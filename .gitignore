@@ -1,0 +1,17 @@
+/target/
+
+# Environment
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+*.swp
+*.swo
+*~
