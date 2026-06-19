@@ -35,6 +35,21 @@ description: Current state and progress tracker for bastion.
 *Record deviations from the plan and notable in-flight choices here. Promote durable ones to
 `decisions/` via `/log-work`.*
 
+- **2026-06-18 — Pre-Block-A reconnaissance against the live orchestrator.** Read the
+  python-orchestration-system to ground Block A. Findings: (1) orchestrator state is one `events`
+  table with JSON `data` + `task_context` columns — no relational runs/nodes tables; the DAG is
+  reconstructed by parsing `task_context`. (2) `/health` returns only `{status, version}` on port
+  **8080** (not 8000 as the scaffold `.env.example` said); DB is `postgres`/`postgres`@5432, db
+  name `postgres` (not `orchestrator_db`). Both config defaults to be corrected in Block A. (3)
+  Worker count / queue depth live in Redis, out of bastion's configured scope → **Block A status
+  scoped to DB + API only**; Redis-backed metrics deferred (see D2). (4) **Critical upstream
+  dependency:** `task_context` is persisted only once, at the end of a run — so a live monitor has
+  no intermediate state to read. The orchestrator owns the fix (incremental node-level
+  persistence): orchestrator DECISIONS **D28** + plan `incremental-execution-observability.md`.
+  bastion Phase 1 (monitor) is gated on that plan's Phase 1 landing. Recorded as bastion **D2**.
+  Test path for Block A: stand up a local Postgres + apply the orchestrator migration for true
+  end-to-end verification, plus unit tests for the unreachable/degraded path.
+
 ---
 
 ## Quick Self-Check
