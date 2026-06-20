@@ -16,6 +16,9 @@ file**, append-only — never edit a settled decision; supersede it with a new o
 - [D2: Observability Consumer Contract](./D2-observability-consumer-contract.md) — bastion is a
   read-only consumer of orchestrator execution state; the live monitor is gated on orchestrator
   D28 (incremental node-level persistence).
+- [D3: Pin the Data Contract](./D3-pin-data-contract.md) — bastion pins v1.0.0 of the
+  orchestrator-owned data contract; Hybrid read path; two sources joined by node class name.
+  Orchestrator D30 / brain D20.
 
 <!-- Add a row per decision as they are made. Record new ones with /log-decision-style atomic
      files (D2, D3, …). -->
