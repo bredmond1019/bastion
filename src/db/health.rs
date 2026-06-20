@@ -30,3 +30,48 @@ pub async fn probe(db_url: &str) -> DbStatus {
         Err(e) => DbStatus::Unreachable(e.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn db_status_reachable_equality() {
+        assert_eq!(DbStatus::Reachable, DbStatus::Reachable);
+    }
+
+    #[test]
+    fn db_status_unreachable_equality() {
+        let a = DbStatus::Unreachable("connection refused".to_string());
+        let b = DbStatus::Unreachable("connection refused".to_string());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn db_status_reachable_ne_unreachable() {
+        assert_ne!(
+            DbStatus::Reachable,
+            DbStatus::Unreachable("error".to_string())
+        );
+    }
+
+    #[test]
+    fn db_status_unreachable_stores_message() {
+        let msg = "could not connect to server";
+        let status = DbStatus::Unreachable(msg.to_string());
+        match status {
+            DbStatus::Unreachable(s) => assert_eq!(s, msg),
+            DbStatus::Reachable => panic!("expected Unreachable"),
+        }
+    }
+
+    #[test]
+    fn db_status_debug_contains_variant_name() {
+        let s = format!("{:?}", DbStatus::Reachable);
+        assert!(s.contains("Reachable"));
+
+        let u = format!("{:?}", DbStatus::Unreachable("timeout".to_string()));
+        assert!(u.contains("Unreachable"));
+        assert!(u.contains("timeout"));
+    }
+}
