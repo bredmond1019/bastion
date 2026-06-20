@@ -1,7 +1,7 @@
 pub mod app;
+pub mod events;
 pub mod graph;
 pub mod ui;
-pub mod events;
 
 use anyhow::Result;
 

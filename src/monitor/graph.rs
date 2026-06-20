@@ -1,8 +1,8 @@
 // Converts WorkflowRun node state into a petgraph DAG and computes
 // a left-to-right topological layout for ratatui canvas rendering.
 
-use petgraph::graph::DiGraph;
 use crate::db::workflows::NodeState;
+use petgraph::graph::DiGraph;
 
 pub struct GraphLayout {
     pub graph: DiGraph<String, ()>,

@@ -2,7 +2,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "bastion", about = "Control panel for the agentic engineering stack")]
+#[command(
+    name = "bastion",
+    about = "Control panel for the agentic engineering stack"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
