@@ -21,6 +21,10 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(2);
 
-        Ok(Self { database_url, api_base_url, poll_interval_secs })
+        Ok(Self {
+            database_url,
+            api_base_url,
+            poll_interval_secs,
+        })
     }
 }
