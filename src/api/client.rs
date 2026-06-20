@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -15,6 +15,15 @@ pub enum ApiStatus {
 struct HealthBody {
     status: String,
     version: String,
+}
+
+/// `GET /workflows/{type}/graph` body — the static DAG (data contract §7).
+/// The only source of edges and of not-yet-run nodes; joined to live `node_runs`
+/// state by node class name.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowGraph {
+    pub nodes: Vec<String>,
+    pub edges: Vec<(String, String)>,
 }
 
 pub struct ApiClient {
@@ -35,16 +44,41 @@ impl ApiClient {
         format!("{}/health", self.base_url.trim_end_matches('/'))
     }
 
+    /// Fetch a workflow's static DAG from `GET /workflows/{type}/graph`.
+    /// Edges (and pending nodes) come only from here; live state comes from
+    /// polling Postgres `node_runs`, joined by class name (data contract §2).
+    pub async fn workflow_graph(&self, workflow_type: &str) -> Result<WorkflowGraph> {
+        let url = format!(
+            "{}/workflows/{workflow_type}/graph",
+            self.base_url.trim_end_matches('/')
+        );
+        self.client
+            .get(&url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .context("requesting workflow graph")?
+            .error_for_status()
+            .context("workflow graph endpoint returned an error status")?
+            .json::<WorkflowGraph>()
+            .await
+            .context("decoding workflow graph body")
+    }
+
     pub async fn trigger_workflow(
         &self,
-        _name: &str,
-        _args: Option<serde_json::Value>,
+        _workflow_type: &str,
+        _data: Option<serde_json::Value>,
     ) -> Result<String> {
-        todo!("Phase 3: POST /workflows/{{name}}/run, return run_id")
+        // Orchestrator's generic dispatcher: POST / with {workflow_type, data}
+        // → 202 {task_id, message} (data contract §7). Returns the task_id.
+        todo!("Phase 3: POST / with {{workflow_type, data}}, return task_id")
     }
 
     pub async fn rerun_node(&self, _run_id: &str, _node_id: &str) -> Result<()> {
-        todo!("Phase 4: POST /workflows/{{run_id}}/nodes/{{node_id}}/rerun")
+        // No orchestrator re-run endpoint exists today — this is a future
+        // contract ADDITION the Python side must make first (data contract §7).
+        todo!("Phase 4: requires a new orchestrator re-run endpoint")
     }
 
     pub async fn health(&self) -> ApiStatus {

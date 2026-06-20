@@ -1,6 +1,10 @@
-// Converts WorkflowRun node state into a petgraph DAG and computes
-// a left-to-right topological layout for ratatui canvas rendering.
+// Builds a petgraph DAG and a left-to-right topological layout for ratatui.
+//
+// Edges come from the orchestrator's graph endpoint (api::client::WorkflowGraph),
+// NOT from node state — `node_runs` carries no edges. Live per-node status is
+// overlaid by joining `nodes` to the graph on class name (data contract §2).
 
+use crate::api::client::WorkflowGraph;
 use crate::db::workflows::NodeState;
 use petgraph::graph::DiGraph;
 
@@ -10,6 +14,8 @@ pub struct GraphLayout {
     pub positions: Vec<(usize, u16, u16)>,
 }
 
-pub fn build_layout(_nodes: &[NodeState]) -> GraphLayout {
-    todo!("Phase 1: topological sort → assign col by depth, row by sibling index")
+/// `graph` supplies the DAG shape (nodes + edges); `nodes` supplies live state
+/// for the nodes that have run, joined to `graph.nodes` by class name.
+pub fn build_layout(_graph: &WorkflowGraph, _nodes: &[NodeState]) -> GraphLayout {
+    todo!("Phase 1: build DiGraph from graph.edges → topological col/row layout")
 }
