@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-18 — Project initialized
-**Current focus:** Phase 0, Block A — Foundation setup
+**Last updated:** 2026-06-20 — phase0-blockA in progress (Tasks 1–1 complete; Tasks 2–5 next — toolchain confirmed, config.rs and .env.example implemented)
+**Current focus:** phase0-blockA — Task 2: Service health probes
 
 ---
 
@@ -24,7 +24,7 @@ description: Current state and progress tracker for bastion.
 ### Phase 0 — Foundation
 | Block | What | Status | Notes |
 |---|---|---|---|
-| Block A | Foundation setup | Not started | Initialize codebase and planning infrastructure |
+| Block A | Foundation setup | In progress | Task 1 complete: toolchain verified, config.rs reads DATABASE_URL + BASTION_API_URL with typed errors, .env.example added. Tasks 2–5 remain. |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
 
