@@ -46,8 +46,8 @@ cargo run -- status        # smoke test (Phase 0+)
 
 Copy `.env.example` to `.env` and fill in:
 ```
-DATABASE_URL=postgres://user:pass@localhost/orchestrator_db
-BASTION_API_URL=http://localhost:8000
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
+BASTION_API_URL=http://localhost:8080
 BASTION_POLL_INTERVAL=2
 ```
 

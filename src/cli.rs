@@ -1,49 +1,36 @@
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(name = "bastion", about = "Control panel for the agentic engineering stack")]
+#[derive(Parser, Debug)]
+#[command(
+    name = "bastion",
+    about = "Personal ops CLI for the agentic engineering stack"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Live TUI graph monitor for workflow execution
-    Monitor {
-        /// Filter to a specific workflow ID (shows all active runs if omitted)
-        #[arg(short, long)]
-        workflow_id: Option<String>,
-    },
-    /// Static post-mortem graph view for a completed run
-    Inspect {
-        /// Run ID to inspect
-        run_id: String,
-    },
-    /// Validate markdown/MDX content
-    Validate {
-        /// Path to content directory (defaults to current dir)
-        #[arg(default_value = ".")]
-        path: PathBuf,
-    },
-    /// Show LLM cost summary
-    Costs {
-        /// Time window (e.g. "7d", "30d", "all")
-        #[arg(long, default_value = "7d")]
-        last: String,
-    },
-    /// Trigger a workflow run via the FastAPI API
-    Run {
-        /// Workflow name to trigger
-        workflow: String,
-        /// JSON args to pass to the workflow
-        #[arg(long)]
-        args: Option<String>,
-        /// Drop into `bastion monitor` after triggering
-        #[arg(long)]
-        monitor: bool,
-    },
     /// Quick stack health check (non-TUI)
     Status,
+    /// Live TUI graph inspector (Phase 1)
+    Monitor,
+    /// Static post-mortem graph view (Phase 2)
+    Inspect {
+        /// Workflow ID to inspect
+        workflow_id: String,
+    },
+    /// LLM spend summary (Phase 2)
+    Costs,
+    /// Trigger a workflow run (Phase 3)
+    Run {
+        /// Workflow ID to trigger
+        workflow_id: String,
+    },
+    /// Validate markdown/MDX content (Phase 4)
+    Validate {
+        /// Path to validate
+        path: String,
+    },
 }

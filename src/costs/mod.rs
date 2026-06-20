@@ -1,7 +1,2 @@
-// `bastion costs --last <window>` — LLM spend summary from PostgreSQL.
-
-use anyhow::Result;
-
-pub async fn run(_window: String) -> Result<()> {
-    todo!("Phase 2: query token usage, print tabular cost summary")
-}
+// LLM spend summary — Phase 2.
+// Reads cost data from the Python orchestrator's PostgreSQL DB and summarizes it.
