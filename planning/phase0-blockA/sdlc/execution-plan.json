@@ -1,0 +1,118 @@
+{
+  "blockId": "phase0-blockA",
+  "additiveFiles": [],
+  "tasks": {
+    "1": {
+      "num": 1,
+      "title": "Toolchain + config plumbing",
+      "dependsOn": [],
+      "evidence": "First step; only confirms baseline build and implements config.rs + .env.example with no consumed upstream symbols.",
+      "filesCreated": [
+        ".env.example"
+      ],
+      "filesModified": [
+        "src/config.rs"
+      ]
+    },
+    "2": {
+      "num": 2,
+      "title": "Service health probes",
+      "dependsOn": [],
+      "evidence": "ApiClient::health() and db::health::probe() are standalone probes; they do not consume config types (probe takes a &str db_url, health takes base_url at construction). Independent of Task 1's config struct.",
+      "filesCreated": [
+        "src/db/health.rs"
+      ],
+      "filesModified": [
+        "src/api/client.rs",
+        "src/db/mod.rs"
+      ]
+    },
+    "3": {
+      "num": 3,
+      "title": "bastion status command + output",
+      "dependsOn": [
+        1,
+        2
+      ],
+      "evidence": "run::status() body: 'let config = Config::load()?;' (Task 1), 'let db = health::probe(&config.database_url).await;' and 'ApiClient::new(...).health().await;' plus 'use crate::api::client::{ApiClient, ApiStatus};' and 'use crate::db::health::{self, DbStatus};' (Task 2).",
+      "filesCreated": [],
+      "filesModified": [
+        "src/run/mod.rs"
+      ]
+    },
+    "4": {
+      "num": 4,
+      "title": "Unit tests (offline-passing)",
+      "dependsOn": [
+        1,
+        2,
+        3
+      ],
+      "evidence": "Config tests call 'Config::from_vars(...)' and assert 'ConfigError::MissingVar' (Task 1). Render tests call 'render_status(&DbStatus::..., &ApiStatus::...)' referencing render_status (Task 3) and the DbStatus/ApiStatus enums (Task 2).",
+      "filesCreated": [],
+      "filesModified": [
+        "src/config.rs",
+        "src/run/mod.rs"
+      ]
+    },
+    "5": {
+      "num": 5,
+      "title": "Validate",
+      "dependsOn": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "evidence": "Step 5 runs the full gated suite (fmt/clippy/test/build) over all prior steps and records baseline + deviations in tasks.md Notes; it can only pass once steps 1-4 are in place.",
+      "filesCreated": [],
+      "filesModified": [
+        "planning/phase0-blockA/tasks.md"
+      ]
+    }
+  },
+  "waves": [
+    {
+      "label": "Wave 1",
+      "parallel": true,
+      "tasks": [
+        1,
+        2
+      ],
+      "mergeOrder": [
+        1,
+        2
+      ]
+    },
+    {
+      "label": "Wave 2",
+      "parallel": false,
+      "tasks": [
+        3
+      ],
+      "mergeOrder": [
+        3
+      ]
+    },
+    {
+      "label": "Wave 3",
+      "parallel": false,
+      "tasks": [
+        4
+      ],
+      "mergeOrder": [
+        4
+      ]
+    },
+    {
+      "label": "Wave 4",
+      "parallel": false,
+      "tasks": [
+        5
+      ],
+      "mergeOrder": [
+        5
+      ]
+    }
+  ]
+}
