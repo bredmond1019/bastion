@@ -16,3 +16,6 @@
 *.swp
 *.swo
 *~
+
+# SDLC worktrees (parallel task pipelines live here — never tracked)
+/trees/
