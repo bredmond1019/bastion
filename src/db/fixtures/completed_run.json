@@ -1,0 +1,79 @@
+{
+  "node_runs": {
+    "DataIngestionNode": {
+      "status": "success",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": "2026-06-20T09:00:00Z"
+    },
+    "EmbeddingNode": {
+      "status": "success",
+      "error": null,
+      "input": {
+        "text": "Sample document content for embedding",
+        "model": "text-embedding-3-small"
+      },
+      "usage": {
+        "input_tokens": 512,
+        "output_tokens": 0,
+        "model": "text-embedding-3-small"
+      },
+      "started_at": "2026-06-20T09:00:04Z"
+    },
+    "LLMSummaryNode": {
+      "status": "success",
+      "error": null,
+      "input": {
+        "context": "Retrieved chunks for summarization",
+        "prompt": "Summarize the following document"
+      },
+      "usage": {
+        "input_tokens": 2048,
+        "output_tokens": 256,
+        "model": "claude-3-5-haiku-20241022"
+      },
+      "started_at": "2026-06-20T09:00:09Z"
+    },
+    "ValidationNode": {
+      "status": "failed",
+      "error": "Validation schema mismatch: expected field 'title' was missing",
+      "input": null,
+      "usage": null,
+      "started_at": "2026-06-20T09:00:18Z"
+    },
+    "OutputFormatterNode": {
+      "status": "failed",
+      "error": "Upstream dependency ValidationNode failed",
+      "input": null,
+      "usage": null,
+      "started_at": "2026-06-20T09:00:19Z"
+    }
+  },
+  "nodes": {
+    "DataIngestionNode": {
+      "output": {
+        "documents_loaded": 3,
+        "total_bytes": 15240
+      }
+    },
+    "EmbeddingNode": {
+      "output": {
+        "embedding_dim": 1536,
+        "chunks_embedded": 12
+      }
+    },
+    "LLMSummaryNode": {
+      "output": {
+        "summary": "The document describes an agentic pipeline for document processing.",
+        "word_count": 45
+      }
+    },
+    "ValidationNode": {
+      "output": null
+    },
+    "OutputFormatterNode": {
+      "output": null
+    }
+  }
+}
