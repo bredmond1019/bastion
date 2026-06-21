@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockB complete
+
+Phase 5 Block B (`attach` / `new` / `kill` session lifecycle verbs) shipped and reviewed in a single attempt (PASS). The three lifecycle verbs are now fully implemented: `tmux.rs` gained pure construction functions (`attach_args`, `new_session_args` with optional `--dir`, `kill_session_args`) and execution helpers (`new_session`, `kill_session`, and `attach_session` using `.status()` so the child inherits stdio and the call blocks until the user detaches — per-spec, `.status()` was chosen over `exec()` to preserve clean teardown on detach). `commands.rs` added `attach`, `new`, and `kill` public entry points with the same graceful degradation pattern as `sessions::run` (NotInstalled/NoServer → human message, ExitError → named-session error), plus pure `format_created`/`format_killed` helpers to keep confirmation messages unit-testable without I/O. `cli.rs` and `main.rs` were wired with sync dispatch arms that call no `Config::load()` and open no Postgres pool (D4/D5 enforced). All six acceptance criteria were met; 79 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Next: phase5-blockC — `bastion send` (keystroke injection into tmux panes).
+
+```
+44f6db1 docs: update docs for phase5-blockB
+4c3d550 feat: implement phase5-blockB
+7012112 chore: add spec for phase5-blockB
+```
+
+---
+
 ## 2026-06-21 — phase5-blockA decisions promoted to registry
 
 The two settled decisions from phase5-blockA implement report were promoted to the decision registry: **D5** (Session verbs are synchronous: tmux shell-outs are blocking `std::process::Command` calls, so session verbs stay plain sync with no tokio coupling) and **D6** (Skip malformed tmux output lines: when parsing `tmux list-sessions` output, an unparseable line is skipped with a stderr warning rather than aborting the listing — partial system state is more useful than none). Both decisions build on D4 and are now part of the durable architectural record. Updated `planning/decisions/index.md` to register both.

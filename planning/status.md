@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — phase5-blockA complete + decisions D5/D6 promoted to registry; sessions/ module shipped with tmux wrapper, model, commands, and CLI wiring
-**Current focus:** planning/phase5-blockB — `attach` / `new` / `kill` lifecycle verbs (Phase 5 session management, ungated parallel track).
+**Last updated:** 2026-06-21 — phase5-blockB complete; attach/new/kill lifecycle verbs shipped; 79 tests passing, all gating checks green
+**Current focus:** planning/phase5-blockC — `bastion send` (keystroke injection into tmux panes).
 
 ---
 
@@ -36,7 +36,7 @@ description: Current state and progress tracker for bastion.
 | Block | What | Status | Notes |
 |---|---|---|---|
 | Block A | `bastion sessions` + tmux wrapper + lazy DB pool | Done | sessions/ module shipped: tmux.rs (pure arg construction + typed errors), model.rs (Session/Pane + fixture parsing), commands.rs (list verb, graceful degradation, render), CLI wiring. DB-free guarantee enforced by architecture and locked in by test. 20 new tests; 73 total pass. All gating checks green. PASS in 1 review attempt. |
-| Block B | `attach` / `new` / `kill` (lifecycle) | Not started | |
+| Block B | `attach` / `new` / `kill` (lifecycle) | Done | attach/new/kill verbs shipped: pure arg-construction functions, interactive attach_session (.status()), new_session, kill_session; graceful degradation for NotInstalled/NoServer/ExitError; format_created/format_killed helpers unit-tested. 79 tests pass (2 ignored); all gating checks green. PASS in 1 review attempt. |
 | Block C | `bastion send` (keystrokes) | Not started | |
 | Block D | `bastion capture` (pane output) | Not started | |
 | Block E | session view in the TUI | Not started | Built on Block A–D primitives. |
