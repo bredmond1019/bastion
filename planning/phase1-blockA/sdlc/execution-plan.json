@@ -1,0 +1,120 @@
+{
+  "blockId": "phase1-blockA",
+  "additiveFiles": [],
+  "tasks": {
+    "1": {
+      "num": 1,
+      "title": "Add test fixtures for events.task_context JSON parsing",
+      "dependsOn": [],
+      "evidence": "Depends on: none.",
+      "filesCreated": [
+        "src/db/fixtures/in_progress_run.json",
+        "src/db/fixtures/completed_run.json"
+      ],
+      "filesModified": [],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    },
+    "2": {
+      "num": 2,
+      "title": "Implement db::workflows node_runs JSON -> NodeState parsing",
+      "dependsOn": [
+        1
+      ],
+      "evidence": "Depends on: 1. 'Write unit tests against the Task 1 fixtures'",
+      "filesCreated": [],
+      "filesModified": [
+        "src/db/workflows.rs"
+      ],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    },
+    "3": {
+      "num": 3,
+      "title": "Implement db::workflows::list_active_runs and get_run_state",
+      "dependsOn": [
+        2
+      ],
+      "evidence": "Depends on: 2. 'parses each row with the Task 2 parsing layer'; 'unit tests use the fixture-based parsing layer from Task 2'",
+      "filesCreated": [],
+      "filesModified": [
+        "src/db/workflows.rs"
+      ],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    },
+    "4": {
+      "num": 4,
+      "title": "Implement monitor::graph::build_layout",
+      "dependsOn": [
+        2
+      ],
+      "evidence": "Depends on: 2. 'Overlay live status from nodes: &[NodeState]' (NodeState defined/parsed in Task 2)",
+      "filesCreated": [],
+      "filesModified": [
+        "src/monitor/graph.rs"
+      ],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    },
+    "5": {
+      "num": 5,
+      "title": "Validate — all gates pass",
+      "dependsOn": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "evidence": "Depends on: 1, 2, 3, 4.",
+      "filesCreated": [],
+      "filesModified": [],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    }
+  },
+  "waves": [
+    {
+      "label": "Wave 1",
+      "parallel": false,
+      "tasks": [
+        1
+      ],
+      "mergeOrder": [
+        1
+      ]
+    },
+    {
+      "label": "Wave 2",
+      "parallel": false,
+      "tasks": [
+        2
+      ],
+      "mergeOrder": [
+        2
+      ]
+    },
+    {
+      "label": "Wave 3",
+      "parallel": true,
+      "tasks": [
+        3,
+        4
+      ],
+      "mergeOrder": [
+        3,
+        4
+      ]
+    },
+    {
+      "label": "Wave 4",
+      "parallel": false,
+      "tasks": [
+        5
+      ],
+      "mergeOrder": [
+        5
+      ]
+    }
+  ]
+}
