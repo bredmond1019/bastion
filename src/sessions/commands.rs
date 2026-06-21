@@ -71,6 +71,17 @@ pub fn new(session_name: &str, dir: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
+/// Send `keys` to the named tmux session, followed by Enter.
+pub fn send(session_name: &str, keys: &str) -> anyhow::Result<()> {
+    match tmux::send_keys(session_name, keys) {
+        Ok(()) => {
+            println!("{}", format_sent(session_name, keys));
+            Ok(())
+        }
+        Err(e) => apply_degradation("send", session_name, e),
+    }
+}
+
 /// Kill (remove) a tmux session by name.
 pub fn kill(session_name: &str) -> anyhow::Result<()> {
     match tmux::kill_session(session_name) {
@@ -133,6 +144,10 @@ pub fn format_created(name: &str) -> String {
 
 pub fn format_killed(name: &str) -> String {
     format!("killed session '{}'", name)
+}
+
+pub fn format_sent(session: &str, keys: &str) -> String {
+    format!("sent to '{}': {}", session, keys)
 }
 
 /// Pure render function: `&[Session]` → formatted String.
@@ -294,6 +309,30 @@ mod tests {
                 other => panic!("verb {verb}: expected Fatal, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn degrade_exit_error_for_send_is_fatal_not_found() {
+        let err = TmuxError::ExitError {
+            code: 1,
+            stderr: "can't find session: ghost".to_string(),
+        };
+        match degrade_tmux_error("send", "ghost", &err) {
+            Degraded::Fatal(m) => {
+                assert!(m.contains("session 'ghost' not found"), "got: {m}");
+            }
+            other => panic!("expected Fatal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn format_sent_contains_session_and_command() {
+        let msg = format_sent("work", "cargo build --release");
+        assert!(msg.contains("work"), "expected session name in: {msg}");
+        assert!(
+            msg.contains("cargo build --release"),
+            "expected command in: {msg}"
+        );
     }
 
     /// Architectural guarantee: the sessions code path does not call Config::load()

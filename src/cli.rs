@@ -69,4 +69,12 @@ pub enum Commands {
         /// Name of the session to kill
         session: String,
     },
+    /// Send a command to a tmux session without attaching
+    Send {
+        /// Name of the target session
+        session: String,
+        /// Command to send (multi-word; no quoting needed)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        cmd: Vec<String>,
+    },
 }

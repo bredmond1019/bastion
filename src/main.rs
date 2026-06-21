@@ -41,5 +41,9 @@ async fn main() -> Result<()> {
             sessions::commands::new(&session, dir.as_deref().and_then(|p| p.to_str()))
         }
         Commands::Kill { session } => sessions::commands::kill(&session),
+        Commands::Send { session, cmd } => {
+            let keys = cmd.join(" ");
+            sessions::commands::send(&session, &keys)
+        }
     }
 }
