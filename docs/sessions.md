@@ -40,7 +40,9 @@ Because the surface needs no database, this works even when the orchestrator sta
 ## TUI Session Dashboard
 
 Running `bastion` (bare) or `bastion tui` opens a live ratatui dashboard that lists all tmux
-sessions with their state and last pane output, refreshing automatically every 2 seconds.
+sessions with their activity state (derived from `pane_current_command`) and last pane output,
+refreshing automatically every 2 seconds. Sessions running a non-shell foreground command show
+`running (cmd)` in the STATE column; idle shells show `idle`.
 
 ### Key bindings
 
@@ -63,11 +65,21 @@ TUI rather than crashing the loop.
 
 ### `bastion sessions`
 
-List all tmux sessions, each with its running/idle state and the last line of pane output.
+List all tmux sessions, each with their activity state and the last line of pane output.
 
 ```bash
 bastion sessions
 ```
+
+The STATE column is derived from the session's foreground command (`pane_current_command`):
+
+| State | Meaning |
+|---|---|
+| `running (cmd)` | A non-shell process is in the foreground (e.g. `running (cargo)`, `running (claude)`). |
+| `idle` | A bare shell (`zsh`, `bash`, `sh`, `fish`) is in the foreground — no active command. |
+
+A detached session with a live `claude` process correctly shows `running (claude)` rather
+than `idle`, fixing the previous mislabeling of detached-but-busy sessions.
 
 ### `bastion attach <session>`
 
@@ -86,6 +98,20 @@ Create a new **detached** session. `--dir` sets the session's starting working d
 bastion new work
 bastion new build --dir /Users/brandon/Dev/agentic-portfolio/bastion
 ```
+
+When `--dir` is provided, bastion prints an advisory **trust pre-flight** line after creating
+the session. This checks whether the target directory is listed as trusted in `~/.claude.json`
+(the local Claude Code trust store):
+
+```
+trust: trusted      # directory has hasTrustDialogAccepted: true in ~/.claude.json
+trust: untrusted    # directory is listed but hasTrustDialogAccepted is false
+trust: unknown      # ~/.claude.json absent, directory not listed, or file unreadable
+```
+
+The trust check is **advisory only** — it never blocks or fails `bastion new`. The session
+is created regardless of the trust status, and `unknown` is not an error. The check is
+read-only: bastion never writes to `~/.claude.json`.
 
 ### `bastion send <session> <cmd...>`
 
@@ -135,4 +161,4 @@ The surface degrades gracefully rather than panicking:
 
 ---
 
-*Block E (TUI session dashboard) is complete. The verbs above remain available for scripting.*
+*Block F (activity indicator + Claude trust observer) is complete. Block E (TUI session dashboard) and all earlier verbs remain available for scripting.*
