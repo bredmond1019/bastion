@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — phase5-blockD complete: `bastion capture` (pane output) shipped, PASS in 1 review attempt; 110 tests pass, all gating checks green.
-**Current focus:** planning/phase5-blockE — session view in the TUI.
+**Last updated:** 2026-06-21 — phase5-blockE complete: ratatui session TUI dashboard shipped, PASS in 1 review attempt; 145 tests pass, all gating checks green.
+**Current focus:** planning/phase1-blockB — TUI render loop and event-driven updates (monitor track).
 
 ---
 
@@ -39,7 +39,7 @@ description: Current state and progress tracker for bastion.
 | Block B | `attach` / `new` / `kill` (lifecycle) | Done | attach/new/kill verbs shipped: pure arg-construction functions, interactive attach_session (.status()), new_session, kill_session; graceful degradation for NotInstalled/NoServer/ExitError; format_created/format_killed helpers unit-tested. PASS in 1 review attempt. Follow-up chore (2026-06-21) closed the error-path test gaps: extracted pure `classify_no_server` (tmux.rs) + `degrade_tmux_error`/`Degraded` (commands.rs); 9 new tests, 88 total, all gating checks green. **Deferred manual smoke test now COMPLETE** — verified live against tmux 3.6b: new (incl. `--dir` cwd), sessions list, kill (valid + unknown-session error), attach unknown-session error, and the interactive `attach`→`Ctrl-b d` detach round-trip (returns cleanly to shell). |
 | Block C | `bastion send` (keystrokes) | Done | `bastion send` shipped: `send_keys_args` with `-l`/`--` for literal delivery, `send_enter_args` for separate Enter keypress, execution fn + CLI wiring + graceful degradation. 9 new tests; 96 total pass. All gating checks green. PASS in 1 review attempt. |
 | Block D | `bastion capture` (pane output) | Done | `Pane::last_lines` with trailing-blank stripping; capture verb + CLI wiring + graceful degradation. 14 new tests; 110 total pass. All gating checks green. PASS in 1 review attempt. |
-| Block E | session view in the TUI | Not started | Built on Block A–D primitives. |
+| Block E | session view in the TUI | Done | ratatui session dashboard shipped: `SessionApp` state model (29 unit tests), `ui.rs` render + event loop (6 unit tests + smoke-tested), CLI wired so bare `bastion` and `bastion tui` both launch the dashboard. 145 tests pass; all gating checks green. PASS in 1 review attempt. |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
 
