@@ -223,6 +223,40 @@ Build order is strict and incremental — each verb ships only when reached for.
   activity, JSON → trust flag) is exhaustively unit-tested against fixtures; the thin I/O shell is
   smoke-tested. DB-free (D4) and synchronous (D5) invariants preserved.
 
+### Block G — `bastion ask` (one Claude Code turn for an external caller)
+- **What:** A new non-interactive subcommand that performs a **single Claude Code "turn"** against an
+  interactive session and exits when the answer file is ready — the contract the Python orchestrator's
+  `CLAUDE_CODE_SESSION` provider shells out to (so a workflow LLM node runs on the subscription, billed
+  to the live session, and is observable in `bastion sessions`).
+  ```
+  bastion ask --session <name> --prompt-file <path> --out <path>
+              [--dir <trusted-workdir>] [--timeout <secs=180>]
+              [--launch-cmd "claude --permission-mode bypassPermissions"]
+  ```
+  Behavior: (1) ensure the session + Claude are running — if `has_session` is false, `new-session -d`,
+  send `--launch-cmd`, wait for readiness; reuse Block F's `classify_state` to skip launch when Claude
+  is already running and Block F's trust observer to **fail fast** on an untrusted `--dir`. (2) Send a
+  short fixed **trigger** (the only keystrokes): `Read <prompt-file> and follow its instructions exactly.
+  Write your complete answer to <out>. When finished, create an empty file <out>.done`. (3) Poll for
+  `<out>.done` up to `--timeout`, remove it, exit `0` (answer at `<out>`); on timeout `capture-pane` to
+  stderr and exit non-zero. bastion is **payload-agnostic** — it guarantees `<out>` exists and is
+  complete; the caller decides JSON vs markdown via the prompt file.
+- **Why:** Closes the loop for the cross-repo "Claude Code as an LLM provider" feature — gives the
+  orchestrator one clean, stable command instead of choreographing raw `send`/`capture` itself, and
+  keeps all tmux/session logic in bastion (its proper home). Contract is pinned in the brain:
+  `agentic-portfolio/docs/integrations/claude-code-llm-provider.md` §2 (`bastion ask` v0.1.0).
+- **Build notes:** new module `src/sessions/ask.rs` reusing `tmux.rs` (`new_session`, `send_keys`,
+  `capture_pane`, `has_session`) + Block F's `classify_state` / `trust_status`. Keep the Coverage-bar
+  split: trigger-string construction, `send-keys` arg vectors, `<out>`→`<out>.done` derivation, and
+  launch/readiness command building are pure and unit-tested element-by-element; the poll loop + process
+  spawn is the thin I/O shell, smoke-tested and recorded in `## Notes`. DB-free (D4) and synchronous (D5)
+  preserved.
+- **Acceptance criteria:** `bastion ask` against a pre-trusted dir produces `<out>` and exits 0; the
+  session it used appears in `bastion sessions` (Block F) as *running (claude)*; a timeout exits non-zero
+  with stderr diagnostics and does not falsely report success; an untrusted `--dir` fails fast (never
+  stalls). Pure logic exhaustively unit-tested; gated checks (`cargo fmt --check`, `cargo clippy -- -D
+  warnings`, `cargo test`, `cargo build --release`) pass.
+
 ---
 
 ## Quick Reference Sequence Table
@@ -243,6 +277,7 @@ Build order is strict and incremental — each verb ships only when reached for.
 | 5 | D | `bastion capture` | Read pane output | Observe without attaching |
 | 5 | E | Session TUI view | Ergonomic operator surface | Pleasant from a phone |
 | 5 | F | Activity indicator + trust observer | Honest session state (running vs idle); pre-flight the Claude trust prompt | Trustworthy at-a-glance from a phone |
+| 5 | G | `bastion ask` (one Claude Code turn) | Stable command for the orchestrator's `CLAUDE_CODE_SESSION` LLM provider | Subscription-billed, observable LLM nodes |
 
 > Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
 > Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any
