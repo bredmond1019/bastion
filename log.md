@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockD complete
+
+Phase 5 Block D (`bastion capture` — pane output) shipped and reviewed in a single attempt (PASS). The implementation added `Pane::last_lines(n: Option<usize>) -> Vec<String>` to `model.rs`: strips trailing blank/whitespace-only padding lines from `capture-pane -p` output first, then returns all or the last `n` meaningful lines in original order. Nine unit tests cover all specified edge cases (more/fewer/exactly-N, `Some(0)`, `None`, blank padding, empty/all-blank input, order preservation). On the commands side, `capture(session_name, lines)` calls `capture_pane_raw`, builds a `Pane`, calls `last_lines`, and prints via the pure `format_capture` helper; errors route through the existing `apply_degradation` path — no new match arm was needed in `degrade_tmux_error` since the non-`"new"` default branch already produces the correct "session not found" Fatal for the `capture` verb. CLI wiring added the `Capture { session, lines }` variant to the `Commands` enum and the dispatch arm in `main.rs` on the sync, DB-free path (D4/D5 enforced). All six acceptance criteria were met; 110 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Docs updated: `docs/sessions.md` gained the capture verb section, error-behavior row, and footer update; `docs/index.md` updated the verb list. Next: phase5-blockE — session view in the TUI.
+
+```
+7e06ba7 docs: update docs for phase5-blockD
+394ca23 feat: implement phase5-blockD — bastion capture
+2fe57d8 chore: add spec for phase5-blockD
+```
+
+---
+
 ## 2026-06-21 — user-facing docs + test-coverage standing rule
 
 Reviewed phase5-blockC test coverage and judged it sufficient: the pure arg-construction and escaping logic in `tmux.rs` is exhaustively tested (unit cases covering `-l` literal delivery, `--` flag-guard separator, Enter keypress isolation), while the thin tmux shell-out wrappers are left to manual smoke-test per the module's established pattern (D5/D6). Added CLAUDE.md standing rule 6 "Coverage bar" to codify the separate-pure-logic-from-I/O testing pattern already locked into the sessions surface, formalizing the bar across all Phase 5 work: pure logic exhaustively unit-tested, error/degradation paths explicit, and the untestable I/O shells smoke-tested manually. Filled in the README.md skeleton (Prerequisites: Rust + tmux + PostgreSQL for monitor track; Setup: clone + `.env` + the three vars; Running locally: example commands for `status`, `sessions`, `send`, `new`, `attach`, `kill` with a Shipped-vs-Planned table; Tests: `cargo test` one-liner + all four gates). Added docs/sessions.md (verb reference for `sessions` / `attach` / `new` / `kill` / `send`, operator workflow via SSH-over-Tailscale from phone, and the DB-free/synchronous guarantees that let it run with Postgres stopped); and docs/index.md (router for docs/ linking sessions.md, data-contract.md, and back to planning/). All markdown carries OKF frontmatter. Planned via `/chore` (planning/chore-user-facing-docs/tasks.md). Docs-only — no source changed; all four gating checks green (`cargo fmt --check`, `cargo clippy`, 96 tests pass, `cargo build --release`).
