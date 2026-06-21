@@ -87,6 +87,44 @@ pub fn kill_session_args(session_name: &str) -> Vec<String> {
     ]
 }
 
+/// Returns the argument list for a **literal** send-keys invocation:
+///   tmux send-keys -t <session_name> -l -- <keys>
+///
+/// `-l` (literal) ensures the text is never interpreted as tmux key names
+/// (e.g. a command containing `Enter`, `C-c`).  `--` prevents a command
+/// starting with `-` from being parsed as a flag.  The `keys` value is a
+/// single argv element — multi-word commands are passed verbatim.
+///
+/// The Enter keypress must be sent in a separate call (use `send_enter_args`)
+/// because `-l` disables key-name lookup.
+pub fn send_keys_args(session_name: &str, keys: &str) -> Vec<String> {
+    vec![
+        "tmux".to_string(),
+        "send-keys".to_string(),
+        "-t".to_string(),
+        session_name.to_string(),
+        "-l".to_string(),
+        "--".to_string(),
+        keys.to_string(),
+    ]
+}
+
+/// Returns the argument list for sending an Enter keypress:
+///   tmux send-keys -t <session_name> Enter
+///
+/// This is a separate invocation from `send_keys_args` because `-l` (literal)
+/// disables key-name lookup, so `Enter` would be sent as the literal string
+/// rather than the Return key.
+pub fn send_enter_args(session_name: &str) -> Vec<String> {
+    vec![
+        "tmux".to_string(),
+        "send-keys".to_string(),
+        "-t".to_string(),
+        session_name.to_string(),
+        "Enter".to_string(),
+    ]
+}
+
 // ── Execution ─────────────────────────────────────────────────────────────────
 
 /// Errors produced by this module.
@@ -162,6 +200,23 @@ pub fn new_session(session_name: &str, dir: Option<&str>) -> Result<()> {
 pub fn kill_session(session_name: &str) -> Result<()> {
     let args = kill_session_args(session_name);
     run_tmux(&args).context("kill-session failed")?;
+    Ok(())
+}
+
+/// Send `keys` literally to `session_name`, followed by an Enter keypress.
+///
+/// Two tmux invocations are made:
+/// 1. `send-keys -t <session> -l -- <keys>` — sends the text literally.
+/// 2. `send-keys -t <session> Enter` — sends the Return key.
+///
+/// An unknown session surfaces as `TmuxError::ExitError`.
+pub fn send_keys(session_name: &str, keys: &str) -> Result<()> {
+    let literal_args = send_keys_args(session_name, keys);
+    run_tmux(&literal_args).context("send-keys (literal) failed")?;
+
+    let enter_args = send_enter_args(session_name);
+    run_tmux(&enter_args).context("send-keys (Enter) failed")?;
+
     Ok(())
 }
 
@@ -275,6 +330,71 @@ mod tests {
         assert_eq!(args[2], "-t");
         assert_eq!(args[3], "old-session");
         assert_eq!(args.len(), 4);
+    }
+
+    // ── send-keys arg construction ──────────────────────────────────────────────
+
+    #[test]
+    fn send_keys_args_simple_command() {
+        let args = send_keys_args("work", "cargo build");
+        assert_eq!(args[0], "tmux");
+        assert_eq!(args[1], "send-keys");
+        assert_eq!(args[2], "-t");
+        assert_eq!(args[3], "work");
+        assert_eq!(args[4], "-l");
+        assert_eq!(args[5], "--");
+        assert_eq!(args[6], "cargo build");
+        assert_eq!(args.len(), 7);
+    }
+
+    #[test]
+    fn send_keys_args_contains_literal_flag() {
+        // -l must always be present so key-name tokens are never interpreted.
+        let args = send_keys_args("work", "echo Enter");
+        assert!(args.contains(&"-l".to_string()), "missing -l in: {args:?}");
+    }
+
+    #[test]
+    fn send_keys_args_contains_double_dash() {
+        // -- must always be present so a leading hyphen is not parsed as a flag.
+        let args = send_keys_args("work", "--help");
+        assert!(args.contains(&"--".to_string()), "missing -- in: {args:?}");
+    }
+
+    #[test]
+    fn send_keys_args_command_with_tmux_key_token() {
+        // A command containing "Enter" must be a single argv element after --.
+        let args = send_keys_args("work", "echo Enter");
+        assert_eq!(
+            args[6], "echo Enter",
+            "command must be a single argv element"
+        );
+        assert_eq!(args.len(), 7);
+    }
+
+    #[test]
+    fn send_keys_args_command_with_leading_hyphen() {
+        // A command starting with - must be after --, as a single argv element.
+        let args = send_keys_args("work", "--help");
+        assert_eq!(args[5], "--", "-- must precede the command");
+        assert_eq!(args[6], "--help", "command must be a single argv element");
+        assert_eq!(args.len(), 7);
+    }
+
+    #[test]
+    fn send_enter_args_correct() {
+        let args = send_enter_args("work");
+        assert_eq!(args[0], "tmux");
+        assert_eq!(args[1], "send-keys");
+        assert_eq!(args[2], "-t");
+        assert_eq!(args[3], "work");
+        assert_eq!(args[4], "Enter");
+        assert_eq!(args.len(), 5);
+        // Must NOT contain -l — that would prevent Enter being treated as the Return key.
+        assert!(
+            !args.contains(&"-l".to_string()),
+            "-l must not appear in enter args"
+        );
     }
 
     // ── stderr classification (#2) ──────────────────────────────────────────────
