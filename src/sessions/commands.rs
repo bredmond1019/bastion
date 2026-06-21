@@ -82,6 +82,20 @@ pub fn send(session_name: &str, keys: &str) -> anyhow::Result<()> {
     }
 }
 
+/// Capture the last N lines of pane output for the named session.
+/// Prints one line per line; trailing blank padding from `capture-pane -p` is excluded.
+pub fn capture(session_name: &str, lines: Option<usize>) -> anyhow::Result<()> {
+    match tmux::capture_pane_raw(session_name) {
+        Ok(output) => {
+            let pane = Pane::new(session_name, output);
+            let captured = pane.last_lines(lines);
+            print!("{}", format_capture(&captured));
+            Ok(())
+        }
+        Err(e) => apply_degradation("capture", session_name, e),
+    }
+}
+
 /// Kill (remove) a tmux session by name.
 pub fn kill(session_name: &str) -> anyhow::Result<()> {
     match tmux::kill_session(session_name) {
@@ -148,6 +162,14 @@ pub fn format_killed(name: &str) -> String {
 
 pub fn format_sent(session: &str, keys: &str) -> String {
     format!("sent to '{}': {}", session, keys)
+}
+
+/// Join captured lines for printing. Each line ends with a newline; empty slice → empty string.
+pub fn format_capture(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    lines.iter().map(|l| format!("{l}\n")).collect()
 }
 
 /// Pure render function: `&[Session]` → formatted String.
@@ -333,6 +355,52 @@ mod tests {
             msg.contains("cargo build --release"),
             "expected command in: {msg}"
         );
+    }
+
+    // ── capture verb degradation ─────────────────────────────────────────────
+
+    #[test]
+    fn degrade_exit_error_for_capture_is_fatal_not_found() {
+        let err = TmuxError::ExitError {
+            code: 1,
+            stderr: "can't find session: ghost".to_string(),
+        };
+        match degrade_tmux_error("capture", "ghost", &err) {
+            Degraded::Fatal(m) => {
+                assert!(m.contains("session 'ghost' not found"), "got: {m}");
+            }
+            other => panic!("expected Fatal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn degrade_not_installed_for_capture_is_graceful() {
+        match degrade_tmux_error("capture", "any", &TmuxError::NotInstalled) {
+            Degraded::Graceful(m) => assert!(m.contains("bastion capture"), "got: {m}"),
+            other => panic!("expected Graceful, got {other:?}"),
+        }
+    }
+
+    // ── format_capture ────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_capture_joins_lines_with_newline() {
+        let lines = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+        let out = format_capture(&lines);
+        assert_eq!(out, "alpha\nbeta\ngamma\n");
+    }
+
+    #[test]
+    fn format_capture_empty_slice_returns_empty_string() {
+        let out = format_capture(&[]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn format_capture_single_line_has_trailing_newline() {
+        let lines = vec!["only".to_string()];
+        let out = format_capture(&lines);
+        assert_eq!(out, "only\n");
     }
 
     /// Architectural guarantee: the sessions code path does not call Config::load()

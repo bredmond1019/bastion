@@ -77,4 +77,12 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         cmd: Vec<String>,
     },
+    /// Print recent pane output for a tmux session without attaching
+    Capture {
+        /// Name of the session to capture output from
+        session: String,
+        /// Maximum number of lines to print (prints all if omitted)
+        #[arg(long)]
+        lines: Option<usize>,
+    },
 }

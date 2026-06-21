@@ -59,6 +59,35 @@ impl Pane {
             .find(|l| !l.trim().is_empty())
             .unwrap_or("")
     }
+
+    /// Return the trailing lines of pane output, after stripping trailing blank/whitespace-only
+    /// lines that `tmux capture-pane -p` pads to fill the pane height.
+    ///
+    /// - `None`    → return all non-padding lines (oldest → newest).
+    /// - `Some(n)` → return at most the last `n` non-padding lines.
+    /// - `Some(0)` → empty Vec.
+    pub fn last_lines(&self, n: Option<usize>) -> Vec<String> {
+        if n == Some(0) {
+            return Vec::new();
+        }
+
+        // Collect non-padding lines: strip trailing blank lines first.
+        let lines: Vec<&str> = self.raw_output.lines().collect();
+        let trimmed_end = lines
+            .iter()
+            .rposition(|l| !l.trim().is_empty())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let meaningful: &[&str] = &lines[..trimmed_end];
+
+        match n {
+            None => meaningful.iter().map(|l| l.to_string()).collect(),
+            Some(count) => {
+                let start = meaningful.len().saturating_sub(count);
+                meaningful[start..].iter().map(|l| l.to_string()).collect()
+            }
+        }
+    }
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────────────
@@ -227,5 +256,72 @@ background\t0\t1\t1718000100\n";
     fn state_as_str() {
         assert_eq!(SessionState::Running.as_str(), "running");
         assert_eq!(SessionState::Idle.as_str(), "idle");
+    }
+
+    // ── Pane::last_lines ─────────────────────────────────────────────────────
+
+    #[test]
+    fn last_lines_none_returns_all_nonblank_trailing_stripped() {
+        let pane = Pane::new("s", "line1\nline2\nline3\n\n   \n");
+        let lines = pane.last_lines(None);
+        assert_eq!(lines, vec!["line1", "line2", "line3"]);
+    }
+
+    #[test]
+    fn last_lines_some_n_more_lines_than_n() {
+        let pane = Pane::new("s", "a\nb\nc\nd\ne\n\n");
+        let lines = pane.last_lines(Some(3));
+        assert_eq!(lines, vec!["c", "d", "e"]);
+    }
+
+    #[test]
+    fn last_lines_some_n_fewer_lines_than_n() {
+        let pane = Pane::new("s", "x\ny\n\n\n");
+        let lines = pane.last_lines(Some(10));
+        assert_eq!(lines, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn last_lines_some_n_exactly_n_lines() {
+        let pane = Pane::new("s", "p\nq\nr\n\n");
+        let lines = pane.last_lines(Some(3));
+        assert_eq!(lines, vec!["p", "q", "r"]);
+    }
+
+    #[test]
+    fn last_lines_some_zero_returns_empty() {
+        let pane = Pane::new("s", "a\nb\nc\n");
+        let lines = pane.last_lines(Some(0));
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn last_lines_empty_input_returns_empty() {
+        let pane = Pane::new("s", "");
+        assert!(pane.last_lines(None).is_empty());
+        assert!(pane.last_lines(Some(5)).is_empty());
+    }
+
+    #[test]
+    fn last_lines_all_blank_returns_empty() {
+        let pane = Pane::new("s", "\n   \n\t\n");
+        assert!(pane.last_lines(None).is_empty());
+        assert!(pane.last_lines(Some(3)).is_empty());
+    }
+
+    #[test]
+    fn last_lines_order_is_preserved_oldest_newest() {
+        let pane = Pane::new("s", "first\nsecond\nthird\n\n");
+        let lines = pane.last_lines(Some(2));
+        assert_eq!(lines, vec!["second", "third"]);
+    }
+
+    #[test]
+    fn last_lines_trailing_blank_padding_stripped() {
+        // Simulate tmux padding: content lines followed by many blank lines.
+        let raw = "output1\noutput2\n\n\n\n\n\n\n\n";
+        let pane = Pane::new("s", raw);
+        let lines = pane.last_lines(None);
+        assert_eq!(lines, vec!["output1", "output2"]);
     }
 }
