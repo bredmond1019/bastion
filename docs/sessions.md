@@ -148,6 +148,57 @@ bastion capture work
 bastion capture work --lines 50
 ```
 
+### `bastion ask` — one Claude Code turn (brain contract v0.1.0)
+
+Run a single non-interactive Claude Code turn against an interactive tmux session. This is the
+stable command the Python orchestrator's `CLAUDE_CODE_SESSION` LLM provider shells out to — it
+makes a Claude Code session observable from the outside without attaching.
+
+```bash
+bastion ask \
+  --session <name> \
+  --prompt-file <path-to-prompt> \
+  --out <path-for-answer> \
+  [--dir <trusted-project-dir>] \
+  [--timeout 180] \
+  [--launch-cmd "claude --permission-mode bypassPermissions"]
+```
+
+**Flags:**
+
+| Flag | Required | Default | Description |
+|---|---|---|---|
+| `--session` | yes | — | tmux session name; created if absent |
+| `--prompt-file` | yes | — | Path to a file containing the full prompt text |
+| `--out` | yes | — | Path Claude should write the answer to; bastion waits for `<out>.done` |
+| `--dir` | no | — | Working directory if the session must be created; must be Claude-trusted |
+| `--timeout` | no | `180` | Seconds to wait for `<out>.done` to appear |
+| `--launch-cmd` | no | `claude --permission-mode bypassPermissions` | Command to start Claude if the session is cold |
+
+**Protocol:**
+
+1. If the named session does not exist, bastion creates it (using `--dir` if provided) and
+   launches Claude Code with `--launch-cmd`.
+2. If the session exists but Claude is not the foreground process, bastion launches Claude Code.
+3. bastion sends a fixed trigger keystroke that instructs Claude Code to read `--prompt-file`,
+   write its answer to `--out`, then write `<out>.done` to signal completion.
+4. bastion polls until `<out>.done` appears (or `--timeout` expires), then removes the marker
+   and exits.
+
+**Exit semantics (contract):**
+
+- Exits `0` only when `<out>.done` was observed and the turn completed.
+- Exits non-zero with a diagnostic message on stderr on timeout or any error.
+
+**Trust pre-flight:**
+
+If `--dir` is provided and `bastion` must create the session, the directory is checked against
+`~/.claude.json`. An untrusted directory causes `bastion ask` to fail immediately with exit 1
+and a clear stderr message — no session is created. An `unknown` directory (not listed in
+`~/.claude.json`) proceeds without error. The check is read-only.
+
+**Guarantees:** DB-free (D4) — no Postgres connection. Synchronous (D5) — no async/await.
+
 ## Verifying the surface
 
 A quick manual smoke test that exercises the activity indicator and the trust pre-flight against a
@@ -190,4 +241,4 @@ The surface degrades gracefully rather than panicking:
 
 ---
 
-*Block F (activity indicator + Claude trust observer) is complete. Block E (TUI session dashboard) and all earlier verbs remain available for scripting.*
+*Block G (`bastion ask` — one Claude Code turn) is complete. Block F (activity indicator + Claude trust observer), Block E (TUI session dashboard), and all earlier verbs remain available for scripting.*
