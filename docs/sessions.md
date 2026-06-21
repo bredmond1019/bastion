@@ -34,6 +34,9 @@ Alternatively, use the individual verbs below for one-shot scripting or shell pi
 
 Because the surface needs no database, this works even when the orchestrator stack is down.
 
+> For the specific flow of launching and driving **Claude Code** inside a session, see the
+> task-oriented guide: [claude-code-workflow.md](claude-code-workflow.md).
+
 ## TUI Session Dashboard
 
 Running `bastion` (bare) or `bastion tui` opens a live ratatui dashboard that lists all tmux
