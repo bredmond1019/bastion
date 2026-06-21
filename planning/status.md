@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — phase5-blockF complete: activity indicator (pane_current_command → classify_state) and Claude trust observer (read-only ~/.claude.json) shipped; 181 tests pass (+36). Next: phase1-blockB (TUI render loop).
-**Current focus:** phase1-blockB
+**Last updated:** 2026-06-21 — Phase 5 complete A–F: activity indicator + trust observer shipped; 181 tests PASS in 1 attempt. Next: phase1-blockB (TUI render loop), blocked on orchestrator D28.
+**Current focus:** phase1-blockB (blocked on orchestrator D28 — incremental execution-state persistence)
 
 ---
 
@@ -51,6 +51,7 @@ description: Current state and progress tracker for bastion.
 *Record deviations from the plan and notable in-flight choices here. Promote durable ones to
 `decisions/` via `/log-work`.*
 
+- **2026-06-21 — Phase 5 Block F rule 6 backfill + doc drift fix.** The live smoke test that the pipeline skipped (Detached sessions showing running command vs idle shell, and trust pre-flight) was backfilled manually against tmux 3.6b this session and recorded in planning/phase5-blockF/tasks.md ## Notes (Rule 6 coverage bar met). A doc audit discovered README.md had drifted: missing the `capture` verb shipped back in Block D + the table and examples were out of sync. Root cause: `/document` was not reconciling the README command table against the evolving `src/cli.rs` Commands enum. Fixed in `.claude/commands/document.md` so `/document` now auto-syncs the README table on any cli.rs changes. Added a "Verifying the surface" runbook to docs/sessions.md covering how to smoke-test blocks manually (session creation, attach, send, capture, kill).
 - **2026-06-21 — Phase 5 Block F added from the blockE live test.** Driving Claude Code through bastion live surfaced two gaps: a running Claude Code session reads "idle" (SessionState is keyed on `session_attached`, not the pane's foreground process), and hands-off `send`-launches stall on Claude's one-time workspace-trust prompt per new directory. Verified `#{pane_current_command}` is available in `tmux list-sessions -F`, and that Claude already persists trust in `~/.claude.json` (`projects[dir].hasTrustDialogAccepted`) — so a bastion-owned trust store would be a redundant, drift-prone second source of truth; Block F reads it as a read-only observer instead (same posture as toward the orchestrator's Postgres). Added Block F to master-plan.md (Phase 5 section + quick-ref table).
 - **2026-06-21 — bastion absorbs tmux session management; second surface added (D4).** What was
   sketched as a standalone tool (working name `brain`) is folded into bastion as modules instead:

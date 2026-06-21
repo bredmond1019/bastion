@@ -10,6 +10,27 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockF follow-ups: Rule 6 smoke-test backfill + README drift fix
+
+The live smoke test for Block F that the validation pipeline skipped (detached-but-running sessions showing correct foreground command state, and Claude trust pre-flight detection) was backfilled manually and recorded in planning/phase5-blockF/tasks.md ## Notes per Rule 6 (Coverage bar). Verified against a live tmux 3.6b: `bastion sessions` showed a sleep process as `running (sleep)` while detached (the core bug fix), bare shells as `idle`, new sessions printed trust pre-flight correctly (trusted/untrusted/unknown for known dirs vs absent project), and the untrusted path did not prompt or write to ~/.claude.json (read-only observer enforced). A doc audit discovered README.md had drifted during Phase 5 work — missing the `capture` verb shipped in Block D and the command table was out of sync with the current cli.rs Commands enum. Root cause: the `/document` command was not reconciling the README against cli.rs. Fixed `.claude/commands/document.md` to auto-sync the command table when cli.rs changes, then re-reconciled the README with all verbs including capture. Also added "Verifying the surface" runbook to docs/sessions.md documenting manual smoke-test steps (create, attach, send, capture, kill) for future blocks. Phase 5 is now complete A–F; Phase 1 Block B (TUI render loop and event-driven updates) remains the next sequenced work, blocked on orchestrator D28 (incremental execution-state persistence).
+
+```diff
+ .claude/commands/document.md                    | 19 ++++--
+ README.md                                       |  6 +-
+ docs/sessions.md                                | 61 ++++++++++++++++++-
+ log.md                                          | 12 ++++
+ planning/handoff.md                             | 79 -------------------------
+ planning/phase5-blockF/sdlc/reports/document.md | 31 ++++++++++
+ planning/phase5-blockF/sdlc/reports/review.md   | 57 ++++++++++++++++++
+ planning/phase5-blockF/sdlc/reports/test.md     | 56 ++++++++++++++++++
+ planning/phase5-blockF/sdlc/reports/workflow.md | 63 ++++++++++++++++++++
+ planning/phase5-blockF/tasks.md                 | 23 ++++++-
+ planning/status.md                              |  6 +-
+ 11 files changed, 321 insertions(+), 92 deletions(-)
+```
+
+---
+
 ## 2026-06-21 — phase5-blockF complete: activity indicator + Claude trust observer
 
 Phase 5 Block F shipped and reviewed in a single attempt (PASS). The implementation fixed the core state-honesty bug: `SessionState` was keyed on `session_attached` (whether a tmux client is connected), so a detached-but-running Claude Code session would mislabel as idle. Block F reroutes state derivation through a new pure `classify_state(pane_current_command: &str) -> SessionState` function: commands in the `IDLE_SHELLS` const (`zsh`, `bash`, `sh`, `fish`) map to `Idle`; any other non-empty command maps to `Running`; empty/unknown defaults to `Idle`. `LIST_SESSIONS_FORMAT` in `tmux.rs` gained a 5th tab-separated field (`#{pane_current_command}`); `parse_session_line` now reads it for state. The `format_state_col` helper in `commands.rs` renders `running (cmd)` or `idle` for both the CLI table and the TUI row. A new `claude_state.rs` module provides the trust observer: pure `trust_for_dir(claude_json, dir) -> TrustStatus` parses `~/.claude.json` and returns `Trusted`, `Untrusted`, or `Unknown` without ever writing; the thin I/O shell `trust_status(dir)` resolves the home path and delegates. `bastion new --dir <d>` now prints an advisory trust pre-flight after session creation (never blocking, `Unknown` is a silent-acceptable outcome). 36 new unit tests raised the baseline from 145 to 181. All gating checks green. Smoke-tested: detached cargo-test session shows `running (cargo)`, bare zsh shows `idle`, trust pre-flight reports correctly for known/unknown dirs and absent file, all paths confirm DB-free (D4) and synchronous (D5). Next: phase1-blockB (TUI render loop and event-driven updates).
