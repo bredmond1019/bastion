@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — phase1-blockA complete (all 5 tasks merged); Phase 5 session-management track added (D4)
-**Current focus:** phase1-blockB — TUI render loop. Phase 5 (session management) is an ungated parallel track, available to pick up at any time.
+**Last updated:** 2026-06-21 — phase5-blockA complete; sessions/ module shipped with tmux wrapper, model, commands, and CLI wiring
+**Current focus:** planning/phase5-blockB — `attach` / `new` / `kill` lifecycle verbs (Phase 5 session management, ungated parallel track).
 
 ---
 
@@ -35,7 +35,7 @@ description: Current state and progress tracker for bastion.
 ### Phase 5 — Session Management (independent, ungated track — D4)
 | Block | What | Status | Notes |
 |---|---|---|---|
-| Block A | `bastion sessions` + tmux wrapper + lazy DB pool | Not started | First session verb; stands up `sessions/` module and the lazy-DB refactor. |
+| Block A | `bastion sessions` + tmux wrapper + lazy DB pool | Done | sessions/ module shipped: tmux.rs (pure arg construction + typed errors), model.rs (Session/Pane + fixture parsing), commands.rs (list verb, graceful degradation, render), CLI wiring. DB-free guarantee enforced by architecture and locked in by test. 20 new tests; 73 total pass. All gating checks green. PASS in 1 review attempt. |
 | Block B | `attach` / `new` / `kill` (lifecycle) | Not started | |
 | Block C | `bastion send` (keystrokes) | Not started | |
 | Block D | `bastion capture` (pane output) | Not started | |

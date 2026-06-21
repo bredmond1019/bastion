@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockA complete
+
+Phase 5 Block A (`bastion sessions` + tmux wrapper + lazy DB pool) shipped and reviewed in a single attempt (PASS). The `sessions/` module is now fully implemented: `tmux.rs` provides pure command-construction functions (`list_sessions_args`, `capture_pane_args`) separated from I/O execution, with a typed `TmuxError` enum for NotInstalled/NoServer/ExitError and shared format constants; `model.rs` defines `Session`, `Pane`, and `SessionState` with pure parsing functions and a malformed-line-skip policy; `commands.rs` wires everything into the `bastion sessions` list verb with graceful degradation and a pure `render_sessions` function. The DB-free guarantee (D4) is enforced architecturally — the dispatch arm never calls `Config::load()` or opens a pool — and locked in by a dedicated test. All four gating checks (fmt, clippy, test suite [73 pass, 2 ignored], release build) were green at both implement and review time. No new crate dependencies introduced. Next: phase5-blockB — `attach` / `new` / `kill` lifecycle verbs.
+
+```
+48a378a docs: update docs for planning/phase5-blockA
+2c3ab18 feat: implement planning/phase5-blockA
+6636b57 chore: add spec for phase5-blockA
+```
+
+---
+
 ## 2026-06-21 — phase1-blockA complete
 
 Phase 1 Block A (DB queries + graph layout) shipped: all 5 tasks merged and validated. The data layer foundation for `bastion monitor` is now complete. Task 1 delivered test fixtures capturing in-progress and completed workflow run states from `task_context` JSON. Task 2 implemented the parsing layer deserializing `node_runs` and `nodes` into strongly typed `NodeState` structs, with correct status aggregation (`running` > `failed` > `pending` > `success`), all four `RunStatus` variants via `#[serde(rename_all = "lowercase")]`, and null usage field handling. Task 3 filled the DB query stubs (`list_active_runs`, `get_run_state`) using `sqlx`, honoring the read-only observer rule (D2), and provided integration test stubs with `#[ignore]` gates and `BASTION_INTEGRATION_TEST` env var. Task 4 built the topological graph layout (`build_layout`) using `petgraph::DiGraph`, assigned column depths via toposort, and overlaid live `NodeState` status by class-name join. Task 5 validated all gates: `cargo fmt`, `clippy`, `test` (17 passing), and `release` build all green. 100% test coverage of DAG layouts (linear chains, diamond graphs, isolated nodes) and fixture-based parsing. Cross-contract alignment confirmed (v1.0.0, D3). TUI render loop (phase1-blockB) is now ready to consume this data layer.
