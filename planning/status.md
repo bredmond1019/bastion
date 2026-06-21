@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — phase5-blockE complete: ratatui session TUI dashboard shipped, PASS in 1 review attempt; 145 tests pass, all gating checks green.
-**Current focus:** planning/phase1-blockB — TUI render loop and event-driven updates (monitor track).
+**Last updated:** 2026-06-21 — phase5-blockE live-tested end-to-end; two state-honesty gaps found → defined Phase 5 Block F (activity indicator + Claude trust observer) in master-plan.md.
+**Current focus:** planning/phase5-blockF — session activity indicator + Claude trust observer (unblocked Phase 5 work; phase1-blockB remains gated on orchestrator D28).
 
 ---
 
@@ -40,6 +40,7 @@ description: Current state and progress tracker for bastion.
 | Block C | `bastion send` (keystrokes) | Done | `bastion send` shipped: `send_keys_args` with `-l`/`--` for literal delivery, `send_enter_args` for separate Enter keypress, execution fn + CLI wiring + graceful degradation. 9 new tests; 96 total pass. All gating checks green. PASS in 1 review attempt. |
 | Block D | `bastion capture` (pane output) | Done | `Pane::last_lines` with trailing-blank stripping; capture verb + CLI wiring + graceful degradation. 14 new tests; 110 total pass. All gating checks green. PASS in 1 review attempt. |
 | Block E | session view in the TUI | Done | ratatui session dashboard shipped: `SessionApp` state model (29 unit tests), `ui.rs` render + event loop (6 unit tests + smoke-tested), CLI wired so bare `bastion` and `bastion tui` both launch the dashboard. 145 tests pass; all gating checks green. PASS in 1 review attempt. |
+| Block F | session activity indicator + Claude trust observer | Not started | Defined 2026-06-21 from the phase5-blockE live test. Activity indicator: classify sessions by `#{pane_current_command}` (idle shell vs running cmd) so a detached-but-running Claude Code session no longer mislabels as "idle". Trust observer: read `~/.claude.json` `projects[dir].hasTrustDialogAccepted` (read-only) to pre-flight Claude's one-time trust prompt. Unblocked (D4 track). |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
 
@@ -50,6 +51,7 @@ description: Current state and progress tracker for bastion.
 *Record deviations from the plan and notable in-flight choices here. Promote durable ones to
 `decisions/` via `/log-work`.*
 
+- **2026-06-21 — Phase 5 Block F added from the blockE live test.** Driving Claude Code through bastion live surfaced two gaps: a running Claude Code session reads "idle" (SessionState is keyed on `session_attached`, not the pane's foreground process), and hands-off `send`-launches stall on Claude's one-time workspace-trust prompt per new directory. Verified `#{pane_current_command}` is available in `tmux list-sessions -F`, and that Claude already persists trust in `~/.claude.json` (`projects[dir].hasTrustDialogAccepted`) — so a bastion-owned trust store would be a redundant, drift-prone second source of truth; Block F reads it as a read-only observer instead (same posture as toward the orchestrator's Postgres). Added Block F to master-plan.md (Phase 5 section + quick-ref table).
 - **2026-06-21 — bastion absorbs tmux session management; second surface added (D4).** What was
   sketched as a standalone tool (working name `brain`) is folded into bastion as modules instead:
   a `sessions/` module and a `bastion sessions` command family, with a session view in the TUI.

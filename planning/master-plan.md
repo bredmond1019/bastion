@@ -199,6 +199,30 @@ Build order is strict and incremental — each verb ships only when reached for.
   documented key actions work; `a` drops into a real tmux attach and returns cleanly; `q` exits.
   Built entirely on the Block A–D primitives.
 
+### Block F — session activity indicator + Claude trust observer
+- **What:** Make the session list tell the truth about what is *running*, and pre-flight the
+  Claude Code trust prompt.
+  - **Activity indicator:** add `#{pane_current_command}` to the `list-sessions` format and use the
+    active pane's foreground command to classify each session — *idle shell* (command ∈
+    `{zsh, bash, sh, fish}`) vs *running `<cmd>`* (anything else, e.g. `claude` / `node` / `cargo`).
+    This replaces the current attached-client signal, which mislabels a detached-but-busy Claude
+    Code session as "idle". Optionally surface "active Ns ago" from the already-fetched
+    `session_activity` epoch. Render the new state in both `bastion sessions` and the TUI dashboard.
+  - **Trust observer:** read `~/.claude.json` `projects["<dir>"].hasTrustDialogAccepted` as a
+    **read-only observer** (never written — Claude owns that file) to warn, before/at launch, that a
+    directory is untrusted and will show Claude Code's one-time trust prompt. Degrade gracefully:
+    missing file/field → "trust: unknown", never an error, never blocks the launch.
+- **Why:** The live test exposed that a running Claude Code session reports `idle` (state is keyed on
+  whether a *client* is attached, not on what the pane is doing) — the one fact the phone workflow
+  needs is "is this still working?". And hands-off `send`-launches silently stall on the trust prompt
+  the first time per new directory. Both make the operator surface honest about real session state.
+- **Acceptance criteria:** `bastion sessions` and the TUI distinguish a running command (incl. a live
+  Claude Code session) from an idle shell, derived from `pane_current_command`. The trust observer
+  reports whether a target directory is trusted by reading `~/.claude.json`, degrading gracefully when
+  the file or field is absent, and never writes to it. Pure parsing/classification (command →
+  activity, JSON → trust flag) is exhaustively unit-tested against fixtures; the thin I/O shell is
+  smoke-tested. DB-free (D4) and synchronous (D5) invariants preserved.
+
 ---
 
 ## Quick Reference Sequence Table
@@ -218,6 +242,7 @@ Build order is strict and incremental — each verb ships only when reached for.
 | 5 | C | `bastion send` | Send keystrokes | Act without attaching |
 | 5 | D | `bastion capture` | Read pane output | Observe without attaching |
 | 5 | E | Session TUI view | Ergonomic operator surface | Pleasant from a phone |
+| 5 | F | Activity indicator + trust observer | Honest session state (running vs idle); pre-flight the Claude trust prompt | Trustworthy at-a-glance from a phone |
 
 > Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
 > Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any

@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockE live-tested; two state-honesty gaps → phase5-blockF defined
+
+Live-tested driving Claude Code through bastion: created a new session with `bastion new --dir ~/.claude/projects/test`, launched `claude --permission-mode bypassPermissions` inside, answered the one-time workspace-trust prompt, sent a prompt via `bastion send`, captured the reply with `bastion capture`, and killed the session. Two findings emerged: (1) a running Claude Code session reported "idle" status in the TUI because `SessionState` is keyed on `session_attached` (whether a client is connected to the tmux session) rather than the pane's foreground process — so a detached-but-executing Claude Code session looks identical to a shell at rest; (2) hands-off `bastion send` + capture workflows stall on Claude's one-time workspace-trust prompt per new directory, blocking unattended automation. Investigated both: confirmed `tmux list-sessions -F "#{pane_current_command}"` is available and can distinguish idle shell from running foreground process; verified that Claude already persists trust state in `~/.claude.json` under `projects[dir].hasTrustDialogAccepted` and that reading it is safe (read-only, no bastion side-effects). Added Phase 5 Block F to the master plan: session activity indicator (classify via `#{pane_current_command}` to surface running-vs-idle accurately) and Claude trust observer (read `~/.claude.json` pre-flight to detect when a trust prompt will block, avoiding redundant bastion state storage). Both are unblocked (D4 track); the observer pattern mirrors the Postgres posture — read-only observer, not state owner.
+
+```diff
+ planning/handoff.md     | 107 +++++++++++++++++++++++++++---------------------
+ planning/master-plan.md |  25 +++++++++++
+ 2 files changed, 85 insertions(+), 47 deletions(-)
+```
+
+---
+
 ## 2026-06-21 — phase5-blockE complete
 
 Phase 5 Block E (ratatui session TUI dashboard) shipped and reviewed in a single attempt (PASS). The implementation added `src/sessions/app.rs` — a pure `SessionApp` state model with `Mode`, `InputKind`, and `Action` enums, navigation methods (`select_next`/`select_prev`/`set_sessions` with clamp), input-buffer editing (`push_input`/`backspace_input`/`take_input`), and a pure `on_key(KeyCode) -> Action` mapping — exhaustively covered by 29 unit tests across all navigation bounds, `set_sessions` clamp, every `on_key` branch including Esc-cancel and Enter-commit for both `InputKind`s, and no-selection error paths. `src/sessions/ui.rs` adds pure render-string helpers (`session_row`, `footer_hint`, `status_line`) with 6 unit tests and the I/O shell (`run`/`run_inner`/`draw`/`poll_sessions`/`execute_action`) that enters raw mode + alternate screen, loops synchronously at a 2 s refresh cadence, handles all actions including `Attach` (suspend TUI → tmux attach → re-enter), routes tmux errors through `degrade_tmux_error` into `app.status`, and always tears down the terminal on both success and error paths. CLI wiring changed `Cli.command` to `Option<Commands>` and added a `Tui` variant so bare `bastion` and `bastion tui` both dispatch to `sessions::ui::run()` without breaking any pre-existing verb. Key trade-off: `k` is kill-only in Normal mode; Up-arrow (not `k`) is the vim-nav-up binding, intentionally avoiding the collision. 145 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Smoke-tested against a live tmux server with Postgres stopped — all D4/D5 constraints confirmed. Next: planning/phase1-blockB — TUI render loop and event-driven updates.
