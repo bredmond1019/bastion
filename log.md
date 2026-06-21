@@ -10,6 +10,19 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockE complete
+
+Phase 5 Block E (ratatui session TUI dashboard) shipped and reviewed in a single attempt (PASS). The implementation added `src/sessions/app.rs` — a pure `SessionApp` state model with `Mode`, `InputKind`, and `Action` enums, navigation methods (`select_next`/`select_prev`/`set_sessions` with clamp), input-buffer editing (`push_input`/`backspace_input`/`take_input`), and a pure `on_key(KeyCode) -> Action` mapping — exhaustively covered by 29 unit tests across all navigation bounds, `set_sessions` clamp, every `on_key` branch including Esc-cancel and Enter-commit for both `InputKind`s, and no-selection error paths. `src/sessions/ui.rs` adds pure render-string helpers (`session_row`, `footer_hint`, `status_line`) with 6 unit tests and the I/O shell (`run`/`run_inner`/`draw`/`poll_sessions`/`execute_action`) that enters raw mode + alternate screen, loops synchronously at a 2 s refresh cadence, handles all actions including `Attach` (suspend TUI → tmux attach → re-enter), routes tmux errors through `degrade_tmux_error` into `app.status`, and always tears down the terminal on both success and error paths. CLI wiring changed `Cli.command` to `Option<Commands>` and added a `Tui` variant so bare `bastion` and `bastion tui` both dispatch to `sessions::ui::run()` without breaking any pre-existing verb. Key trade-off: `k` is kill-only in Normal mode; Up-arrow (not `k`) is the vim-nav-up binding, intentionally avoiding the collision. 145 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Smoke-tested against a live tmux server with Postgres stopped — all D4/D5 constraints confirmed. Next: planning/phase1-blockB — TUI render loop and event-driven updates.
+
+```
+f88610e docs: update docs for phase5-blockE
+cf5ffdb feat: implement phase5-blockE — session TUI dashboard
+2e8cd16 chore: break down phase5-blockE task 2 into atomic sub-steps
+5e3a469 chore: add spec for phase5-blockE
+```
+
+---
+
 ## 2026-06-21 — phase5-blockD complete
 
 Phase 5 Block D (`bastion capture` — pane output) shipped and reviewed in a single attempt (PASS). The implementation added `Pane::last_lines(n: Option<usize>) -> Vec<String>` to `model.rs`: strips trailing blank/whitespace-only padding lines from `capture-pane -p` output first, then returns all or the last `n` meaningful lines in original order. Nine unit tests cover all specified edge cases (more/fewer/exactly-N, `Some(0)`, `None`, blank padding, empty/all-blank input, order preservation). On the commands side, `capture(session_name, lines)` calls `capture_pane_raw`, builds a `Pane`, calls `last_lines`, and prints via the pure `format_capture` helper; errors route through the existing `apply_degradation` path — no new match arm was needed in `degrade_tmux_error` since the non-`"new"` default branch already produces the correct "session not found" Fatal for the `capture` verb. CLI wiring added the `Capture { session, lines }` variant to the `Commands` enum and the dispatch arm in `main.rs` on the sync, DB-free path (D4/D5 enforced). All six acceptance criteria were met; 110 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Docs updated: `docs/sessions.md` gained the capture verb section, error-behavior row, and footer update; `docs/index.md` updated the verb list. Next: phase5-blockE — session view in the TUI.
