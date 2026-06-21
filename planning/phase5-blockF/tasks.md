@@ -74,4 +74,25 @@ cargo build --release
 ```
 
 ## Notes
-<!-- filled in as work happens -->
+
+### Manual smoke test — 2026-06-21 (Coverage bar, rule 6)
+Verified live against **tmux 3.6b**, DB-free (Postgres not involved on any path):
+
+**Activity indicator** (`bastion sessions`, both sessions detached — no attached client):
+- `smoke-idle` (bare shell in `/tmp`) → `idle`.
+- `smoke-run` (after `bastion send smoke-run "sleep 300"`) → `running (sleep)`.
+- Confirms the core fix: a **detached-but-running** session reports `running (<cmd>)` from
+  `#{pane_current_command}`, not `idle` — the attached-client signal would have shown both as idle.
+
+**Trust observer** (`bastion new <name> --dir <dir>` pre-flight line):
+- `--dir /Users/brandon/Dev/ai-event-quickstart` (present + `hasTrustDialogAccepted: true` in
+  `~/.claude.json`) → `trust: trusted`.
+- `--dir /tmp/never-opened-xyz-<pid>` (absent from `projects`) → `trust: unknown`.
+- `--dir /tmp` (absent from `projects`) → `trust: unknown`.
+- In every case the session was still **created** (advisory only, never blocks). `~/.claude.json`
+  was read read-only and never written (no write path exists by construction — `trust_for_dir`
+  takes `&str`, `trust_status` only `read_to_string`).
+
+All four smoke sessions cleaned up via `bastion kill`; `bastion sessions` then reports
+`no tmux server running` (graceful degradation, D6). Automated suite: **181 passed, 2 ignored**
+(+36 over the 145 baseline).
