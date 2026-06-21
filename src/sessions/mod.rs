@@ -3,6 +3,7 @@
 // std::process::Command and never opens a Postgres pool or calls Config::load().
 
 pub mod app;
+pub mod ask;
 pub mod claude_state;
 pub mod commands;
 pub mod model;
