@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockG complete: `bastion ask` (one Claude Code turn)
+
+Phase 5 Block G shipped and reviewed in 2 attempts (PASS). The implementation added `src/sessions/ask.rs` with a clean pure/I/O split: pure helpers `done_path` (derives `<out>.done`), `trigger_text` (exact contract wording with absolute paths), `poll_plan` (max-iterations from timeout/interval), and `has_session_args` (tmux `has-session` arg vector), all unit-tested element-by-element without I/O. The thin I/O shell `ask()` performs: trust pre-flight (fail fast on `Untrusted` dir via Block F `trust_status`), ensure-session+Claude (cold-start creates session + launches `--launch-cmd`, skips if `classify_state==Running`), send the fixed trigger via `send_keys` + Enter, then poll for `<out>.done` bounded by `--timeout`. A first review flagged one gap: the readiness check used an exact `"claude"` string match, but Claude Code v2.1.185 sets its process name (`ucomm`) to its version string `"2.1.185"`, so `#{pane_current_command}` never matches. Fixed in the second pass by replacing `foreground.trim() == "claude"` with `classify_state(&foreground) == SessionState::Running` — any non-idle foreground process is taken as the signal Claude is up. 26 new tests raised the baseline from 181 to 206+; all gating checks green. Smoke-tested: cold start → PONG written → exit 0; warm reuse skips relaunch; timeout → exit 1 + stderr diagnostics; untrusted dir → fail fast before session creation; unknown dir → proceeds; confirmed DB-free (D4) and synchronous (D5). Docs updated: `bastion ask` verb added to README command table and docs/sessions.md (full flag table, protocol description, exit-code contract). Phase 5 is now complete A–G. Next: phase1-blockB (TUI render loop and event-driven updates, blocked on orchestrator D28).
+
+```
+d177e65 docs: update docs for phase5-blockG
+bd7190d fix: fix pass 2 for phase5-blockG — readiness check + smoke test notes
+76c980b feat: implement phase5-blockG — bastion ask subcommand
+```
+
+---
+
 ## 2026-06-21 — phase5-blockF follow-ups: Rule 6 smoke-test backfill + README drift fix
 
 The live smoke test for Block F that the validation pipeline skipped (detached-but-running sessions showing correct foreground command state, and Claude trust pre-flight detection) was backfilled manually and recorded in planning/phase5-blockF/tasks.md ## Notes per Rule 6 (Coverage bar). Verified against a live tmux 3.6b: `bastion sessions` showed a sleep process as `running (sleep)` while detached (the core bug fix), bare shells as `idle`, new sessions printed trust pre-flight correctly (trusted/untrusted/unknown for known dirs vs absent project), and the untrusted path did not prompt or write to ~/.claude.json (read-only observer enforced). A doc audit discovered README.md had drifted during Phase 5 work — missing the `capture` verb shipped in Block D and the command table was out of sync with the current cli.rs Commands enum. Root cause: the `/document` command was not reconciling the README against cli.rs. Fixed `.claude/commands/document.md` to auto-sync the command table when cli.rs changes, then re-reconciled the README with all verbs including capture. Also added "Verifying the surface" runbook to docs/sessions.md documenting manual smoke-test steps (create, attach, send, capture, kill) for future blocks. Phase 5 is now complete A–F; Phase 1 Block B (TUI render loop and event-driven updates) remains the next sequenced work, blocked on orchestrator D28 (incremental execution-state persistence).

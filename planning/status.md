@@ -6,7 +6,7 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — Phase 5 complete A–F: activity indicator + trust observer shipped; 181 tests PASS in 1 attempt. Next: phase1-blockB (TUI render loop), blocked on orchestrator D28.
+**Last updated:** 2026-06-21 — Phase 5 complete A–G: `bastion ask` shipped; 206 tests PASS in 2 review attempts. Next: phase1-blockB (TUI render loop), blocked on orchestrator D28.
 **Current focus:** phase1-blockB (blocked on orchestrator D28 — incremental execution-state persistence)
 
 ---
@@ -41,7 +41,7 @@ description: Current state and progress tracker for bastion.
 | Block D | `bastion capture` (pane output) | Done | `Pane::last_lines` with trailing-blank stripping; capture verb + CLI wiring + graceful degradation. 14 new tests; 110 total pass. All gating checks green. PASS in 1 review attempt. |
 | Block E | session view in the TUI | Done | ratatui session dashboard shipped: `SessionApp` state model (29 unit tests), `ui.rs` render + event loop (6 unit tests + smoke-tested), CLI wired so bare `bastion` and `bastion tui` both launch the dashboard. 145 tests pass; all gating checks green. PASS in 1 review attempt. |
 | Block F | session activity indicator + Claude trust observer | Done | Activity indicator shipped: `classify_state(pane_current_command)` replaces session_attached as the state source; detached-but-running sessions now correctly show `running (cmd)`. Trust observer shipped: new `claude_state.rs` reads `~/.claude.json` as a read-only observer and prints advisory trust pre-flight on `bastion new --dir`. 36 new tests (145 → 181). All gating checks green. PASS in 1 review attempt. Smoke-tested DB-free (D4) and synchronous (D5). |
-| Block G | `bastion ask` (one Claude Code turn) | Not started | Spec at `planning/phase5-blockG/tasks.md`. Implements the brain contract `agentic-portfolio/docs/integrations/claude-code-llm-provider.md` §2 (`bastion ask` v0.1.0) — the command the orchestrator's `CLAUDE_CODE_SESSION` LLM provider calls. Reuses Block F `classify_state` + `trust_status`. Unblocked (F is Done). |
+| Block G | `bastion ask` (one Claude Code turn) | Done | `bastion ask` shipped: pure `done_path`/`trigger_text`/`poll_plan`/`has_session_args` helpers; `AskError` enum (`UntrustedDir`, `Tmux`, `Launch`, `Timeout`); thin I/O shell (ensure session+Claude → send trigger → poll `<out>.done`). 26 new tests (181 → 206+). All gating checks green. PASS in 2 review attempts (fix: `classify_state()==Running` replaces exact `"claude"` string check, since Claude Code v2.1.185 sets `ucomm` to its version string). Smoke-tested: cold start → PONG written → exit 0; warm reuse (no relaunch); timeout → exit 1 + stderr; untrusted dir → fail fast; unknown dir → proceeds. DB-free (D4) and synchronous (D5) confirmed. |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
 

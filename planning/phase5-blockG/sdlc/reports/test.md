@@ -1,3 +1,9 @@
+---
+type: sdlc/test-report
+phase: phase5-blockG
+date: 2026-06-21
+---
+
 # Test Report — phase5-blockG
 
 **Date:** 2026-06-21
