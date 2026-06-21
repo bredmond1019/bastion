@@ -18,6 +18,11 @@ description: Strategic roadmap and phase specifications for bastion.
 
 A single binary — `bastion` — that is the terminal entry point for the entire personal engineering stack. You open one pane, run one command family, and know what your system is doing. Longer term: a credible example of custom observability tooling you can describe to engineering clients.
 
+bastion has **two surfaces** under one roof (brain D21 / bastion D4):
+
+1. **Workflow observability** (`monitor`, `inspect`, `costs`, `run`) — reads the orchestrator's PostgreSQL state. The phases below (0–4) build this. Phase 1 is gated by D2.
+2. **Process / session control** (`status`, `sessions` family) — shells out to tmux to manage the long-running Claude Code sessions on the Mac Mini. Phase 5 builds this. It depends on neither Postgres nor the orchestrator and is therefore an **independent, ungated track** — workable at any time, accessible from desktop or phone via SSH over Tailscale.
+
 ## Architecture / Design Overview
 
 `bastion` is an **observer, never a writer** of the Python orchestrator. It reconstructs a live run
@@ -57,8 +62,18 @@ src/
 ├── inspect/          static post-mortem view (monitor minus polling)
 ├── validate/         markdown/MDX validation (mirrors markdown-engine-validator)
 ├── costs/            LLM spend summary (tabular stdout)
-└── run/              workflow trigger (FastAPI) + stack status check
+├── run/              workflow trigger (FastAPI) + stack status check
+└── sessions/         tmux session control (Phase 5)
+    ├── tmux.rs       thin wrapper over `std::process::Command` → tmux CLI
+    ├── model.rs      Session/Pane types parsed from tmux output
+    ├── commands.rs   sessions/attach/new/send/capture/kill verbs
+    └── ui.rs         ratatui session view (Block E)
 ```
+
+> **Lazy DB pool (D4):** the `sessions/` surface must run with zero Postgres connectivity. The
+> pool is opened on demand by the workflow-observability commands only — `sessions` commands and
+> the session TUI never touch it. If `main` currently opens the pool eagerly, Phase 5 Block A
+> makes it lazy.
 
 ---
 
@@ -128,6 +143,64 @@ src/
 
 ---
 
+## Phase 5 — Session Management (independent, ungated track)
+
+The process/session-control surface (brain D21 / bastion D4). Manages the tmux sessions on the
+Mac Mini that hold long-running Claude Code sessions. Shells out to the tmux CLI via
+`std::process::Command` — **no Postgres, no orchestrator dependency**, so this track is not gated
+by D2 and can be picked up at any time. Workflow: from the phone, SSH into the Mini over Tailscale
+→ run `bastion` → use the session verbs or the TUI. bastion **manages** these sessions; it does
+not run Claude Code itself.
+
+Build order is strict and incremental — each verb ships only when reached for.
+
+### Block A — `bastion sessions` (+ tmux wrapper + lazy DB pool)
+- **What:** Stand up the `sessions/` module: `tmux.rs` (thin `std::process::Command` wrapper),
+  `model.rs` (`Session`/`Pane` parsed from `tmux list-sessions` / `list-panes` output).
+  Implement `bastion sessions` — list sessions, each with its last pane output line (via
+  `capture-pane -p`). **Make the Postgres pool lazy** so this command runs with zero DB
+  connectivity (D4).
+- **Why:** First useful thing, and it forces the two foundations everything else builds on — the
+  tmux wrapper and the lazy-DB refactor.
+- **Acceptance criteria:** `bastion sessions` lists real tmux sessions with last-line output and a
+  running/idle indicator. Runs with Postgres stopped. Unit tests parse captured `tmux` output
+  fixtures into `Session`/`Pane` (no live tmux required in CI). Gracefully reports when tmux isn't
+  installed or no server is running.
+
+### Block B — `bastion attach` / `new` / `kill` (session lifecycle)
+- **What:** `bastion attach <session>` (exec into `tmux attach -t`), `bastion new <session>
+  [--dir PATH]` (`tmux new-session -d -s … -c …`), `bastion kill <session>` (`tmux kill-session`).
+- **Why:** Core lifecycle — create, enter, dispose.
+- **Acceptance criteria:** Each verb performs the corresponding tmux action against a real server.
+  `attach` hands the terminal cleanly to tmux and returns to the shell on detach. `new` honors
+  `--dir`. Bad/unknown session names produce clear errors. Command-construction logic is unit
+  tested without spawning tmux.
+
+### Block C — `bastion send` (send keystrokes without attaching)
+- **What:** `bastion send <session> <cmd>` → `tmux send-keys -t <session> <cmd> Enter`.
+- **Why:** Trigger actions in a session from the phone without a full attach.
+- **Acceptance criteria:** Keystrokes arrive in the target session. Quoting/escaping of
+  multi-word commands is correct and unit tested. Clear error on unknown session.
+
+### Block D — `bastion capture` (read pane output non-interactively)
+- **What:** `bastion capture <session> [--lines N]` → `tmux capture-pane -p -t <session>`,
+  print the last N lines.
+- **Why:** Check what a session is doing without attaching — the read counterpart to `send`.
+- **Acceptance criteria:** Prints recent pane output for a session. `--lines` bounds the output.
+  Output parsing/trimming is unit tested against fixtures.
+
+### Block E — session view in the TUI
+- **What:** A `ratatui` session dashboard (reachable as `bastion` no-arg or `bastion tui`,
+  alongside the monitor view): list of sessions with status + last line; `[a]` attach (drop into
+  full tmux attach), `[n]` new, `[s]` inline send, `[k]` kill, `[q]` quit.
+- **Why:** The ergonomic operator surface that ties the verbs together — the piece that makes it
+  pleasant from a phone.
+- **Acceptance criteria:** The dashboard lists live sessions and refreshes; selection + the
+  documented key actions work; `a` drops into a real tmux attach and returns cleanly; `q` exits.
+  Built entirely on the Block A–D primitives.
+
+---
+
 ## Quick Reference Sequence Table
 
 | Phase | Block | What | Why | Role in destination |
@@ -140,6 +213,15 @@ src/
 | 3 | A | `bastion run` | Workflow trigger | Closes the control loop |
 | 3 | B | `bastion validate` | Content validation | Unifies the Rust tool surface |
 | 4 | — | Polish | SSE, re-run, config, man page | Production-quality tooling |
+| 5 | A | `bastion sessions` + tmux wrapper + lazy DB | First session verb; foundations | Process-control surface (ungated) |
+| 5 | B | `attach` / `new` / `kill` | Session lifecycle | Operate sessions from any device |
+| 5 | C | `bastion send` | Send keystrokes | Act without attaching |
+| 5 | D | `bastion capture` | Read pane output | Observe without attaching |
+| 5 | E | Session TUI view | Ergonomic operator surface | Pleasant from a phone |
+
+> Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
+> Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any
+> time, including before the monitor track completes.
 
 ---
 

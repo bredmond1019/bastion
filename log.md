@@ -10,6 +10,12 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+### 2026-06-21 (planning — absorb tmux session management as a second surface, D4)
+
+Folded the previously-standalone tmux session-management tool (working name `brain`) into bastion as modules rather than a separate repo. bastion is now the single operator shell with two surfaces: workflow observability (Postgres, gated by D2) and process/session control (tmux, ungated). Rationale: the standalone tool's charter was already bastion's, and bastion is shaped for it (single crate; already depends on clap/ratatui/crossterm; tmux needs no new deps). Recorded as bastion **D4** (cross-repo brain **D21**). Added **Phase 5 — Session Management** (Blocks A–E: `sessions` + tmux wrapper + lazy DB → `attach`/`new`/`kill` → `send` → `capture` → session TUI) to `master-plan.md`, including the `sessions/` module in the architecture src tree and a lazy-DB-pool note. The one real engineering constraint: the Postgres pool must open lazily so session commands run with zero DB. Updated `status.md` (Phase 5 sub-table + deviation entry) and the `CLAUDE.md` directory map. Phase 5 is an independent track — not gated by D2, workable at any time. Planning-only change; no source touched yet. Next (workflow track): phase1-blockB TUI render loop. Phase 5 Block A available whenever session work is picked up.
+
+---
+
 ### 2026-06-21 (task 5 — Validate all gates pass)
 
 Executed full validation suite: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`. All four gates passed with zero errors and zero warnings. All five tasks (fixtures, parsing, DB queries, layout algorithm, validation) are now complete and integrated. Test coverage includes node_runs JSON parsing against captured fixtures (in-progress and completed run states), all four RunStatus variants (`pending`, `running`, `success`, `failed`), null usage field handling, topological DAG layout (linear chains and diamond graphs), and live-state overlay by class name join. DB functions gate integration tests with `#[ignore]` and BASTION_INTEGRATION_TEST env var. Phase 1 Block A is ready to merge. Next: phase1-blockB — implement the ratatui TUI render loop and event-driven updates.

@@ -69,7 +69,8 @@ bastion/
 │   ├── inspect/        ← static post-mortem graph view
 │   ├── validate/       ← markdown/MDX content validation
 │   ├── costs/          ← LLM spend summary
-│   └── run/            ← workflow trigger + stack health check
+│   ├── run/            ← workflow trigger + stack health check
+│   └── sessions/       ← tmux session control (Phase 5; shells to tmux, no DB) — D4
 └── Cargo.toml
 ```
 
