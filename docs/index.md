@@ -11,7 +11,7 @@ User-facing documentation for bastion. For internal strategy and progress, see `
 | Doc | Contents |
 |---|---|
 | [index.md](index.md) | This router |
-| [sessions.md](sessions.md) | Session-control surface — TUI dashboard (`bastion` / `bastion tui`) + `sessions` / `attach` / `new` / `kill` / `send` / `capture` verb reference + operator workflow |
+| [sessions.md](sessions.md) | Session-control surface — TUI dashboard (`bastion` / `bastion tui`) + `sessions` / `attach` / `new` / `kill` / `send` / `capture` / `ask` verb reference + operator workflow |
 | [claude-code-workflow.md](claude-code-workflow.md) | Hands-on guide — use bastion to open a tmux session, launch Claude Code in it, and drive it (attach vs. send/capture), including from a phone |
 | [data-contract.md](data-contract.md) | Orchestrator field mappings — the execution state the monitor track reads (pinned to the orchestrator's contract) |
 
