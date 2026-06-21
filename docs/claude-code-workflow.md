@@ -39,15 +39,19 @@ Create a detached session rooted in the project you want Claude Code to work on,
 
 ```bash
 # Create a detached tmux session in the target project directory
-bastion new claude-bastion --dir /Users/brandon/Dev/agentic-portfolio/bastion
+bastion new claude-app --dir ~/projects/my-app
 
 # Launch Claude Code inside that session
-bastion send claude-bastion claude
+bastion send claude-app claude --permission-mode bypassPermissions
 ```
 
 `bastion send` types the command literally and presses Enter, so `claude` starts in the
 session's working directory. The session keeps running detached — Claude Code is now live
-inside `claude-bastion`, waiting for input.
+inside `claude-app`, waiting for input.
+
+> The `claude` flags are passed straight through. `bastion send` allows hyphen-led values and
+> delivers everything after the session name literally, so `--permission-mode bypassPermissions`
+> reaches the shell verbatim rather than being parsed as bastion's own flags.
 
 > `--dir` matters: Claude Code picks up the `CLAUDE.md` and `.claude/` of whatever directory
 > the session started in. Point each session at the sub-project you want it scoped to.
@@ -55,10 +59,10 @@ inside `claude-bastion`, waiting for input.
 You can run several at once — one session per project:
 
 ```bash
-bastion new claude-rag   --dir /Users/brandon/Dev/agentic-portfolio/rag-engine-rs
-bastion new claude-learn --dir /Users/brandon/Dev/agentic-portfolio/learn-ai
-bastion send claude-rag   claude
-bastion send claude-learn claude
+bastion new claude-api --dir ~/projects/api
+bastion new claude-web --dir ~/projects/web
+bastion send claude-api claude --permission-mode bypassPermissions
+bastion send claude-web claude --permission-mode bypassPermissions
 ```
 
 ## 2. Interact — two modes
@@ -70,10 +74,10 @@ text — it lands in Claude Code's input box and Enter submits it:
 
 ```bash
 # Submit a prompt to the Claude Code session
-bastion send claude-bastion "summarize planning/status.md and propose the next block"
+bastion send claude-app "summarize the README and propose the next task"
 
 # Read back what Claude Code has printed so far
-bastion capture claude-bastion --lines 60
+bastion capture claude-app --lines 60
 ```
 
 `send` delivers the text literally (tmux `send-keys -l --`), so multi-word prompts, prompts
@@ -96,7 +100,7 @@ To drive Claude Code directly — answer its prompts, scroll, use its slash comm
 tool calls — attach to the session:
 
 ```bash
-bastion attach claude-bastion
+bastion attach claude-app
 ```
 
 The terminal is handed to tmux and you are inside the live Claude Code session. Work normally.
@@ -114,7 +118,7 @@ From the dashboard:
 | Key | Use with Claude Code |
 |---|---|
 | `↑` / `↓` | Move between your `claude-*` sessions |
-| `n` | Create a new session (then `s` → `claude` to launch Claude Code in it) |
+| `n` | Create a new session (then `s` → `claude --permission-mode bypassPermissions` to launch Claude Code in it) |
 | `s` | Send a prompt to the selected Claude Code session inline |
 | `a` | Attach — drop into the live Claude Code UI; `Ctrl-b d` returns to the dashboard |
 | `k` | Kill a finished session |
@@ -129,7 +133,7 @@ and `Ctrl-b d` to pop back out.
 When a session's work is done:
 
 ```bash
-bastion kill claude-bastion
+bastion kill claude-app
 ```
 
 or press `k` on it in the TUI. (Quitting Claude Code with `/exit` or `Ctrl-c` leaves the tmux
@@ -140,9 +144,9 @@ session alive with a shell; `kill` removes the session entirely.)
 From a phone, SSH'd into the Mac Mini over Tailscale:
 
 ```bash
-# 1. Spin up a Claude Code session on the workflow engine project
-bastion new wf --dir /Users/brandon/Dev/agentic-portfolio/workflow-engine-rs
-bastion send wf claude
+# 1. Spin up a Claude Code session on the target project
+bastion new wf --dir ~/projects/my-service
+bastion send wf claude --permission-mode bypassPermissions
 
 # 2. Kick off a task
 bastion send wf "run the test suite and tell me what's failing"
@@ -164,8 +168,9 @@ neither.
 ## Notes & limits
 
 - **bastion does not run Claude Code.** It starts/sends/reads tmux sessions; the `claude`
-  process lives inside them. If `claude` is not installed on the host, `bastion send <s> claude`
-  will just print a shell "command not found" into the pane (visible via `capture`).
+  process lives inside them. If `claude` is not installed on the host,
+  `bastion send <s> claude --permission-mode bypassPermissions` will just print a shell
+  "command not found" into the pane (visible via `capture`).
 - **`send` is one prompt at a time.** It types text and presses Enter. It does not stream a
   conversation or detect when Claude Code is done — use `capture` to poll, or `attach` for a
   real exchange.
