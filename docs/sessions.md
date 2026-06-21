@@ -26,11 +26,35 @@ Prerequisite: `tmux` must be installed and on `PATH`.
 The intended path is hands-on from anywhere, including a phone:
 
 1. SSH into the Mac Mini over Tailscale.
-2. Run `bastion`.
-3. Drive the sessions with the verbs below — list what's running, send a command into a session,
-   check on it, or attach for an interactive turn.
+2. Run `bastion` (or `bastion tui`) to open the interactive session dashboard.
+3. Drive the sessions from the TUI — navigate with arrow keys, attach, create, send commands, or
+   kill sessions without leaving the terminal.
+
+Alternatively, use the individual verbs below for one-shot scripting or shell pipelines.
 
 Because the surface needs no database, this works even when the orchestrator stack is down.
+
+## TUI Session Dashboard
+
+Running `bastion` (bare) or `bastion tui` opens a live ratatui dashboard that lists all tmux
+sessions with their state and last pane output, refreshing automatically every 2 seconds.
+
+### Key bindings
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Navigate session list |
+| `a` | Attach to the selected session (TUI suspends; returns on detach) |
+| `n` | Create a new named session (prompts for name inline) |
+| `s` | Send a command to the selected session (prompts for command inline) |
+| `k` | Kill the selected session |
+| `q` / `Esc` | Quit the dashboard |
+
+Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without
+making any change.
+
+tmux errors (missing tmux, no server, unknown session) surface as a status message inside the
+TUI rather than crashing the loop.
 
 ## Verb reference
 
@@ -108,4 +132,4 @@ The surface degrades gracefully rather than panicking:
 
 ---
 
-*The verbs above are the Phase 5 Blocks A–D surface. Block E (TUI session view) is planned — see [planning/master-plan.md](../planning/master-plan.md).*
+*Block E (TUI session dashboard) is complete. The verbs above remain available for scripting.*
