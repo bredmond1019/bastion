@@ -49,4 +49,6 @@ pub enum Commands {
     },
     /// Quick stack health check (non-TUI)
     Status,
+    /// List tmux sessions with last-line output
+    Sessions,
 }

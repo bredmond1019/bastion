@@ -10,6 +10,7 @@ mod db;
 mod inspect;
 mod monitor;
 mod run;
+mod sessions;
 mod validate;
 
 use anyhow::Result;
@@ -32,5 +33,7 @@ async fn main() -> Result<()> {
             monitor,
         } => run::trigger(workflow, args, monitor).await,
         Commands::Status => run::status().await,
+        // Sessions path is DB-free (D4): no Config::load(), no Postgres pool.
+        Commands::Sessions => sessions::run(),
     }
 }
