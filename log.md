@@ -10,6 +10,17 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockA decisions promoted to registry
+
+The two settled decisions from phase5-blockA implement report were promoted to the decision registry: **D5** (Session verbs are synchronous: tmux shell-outs are blocking `std::process::Command` calls, so session verbs stay plain sync with no tokio coupling) and **D6** (Skip malformed tmux output lines: when parsing `tmux list-sessions` output, an unparseable line is skipped with a stderr warning rather than aborting the listing — partial system state is more useful than none). Both decisions build on D4 and are now part of the durable architectural record. Updated `planning/decisions/index.md` to register both.
+
+```diff
+planning/decisions/index.md | 6 ++++++
+ 1 file changed, 6 insertions(+)
+```
+
+---
+
 ## 2026-06-21 — phase5-blockA complete
 
 Phase 5 Block A (`bastion sessions` + tmux wrapper + lazy DB pool) shipped and reviewed in a single attempt (PASS). The `sessions/` module is now fully implemented: `tmux.rs` provides pure command-construction functions (`list_sessions_args`, `capture_pane_args`) separated from I/O execution, with a typed `TmuxError` enum for NotInstalled/NoServer/ExitError and shared format constants; `model.rs` defines `Session`, `Pane`, and `SessionState` with pure parsing functions and a malformed-line-skip policy; `commands.rs` wires everything into the `bastion sessions` list verb with graceful degradation and a pure `render_sessions` function. The DB-free guarantee (D4) is enforced architecturally — the dispatch arm never calls `Config::load()` or opens a pool — and locked in by a dedicated test. All four gating checks (fmt, clippy, test suite [73 pass, 2 ignored], release build) were green at both implement and review time. No new crate dependencies introduced. Next: phase5-blockB — `attach` / `new` / `kill` lifecycle verbs.
