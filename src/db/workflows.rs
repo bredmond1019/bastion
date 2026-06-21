@@ -8,13 +8,91 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use sqlx::postgres::PgPoolOptions;
 
-pub async fn list_active_runs(_db_url: &str) -> Result<Vec<WorkflowRun>> {
-    todo!("Phase 1: scan `events` for rows whose node_runs aren't all terminal")
+/// Return all workflow runs that have at least one non-terminal node (i.e., any
+/// node whose status is `pending` or `running`). Read-only; never writes (D2).
+///
+/// Implementation note: contract v1.0.0 has no indexed status column on `events`,
+/// so this function fetches all rows and filters in Rust after parsing.
+pub async fn list_active_runs(db_url: &str) -> Result<Vec<WorkflowRun>> {
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(db_url)
+        .await
+        .context("failed to connect to PostgreSQL")?;
+
+    let rows = sqlx::query_as::<_, EventRow>("SELECT id, workflow_type, task_context FROM events")
+        .fetch_all(&pool)
+        .await
+        .context("failed to query events table")?;
+
+    let mut active = Vec::new();
+    for row in rows {
+        let run = parse_event_row(row)?;
+        // Keep only runs that have at least one non-terminal node.
+        let is_active = run
+            .nodes
+            .iter()
+            .any(|n| matches!(n.status, RunStatus::Pending | RunStatus::Running));
+        if is_active {
+            active.push(run);
+        }
+    }
+    Ok(active)
 }
 
-pub async fn get_run_state(_db_url: &str, _run_id: &str) -> Result<WorkflowRun> {
-    todo!("Phase 1: load one `events` row, parse task_context into a WorkflowRun")
+/// Load a single workflow run by its `events.id`. Read-only; never writes (D2).
+pub async fn get_run_state(db_url: &str, run_id: &str) -> Result<WorkflowRun> {
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(db_url)
+        .await
+        .context("failed to connect to PostgreSQL")?;
+
+    let row = sqlx::query_as::<_, EventRow>(
+        "SELECT id, workflow_type, task_context FROM events WHERE id = $1",
+    )
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .with_context(|| format!("no events row found for id '{run_id}'"))?;
+
+    parse_event_row(row)
+}
+
+// ── internal helpers ──────────────────────────────────────────────────────────
+
+/// Raw columns fetched from the `events` table.
+#[derive(sqlx::FromRow)]
+struct EventRow {
+    id: String,
+    workflow_type: String,
+    task_context: serde_json::Value,
+}
+
+/// Parse one `EventRow` into a `WorkflowRun` using the Task-2 parsing layer.
+fn parse_event_row(row: EventRow) -> Result<WorkflowRun> {
+    let nodes = parse_task_context(&row.task_context)
+        .with_context(|| format!("failed to parse task_context for run '{}'", row.id))?;
+
+    // Derive started_at as the minimum non-null started_at across all nodes.
+    let started_at = nodes
+        .iter()
+        .filter_map(|n| n.started_at.as_deref())
+        .min()
+        .map(str::to_string);
+
+    let status = derive_run_status(&nodes);
+
+    Ok(WorkflowRun {
+        id: row.id,
+        workflow_name: row.workflow_type,
+        status,
+        nodes,
+        started_at,
+        elapsed_secs: None, // requires wall-clock subtraction; deferred to display layer
+    })
 }
 
 /// Parse `task_context` JSON (the `task_context` column from an `events` row)
@@ -484,5 +562,45 @@ mod tests {
             started_at: None,
             elapsed_secs: None,
         }
+    }
+
+    // ── integration stubs (require a live DB; skipped in CI) ─────────────────
+    //
+    // Run with:
+    //   BASTION_INTEGRATION_TEST=1 cargo test -- --ignored
+    //
+    // These stubs document the expected call shape for `list_active_runs` and
+    // `get_run_state`. They are gated behind `#[ignore]` and a runtime env-var
+    // check so they never execute in unit-test CI.
+
+    #[tokio::test]
+    #[ignore]
+    async fn integration_list_active_runs_returns_vec() {
+        if std::env::var("BASTION_INTEGRATION_TEST").is_err() {
+            return;
+        }
+        let db_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
+        let runs = list_active_runs(&db_url)
+            .await
+            .expect("list_active_runs should not error against a live DB");
+        // Just confirm the return type is correct; count may be 0 in a clean DB.
+        let _: Vec<WorkflowRun> = runs;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn integration_get_run_state_errors_on_missing_id() {
+        if std::env::var("BASTION_INTEGRATION_TEST").is_err() {
+            return;
+        }
+        let db_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
+        // A UUID that will never exist in the events table.
+        let result = get_run_state(&db_url, "00000000-0000-0000-0000-000000000000").await;
+        assert!(
+            result.is_err(),
+            "get_run_state should return Err for an unknown id"
+        );
     }
 }
