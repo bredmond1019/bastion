@@ -10,7 +10,7 @@ title: Task Log — phase1-blockA task 2
 **Verdict:** PASS
 **Date:** 2026-06-21
 **Branch:** phase1-blocka-task2-4
-**Applied:** false
+**Applied:** true
 
 ---
 

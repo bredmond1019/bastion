@@ -11,7 +11,7 @@ status: PASS
 **Verdict:** PASS
 **Date:** 2026-06-21
 **Branch:** phase1-blocka-task3
-**Applied:** false
+**Applied:** true
 
 ---
 

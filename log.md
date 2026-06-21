@@ -10,6 +10,66 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+### 2026-06-21 (task 5 — Validate all gates pass)
+
+Executed full validation suite: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`. All four gates passed with zero errors and zero warnings. All five tasks (fixtures, parsing, DB queries, layout algorithm, validation) are now complete and integrated. Test coverage includes node_runs JSON parsing against captured fixtures (in-progress and completed run states), all four RunStatus variants (`pending`, `running`, `success`, `failed`), null usage field handling, topological DAG layout (linear chains and diamond graphs), and live-state overlay by class name join. DB functions gate integration tests with `#[ignore]` and BASTION_INTEGRATION_TEST env var. Phase 1 Block A is ready to merge. Next: phase1-blockB — implement the ratatui TUI render loop and event-driven updates.
+
+```
+d35d8f4 docs: update docs for phase1-blockA-task5
+8036f62 feat: validate all gates pass for phase1-blockA (task 5)
+e3aa4be chore: init worktree phase1-blocka-task5
+```
+
+---
+
+### 2026-06-21 (task 4 — implement monitor::graph::build_layout)
+
+Completed implementation of the `build_layout` function in `src/monitor/graph.rs`. Constructed a `petgraph::graph::DiGraph` from `WorkflowGraph.edges`, added isolated vertices for pending nodes not yet in `node_runs`, and overlaid live `NodeState` status by joining on node class name. Implemented topological column assignment using `petgraph::algo::toposort` to determine node depth; assigned row positions within each column in toposort order. Stored positions as `Vec<(usize, u16, u16)>` tuples (node_index, column, row). Unit tests cover a linear three-node chain producing distinct columns, a diamond DAG with correct depth assignments, isolated node positioning, and live-state overlay. Review passed on first attempt with zero findings. Next: Task 5 — Validate — all gates pass.
+
+```
+90a202d docs: update docs for phase1-blockA-task4
+d46486c feat(phase1-blockA): implement monitor::graph::build_layout (task 4)
+6259de3 chore: init worktree phase1-blocka-task4
+```
+
+---
+
+## 2026-06-21 (task 3 — implement db::workflows queries)
+
+Task 3 implemented the two core database query functions (`list_active_runs` and `get_run_state`) using `sqlx` against the orchestrator's PostgreSQL events table. The functions parse live `task_context` JSON into `NodeState` structs using the parsing layer from Task 2, apply the read-only observer rule (D2), and filter for active runs by terminal node status aggregation. Integration test stubs with `#[ignore]` attribute and `BASTION_INTEGRATION_TEST` env var documented the expected call shape and validated the schema assumptions against live data. All code review comments addressed; PASS verdict accepted on first review attempt. Next: Task 4 — Implement `monitor::graph::build_layout` (construct petgraph DAG from workflow edges and overlay live status via NodeState join).
+
+```
+7a2253c docs: update docs for phase1-blockA-task3
+e9676b3 feat(phase1-blockA): implement list_active_runs and get_run_state with sqlx (task 3)
+9e1cba7 chore: init worktree phase1-blocka-task3
+```
+
+---
+
+### 2026-06-21 (task 2 — JSON parsing layer for workflow node state)
+
+Implemented the core parsing layer for deserializing `task_context.node_runs` and `nodes` JSON into strongly typed `NodeState` structs. Added a private module in `src/db/workflows.rs` that joins node_runs (status, error, input, usage fields) with nodes (output) by name, correctly derives `WorkflowRun.status` by aggregating node statuses (running > failed > pending > success), and handles null usage fields as `None`. All four `RunStatus` variants (`pending`, `running`, `success`, `failed`) deserialize via `#[serde(rename_all = "lowercase")]`. Comprehensive unit tests verify correct status derivation, mixed-state runs (partial success + running nodes), and all four status variants against the Task 1 fixtures. Review verdict: PASS (1 attempt). Next: Task 3 — Implement `db::workflows::list_active_runs` and `get_run_state` to integrate the parsing layer with live PostgreSQL queries.
+
+```
+9115c6c docs: update docs for phase1-blockA-task2
+5938e33 feat(phase1-blockA): implement node_runs JSON → NodeState parsing layer (task 2)
+d89233f chore: init worktree phase1-blocka-task2-4
+```
+
+---
+
+### 2026-06-20 (task 1 — test fixtures for DB parsing)
+
+Task 1 delivered static JSON fixtures representing in-progress and completed workflow run states. The fixture files capture `task_context` structure with mixed `node_runs` statuses (pending, running, success, failed) and provide the test data foundation for Task 2's parsing layer. Unit tests verified both fixture schemas and confirmed the structure matches the orchestrator's data contract. Review passed with no required changes. Next: Task 2 — Implement `db::workflows` — `node_runs` JSON → `NodeState` parsing.
+
+```
+b2195a4 docs: update docs for phase1-blockA-task1
+19243af feat(phase1-blockA): add task_context JSON fixtures for DB parsing tests
+5cb2346 chore: init worktree phase1-blocka-task1
+```
+
+---
+
 ## 2026-06-20 (phase0-blockA complete)
 
 Merged both task1 and task2 branches after resolving merge conflicts across 7 source files. Phase 0 Block A is now complete: the Rust toolchain compiles, `config.rs` reads `DATABASE_URL` and `BASTION_API_URL` from the environment with typed error handling, `.env.example` documents both variables, and health probes for PostgreSQL and FastAPI are implemented as read-only observers (honoring D2). The `bastion status` command works offline, printing service reachability (reachable/unreachable per DB and API), and exits cleanly even when both services are absent. All 17 unit tests pass (3 config parsing + 5 DB health + 2 status render + 7 API client health), and all gated checks are green (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`). Next: Phase 1 Block A — DB queries and graph layout.

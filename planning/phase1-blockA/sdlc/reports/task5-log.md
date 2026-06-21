@@ -4,7 +4,7 @@ spec: phase1-blockA
 task: 5
 verdict: PASS
 date: 2026-06-21
-applied: false
+applied: true
 ---
 
 # Task Log — phase1-blockA task 5
@@ -14,7 +14,7 @@ applied: false
 **Verdict:** PASS
 **Date:** 2026-06-21
 **Branch:** phase1-blocka-task5
-**Applied:** false
+**Applied:** true
 
 ---
 

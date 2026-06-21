@@ -6,9 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-20 — phase0-blockA complete; aligned to orchestrator data contract v1.0.0
-**Current focus:** phase1-blockA — DB queries + graph layout, built against data contract v1.0.0
-(`docs/data-contract.md`): parse `events.task_context.node_runs`, fetch the graph endpoint, join by class name
+**Last updated:** 2026-06-21 — phase1-blockA complete (all 5 tasks merged); phase1-blockB next
+**Current focus:** phase1-blockB — TUI render loop and event-driven updates
 
 ---
 
@@ -26,6 +25,12 @@ description: Current state and progress tracker for bastion.
 | Block | What | Status | Notes |
 |---|---|---|---|
 | Block A | Foundation setup | Done | Both tasks merged (2026-06-20). Toolchain verified, config.rs reads DATABASE_URL + BASTION_API_URL with typed errors, .env.example added. Health probes (API + DB) implemented. `bastion status` command works offline and prints service reachability. All 17 tests pass; all gated checks green. |
+
+### Phase 1 — Monitor
+| Block | What | Status | Notes |
+|---|---|---|---|
+| Block A | DB queries + graph layout | Done | All tasks complete: test fixtures created (in-progress + completed run samples); node_runs JSON → NodeState parsing implemented with RunStatus deserialization; DB queries (list_active_runs, get_run_state) filled with sqlx; topological layout algorithm with grid position assignment verified against linear chains and diamond DAGs; all validation gates pass (cargo fmt, clippy, test, build --release). Cross-contract sync: v1.0.0 aligned (D3). |
+| Block B | TUI render loop and event-driven updates | Not started | Next: implement ratatui TUI render loop and event-driven updates. |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
 

@@ -14,7 +14,7 @@ date: 2026-06-20
 **Verdict:** PASS
 **Date:** 2026-06-20
 **Branch:** phase1-blocka-task1
-**Applied:** false
+**Applied:** true
 
 ---
 
