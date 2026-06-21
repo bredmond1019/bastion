@@ -122,15 +122,21 @@ pub fn run_tmux(args: &[String]) -> Result<String> {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
     // tmux exits 1 with this stderr when no server is running.
-    if stderr.contains("no server running")
-        || stderr.contains("error connecting to")
-        || stderr.contains("No such file or directory")
-    {
+    if classify_no_server(&stderr) {
         bail!(TmuxError::NoServer);
     }
 
     let code = output.status.code().unwrap_or(-1);
     bail!(TmuxError::ExitError { code, stderr });
+}
+
+/// True when tmux stderr indicates no server is running / reachable.
+/// Pure classification logic, extracted from `run_tmux` so it is unit-testable
+/// without spawning a tmux process.
+pub fn classify_no_server(stderr: &str) -> bool {
+    stderr.contains("no server running")
+        || stderr.contains("error connecting to")
+        || stderr.contains("No such file or directory")
 }
 
 /// List all tmux sessions; returns raw formatted output lines.
@@ -269,5 +275,37 @@ mod tests {
         assert_eq!(args[2], "-t");
         assert_eq!(args[3], "old-session");
         assert_eq!(args.len(), 4);
+    }
+
+    // ── stderr classification (#2) ──────────────────────────────────────────────
+
+    #[test]
+    fn classify_no_server_matches_no_server_running() {
+        assert!(classify_no_server(
+            "no server running on /tmp/tmux-501/default"
+        ));
+    }
+
+    #[test]
+    fn classify_no_server_matches_error_connecting() {
+        assert!(classify_no_server(
+            "error connecting to /tmp/tmux-501/default (No such file)"
+        ));
+    }
+
+    #[test]
+    fn classify_no_server_matches_no_such_file() {
+        assert!(classify_no_server("No such file or directory"));
+    }
+
+    #[test]
+    fn classify_no_server_rejects_unrelated_stderr() {
+        assert!(!classify_no_server("duplicate session: work"));
+        assert!(!classify_no_server("can't find session: nope"));
+    }
+
+    #[test]
+    fn classify_no_server_rejects_empty() {
+        assert!(!classify_no_server(""));
     }
 }

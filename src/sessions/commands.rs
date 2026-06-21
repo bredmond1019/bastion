@@ -56,25 +56,7 @@ pub fn run() -> anyhow::Result<()> {
 pub fn attach(session_name: &str) -> anyhow::Result<()> {
     match tmux::attach_session(session_name) {
         Ok(()) => Ok(()),
-        Err(e) => {
-            if let Some(te) = e.downcast_ref::<TmuxError>() {
-                match te {
-                    TmuxError::NotInstalled => {
-                        println!("tmux not installed — install tmux to use `bastion attach`");
-                        return Ok(());
-                    }
-                    TmuxError::NoServer => {
-                        println!("no tmux server running");
-                        return Ok(());
-                    }
-                    TmuxError::ExitError { .. } => {
-                        println!("error: session '{}' not found", session_name);
-                        return Err(e);
-                    }
-                }
-            }
-            Err(e)
-        }
+        Err(e) => apply_degradation("attach", session_name, e),
     }
 }
 
@@ -85,25 +67,7 @@ pub fn new(session_name: &str, dir: Option<&str>) -> anyhow::Result<()> {
             println!("{}", format_created(session_name));
             Ok(())
         }
-        Err(e) => {
-            if let Some(te) = e.downcast_ref::<TmuxError>() {
-                match te {
-                    TmuxError::NotInstalled => {
-                        println!("tmux not installed — install tmux to use `bastion new`");
-                        return Ok(());
-                    }
-                    TmuxError::NoServer => {
-                        println!("no tmux server running");
-                        return Ok(());
-                    }
-                    TmuxError::ExitError { stderr, .. } => {
-                        println!("error creating session '{}': {}", session_name, stderr);
-                        return Err(e);
-                    }
-                }
-            }
-            Err(e)
-        }
+        Err(e) => apply_degradation("new", session_name, e),
     }
 }
 
@@ -114,26 +78,52 @@ pub fn kill(session_name: &str) -> anyhow::Result<()> {
             println!("{}", format_killed(session_name));
             Ok(())
         }
-        Err(e) => {
-            if let Some(te) = e.downcast_ref::<TmuxError>() {
-                match te {
-                    TmuxError::NotInstalled => {
-                        println!("tmux not installed — install tmux to use `bastion kill`");
-                        return Ok(());
-                    }
-                    TmuxError::NoServer => {
-                        println!("no tmux server running");
-                        return Ok(());
-                    }
-                    TmuxError::ExitError { .. } => {
-                        println!("error: session '{}' not found", session_name);
-                        return Err(e);
-                    }
-                }
+        Err(e) => apply_degradation("kill", session_name, e),
+    }
+}
+
+/// Outcome of mapping a `TmuxError` to user-facing degradation.
+#[derive(Debug, PartialEq)]
+pub enum Degraded {
+    /// Print this message; treat as success (graceful — tmux not installed / no server).
+    Graceful(String),
+    /// Print this message; propagate the original error.
+    Fatal(String),
+}
+
+/// Map a `TmuxError` to its user-facing degradation for a given verb.
+/// Pure logic, extracted from the handlers so it is unit-testable without
+/// spawning tmux. `verb` is the CLI verb name (`attach` / `new` / `kill`).
+pub fn degrade_tmux_error(verb: &str, session_name: &str, err: &TmuxError) -> Degraded {
+    match err {
+        TmuxError::NotInstalled => Degraded::Graceful(format!(
+            "tmux not installed — install tmux to use `bastion {verb}`"
+        )),
+        TmuxError::NoServer => Degraded::Graceful("no tmux server running".to_string()),
+        TmuxError::ExitError { stderr, .. } => match verb {
+            "new" => Degraded::Fatal(format!("error creating session '{session_name}': {stderr}")),
+            _ => Degraded::Fatal(format!("error: session '{session_name}' not found")),
+        },
+    }
+}
+
+/// Apply the degradation outcome for a tmux error: print the message and either
+/// swallow (graceful) or propagate (fatal) the original error. Non-`TmuxError`
+/// errors are propagated unchanged.
+fn apply_degradation(verb: &str, session_name: &str, e: anyhow::Error) -> anyhow::Result<()> {
+    if let Some(te) = e.downcast_ref::<TmuxError>() {
+        match degrade_tmux_error(verb, session_name, te) {
+            Degraded::Graceful(msg) => {
+                println!("{msg}");
+                return Ok(());
             }
-            Err(e)
+            Degraded::Fatal(msg) => {
+                println!("{msg}");
+                return Err(e);
+            }
         }
     }
+    Err(e)
 }
 
 /// Pure formatting helpers — testable without I/O.
@@ -250,6 +240,60 @@ mod tests {
             "expected session name in: {msg}"
         );
         assert!(msg.contains("killed"), "expected 'killed' in: {msg}");
+    }
+
+    // ── TmuxError degradation mapping (#1) ──────────────────────────────────────
+
+    #[test]
+    fn degrade_not_installed_is_graceful_with_verb() {
+        // The verb name is interpolated into the hint, so test more than one verb.
+        let attach = degrade_tmux_error("attach", "x", &TmuxError::NotInstalled);
+        let kill = degrade_tmux_error("kill", "x", &TmuxError::NotInstalled);
+        match attach {
+            Degraded::Graceful(m) => assert!(m.contains("bastion attach"), "got: {m}"),
+            other => panic!("expected Graceful, got {other:?}"),
+        }
+        match kill {
+            Degraded::Graceful(m) => assert!(m.contains("bastion kill"), "got: {m}"),
+            other => panic!("expected Graceful, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn degrade_no_server_is_graceful() {
+        let d = degrade_tmux_error("new", "x", &TmuxError::NoServer);
+        assert_eq!(d, Degraded::Graceful("no tmux server running".to_string()));
+    }
+
+    #[test]
+    fn degrade_exit_error_for_new_is_fatal_with_stderr() {
+        let err = TmuxError::ExitError {
+            code: 1,
+            stderr: "duplicate session: work".to_string(),
+        };
+        match degrade_tmux_error("new", "work", &err) {
+            Degraded::Fatal(m) => {
+                assert!(m.contains("error creating session 'work'"), "got: {m}");
+                assert!(m.contains("duplicate session: work"), "got: {m}");
+            }
+            other => panic!("expected Fatal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn degrade_exit_error_for_attach_and_kill_is_fatal_not_found() {
+        let err = TmuxError::ExitError {
+            code: 1,
+            stderr: "can't find session: ghost".to_string(),
+        };
+        for verb in ["attach", "kill"] {
+            match degrade_tmux_error(verb, "ghost", &err) {
+                Degraded::Fatal(m) => {
+                    assert!(m.contains("session 'ghost' not found"), "verb {verb}: {m}");
+                }
+                other => panic!("verb {verb}: expected Fatal, got {other:?}"),
+            }
+        }
     }
 
     /// Architectural guarantee: the sessions code path does not call Config::load()
