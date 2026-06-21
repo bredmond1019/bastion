@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — phase5-blockB complete; attach/new/kill lifecycle verbs shipped; 79 tests passing, all gating checks green
-**Current focus:** planning/phase5-blockC — `bastion send` (keystroke injection into tmux panes).
+**Last updated:** 2026-06-21 — phase5-blockC complete; `bastion send` keystroke injection shipped; 96 tests passing, all gating checks green
+**Current focus:** planning/phase5-blockD — `bastion capture` (pane output).
 
 ---
 
@@ -37,7 +37,7 @@ description: Current state and progress tracker for bastion.
 |---|---|---|---|
 | Block A | `bastion sessions` + tmux wrapper + lazy DB pool | Done | sessions/ module shipped: tmux.rs (pure arg construction + typed errors), model.rs (Session/Pane + fixture parsing), commands.rs (list verb, graceful degradation, render), CLI wiring. DB-free guarantee enforced by architecture and locked in by test. 20 new tests; 73 total pass. All gating checks green. PASS in 1 review attempt. |
 | Block B | `attach` / `new` / `kill` (lifecycle) | Done | attach/new/kill verbs shipped: pure arg-construction functions, interactive attach_session (.status()), new_session, kill_session; graceful degradation for NotInstalled/NoServer/ExitError; format_created/format_killed helpers unit-tested. PASS in 1 review attempt. Follow-up chore (2026-06-21) closed the error-path test gaps: extracted pure `classify_no_server` (tmux.rs) + `degrade_tmux_error`/`Degraded` (commands.rs); 9 new tests, 88 total, all gating checks green. **Deferred manual smoke test now COMPLETE** — verified live against tmux 3.6b: new (incl. `--dir` cwd), sessions list, kill (valid + unknown-session error), attach unknown-session error, and the interactive `attach`→`Ctrl-b d` detach round-trip (returns cleanly to shell). |
-| Block C | `bastion send` (keystrokes) | Not started | |
+| Block C | `bastion send` (keystrokes) | Done | `bastion send` shipped: `send_keys_args` with `-l`/`--` for literal delivery, `send_enter_args` for separate Enter keypress, execution fn + CLI wiring + graceful degradation. 9 new tests; 96 total pass. All gating checks green. PASS in 1 review attempt. |
 | Block D | `bastion capture` (pane output) | Not started | |
 | Block E | session view in the TUI | Not started | Built on Block A–D primitives. |
 
