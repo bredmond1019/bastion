@@ -323,7 +323,7 @@ STEP 2 — Decide:
     uiTest ({enabled, devServerCommand, readySignal, port, routes[]}). Ignore any other fields.
 
 Return your findings using the StructuredOutput tool.
-`, { label: 'harness-config', schema: HARNESS_CONFIG_SCHEMA, model: 'haiku' })
+`, { label: 'harness-config', schema: HARNESS_CONFIG_SCHEMA, model: 'sonnet' })
 
   if (!result || !result.present || !result.config) return null
   return result.config
