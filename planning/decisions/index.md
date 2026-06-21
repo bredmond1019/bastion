@@ -28,6 +28,12 @@ file**, append-only — never edit a settled decision; supersede it with a new o
 - [D6: Skip malformed tmux output lines](./D6-malformed-tmux-line-skip.md) — when parsing
   `list-sessions` output, a malformed line is skipped with a stderr warning rather than aborting
   the listing; partial system state beats none. Builds on D4.
+- [D7: Session TUI navigation is arrow-keys + `j`; `k` is kill-only](./D7-tui-keybindings-k-is-kill.md)
+  — in the session TUI Normal mode, `k` is bound to the kill verb (not vim nav-up); navigation is
+  `Up`/`Down` + `j`, so an up-press can never trigger an accidental kill. Builds on D4/D5.
+- [D8: Attach is handled in the TUI run loop, not `execute_action`](./D8-attach-handled-in-run-loop.md)
+  — the `Attach` action is executed inline in `run_inner` because suspending/restoring the terminal
+  needs the `ratatui::Terminal` handle the shared `execute_action` helper does not hold. Builds on D5.
 
 <!-- Add a row per decision as they are made. Record new ones with /log-decision-style atomic
      files (D2, D3, …). -->
