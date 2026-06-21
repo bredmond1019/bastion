@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockC complete
+
+Phase 5 Block C (`bastion send` — keystroke injection into tmux panes) shipped and reviewed in a single attempt (PASS). The implementation added two pure arg-construction functions to `tmux.rs`: `send_keys_args` (builds `tmux send-keys -t <session> -l -- <keys>` with `-l` for literal delivery and `--` to guard against leading-hyphen flag ambiguity) and `send_enter_args` (separate `tmux send-keys -t <session> Enter` invocation, required because `-l` disables key-name lookup). The `send_keys` execution fn chains both calls via `run_tmux`. On the commands side, `format_sent` is a pure helper for confirmation output and `send` routes errors through the existing `apply_degradation` path — `degrade_tmux_error`'s default branch already produces the right "session not found" message for the `send` verb without any match-arm change. The CLI variant uses `trailing_var_arg = true` with `allow_hyphen_values = true` so `bastion send work cargo build --release` is captured intact without user quoting. All five acceptance criteria were met; 96 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Next: phase5-blockD — `bastion capture` (pane output).
+
+```
+64f74cb docs: update docs for phase5-blockC
+960340c feat: implement phase5-blockC — bastion send
+cf43615 chore: add spec for phase5-blockC
+```
+
+---
+
 ## 2026-06-21 — phase5-blockB complete
 
 Phase 5 Block B (`attach` / `new` / `kill` session lifecycle verbs) shipped and reviewed in a single attempt (PASS). The three lifecycle verbs are now fully implemented: `tmux.rs` gained pure construction functions (`attach_args`, `new_session_args` with optional `--dir`, `kill_session_args`) and execution helpers (`new_session`, `kill_session`, and `attach_session` using `.status()` so the child inherits stdio and the call blocks until the user detaches — per-spec, `.status()` was chosen over `exec()` to preserve clean teardown on detach). `commands.rs` added `attach`, `new`, and `kill` public entry points with the same graceful degradation pattern as `sessions::run` (NotInstalled/NoServer → human message, ExitError → named-session error), plus pure `format_created`/`format_killed` helpers to keep confirmation messages unit-testable without I/O. `cli.rs` and `main.rs` were wired with sync dispatch arms that call no `Config::load()` and open no Postgres pool (D4/D5 enforced). All six acceptance criteria were met; 79 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Next: phase5-blockC — `bastion send` (keystroke injection into tmux panes).
