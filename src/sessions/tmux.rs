@@ -45,6 +45,48 @@ pub fn capture_pane_args(session_name: &str) -> Vec<String> {
     ]
 }
 
+/// Returns the argument list for:
+///   tmux attach -t <session_name>
+/// The first element is the `tmux` binary name.
+pub fn attach_args(session_name: &str) -> Vec<String> {
+    vec![
+        "tmux".to_string(),
+        "attach".to_string(),
+        "-t".to_string(),
+        session_name.to_string(),
+    ]
+}
+
+/// Returns the argument list for:
+///   tmux new-session -d -s <session_name> [-c <dir>]
+/// The first element is the `tmux` binary name.
+pub fn new_session_args(session_name: &str, dir: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "tmux".to_string(),
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        session_name.to_string(),
+    ];
+    if let Some(d) = dir {
+        args.push("-c".to_string());
+        args.push(d.to_string());
+    }
+    args
+}
+
+/// Returns the argument list for:
+///   tmux kill-session -t <session_name>
+/// The first element is the `tmux` binary name.
+pub fn kill_session_args(session_name: &str) -> Vec<String> {
+    vec![
+        "tmux".to_string(),
+        "kill-session".to_string(),
+        "-t".to_string(),
+        session_name.to_string(),
+    ]
+}
+
 // ── Execution ─────────────────────────────────────────────────────────────────
 
 /// Errors produced by this module.
@@ -103,6 +145,47 @@ pub fn capture_pane_raw(session_name: &str) -> Result<String> {
     run_tmux(&args).context("capture-pane failed")
 }
 
+/// Create a detached tmux session, optionally starting in `dir`.
+pub fn new_session(session_name: &str, dir: Option<&str>) -> Result<()> {
+    let args = new_session_args(session_name, dir);
+    run_tmux(&args).context("new-session failed")?;
+    Ok(())
+}
+
+/// Remove a tmux session.
+pub fn kill_session(session_name: &str) -> Result<()> {
+    let args = kill_session_args(session_name);
+    run_tmux(&args).context("kill-session failed")?;
+    Ok(())
+}
+
+/// Attach to an existing tmux session, handing the terminal to tmux.
+/// Blocks until the user detaches (Ctrl-b d), then returns control.
+pub fn attach_session(session_name: &str) -> Result<()> {
+    let args = attach_args(session_name);
+    debug_assert!(!args.is_empty(), "args must not be empty");
+    let (bin, rest) = args.split_first().expect("args must not be empty");
+
+    let status = Command::new(bin).args(rest).status().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow::Error::new(TmuxError::NotInstalled)
+        } else {
+            anyhow::Error::new(e).context("failed to run tmux")
+        }
+    })?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    let code = status.code().unwrap_or(-1);
+    // When the session does not exist tmux exits non-zero; we surface that as ExitError.
+    bail!(TmuxError::ExitError {
+        code,
+        stderr: format!("can't find session: {session_name}")
+    });
+}
+
 // ── Tests (pure, no live tmux) ────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -142,5 +225,49 @@ mod tests {
     fn field_sep_matches_format_separator() {
         // Verify the const separator agrees with what we put in the format string.
         assert!(LIST_SESSIONS_FORMAT.contains(FIELD_SEP));
+    }
+
+    #[test]
+    fn attach_args_correct() {
+        let args = attach_args("my-session");
+        assert_eq!(args[0], "tmux");
+        assert_eq!(args[1], "attach");
+        assert_eq!(args[2], "-t");
+        assert_eq!(args[3], "my-session");
+        assert_eq!(args.len(), 4);
+    }
+
+    #[test]
+    fn new_session_args_without_dir() {
+        let args = new_session_args("work", None);
+        assert_eq!(args[0], "tmux");
+        assert_eq!(args[1], "new-session");
+        assert_eq!(args[2], "-d");
+        assert_eq!(args[3], "-s");
+        assert_eq!(args[4], "work");
+        assert_eq!(args.len(), 5);
+    }
+
+    #[test]
+    fn new_session_args_with_dir() {
+        let args = new_session_args("work", Some("/tmp"));
+        assert_eq!(args[0], "tmux");
+        assert_eq!(args[1], "new-session");
+        assert_eq!(args[2], "-d");
+        assert_eq!(args[3], "-s");
+        assert_eq!(args[4], "work");
+        assert_eq!(args[5], "-c");
+        assert_eq!(args[6], "/tmp");
+        assert_eq!(args.len(), 7);
+    }
+
+    #[test]
+    fn kill_session_args_correct() {
+        let args = kill_session_args("old-session");
+        assert_eq!(args[0], "tmux");
+        assert_eq!(args[1], "kill-session");
+        assert_eq!(args[2], "-t");
+        assert_eq!(args[3], "old-session");
+        assert_eq!(args.len(), 4);
     }
 }

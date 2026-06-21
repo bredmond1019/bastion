@@ -1,6 +1,7 @@
-// sessions/commands.rs — `bastion sessions` list verb.
+// sessions/commands.rs — session verb handlers (list, attach, new, kill).
 //
 // Decision D4: this entire path is DB-free. No Config::load(), no Postgres pool.
+// Decision D5: all verbs are synchronous blocking calls — no async/tokio coupling.
 // tmux is the only data source.
 
 use crate::sessions::model::{Pane, Session, parse_sessions};
@@ -48,6 +49,100 @@ pub fn run() -> anyhow::Result<()> {
 
     print!("{}", render_sessions(&sessions));
     Ok(())
+}
+
+/// Attach to an existing tmux session, inheriting the terminal.
+/// Blocks until the user detaches; then returns to the shell.
+pub fn attach(session_name: &str) -> anyhow::Result<()> {
+    match tmux::attach_session(session_name) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if let Some(te) = e.downcast_ref::<TmuxError>() {
+                match te {
+                    TmuxError::NotInstalled => {
+                        println!("tmux not installed — install tmux to use `bastion attach`");
+                        return Ok(());
+                    }
+                    TmuxError::NoServer => {
+                        println!("no tmux server running");
+                        return Ok(());
+                    }
+                    TmuxError::ExitError { .. } => {
+                        println!("error: session '{}' not found", session_name);
+                        return Err(e);
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Create a new detached tmux session, optionally in a given directory.
+pub fn new(session_name: &str, dir: Option<&str>) -> anyhow::Result<()> {
+    match tmux::new_session(session_name, dir) {
+        Ok(()) => {
+            println!("{}", format_created(session_name));
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(te) = e.downcast_ref::<TmuxError>() {
+                match te {
+                    TmuxError::NotInstalled => {
+                        println!("tmux not installed — install tmux to use `bastion new`");
+                        return Ok(());
+                    }
+                    TmuxError::NoServer => {
+                        println!("no tmux server running");
+                        return Ok(());
+                    }
+                    TmuxError::ExitError { stderr, .. } => {
+                        println!("error creating session '{}': {}", session_name, stderr);
+                        return Err(e);
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Kill (remove) a tmux session by name.
+pub fn kill(session_name: &str) -> anyhow::Result<()> {
+    match tmux::kill_session(session_name) {
+        Ok(()) => {
+            println!("{}", format_killed(session_name));
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(te) = e.downcast_ref::<TmuxError>() {
+                match te {
+                    TmuxError::NotInstalled => {
+                        println!("tmux not installed — install tmux to use `bastion kill`");
+                        return Ok(());
+                    }
+                    TmuxError::NoServer => {
+                        println!("no tmux server running");
+                        return Ok(());
+                    }
+                    TmuxError::ExitError { .. } => {
+                        println!("error: session '{}' not found", session_name);
+                        return Err(e);
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Pure formatting helpers — testable without I/O.
+pub fn format_created(name: &str) -> String {
+    format!("created session '{}'", name)
+}
+
+pub fn format_killed(name: &str) -> String {
+    format!("killed session '{}'", name)
 }
 
 /// Pure render function: `&[Session]` → formatted String.
@@ -135,6 +230,26 @@ mod tests {
         assert!(out.contains("cargo test"));
         assert!(out.contains("bg"));
         assert!(out.contains("idle"));
+    }
+
+    #[test]
+    fn format_created_contains_name() {
+        let msg = format_created("my-session");
+        assert!(
+            msg.contains("my-session"),
+            "expected session name in: {msg}"
+        );
+        assert!(msg.contains("created"), "expected 'created' in: {msg}");
+    }
+
+    #[test]
+    fn format_killed_contains_name() {
+        let msg = format_killed("old-session");
+        assert!(
+            msg.contains("old-session"),
+            "expected session name in: {msg}"
+        );
+        assert!(msg.contains("killed"), "expected 'killed' in: {msg}");
     }
 
     /// Architectural guarantee: the sessions code path does not call Config::load()

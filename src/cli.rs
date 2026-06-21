@@ -51,4 +51,22 @@ pub enum Commands {
     Status,
     /// List tmux sessions with last-line output
     Sessions,
+    /// Attach to an existing tmux session
+    Attach {
+        /// Name of the session to attach to
+        session: String,
+    },
+    /// Create a new detached tmux session
+    New {
+        /// Name of the session to create
+        session: String,
+        /// Working directory for the new session
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Kill (remove) a tmux session
+    Kill {
+        /// Name of the session to kill
+        session: String,
+    },
 }

@@ -34,6 +34,12 @@ async fn main() -> Result<()> {
         } => run::trigger(workflow, args, monitor).await,
         Commands::Status => run::status().await,
         // Sessions path is DB-free (D4): no Config::load(), no Postgres pool.
+        // All session verbs are sync blocking (D5): no async/tokio coupling.
         Commands::Sessions => sessions::run(),
+        Commands::Attach { session } => sessions::commands::attach(&session),
+        Commands::New { session, dir } => {
+            sessions::commands::new(&session, dir.as_deref().and_then(|p| p.to_str()))
+        }
+        Commands::Kill { session } => sessions::commands::kill(&session),
     }
 }
