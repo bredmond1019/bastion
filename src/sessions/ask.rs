@@ -145,7 +145,8 @@ pub fn has_session(name: &str) -> bool {
 /// Steps:
 ///   1. Trust pre-flight — fail fast if `--dir` is explicitly Untrusted.
 ///   2. Ensure session + Claude — create session and/or launch Claude when cold,
-///      skip launch when `classify_state` already reports `claude` running.
+///      skip launch when `classify_state` reports a non-shell process running
+///      (covers `"claude"` as well as version-string names like `"2.1.185"`).
 ///   3. Send the trigger — the only keystrokes sent.
 ///   4. Wait for completion — poll `done_path(--out)` up to `--timeout`; on
 ///      found, remove the marker and return `Ok(())`; on timeout, capture
@@ -179,8 +180,11 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
         wait_for_claude(&args.session, READINESS_TIMEOUT_SECS, READINESS_POLL_MS)?;
     } else {
         // Session exists — check whether Claude is already the foreground process.
+        // Use `classify_state` rather than checking for `"claude"` by name: modern
+        // Claude Code renames its process to its version string (e.g. "2.1.185"),
+        // so any non-idle-shell foreground command signals Claude is running.
         let foreground = foreground_cmd_for(&args.session);
-        if classify_state(&foreground) != SessionState::Running || foreground.trim() != "claude" {
+        if classify_state(&foreground) != SessionState::Running {
             // Session exists but Claude is not running — launch it.
             tmux::send_keys(&args.session, &args.launch_cmd).map_err(|e| AskError::Tmux {
                 op: "send-keys (launch into existing session)".to_string(),
@@ -224,14 +228,21 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Poll `list-sessions` until the target session's foreground command is `claude`,
-/// or until `timeout_secs` elapses.
+/// Poll `list-sessions` until the target session's foreground command is a
+/// non-shell process (i.e. `classify_state` returns `Running`), or until
+/// `timeout_secs` elapses.
+///
+/// We use `classify_state` rather than checking for the string `"claude"`
+/// because Claude Code renames its process via `pthread_setname_np` to the
+/// version string (e.g. `"2.1.185"`), so `#{pane_current_command}` in tmux
+/// never shows `"claude"` when a modern Claude Code is running.  Any
+/// non-idle-shell foreground command is a reliable signal that Claude is up.
 fn wait_for_claude(session: &str, timeout_secs: u64, interval_ms: u64) -> Result<(), AskError> {
     let max_attempts = poll_plan(timeout_secs, interval_ms);
 
     for _ in 0..max_attempts {
         let foreground = foreground_cmd_for(session);
-        if foreground.trim() == "claude" {
+        if classify_state(&foreground) == SessionState::Running {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(interval_ms));
