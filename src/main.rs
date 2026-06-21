@@ -45,5 +45,6 @@ async fn main() -> Result<()> {
             let keys = cmd.join(" ");
             sessions::commands::send(&session, &keys)
         }
+        Commands::Capture { session, lines } => sessions::commands::capture(&session, lines),
     }
 }
