@@ -53,6 +53,28 @@ async fn main() -> Result<()> {
                 sessions::commands::send(&session, &keys)
             }
             Commands::Capture { session, lines } => sessions::commands::capture(&session, lines),
+            // `ask` is DB-free (D4) and synchronous (D5) — lives on the sessions surface.
+            Commands::Ask {
+                session,
+                prompt_file,
+                out,
+                dir,
+                timeout,
+                launch_cmd,
+            } => {
+                let args = sessions::ask::AskArgs {
+                    session,
+                    prompt_file,
+                    out,
+                    dir,
+                    timeout_secs: timeout,
+                    launch_cmd,
+                };
+                sessions::ask::ask(args).map_err(|e| {
+                    eprintln!("bastion ask: {e}");
+                    anyhow::anyhow!("{e}")
+                })
+            }
         },
     }
 }
