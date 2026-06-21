@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Session Control Surface
-description: Verb reference and operator workflow for bastion's tmux session-control commands (sessions / attach / new / kill / send).
+description: Verb reference and operator workflow for bastion's tmux session-control commands (sessions / attach / new / kill / send / capture).
 ---
 
 # Session Control
@@ -83,6 +83,18 @@ Remove a session.
 bastion kill work
 ```
 
+### `bastion capture <session> [--lines N]`
+
+Print the recent pane output for a session. By default, all non-blank trailing content is shown.
+Use `--lines N` to cap the output to the last `N` meaningful lines. Trailing blank/whitespace-only
+lines (tmux pane-height padding) are always stripped before the line limit is applied, so `N`
+counts against real content.
+
+```bash
+bastion capture work
+bastion capture work --lines 50
+```
+
 ## Error behavior
 
 The surface degrades gracefully rather than panicking:
@@ -91,10 +103,9 @@ The surface degrades gracefully rather than panicking:
 |---|---|
 | tmux not installed | Prints `tmux not installed — install tmux to use \`bastion <verb>\`` and exits successfully. |
 | No tmux server running | Prints `no tmux server running` and exits successfully. |
-| Unknown session (`attach` / `kill` / `send`) | Prints `error: session '<name>' not found` and exits non-zero. |
+| Unknown session (`attach` / `kill` / `send` / `capture`) | Prints `error: session '<name>' not found` and exits non-zero. |
 | Session already exists (`new`) | Prints `error creating session '<name>': <tmux stderr>` and exits non-zero. |
 
 ---
 
-*The verbs above are the Phase 5 Blocks A–C surface. Block D (`capture`, read pane output) and
-Block E (TUI session view) are planned — see [planning/master-plan.md](../planning/master-plan.md).*
+*The verbs above are the Phase 5 Blocks A–D surface. Block E (TUI session view) is planned — see [planning/master-plan.md](../planning/master-plan.md).*
