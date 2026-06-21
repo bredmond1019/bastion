@@ -22,6 +22,12 @@ file**, append-only — never edit a settled decision; supersede it with a new o
 - [D4: Session Management Surface](./D4-session-management-surface.md) — bastion absorbs tmux
   session management as modules in the binary (the dropped standalone "brain" idea); a second,
   ungated process-control surface alongside workflow observability. Brain D21.
+- [D5: Session verbs are synchronous](./D5-sessions-synchronous.md) — the `sessions/` surface is
+  plain sync Rust (tmux shell-outs are blocking `std::process::Command`); session verbs are not
+  async and add no tokio coupling. Builds on D4.
+- [D6: Skip malformed tmux output lines](./D6-malformed-tmux-line-skip.md) — when parsing
+  `list-sessions` output, a malformed line is skipped with a stderr warning rather than aborting
+  the listing; partial system state beats none. Builds on D4.
 
 <!-- Add a row per decision as they are made. Record new ones with /log-decision-style atomic
      files (D2, D3, …). -->

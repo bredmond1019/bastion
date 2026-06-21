@@ -6,7 +6,7 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — phase5-blockA complete; sessions/ module shipped with tmux wrapper, model, commands, and CLI wiring
+**Last updated:** 2026-06-21 — phase5-blockA complete + decisions D5/D6 promoted to registry; sessions/ module shipped with tmux wrapper, model, commands, and CLI wiring
 **Current focus:** planning/phase5-blockB — `attach` / `new` / `kill` lifecycle verbs (Phase 5 session management, ungated parallel track).
 
 ---
@@ -60,6 +60,7 @@ description: Current state and progress tracker for bastion.
   Added **Phase 5** (Blocks A–E) to `master-plan.md` as an independent track. One real constraint:
   the Postgres pool must become **lazy** so session commands run with zero DB. Cross-repo: brain
   **D21**; recorded as bastion **D4**.
+- **2026-06-21 — Decisions D5–D6 promoted to registry (phase5-blockA deferred choices).** D5 (Session verbs are synchronous: tmux shell-outs are blocking `std::process::Command` calls, so no async ceremony or tokio coupling to the sessions/ surface) and D6 (Malformed `tmux list-sessions` output lines are skipped with stderr warning rather than aborting; partial system state is more useful than none). Both build on D4 and finalize the sessions/ surface contract.
 - **2026-06-20 — Pinned the orchestrator data contract v1.0.0 (D3).** The orchestrator now publishes a single, versioned contract (`python-orchestration-system/docs/data-contract.md`) for the execution state bastion reads; bastion holds a consumer view (`docs/data-contract.md`) pinned to v1.0.0. Confirmed the **Hybrid** read path (direct Postgres for the live poll; reserved HTTP read API later) and the **two-source merge model** (DAG edges from `GET /workflows/{type}/graph`, live state from `events.task_context.node_runs`, joined by node **class name**). Realigned `master-plan.md` and the Phase-1 stub type defs to reality (no relational `workflow_runs`/`node_states` tables exist): `NodeState` gained `model`/`input`; `RunStatus` deserializes lowercase status strings; `ApiClient::workflow_graph()` added; `build_layout` now takes API edges. Orchestrator-side additions that complete the contract: per-node `input` + serializable output (orchestrator D30). `cargo fmt`/`clippy`/`test` (17) all green. Cross-repo: brain D20 / orchestrator D30. `/log-work` gained a contract sync-checklist step.
 - **2026-06-18 — Pre-Block-A reconnaissance against the live orchestrator.** Read the
   python-orchestration-system to ground Block A. Findings: (1) orchestrator state is one `events`
