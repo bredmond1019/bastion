@@ -148,6 +148,35 @@ bastion capture work
 bastion capture work --lines 50
 ```
 
+## Verifying the surface
+
+A quick manual smoke test that exercises the activity indicator and the trust pre-flight against a
+live tmux server (DB-free — Postgres need not be running):
+
+```bash
+cargo build
+BIN=./target/debug/bastion
+
+# Activity indicator — idle shell vs. detached-but-running command
+$BIN new smoke-idle --dir /tmp                 # bare shell
+$BIN new smoke-run  --dir /tmp
+$BIN send smoke-run "sleep 300"                # gives the pane a foreground command
+$BIN sessions                                  # smoke-idle → idle ; smoke-run → running (sleep)
+
+# Trust observer — pre-flight line on `new --dir`
+$BIN new smoke-trusted --dir <a-trusted-project-dir>   # → trust: trusted
+$BIN new smoke-unknown --dir /tmp/never-opened          # → trust: unknown (session still created)
+
+# Cleanup
+for s in smoke-idle smoke-run smoke-trusted smoke-unknown; do $BIN kill "$s"; done
+$BIN sessions                                  # → no tmux server running (graceful degradation)
+```
+
+Expected results: a **detached** session running a command reports `running (<cmd>)`, not `idle`;
+the trust line is advisory (the session is created regardless), and `~/.claude.json` is only ever
+read, never written. To find a trusted directory for the test, pick any path whose
+`projects[<dir>].hasTrustDialogAccepted` is `true` in `~/.claude.json`.
+
 ## Error behavior
 
 The surface degrades gracefully rather than panicking:
