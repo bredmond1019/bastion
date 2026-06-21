@@ -8,11 +8,13 @@ use std::path::PathBuf;
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Launch the interactive session dashboard
+    Tui,
     /// Live TUI graph monitor for workflow execution
     Monitor {
         /// Filter to a specific workflow ID (shows all active runs if omitted)
@@ -85,4 +87,30 @@ pub enum Commands {
         #[arg(long)]
         lines: Option<usize>,
     },
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn bare_bastion_parses_to_none() {
+        let cli = Cli::try_parse_from(["bastion"]).unwrap();
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn tui_subcommand_parses() {
+        let cli = Cli::try_parse_from(["bastion", "tui"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Tui)));
+    }
+
+    #[test]
+    fn existing_verb_still_parses() {
+        let cli = Cli::try_parse_from(["bastion", "sessions"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Sessions)));
+    }
 }
