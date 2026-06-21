@@ -77,4 +77,26 @@ cargo build --release
 ```
 
 ## Notes
-<!-- filled in as work happens: manual smoke-test results, deferred-choice rationale -->
+
+### Manual smoke test (2026-06-21)
+
+**Environment:** macOS 24.6.0, release build.
+
+**Without Postgres:** dashboard launches cleanly with Postgres stopped — confirmed D4.
+
+**Without tmux server:** `bastion` (no-arg) and `bastion tui` both launch the TUI; the session list is empty with the "no sessions — press [n] to create one" placeholder. `q` exits with the terminal restored cleanly.
+
+**With live tmux server:**
+- Bare `bastion` and `bastion tui` both open the dashboard; sessions render with state and last-line columns; the list auto-refreshes every 2 s.
+- `j` / `Down` advance the selection; `Up` retreats; wrapping works at both ends.
+- `n` -> typed a name -> Enter -> new session appeared on next refresh; Esc cancels without creating.
+- `s` -> typed a command -> Enter -> send confirmed; `capture` shows the command arrived in the target pane.
+- `k` -> kills the selected session; list refreshes immediately.
+- `a` -> drops into a real tmux attach; `Ctrl-b d` returns to the dashboard cleanly with the list refreshed.
+- `q` -> exits with the terminal fully restored; prompt returned normally.
+
+**Error paths (verified manually):**
+- Kill on a non-existent session: status line shows "error: session '...' not found" without crashing the loop.
+- `s` with no sessions in list: status shows "no session selected".
+
+All acceptance criteria confirmed. I/O shell `ui::run` smoke-tested satisfactorily.
