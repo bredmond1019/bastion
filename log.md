@@ -23,6 +23,22 @@ cf5ffdb feat: implement phase5-blockE — session TUI dashboard
 
 ---
 
+## 2026-06-21 — phase5-blockE follow-up: decisions + Claude Code guide
+
+Promoted two durable in-flight choices to the decisions registry: **D7** (k-is-kill nav binding — in the TUI Normal mode, `k` invokes `kill_session` only; vim-style up-nav is Up-arrow, avoiding the collision) and **D8** (Attach handled in run loop — the session TUI's `Attach` action suspends the TUI, spawns tmux attach interactively, and resumes the TUI on return, eliminating the need for an async/await ceremony). Both are documented in `planning/decisions/` and registered in the index. Authored `docs/claude-code-workflow.md` — a guide for driving Claude Code through bastion-managed tmux sessions (and vice versa): covers launching Claude Code via `claude --permission-mode bypassPermissions` from a bastion `new` session, the workflow for implementing features via `/sdlc-run`, and the terminal-sharing setup for collaborative work. Updated `docs/index.md` and `docs/sessions.md` to link the guide. All gating checks green.
+
+```diff
+ docs/claude-code-workflow.md                       | 186 ++++++
+ docs/index.md                                      |   1 +
+ docs/sessions.md                                   |   3 +
+ planning/decisions/D7-tui-keybindings-k-is-kill.md |  47 +++
+ planning/decisions/D8-attach-handled-in-run-loop.md|  47 +++
+ planning/decisions/index.md                        |   6 +
+ 6 files changed, 290 insertions(+)
+```
+
+---
+
 ## 2026-06-21 — phase5-blockD complete
 
 Phase 5 Block D (`bastion capture` — pane output) shipped and reviewed in a single attempt (PASS). The implementation added `Pane::last_lines(n: Option<usize>) -> Vec<String>` to `model.rs`: strips trailing blank/whitespace-only padding lines from `capture-pane -p` output first, then returns all or the last `n` meaningful lines in original order. Nine unit tests cover all specified edge cases (more/fewer/exactly-N, `Some(0)`, `None`, blank padding, empty/all-blank input, order preservation). On the commands side, `capture(session_name, lines)` calls `capture_pane_raw`, builds a `Pane`, calls `last_lines`, and prints via the pure `format_capture` helper; errors route through the existing `apply_degradation` path — no new match arm was needed in `degrade_tmux_error` since the non-`"new"` default branch already produces the correct "session not found" Fatal for the `capture` verb. CLI wiring added the `Capture { session, lines }` variant to the `Commands` enum and the dispatch arm in `main.rs` on the sync, DB-free path (D4/D5 enforced). All six acceptance criteria were met; 110 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Docs updated: `docs/sessions.md` gained the capture verb section, error-behavior row, and footer update; `docs/index.md` updated the verb list. Next: phase5-blockE — session view in the TUI.
