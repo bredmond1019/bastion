@@ -4,6 +4,7 @@
 // Decision D5: all verbs are synchronous blocking calls — no async/tokio coupling.
 // tmux is the only data source.
 
+use crate::sessions::claude_state::{TrustStatus, trust_status};
 use crate::sessions::model::{Pane, Session, parse_sessions};
 use crate::sessions::tmux::{self, TmuxError};
 
@@ -61,10 +62,19 @@ pub fn attach(session_name: &str) -> anyhow::Result<()> {
 }
 
 /// Create a new detached tmux session, optionally in a given directory.
+///
+/// After session creation, prints a one-line trust pre-flight for the
+/// resolved directory (reads `~/.claude.json` as a read-only observer).
+/// The trust check is advisory: Unknown is acceptable and never blocks
+/// or fails session creation.
 pub fn new(session_name: &str, dir: Option<&str>) -> anyhow::Result<()> {
     match tmux::new_session(session_name, dir) {
         Ok(()) => {
             println!("{}", format_created(session_name));
+            if let Some(d) = dir {
+                let status = trust_status(d);
+                println!("{}", format_trust(status, d));
+            }
             Ok(())
         }
         Err(e) => apply_degradation("new", session_name, e),
@@ -182,27 +192,47 @@ pub fn render_sessions(sessions: &[Session]) -> String {
     let mut out = String::new();
     // Header
     out.push_str(&format!(
-        "{:<20}  {:<8}  {}\n",
+        "{:<20}  {:<20}  {}\n",
         "SESSION", "STATE", "LAST OUTPUT"
     ));
     out.push_str(&"-".repeat(70));
     out.push('\n');
 
     for s in sessions {
+        let state_col = format_state_col(s);
         let last = if s.last_line.is_empty() {
             "(no output)"
         } else {
             &s.last_line
         };
-        out.push_str(&format!(
-            "{:<20}  {:<8}  {}\n",
-            s.name,
-            s.state.as_str(),
-            last,
-        ));
+        out.push_str(&format!("{:<20}  {:<20}  {}\n", s.name, state_col, last,));
     }
 
     out
+}
+
+/// Pure helper: format the STATE column for a session row.
+/// Running sessions show "running (cmd)"; idle sessions show "idle".
+pub fn format_state_col(s: &Session) -> String {
+    use crate::sessions::model::SessionState;
+    match s.state {
+        SessionState::Running if !s.foreground_cmd.is_empty() => {
+            format!("running ({})", s.foreground_cmd)
+        }
+        SessionState::Running => "running".to_string(),
+        SessionState::Idle => "idle".to_string(),
+    }
+}
+
+/// Pure helper: format the trust pre-flight line for `bastion new --dir`.
+pub fn format_trust(status: TrustStatus, _dir: &str) -> String {
+    match status {
+        TrustStatus::Trusted => "trust: trusted".to_string(),
+        TrustStatus::Untrusted => {
+            "trust: untrusted (Claude will prompt on first launch)".to_string()
+        }
+        TrustStatus::Unknown => "trust: unknown".to_string(),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -210,6 +240,7 @@ pub fn render_sessions(sessions: &[Session]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sessions::claude_state::TrustStatus;
     use crate::sessions::model::SessionState;
 
     fn make_session(name: &str, state: SessionState, last_line: &str) -> Session {
@@ -217,6 +248,22 @@ mod tests {
             name: name.to_string(),
             state,
             window_count: 1,
+            foreground_cmd: String::new(),
+            last_line: last_line.to_string(),
+        }
+    }
+
+    fn make_session_with_cmd(
+        name: &str,
+        state: SessionState,
+        foreground_cmd: &str,
+        last_line: &str,
+    ) -> Session {
+        Session {
+            name: name.to_string(),
+            state,
+            window_count: 1,
+            foreground_cmd: foreground_cmd.to_string(),
             last_line: last_line.to_string(),
         }
     }
@@ -228,35 +275,87 @@ mod tests {
     }
 
     #[test]
-    fn render_single_running_session() {
-        let sessions = vec![make_session("main", SessionState::Running, "cargo build")];
+    fn render_single_running_session_shows_command() {
+        let sessions = vec![make_session_with_cmd(
+            "main",
+            SessionState::Running,
+            "cargo",
+            "",
+        )];
         let out = render_sessions(&sessions);
-        assert!(out.contains("main"));
-        assert!(out.contains("running"));
-        assert!(out.contains("cargo build"));
+        assert!(out.contains("main"), "row: {out}");
+        assert!(out.contains("running (cargo)"), "row: {out}");
     }
 
     #[test]
-    fn render_single_idle_session_with_empty_last_line() {
+    fn render_running_session_without_cmd_shows_running() {
+        let sessions = vec![make_session("main", SessionState::Running, "")];
+        let out = render_sessions(&sessions);
+        assert!(out.contains("running"), "row: {out}");
+    }
+
+    #[test]
+    fn render_single_idle_session_shows_idle() {
         let sessions = vec![make_session("scratch", SessionState::Idle, "")];
         let out = render_sessions(&sessions);
-        assert!(out.contains("scratch"));
-        assert!(out.contains("idle"));
-        assert!(out.contains("(no output)"));
+        assert!(out.contains("scratch"), "row: {out}");
+        assert!(out.contains("idle"), "row: {out}");
+        assert!(out.contains("(no output)"), "row: {out}");
     }
 
     #[test]
     fn render_multiple_sessions() {
         let sessions = vec![
-            make_session("main", SessionState::Running, "cargo test"),
+            make_session_with_cmd("main", SessionState::Running, "cargo", "cargo test"),
             make_session("bg", SessionState::Idle, ""),
         ];
         let out = render_sessions(&sessions);
-        assert!(out.contains("main"));
-        assert!(out.contains("running"));
-        assert!(out.contains("cargo test"));
-        assert!(out.contains("bg"));
-        assert!(out.contains("idle"));
+        assert!(out.contains("main"), "row: {out}");
+        assert!(out.contains("running (cargo)"), "row: {out}");
+        assert!(out.contains("cargo test"), "row: {out}");
+        assert!(out.contains("bg"), "row: {out}");
+        assert!(out.contains("idle"), "row: {out}");
+    }
+
+    // ── format_state_col ──────────────────────────────────────────────────────
+
+    #[test]
+    fn format_state_col_running_with_cmd() {
+        let s = make_session_with_cmd("s", SessionState::Running, "claude", "");
+        assert_eq!(format_state_col(&s), "running (claude)");
+    }
+
+    #[test]
+    fn format_state_col_running_no_cmd() {
+        let s = make_session("s", SessionState::Running, "");
+        assert_eq!(format_state_col(&s), "running");
+    }
+
+    #[test]
+    fn format_state_col_idle() {
+        let s = make_session("s", SessionState::Idle, "");
+        assert_eq!(format_state_col(&s), "idle");
+    }
+
+    // ── format_trust ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_trust_trusted() {
+        let msg = format_trust(TrustStatus::Trusted, "/some/dir");
+        assert_eq!(msg, "trust: trusted");
+    }
+
+    #[test]
+    fn format_trust_untrusted_contains_hint() {
+        let msg = format_trust(TrustStatus::Untrusted, "/some/dir");
+        assert!(msg.contains("trust: untrusted"), "got: {msg}");
+        assert!(msg.contains("Claude will prompt"), "got: {msg}");
+    }
+
+    #[test]
+    fn format_trust_unknown() {
+        let msg = format_trust(TrustStatus::Unknown, "/some/dir");
+        assert_eq!(msg, "trust: unknown");
     }
 
     #[test]
@@ -416,8 +515,9 @@ mod tests {
 
         // These are the only functions on the sessions command path that
         // process data; neither should require config.
+        // 5-field format: name, attached, windows, activity, pane_current_command
         let sessions = crate::sessions::model::parse_sessions(
-            "work\t1\t2\t1718000000\nscratch\t0\t1\t1718000001\n",
+            "work\t1\t2\t1718000000\tcargo\nscratch\t0\t1\t1718000001\tzsh\n",
         );
         let out = render_sessions(&sessions);
 

@@ -11,9 +11,15 @@ use std::process::Command;
 // ── Format strings ────────────────────────────────────────────────────────────
 
 /// Format string used with `tmux list-sessions -F`.
-/// Fields (tab-separated): session_name, attached (1/0), window count, activity (epoch secs).
-pub const LIST_SESSIONS_FORMAT: &str =
-    "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_activity}";
+/// Fields (tab-separated):
+///   1. session_name
+///   2. session_attached (1/0)
+///   3. session_windows (count)
+///   4. session_activity (epoch secs)
+///   5. pane_current_command (foreground process name in the first pane)
+///
+/// State (running vs idle) is derived from field 5, not field 2.
+pub const LIST_SESSIONS_FORMAT: &str = "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{pane_current_command}";
 
 /// Separator between fields in LIST_SESSIONS_FORMAT output.
 pub const FIELD_SEP: char = '\t';
@@ -280,6 +286,7 @@ mod tests {
         assert!(LIST_SESSIONS_FORMAT.contains("#{session_attached}"));
         assert!(LIST_SESSIONS_FORMAT.contains("#{session_windows}"));
         assert!(LIST_SESSIONS_FORMAT.contains("#{session_activity}"));
+        assert!(LIST_SESSIONS_FORMAT.contains("#{pane_current_command}"));
     }
 
     #[test]

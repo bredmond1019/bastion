@@ -31,13 +31,15 @@ const REFRESH_MS: u64 = 2000;
 // ── Pure render-string helpers (unit-testable, no Frame) ─────────────────────
 
 /// Format a single session as a display row string.
+/// Running sessions show "running (cmd)"; idle sessions show "idle".
 pub fn session_row(s: &Session) -> String {
+    use crate::sessions::commands::format_state_col;
     let last = if s.last_line.is_empty() {
         "(no output)"
     } else {
         s.last_line.as_str()
     };
-    format!("{:<20} {:<8} {}", s.name, s.state.as_str(), last)
+    format!("{:<20} {:<20} {}", s.name, format_state_col(s), last)
 }
 
 /// Render the footer key legend (Normal mode) or the active input prompt.
@@ -221,6 +223,22 @@ mod tests {
             name: name.to_string(),
             state,
             window_count: 1,
+            foreground_cmd: String::new(),
+            last_line: last_line.to_string(),
+        }
+    }
+
+    fn make_session_with_cmd(
+        name: &str,
+        state: SessionState,
+        foreground_cmd: &str,
+        last_line: &str,
+    ) -> Session {
+        Session {
+            name: name.to_string(),
+            state,
+            window_count: 1,
+            foreground_cmd: foreground_cmd.to_string(),
             last_line: last_line.to_string(),
         }
     }
@@ -230,12 +248,20 @@ mod tests {
     }
 
     #[test]
-    fn session_row_running_includes_name_state_lastline() {
-        let s = make_session("main", SessionState::Running, "cargo build");
+    fn session_row_running_with_cmd_shows_command() {
+        let s = make_session_with_cmd("main", SessionState::Running, "claude", "some output");
         let row = session_row(&s);
         assert!(row.contains("main"), "row: {row}");
-        assert!(row.contains("running"), "row: {row}");
-        assert!(row.contains("cargo build"), "row: {row}");
+        assert!(row.contains("running (claude)"), "row: {row}");
+        assert!(row.contains("some output"), "row: {row}");
+    }
+
+    #[test]
+    fn session_row_idle_shows_idle() {
+        let s = make_session_with_cmd("scratch", SessionState::Idle, "zsh", "");
+        let row = session_row(&s);
+        assert!(row.contains("idle"), "row: {row}");
+        assert!(!row.contains("running"), "row must not say running: {row}");
     }
 
     #[test]

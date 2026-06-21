@@ -229,6 +229,7 @@ mod tests {
                 name: name.to_string(),
                 state: SessionState::Idle,
                 window_count: 1,
+                foreground_cmd: String::new(),
                 last_line: String::new(),
             })
             .collect()
