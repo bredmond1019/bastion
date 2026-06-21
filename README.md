@@ -44,6 +44,7 @@ cargo run -- sessions          # list tmux sessions with state + last-line outpu
 cargo run -- new work --dir .  # create a detached session in the current dir
 cargo run -- send work cargo test   # send keystrokes + Enter without attaching
 cargo run -- attach work       # hand the terminal to tmux (Ctrl-b d to detach)
+cargo run -- capture work      # print the session's recent pane output
 cargo run -- kill work         # remove the session
 ```
 
@@ -54,10 +55,11 @@ See [docs/sessions.md](docs/sessions.md) for the full session-control reference.
 | Command | Status | What it does |
 |---|---|---|
 | `status` | Shipped | Quick stack health check (API + DB reachability) |
-| `sessions` | Shipped | List tmux sessions with state + last-line output |
+| `sessions` | Shipped | List tmux sessions with activity state (`running (cmd)` / `idle`) + last-line output |
 | `attach <session>` | Shipped | Attach to a session; returns to shell on detach |
-| `new <session> [--dir PATH]` | Shipped | Create a detached session, optional working dir |
+| `new <session> [--dir PATH]` | Shipped | Create a detached session, optional working dir + trust pre-flight |
 | `send <session> <cmd...>` | Shipped | Send keystrokes + Enter without attaching |
+| `capture <session> [--lines N]` | Shipped | Print a session's recent pane output without attaching |
 | `kill <session>` | Shipped | Remove a session |
 | `monitor` | Planned | Live TUI graph monitor (Phase 1; gated on the orchestrator) |
 | `inspect <run_id>` | Planned | Static post-mortem graph view |
