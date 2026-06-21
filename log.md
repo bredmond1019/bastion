@@ -10,6 +10,21 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — user-facing docs + test-coverage standing rule
+
+Reviewed phase5-blockC test coverage and judged it sufficient: the pure arg-construction and escaping logic in `tmux.rs` is exhaustively tested (unit cases covering `-l` literal delivery, `--` flag-guard separator, Enter keypress isolation), while the thin tmux shell-out wrappers are left to manual smoke-test per the module's established pattern (D5/D6). Added CLAUDE.md standing rule 6 "Coverage bar" to codify the separate-pure-logic-from-I/O testing pattern already locked into the sessions surface, formalizing the bar across all Phase 5 work: pure logic exhaustively unit-tested, error/degradation paths explicit, and the untestable I/O shells smoke-tested manually. Filled in the README.md skeleton (Prerequisites: Rust + tmux + PostgreSQL for monitor track; Setup: clone + `.env` + the three vars; Running locally: example commands for `status`, `sessions`, `send`, `new`, `attach`, `kill` with a Shipped-vs-Planned table; Tests: `cargo test` one-liner + all four gates). Added docs/sessions.md (verb reference for `sessions` / `attach` / `new` / `kill` / `send`, operator workflow via SSH-over-Tailscale from phone, and the DB-free/synchronous guarantees that let it run with Postgres stopped); and docs/index.md (router for docs/ linking sessions.md, data-contract.md, and back to planning/). All markdown carries OKF frontmatter. Planned via `/chore` (planning/chore-user-facing-docs/tasks.md). Docs-only — no source changed; all four gating checks green (`cargo fmt --check`, `cargo clippy`, 96 tests pass, `cargo build --release`).
+
+```diff
+CLAUDE.md | 15 ++++++++++++--
+README.md | 69 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++-------
+docs/index.md | 28 +++++++++++++++++++++++++++ (new file)
+docs/sessions.md | 85 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ (new file)
+planning/chore-user-facing-docs/ | (directory)
+ 5 files changed, 197 insertions(+), 9 deletions(-)
+```
+
+---
+
 ## 2026-06-21 — phase5-blockC complete
 
 Phase 5 Block C (`bastion send` — keystroke injection into tmux panes) shipped and reviewed in a single attempt (PASS). The implementation added two pure arg-construction functions to `tmux.rs`: `send_keys_args` (builds `tmux send-keys -t <session> -l -- <keys>` with `-l` for literal delivery and `--` to guard against leading-hyphen flag ambiguity) and `send_enter_args` (separate `tmux send-keys -t <session> Enter` invocation, required because `-l` disables key-name lookup). The `send_keys` execution fn chains both calls via `run_tmux`. On the commands side, `format_sent` is a pure helper for confirmation output and `send` routes errors through the existing `apply_degradation` path — `degrade_tmux_error`'s default branch already produces the right "session not found" message for the `send` verb without any match-arm change. The CLI variant uses `trailing_var_arg = true` with `allow_hyphen_values = true` so `bastion send work cargo build --release` is captured intact without user quoting. All five acceptance criteria were met; 96 tests pass (2 ignored); fmt, clippy, test, and release-build gates all green. Next: phase5-blockD — `bastion capture` (pane output).
