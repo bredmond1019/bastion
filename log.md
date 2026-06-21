@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase5-blockF complete: activity indicator + Claude trust observer
+
+Phase 5 Block F shipped and reviewed in a single attempt (PASS). The implementation fixed the core state-honesty bug: `SessionState` was keyed on `session_attached` (whether a tmux client is connected), so a detached-but-running Claude Code session would mislabel as idle. Block F reroutes state derivation through a new pure `classify_state(pane_current_command: &str) -> SessionState` function: commands in the `IDLE_SHELLS` const (`zsh`, `bash`, `sh`, `fish`) map to `Idle`; any other non-empty command maps to `Running`; empty/unknown defaults to `Idle`. `LIST_SESSIONS_FORMAT` in `tmux.rs` gained a 5th tab-separated field (`#{pane_current_command}`); `parse_session_line` now reads it for state. The `format_state_col` helper in `commands.rs` renders `running (cmd)` or `idle` for both the CLI table and the TUI row. A new `claude_state.rs` module provides the trust observer: pure `trust_for_dir(claude_json, dir) -> TrustStatus` parses `~/.claude.json` and returns `Trusted`, `Untrusted`, or `Unknown` without ever writing; the thin I/O shell `trust_status(dir)` resolves the home path and delegates. `bastion new --dir <d>` now prints an advisory trust pre-flight after session creation (never blocking, `Unknown` is a silent-acceptable outcome). 36 new unit tests raised the baseline from 145 to 181. All gating checks green. Smoke-tested: detached cargo-test session shows `running (cargo)`, bare zsh shows `idle`, trust pre-flight reports correctly for known/unknown dirs and absent file, all paths confirm DB-free (D4) and synchronous (D5). Next: phase1-blockB (TUI render loop and event-driven updates).
+
+```
+79aa503 docs: update docs for phase5-blockF
+dff4b33 feat: implement phase5-blockF — activity indicator + trust observer
+dec7a50 chore: add spec for phase5-blockF
+```
+
+---
+
 ## 2026-06-21 — phase5-blockE live-tested; two state-honesty gaps → phase5-blockF defined
 
 Live-tested driving Claude Code through bastion: created a new session with `bastion new --dir ~/.claude/projects/test`, launched `claude --permission-mode bypassPermissions` inside, answered the one-time workspace-trust prompt, sent a prompt via `bastion send`, captured the reply with `bastion capture`, and killed the session. Two findings emerged: (1) a running Claude Code session reported "idle" status in the TUI because `SessionState` is keyed on `session_attached` (whether a client is connected to the tmux session) rather than the pane's foreground process — so a detached-but-executing Claude Code session looks identical to a shell at rest; (2) hands-off `bastion send` + capture workflows stall on Claude's one-time workspace-trust prompt per new directory, blocking unattended automation. Investigated both: confirmed `tmux list-sessions -F "#{pane_current_command}"` is available and can distinguish idle shell from running foreground process; verified that Claude already persists trust state in `~/.claude.json` under `projects[dir].hasTrustDialogAccepted` and that reading it is safe (read-only, no bastion side-effects). Added Phase 5 Block F to the master plan: session activity indicator (classify via `#{pane_current_command}` to surface running-vs-idle accurately) and Claude trust observer (read `~/.claude.json` pre-flight to detect when a trust prompt will block, avoiding redundant bastion state storage). Both are unblocked (D4 track); the observer pattern mirrors the Postgres posture — read-only observer, not state owner.
