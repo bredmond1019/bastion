@@ -20,8 +20,19 @@ Personal Rust CLI — unified control panel for monitoring, validating, and oper
    atomic file in `planning/decisions/` and link back.
 5. **Verified identity / handles:** GitHub: bredmond1019 · Site: learn-agentic-ai.com · LinkedIn: bredmond1019 — treat these as the only authoritative
    identities/URLs; flag any other handle or profile link as unverified before publishing it.
-6. <!-- Add project-specific standing rules here (prompt handling, registries, deployment
-   boundaries, code style, etc.). -->
+6. **Coverage bar — separate pure logic from I/O, test the logic exhaustively.** A block is not
+   "done" on a green `cargo test` alone; each pass must satisfy all of:
+   - **Pure logic is exhaustively unit-tested without I/O.** Command/arg construction, parsing,
+     formatting, and classification live in pure functions and are asserted directly (e.g.
+     `*_args()` return `Vec<String>` checked element-by-element; parsers run against fixtures).
+     Keep I/O boundaries (process spawns, Postgres, HTTP) thin shells over that pure core so the
+     core stays testable — this is the established `tmux.rs` construction-vs-execution split.
+   - **Error and degradation paths are tested, not just happy paths.** Every typed error variant
+     and graceful-degradation branch a block introduces gets an explicit case (see
+     `degrade_tmux_error` / `classify_no_server`).
+   - **The thin I/O shell that can't be unit-tested is manually smoke-tested**, and the result is
+     recorded in the task spec's `## Notes`. An untested execution fn is acceptable only when it is
+     a trivial wrapper over already-tested pure functions.
 
 ## Known bugs
 
