@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-21 — phase1-blockA complete
+
+Phase 1 Block A (DB queries + graph layout) shipped: all 5 tasks merged and validated. The data layer foundation for `bastion monitor` is now complete. Task 1 delivered test fixtures capturing in-progress and completed workflow run states from `task_context` JSON. Task 2 implemented the parsing layer deserializing `node_runs` and `nodes` into strongly typed `NodeState` structs, with correct status aggregation (`running` > `failed` > `pending` > `success`), all four `RunStatus` variants via `#[serde(rename_all = "lowercase")]`, and null usage field handling. Task 3 filled the DB query stubs (`list_active_runs`, `get_run_state`) using `sqlx`, honoring the read-only observer rule (D2), and provided integration test stubs with `#[ignore]` gates and `BASTION_INTEGRATION_TEST` env var. Task 4 built the topological graph layout (`build_layout`) using `petgraph::DiGraph`, assigned column depths via toposort, and overlaid live `NodeState` status by class-name join. Task 5 validated all gates: `cargo fmt`, `clippy`, `test` (17 passing), and `release` build all green. 100% test coverage of DAG layouts (linear chains, diamond graphs, isolated nodes) and fixture-based parsing. Cross-contract alignment confirmed (v1.0.0, D3). TUI render loop (phase1-blockB) is now ready to consume this data layer.
+
+```
+fd73256 Merge branch 'phase1-blocka-task5'
+df2f515 Merge branch 'phase1-blocka-task4'
+7e5a042 Merge branch 'phase1-blocka-task3'
+```
+
+---
+
 ### 2026-06-21 (planning — absorb tmux session management as a second surface, D4)
 
 Folded the previously-standalone tmux session-management tool (working name `brain`) into bastion as modules rather than a separate repo. bastion is now the single operator shell with two surfaces: workflow observability (Postgres, gated by D2) and process/session control (tmux, ungated). Rationale: the standalone tool's charter was already bastion's, and bastion is shaped for it (single crate; already depends on clap/ratatui/crossterm; tmux needs no new deps). Recorded as bastion **D4** (cross-repo brain **D21**). Added **Phase 5 — Session Management** (Blocks A–E: `sessions` + tmux wrapper + lazy DB → `attach`/`new`/`kill` → `send` → `capture` → session TUI) to `master-plan.md`, including the `sessions/` module in the architecture src tree and a lazy-DB-pool note. The one real engineering constraint: the Postgres pool must open lazily so session commands run with zero DB. Updated `status.md` (Phase 5 sub-table + deviation entry) and the `CLAUDE.md` directory map. Phase 5 is an independent track — not gated by D2, workable at any time. Planning-only change; no source touched yet. Next (workflow track): phase1-blockB TUI render loop. Phase 5 Block A available whenever session work is picked up.
