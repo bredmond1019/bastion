@@ -34,6 +34,10 @@ file**, append-only — never edit a settled decision; supersede it with a new o
 - [D8: Attach is handled in the TUI run loop, not `execute_action`](./D8-attach-handled-in-run-loop.md)
   — the `Attach` action is executed inline in `run_inner` because suspending/restoring the terminal
   needs the `ratatui::Terminal` handle the shared `execute_action` helper does not hold. Builds on D5.
+- [D9: Claude readiness via `classify_state == Running`, not an exact `"claude"` match](./D9-claude-readiness-via-classify-state.md)
+  — the `bastion ask` cold-start readiness check keys off `classify_state == Running` rather than
+  matching the foreground process name against `"claude"`, because Claude Code renames its process to
+  its version string. Builds on D5; reuses the Block F classifier.
 
 <!-- Add a row per decision as they are made. Record new ones with /log-decision-style atomic
      files (D2, D3, …). -->
