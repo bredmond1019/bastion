@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — phase3-blockB complete (all 5 tasks done); phase5-blockA next — Session control surface foundation
-**Current focus:** phase5-blockA — bastion sessions (tmux integration + session listing)
+**Last updated:** 2026-06-22 — phase3-blockB complete (bastion validate shipped; 404 tests, PASS). Phase 3 + Phase 5 both fully done. Next: Phase 4 (Polish).
+**Current focus:** Phase 4 — Polish (SSE streaming, node re-run, config file, help improvements)
 
 ---
 
