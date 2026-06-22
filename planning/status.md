@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — phase2-blockB complete (bastion costs shipped; 302 tests, PASS in 1 review attempt). Next: phase3-blockA (bastion run).
-**Current focus:** phase3-blockA — bastion run
+**Last updated:** 2026-06-22 — phase3-blockA complete (bastion run shipped; 316 tests, PASS in 1 review attempt). Next: phase3-blockB (bastion validate).
+**Current focus:** phase3-blockB — bastion validate
 
 ---
 
@@ -37,6 +37,12 @@ description: Current state and progress tracker for bastion.
 |---|---|---|---|
 | Block A | bastion inspect | Done | Static post-mortem graph view shipped: `src/monitor/events.rs` widened 3 functions to `pub(crate)`; `src/inspect/mod.rs` replaced `todo!()` with full static loop reusing monitor graph/UI primitives. `build_inspect_app` exhaustively unit-tested (9 cases). 272 tests pass (net +7 over 265 baseline). PASS in 2 review attempts (fix: deferred smoke-test record written to tasks.md § Notes per Rule 6). `docs/inspect.md` created; `docs/index.md` flagged NEEDS_REVIEW for inspect.md row addition. |
 | Block B | bastion costs | Done | LLM spend summary shipped: `bastion costs --last <window>` with hardcoded pricing table (`src/costs/pricing.rs`), pure `parse_window`/`within_window`/`aggregate`/`render_table` logic, thin `db::costs::fetch_all_runs` I/O shell reusing `parse_event_row`. 302 tests pass (+30 over 272 baseline). PASS in 1 review attempt. Smoke test deferred per Rule 6 (orchestrator stack not up). Docs: `docs/costs.md` created; `docs/index.md` + `docs/data-contract.md` updated. |
+
+### Phase 3 — Run + Validate
+| Block | What | Status | Notes |
+|---|---|---|---|
+| Block A | bastion run | Done | Workflow trigger shipped: `trigger_workflow` (api/client.rs) and `run::trigger` (run/mod.rs). Pure helpers `trigger_body` (None→`{}` default), `trigger_url` (trailing-slash normalisation), `parse_args` (JSON validation + non-object rejection), `format_trigger_success` (greppable `task_id:` line). 316 tests pass (+14 over 302 baseline). PASS in 1 review attempt. Live smoke test deferred (needs orchestrator stack); recorded in tasks.md §Notes per Rule 6. Docs: `docs/run.md` created; `docs/index.md` flagged NEEDS_REVIEW for run.md row. |
+| Block B | bastion validate | Not started | — |
 
 ### Phase 5 — Session Management (independent, ungated track — D4)
 | Block | What | Status | Notes |
