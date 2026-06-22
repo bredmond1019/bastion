@@ -59,7 +59,50 @@ pub struct ValidationError {
 |---|---|---|---|
 | `frontmatter` | `src/validate/frontmatter.rs` | `validate_frontmatter(content: &str, file: &Path) -> Vec<ValidationError>` | Implemented (Task 2) |
 | `links` | `src/validate/links.rs` | `validate_links(content: &str, file: &Path) -> Vec<ValidationError>` | Implemented (Task 3) |
-| `report` | `src/validate/report.rs` | `render_report(errors: &[ValidationError], files_scanned: usize) -> String` | Stub (Task 4) |
+| `report` | `src/validate/report.rs` | `render_report(errors: &[ValidationError], files_scanned: usize) -> String` | Implemented (Task 4) |
+
+## Report Rendering (`src/validate/report.rs`)
+
+Implemented in Task 4. Produces a greppable, human-readable report string from a slice of `ValidationError` values.
+
+### Public API
+
+| Function | Signature | Description |
+|---|---|---|
+| `render_report` | `fn render_report(errors: &[ValidationError], files_scanned: usize) -> String` | Formats all errors as greppable lines followed by a summary line. |
+
+### Output Format
+
+Each error is rendered as:
+
+```
+<file>:<line>: <kind-label>: <message>
+```
+
+- Errors are grouped and sorted by file path (lexicographic), then by line number within each file.
+- The final line of the output is a summary: `N error(s) across M file(s)` when errors exist, or `no issues found across M file(s)` when clean.
+- `<kind-label>` is the stable string returned by `ErrorKind::label()` (e.g. `broken-link`, `missing-field`).
+
+### Example
+
+```
+docs/guide.md:3: missing-field: required field 'description' is missing
+docs/guide.md:7: broken-link: relative link target 'nonexistent.md' does not exist
+src/validate/fixtures/bad-frontmatter.md:4: empty-field: required field 'description' is empty
+2 error(s) across 2 file(s)
+```
+
+## Test Fixtures (`src/validate/fixtures/`)
+
+Three fixture files are used by the integration tests in `src/validate/report.rs`:
+
+| Fixture | Purpose |
+|---|---|
+| `good.md` | Valid OKF frontmatter and a working relative link; yields zero errors. |
+| `bad-frontmatter.md` | Valid `type`/`title` but an empty `description` value; yields one `EmptyField` error. |
+| `broken-links.md` | Valid frontmatter, one valid relative link, one external URL, one pure anchor, and one broken relative link (`nonexistent-file.md`); yields exactly one `BrokenLink` error and no frontmatter errors. |
+
+External URLs and pure `#`-anchors in `broken-links.md` confirm that `is_skipped_target` is respected end-to-end.
 
 ## Link Checking (`src/validate/links.rs`)
 
