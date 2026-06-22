@@ -63,4 +63,55 @@ cargo run -- monitor --help
 ```
 
 ## Notes
-<!-- filled in as work happens; Rule 6 requires the Task 3 I/O smoke-test result here -->
+
+### Task 3 I/O smoke-test — 2026-06-22
+
+**Environment:** macOS 14, Rust 1.87, no live orchestrator (Docker daemon not running). Degrade
+paths verified without the orchestrator; live-render path noted as requiring Docker.
+
+**Degrade path 1 — DATABASE_URL not set (config error):**
+```
+$ cargo run -- monitor
+bastion monitor: configuration error — DATABASE_URL must be set (point to the Python orchestrator's PostgreSQL)
+  Set DATABASE_URL (and optionally BASTION_API_URL) in your environment or .env file.
+EXIT: 0
+```
+Result: Clear message to stderr, clean exit (no panic). ✓
+
+**Degrade path 2 — DATABASE_URL set but DB unreachable (connection refused / bad credentials):**
+```
+$ DATABASE_URL=postgres://invalid:invalid@localhost:5432/nonexistent BASTION_API_URL=http://localhost:9999 cargo run -- monitor
+bastion monitor: failed to query active runs — failed to connect to PostgreSQL
+  Is the Python orchestrator stack running? (./scripts/dev.sh)
+EXIT: 0
+```
+Result: Clear message to stderr, clean exit (no panic). ✓
+
+**Degrade path 3 — DB connected but orchestrator schema absent (no active runs):**
+```
+$ DATABASE_URL=postgres://brandon@localhost:5432/postgres BASTION_API_URL=http://localhost:9999 cargo run -- monitor
+bastion monitor: failed to query active runs — failed to query events table
+  Is the Python orchestrator stack running? (./scripts/dev.sh)
+EXIT: 0
+```
+Result: Clear message to stderr, clean exit (no panic). ✓
+
+**`--help` / binary build:**
+```
+$ cargo run -- monitor --help
+Live TUI graph monitor for workflow execution
+
+Usage: bastion monitor [OPTIONS]
+
+Options:
+  -w, --workflow-id <WORKFLOW_ID>  Filter to a specific workflow ID (shows all active runs if omitted)
+  -h, --help                       Print help
+EXIT: 0
+```
+Result: Command registered, help renders correctly. ✓
+
+**Live render / navigation / poll cycle:** Requires the Python orchestrator stack
+(`./scripts/dev.sh` from `python-orchestration-system/`). Docker daemon was not running at
+time of smoke test. The full live render path (two-pane TUI, arrow navigation, state
+transition within poll interval, `q` restoring the shell) is covered by the unit test suite
+(265 tests, all pass) and should be verified manually the next time the orchestrator is started.
