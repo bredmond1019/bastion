@@ -132,4 +132,25 @@ Implemented in Task 3. All link-logic lives in pure functions; only `validate_li
 
 ## Notes
 
-Smoke-test recording is deferred to Task 5 per spec. The `run()` shell is `async` to match the dispatch site in `main.rs`, but all I/O inside is synchronous `std::fs`.
+The `run()` shell is `async` to match the dispatch site in `main.rs`, but all I/O inside is synchronous `std::fs`.
+
+### Smoke-Test Results (Task 5)
+
+**Dirty path — fixture directory (expect exit 1):**
+```
+$ cargo run -- validate src/validate/fixtures
+src/validate/fixtures/bad-frontmatter.md:4: empty-field: required field `description` is present but empty
+src/validate/fixtures/broken-links.md:14: broken-link: broken link: nonexistent-file.md
+2 error(s) across 2 file(s)
+Error: 2 error(s) found
+EXIT CODE: 1
+```
+
+**Clean path — single good file (expect exit 0):**
+```
+$ cargo run -- validate src/validate/fixtures/good.md
+no issues found across 1 file(s)
+EXIT CODE: 0
+```
+
+Both paths exercised the full `run()` I/O shell end-to-end; exit codes match spec.
