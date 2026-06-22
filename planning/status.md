@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — Phase 1 complete (bastion monitor shipped; 265 tests, PASS in 2 review attempts). Next: phase2-blockA (bastion inspect).
-**Current focus:** phase2-blockA — bastion inspect (next block per master-plan.md; D2 gate lifted)
+**Last updated:** 2026-06-22 — phase2-blockA complete (bastion inspect shipped; 272 tests, PASS in 2 review attempts). Next: phase2-blockB (bastion costs).
+**Current focus:** phase2-blockB — bastion costs (next block per master-plan.md)
 
 ---
 
@@ -31,6 +31,12 @@ description: Current state and progress tracker for bastion.
 |---|---|---|---|
 | Block A | DB queries + graph layout | Done | All tasks complete: test fixtures created (in-progress + completed run samples); node_runs JSON → NodeState parsing implemented with RunStatus deserialization; DB queries (list_active_runs, get_run_state) filled with sqlx; topological layout algorithm with grid position assignment verified against linear chains and diamond DAGs; all validation gates pass (cargo fmt, clippy, test, build --release). Cross-contract sync: v1.0.0 aligned (D3). |
 | Block B | TUI render loop and event-driven updates | Done | Two-pane ratatui monitor shipped: `App` state model (navigation + `replace_runs`), `ui.rs` render (graph pane with RunStatus coloring + detail pane), `events.rs` event loop (keyboard nav + DB poll via `tokio::select!`). 265 tests pass; all gating checks green. PASS in 2 review attempts (fix: smoke-test degrade paths recorded in ## Notes per Rule 6). Live render path noted as a follow-up when Docker orchestrator stack is available (`docs/index.md` flagged for `monitor.md` addition). |
+
+### Phase 2 — Inspect + Costs
+| Block | What | Status | Notes |
+|---|---|---|---|
+| Block A | bastion inspect | Done | Static post-mortem graph view shipped: `src/monitor/events.rs` widened 3 functions to `pub(crate)`; `src/inspect/mod.rs` replaced `todo!()` with full static loop reusing monitor graph/UI primitives. `build_inspect_app` exhaustively unit-tested (9 cases). 272 tests pass (net +7 over 265 baseline). PASS in 2 review attempts (fix: deferred smoke-test record written to tasks.md § Notes per Rule 6). `docs/inspect.md` created; `docs/index.md` flagged NEEDS_REVIEW for inspect.md row addition. |
+| Block B | bastion costs | Not started | |
 
 ### Phase 5 — Session Management (independent, ungated track — D4)
 | Block | What | Status | Notes |

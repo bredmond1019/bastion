@@ -10,6 +10,19 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-22 — phase2-blockA complete: bastion inspect static TUI
+
+Phase 2 Block A (`bastion inspect`) shipped and reviewed in 2 attempts (PASS). The implementation widened three functions in `src/monitor/events.rs` to `pub(crate)` (`setup_terminal`, `restore_terminal`, `handle_key`) with no behavior changes, then replaced the `todo!()` stub in `src/inspect/mod.rs` with a complete static render loop. The key design: `build_inspect_app` (pure, exhaustively unit-tested with 9 cases) constructs the `App` for a single fetched run — running `build_layout` when a workflow graph is available, falling back to `None` otherwise. The thin I/O shell `run()` degrades gracefully on all three failure modes (missing `DATABASE_URL`, unknown run ID, unreachable graph API). `run_static_loop` is a plain sync function with blocking `crossterm::event::read()` — no `tokio::select!`, no poll interval, one DB load only. Navigation and exit key handling are fully inherited from `monitor::events::handle_key`. A first review returned PARTIAL because `planning/phase2-blockA/tasks.md § Notes` still had the placeholder; the fix pass replaced it with the deferred smoke-test record per CLAUDE.md Rule 6. 272 tests pass (net +7 over the 265 baseline); all gating checks green. Documentation: `docs/inspect.md` created (operator reference covering usage, layout, keybindings, degrade paths, key internals); `docs/monitor.md` updated with a Related link to inspect.md; `docs/index.md` flagged NEEDS_REVIEW for the missing inspect.md table row (to be added manually). Next: phase2-blockB (bastion costs).
+
+```
+392bc27 docs: update docs for phase2-blockA
+6883cec fix: fix pass 2 for phase2-blockA — record smoke-test deferral in task spec Notes
+ae89be6 feat: implement phase2-blockA — bastion inspect static TUI
+2601c50 chore: add spec for phase2-blockA
+```
+
+---
+
 ## 2026-06-22 — phase1-blockB complete: session wrap-up + D28 verification + monitor docs + phase2 handoff
 
 Phase 1 Block B is now complete with full integration verified. The TUI render loop implementation shipped via four src/monitor/ stubs (app.rs state model, ui.rs ratatui two-pane render, events.rs tokio::select! event loop over keyboard and DB polls, mod.rs wiring) for the live workflow graph monitor: nodes are positioned by topological layout from Block A's data layer, colored by RunStatus, and the detail pane surfaces the selected run's timing/errors/model/token counts/I/O. PASS in 2 review attempts; 265 tests pass; all gating checks green. Cross-repo verification: orchestrator D28 (incremental node-level persistence via task_context callbacks written at every node boundary, not terminal-only completion) confirmed landed in python-orchestration-system, lifting the bastion D2 gate on the monitor's read contract and unblocking Phase 1 as a whole. Documented the orchestrator dev.sh stack (./scripts/dev.sh START/stop commands for bringing up the observability track) in orchestrator README/CLAUDE/spec to align Phase 1 bring-up. Ran /update-docs which added docs/monitor.md (TUI operator reference for live usage, keyboard navigation, terminal safety), auto-synced the README command table against cli.rs (catching a lingering no-op F5 refresh test assertion in the process), and flipped the monitor row from Planned to Shipped. Wrote planning/handoff.md to correct the phantom "phase1-blockC" focus — Phase 1 is complete with both Blocks A & B Done per master-plan.md; the real next block is phase2-blockA (bastion inspect).
