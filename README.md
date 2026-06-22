@@ -86,6 +86,29 @@ See [docs/sessions.md](docs/sessions.md) for the full session-control reference 
 | `run <workflow>` | Planned | Trigger a workflow via the FastAPI API |
 | `validate <path>` | Planned | Markdown/MDX content validation |
 
+## Configuration
+
+bastion reads configuration from three layers, highest precedence first:
+
+1. **Environment variables** (`DATABASE_URL`, `BASTION_API_URL`, `BASTION_POLL_INTERVAL`)
+2. **`~/.config/bastion/config.toml`** (or `$XDG_CONFIG_HOME/bastion/config.toml`)
+3. **Built-in defaults** (`BASTION_API_URL=http://localhost:8080`, `BASTION_POLL_INTERVAL=2`)
+
+A missing or unreadable config file is silently ignored. See [docs/config.md](docs/config.md) for
+the full reference and an example `config.toml`.
+
+## Help and man page
+
+```bash
+bastion --help                 # short help
+bastion help <cmd>             # subcommand help
+bastion <cmd> --help           # subcommand long help
+
+bastion man                    # print the roff man page to stdout
+bastion man --out /tmp/man     # write bastion.1 (+ one page per subcommand) to a directory
+man -l /tmp/man/bastion.1      # view the generated man page
+```
+
 ## Tests
 
 ```bash
@@ -120,6 +143,7 @@ bastion/
 | [docs/sessions.md](docs/sessions.md) | Session-control surface — verb reference + operator workflow |
 | [docs/monitor.md](docs/monitor.md) | Live monitor surface — keybindings, two-pane layout, flags, degrade paths |
 | [docs/data-contract.md](docs/data-contract.md) | Orchestrator field mappings (monitor track) |
+| [docs/config.md](docs/config.md) | Configuration reference — env vars, config file, precedence |
 | [planning/context.md](planning/context.md) | Orientation + governing principles |
 | [planning/master-plan.md](planning/master-plan.md) | Strategy + phase specifications |
 | [planning/status.md](planning/status.md) | Current progress |
