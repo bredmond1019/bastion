@@ -3,77 +3,58 @@ type: Handoff
 created: 2026-06-22
 ---
 
-# Handoff — phase2-blockB done; next is phase3-blockA (`bastion run`)
+# Handoff — phase3-blockA done; next is phase3-blockB (`bastion validate`)
 
 > **For the next agent:** Read this immediately after `/prime`. Delete this file once consumed.
 
 ## What we're doing and why
-Phase 2 is **complete** — `bastion costs` (Block B) shipped and passed review this session, closing
-out the post-mortem/spend half of the observability track. The next sequenced work is
-**phase3-blockA — `bastion run`** (`master-plan.md:127–129`): implement
-`api::client::trigger_workflow` and `run::trigger(workflow, args, monitor)` so
-`bastion run <workflow> [--args '{}'] [--monitor]` issues a POST to the orchestrator's generic
-dispatcher, prints the returned `task_id`, and (with `--monitor`) drops into `bastion monitor` for
-that run. The CLI is already wired: `Commands::Run { workflow, args, monitor }` (`src/cli.rs:42`) and
-`main.rs:37` already call `run::trigger(workflow, args, monitor)`. Both
-`run::trigger` (`src/run/mod.rs:10`) and `ApiClient::trigger_workflow` (`src/api/client.rs:68`) are
-`todo!()` stubs awaiting this block. This is the first **write** path to the orchestrator (POST) —
-but it's a trigger, not a DB write, so the D2 read-only-Postgres observer posture is unchanged.
+Phase 3 Block A (`bastion run`) is complete. The two stubs that have sat empty since the scaffold
+are now filled: `ApiClient::trigger_workflow` (`src/api/client.rs:104`) issues `POST /` with
+`{ "workflow_type", "data" }` → 202 `{ "task_id" }`; `run::trigger` (`src/run/mod.rs:55`) parses
+optional `--args` JSON, calls the client, prints `task_id: <id>`, and optionally hands off to
+`bastion monitor` for that run. The next block in sequence is **phase3-blockB — `bastion validate`**:
+a markdown/MDX content validator that walks a given path, parses frontmatter, checks required OKF
+fields, and reports missing/invalid entries. The `validate` module stub (`src/validate/mod.rs`) is
+already wired in `src/cli.rs` and `src/main.rs`.
 
 ## Completed this session
-- **Shipped phase2-blockB (`bastion costs`)** via `/sdlc-run phase2-blockB` → **PASS in 1 review
-  attempt**, 302 tests (net **+30** over the 272 baseline). Commits `b71418d` (spec), `b83124d`
-  (impl), `7aed418` (docs), `1a282a5` (wrap-up).
-  - `src/costs/pricing.rs` (new): hardcoded per-model price table + pure `price_for` / `estimate_usd`
-    (unknown model → `$0.00`, surfaced as unpriced). **Resolved the prior open question** — pricing
-    lives in a hardcoded table, not config/env; settled inline in the spec (no formal decision record
-    needed).
-  - `src/costs/mod.rs`: `chrono`-backed `Window` + `parse_window` (`7d`/`30d`/`all`), pure
-    `within_window` cutoff filter (injected `now`), `aggregate`, `render_table`, and the wired
-    `costs::run` with graceful degradation (missing `DATABASE_URL` / unreachable DB).
-  - `src/db/costs.rs`: `fetch_all_runs` thin Postgres shell reusing `db::workflows::parse_event_row`
-    (widened to `pub(crate)`) — no duplicated JSON parsing. `chrono` added to `Cargo.toml`.
-  - Docs: created `docs/costs.md` (operator reference); added its row to `docs/index.md`; patched
-    `docs/data-contract.md` to document the costs DB-only read path.
-- **Authored + committed the phase2-blockB spec** earlier this session via `/generate-tasks`.
+- **Shipped phase3-blockA (`bastion run`)** via `/sdlc-run phase3-blockA --from implement` →
+  **PASS in 1 review attempt**, 316 tests (net **+14** over 302 baseline). Commits:
+  - `252fa00` — spec added
+  - `f866f23` — implementation (api/client.rs + run/mod.rs)
+  - `a877123` — docs (docs/run.md created)
+  - `0b07ce2` — wrap-up (status.md, log.md, SDLC reports)
+- **Post-pipeline doc cleanup** (`49ba027`):
+  - Added `run.md` row to `docs/index.md` (clearing the pipeline's NEEDS_REVIEW flag)
+  - Filled `planning/phase3-blockA/tasks.md §Notes` with the 5-case smoke-test deferral record
+    per CLAUDE.md Rule 6
 
 ## Remaining work
-- **Next block: phase3-blockA (`bastion run`).** Start with `/generate-tasks phase3-blockA`, then run
-  the SDLC pipeline. Scope: fill `ApiClient::trigger_workflow` (reqwest POST, parse `task_id` from the
-  202 body) + `run::trigger` (parse optional `--args` JSON, call the client, print `task_id`, and on
-  `--monitor` hand off to `monitor::run`). Keep the Rule 6 split — JSON-arg parsing, request-body
-  construction, and the response/`task_id` extraction are **pure** and unit-tested element-by-element;
-  the reqwest call is the thin I/O shell, smoke-tested and recorded in `## Notes`.
-- **Deferred smoke tests (need the orchestrator stack up — `./scripts/dev.sh` in
-  `../python-orchestration-system`):** (1) `bastion costs --last 7d/30d/all` vs manual SQL
-  (phase2-blockB; an `#[ignore]` stub `db::costs::tests::integration_fetch_all_runs_returns_vec` is in
-  place — run `BASTION_INTEGRATION_TEST=1 cargo test -- --ignored`); (2) `bastion inspect <run-id>`
-  live render/nav/exit (phase2-blockA); (3) `bastion monitor` live render/poll-cycle (phase1-blockB).
-  One bring-up clears all three — and `bastion run` will want the same stack to verify a real trigger
-  end-to-end, so fold all four into that session.
+- **Next block: phase3-blockB (`bastion validate`).** Start with `/generate-tasks phase3-blockB`,
+  then run the SDLC pipeline. Scope: walk a path, parse frontmatter, validate OKF required fields
+  (`type`, `title`, `description`), report missing/invalid entries. The stub at
+  `src/validate/mod.rs` is wired but empty; see `master-plan.md` Phase 3 Block B for the spec.
+- **Deferred smoke tests** (need the orchestrator stack up — `./scripts/dev.sh` in
+  `../python-orchestration-system`): costs, inspect, monitor, and now `bastion run`. All four
+  deferrals are recorded per Rule 6 in their respective `tasks.md §Notes`. Fold into a single
+  stack bring-up session when convenient (not blocking further blocks).
 
 ## Open questions / choices
-- **Trigger endpoint shape — verify against the data contract before coding.** There is a
-  discrepancy in the stubs: `master-plan.md:128` and `api/client.rs:73` say the generic dispatcher is
-  `POST /` with body `{workflow_type, data}` → `202 {task_id, message}` (data contract §7), but the
-  `run::trigger` stub comment (`src/run/mod.rs:11`) says `POST /workflows/{name}/run`. Confirm the
-  real route against `docs/data-contract.md` §7 (and the live orchestrator's FastAPI routes if the
-  stack is up) at `/generate-tasks` time and make the stubs consistent. Treat the **data contract** as
-  authoritative.
-- Everything else is settled — clear to proceed once the endpoint is confirmed.
+- **OKF field set for `validate`:** The `validate` module should enforce `type`, `title`, and
+  `description` frontmatter on all markdown files (consistent with how the rest of this repo's
+  docs are structured). Confirm against `master-plan.md` Phase 3 Block B before generating the
+  task spec — if the plan is more specific, follow it.
+- Everything else is settled — clear to proceed once the field set is confirmed.
 
 ## Context the next agent needs
-- **`run` is on the observability track** — `async`/`tokio` is allowed (D5's synchronous rule applies
-  only to `sessions/`). `bastion run` is a *trigger* (POST), the first non-read call to the
-  orchestrator; it does not touch Postgres, so the D2 read-only-DB posture is untouched.
-- **Reuse the existing client + monitor:** `ApiClient::new(base_url)` already exists with a working
-  `health()` / `workflow_graph()`; follow their reqwest + 2s-timeout + `.error_for_status()` pattern
-  for `trigger_workflow`. `--monitor` should hand off to `monitor::run(workflow_id)` (`main.rs:33`).
-  `Config::load()` supplies `api_base_url` (see `run::status` at `src/run/mod.rs:14` for the pattern).
+- **`validate` is NOT on the observability track** — it reads the filesystem, not Postgres or the
+  API. It should be synchronous (std::fs), not async/tokio. Keep it in the same camp as the
+  `sessions/` surface per D5.
+- **Test baseline is 316** (3 ignored — 1 pre-existing + 2 DB integration stubs; not regressions).
+  `cargo test` prints `316 passed; 3 ignored` — expected.
 - **Validation gate** (`planning/harness.json`): `cargo fmt --check`, `cargo clippy -- -D warnings`,
-  `cargo test`, `cargo build --release`. Test baseline is now **302** (2 ignored = pre-existing +
-  new DB integration stubs, not a regression).
-- **Working tree is clean** — all phase2-blockB work is committed (`1a282a5` is HEAD).
+  `cargo test`, `cargo build --release`.
+- **Working tree is clean** — all changes committed through `49ba027`.
 
 ## First command after `/prime`
-`/generate-tasks phase3-blockA`
+`/generate-tasks phase3-blockB`
