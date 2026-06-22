@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-21 — Orchestrator D28 confirmed landed (incremental node-level persistence + graph endpoint live in `../python-orchestration-system`); **phase1-blockB UNBLOCKED**. Phase 5 complete A–G (206 tests). Next: generate + implement phase1-blockB (TUI render loop).
-**Current focus:** phase1-blockB — TUI render loop + event-driven updates (unblocked; D28 Phase 1 shipped 2026-06-20)
+**Last updated:** 2026-06-22 — phase1-blockB complete (TUI render loop + event-driven updates; 265 tests, PASS in 2 review attempts). Next: phase1-blockC or next phase1 block per master-plan.md.
+**Current focus:** phase1-blockC (next block per master-plan.md)
 
 ---
 
@@ -30,7 +30,7 @@ description: Current state and progress tracker for bastion.
 | Block | What | Status | Notes |
 |---|---|---|---|
 | Block A | DB queries + graph layout | Done | All tasks complete: test fixtures created (in-progress + completed run samples); node_runs JSON → NodeState parsing implemented with RunStatus deserialization; DB queries (list_active_runs, get_run_state) filled with sqlx; topological layout algorithm with grid position assignment verified against linear chains and diamond DAGs; all validation gates pass (cargo fmt, clippy, test, build --release). Cross-contract sync: v1.0.0 aligned (D3). |
-| Block B | TUI render loop and event-driven updates | Not started | **Unblocked 2026-06-21** — orchestrator D28 Phase 1 landed (incremental `node_runs` persistence via `on_progress` callback + `GET /workflows/{type}/graph`, verified in `../python-orchestration-system`). Next: `/generate-tasks phase1-blockB` → implement ratatui TUI render loop + event-driven DB poll. |
+| Block B | TUI render loop and event-driven updates | Done | Two-pane ratatui monitor shipped: `App` state model (navigation + `replace_runs`), `ui.rs` render (graph pane with RunStatus coloring + detail pane), `events.rs` event loop (keyboard nav + DB poll via `tokio::select!`). 265 tests pass; all gating checks green. PASS in 2 review attempts (fix: smoke-test degrade paths recorded in ## Notes per Rule 6). Live render path noted as a follow-up when Docker orchestrator stack is available (`docs/index.md` flagged for `monitor.md` addition). |
 
 ### Phase 5 — Session Management (independent, ungated track — D4)
 | Block | What | Status | Notes |
