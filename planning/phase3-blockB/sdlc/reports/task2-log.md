@@ -11,7 +11,7 @@ description: Completion log for frontmatter validation (Task 2 of phase3-blockB)
 **Verdict:** PASS
 **Date:** 2026-06-22
 **Branch:** phase3-blockb-task2
-**Applied:** false
+**Applied:** true
 
 ---
 

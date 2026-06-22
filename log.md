@@ -10,6 +10,30 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+### 2026-06-22 (task 1 — module skeleton, shared types, and file discovery)
+
+Implemented the module skeleton for `bastion validate`: `src/validate/mod.rs` now contains the shared `ValidationError` and `ErrorKind` types with all five error variants and stable lowercase label methods; the `find_markdown_files` pure function recursively discovers `.md` and `.mdx` files, skips hidden dirs/files and `target/`, handles both directory and single-file arguments, and returns a sorted list (tested exhaustively with 12 unit tests covering recursion, extension filtering, hidden/target skip, single-file arg, determinism); the `run` I/O shell calls file discovery, reads each file, invokes the frontmatter + links validation stubs, collects all errors, prints the report, and returns non-zero exit on any errors. Created stub modules `src/validate/{frontmatter,links,report}.rs` with correct signatures so the crate compiles and the dispatch stays valid. All 328 tests pass, all gating checks green. Verdict PASS in 1 review attempt. Next: Task 2 — Frontmatter validation (OKF fields).
+
+```
+90056a2 docs: update docs for phase3-blockB-task1
+89f3507 feat(validate): module skeleton, shared types, and file discovery
+69e595d chore: init worktree phase3-blockb-task1
+```
+
+---
+
+### 2026-06-22 (task 2 — frontmatter validation)
+
+Implemented OKF frontmatter validation in `src/validate/frontmatter.rs` with a line-based parser (`extract_frontmatter`) detecting missing/malformed/empty required fields (`type`, `title`, `description`), emitting typed `ErrorKind` variants at correct 1-based line numbers. All 24 exhaustive unit tests pass covering valid frontmatter, each missing field individually, all missing, each empty/whitespace value, no frontmatter, unterminated fence, and malformed lines (no colon / empty key). Review gate PASS confirmed all 4 error variants correctly implemented, pure logic exhaustively tested (no external YAML dependency per spec constraint), and files gated against modification (`cli.rs`, `main.rs`, `Cargo.toml`) left untouched. Documentation patched (`docs/validate.md` frontmatter row status updated). Next: Task 3 — Link checking.
+
+```
+f9ea5f1 docs: update docs for phase3-blockB-task2
+60bc9f5 feat(validate): implement frontmatter validation (task 2)
+2e00109 chore: init worktree phase3-blockb-task2
+```
+
+---
+
 ## 2026-06-22 — phase3-blockA complete: bastion run workflow trigger
 
 Phase 3 Block A (`bastion run`) shipped and reviewed in a single attempt (PASS). The implementation filled the two stubs left by the scaffold: `ApiClient::trigger_workflow` in `src/api/client.rs` and `run::trigger` in `src/run/mod.rs`. On the API side, private `TriggerRequest`/`TaskAccepted` types handle the `POST /` body and `202` response; a pure `trigger_body` helper normalises `None` → `data: {}` (empty object, matching the orchestrator's `data: dict` expectation); a pure `trigger_url` method handles trailing-slash normalisation. On the run side, a pure `parse_args` function returns `Ok(None)` for absent `--args`, parses valid JSON objects, and rejects non-objects with typed human-readable error messages; a pure `format_trigger_success` helper emits a greppable `task_id: <id>` output line. The thin I/O shell `trigger` loads config, calls `trigger_workflow`, prints the task_id, and optionally hands off to `monitor::run(Some(task_id)).await` when `--monitor` is passed — the task_id is always printed before the TUI takes over. Error paths use `anyhow` context throughout (no panics). 14 new tests raised the baseline from 302 to 316 (3 ignored); all four gating checks pass. The live smoke test (trigger real workflow, confirm task_id, test `--monitor`, test 422 for unknown workflow, test malformed `--args`) is deferred per Rule 6 and recorded in `planning/phase3-blockA/tasks.md §Notes`. Docs: `docs/run.md` created (operator reference following the established per-command pattern); `docs/index.md` flagged NEEDS_REVIEW for the run.md navigation row. Next: phase3-blockB (bastion validate).

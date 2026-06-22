@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — phase3-blockA complete (bastion run shipped; 316 tests, PASS in 1 review attempt). Next: phase3-blockB (bastion validate).
-**Current focus:** phase3-blockB — bastion validate
+**Last updated:** 2026-06-22 — phase3-blockB in progress (Task 2 complete; Tasks 1–2 done; Tasks 3–5 next — Link validation, report rendering, and fixture validation remaining)
+**Current focus:** phase3-blockB — Task 3: Link checking
 
 ---
 
@@ -42,7 +42,7 @@ description: Current state and progress tracker for bastion.
 | Block | What | Status | Notes |
 |---|---|---|---|
 | Block A | bastion run | Done | Workflow trigger shipped: `trigger_workflow` (api/client.rs) and `run::trigger` (run/mod.rs). Pure helpers `trigger_body` (None→`{}` default), `trigger_url` (trailing-slash normalisation), `parse_args` (JSON validation + non-object rejection), `format_trigger_success` (greppable `task_id:` line). 316 tests pass (+14 over 302 baseline). PASS in 1 review attempt. Live smoke test deferred (needs orchestrator stack); recorded in tasks.md §Notes per Rule 6. Docs: `docs/run.md` created; `docs/index.md` flagged NEEDS_REVIEW for run.md row. |
-| Block B | bastion validate | Not started | — |
+| Block B | bastion validate | In progress | Task 2 complete: Frontmatter validation implemented. 24 exhaustive unit tests pass (pure `extract_frontmatter` + `validate_frontmatter` covering all required fields, structural errors, and line-number assertions). All gating checks green. Next: Task 3 (link checking). |
 
 ### Phase 5 — Session Management (independent, ungated track — D4)
 | Block | What | Status | Notes |
