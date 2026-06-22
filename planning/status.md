@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — phase3-blockB complete (bastion validate shipped; 404 tests, PASS). Phase 3 + Phase 5 both fully done. Next: Phase 4 (Polish).
-**Current focus:** Phase 4 — Polish (SSE streaming, node re-run, config file, help improvements)
+**Last updated:** 2026-06-22 — phase4-blockA complete (config file support + help/man polish; 428 tests, PASS). Phase 3, Phase 4 Block A, and Phase 5 all done. Next: Phase 4 remaining items when orchestrator D28 Phases 4–5 land (SSE streaming, TUI node re-run); no unblocked work in queue.
+**Current focus:** Phase 4 — remaining items blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run)
 
 ---
 
@@ -43,6 +43,13 @@ description: Current state and progress tracker for bastion.
 |---|---|---|---|
 | Block A | bastion run | Done | Workflow trigger shipped: `trigger_workflow` (api/client.rs) and `run::trigger` (run/mod.rs). Pure helpers `trigger_body` (None→`{}` default), `trigger_url` (trailing-slash normalisation), `parse_args` (JSON validation + non-object rejection), `format_trigger_success` (greppable `task_id:` line). 316 tests pass (+14 over 302 baseline). PASS in 1 review attempt. Live smoke test deferred (needs orchestrator stack); recorded in tasks.md §Notes per Rule 6. Docs: `docs/run.md` created; `docs/index.md` flagged NEEDS_REVIEW for run.md row. |
 | Block B | bastion validate | Done | Tasks 1–5 complete. Module skeleton, frontmatter validation, link checking, report rendering, and fixtures all implemented and tested. Validation gate passed: all four gating checks (fmt, clippy, 404 tests, release build) pass. Smoke tests verify correct behavior on both clean and dirty fixtures. No new crate dependencies added. Ready for merge. |
+
+### Phase 4 — Polish
+| Block | What | Status | Notes |
+|---|---|---|---|
+| Block A | Config file + help/man polish | Done | Config file support (`~/.config/bastion/config.toml`; env > file > built-in precedence), `bastion help` enrichment (`long_about` + `after_help` examples), and `bastion man` hidden subcommand (pure `render_man()` + `clap_mangen`). 428 tests pass (+24 from 404 baseline). PASS in 1 review attempt. Two remaining Phase 4 items (SSE streaming, TUI node re-run) deferred — blocked on orchestrator D28 Phases 4–5. |
+| Block B | SSE streaming | Blocked | Blocked on orchestrator D28 Phase 4 |
+| Block C | TUI node re-run | Blocked | Blocked on orchestrator D28 Phase 5 |
 
 ### Phase 5 — Session Management (independent, ungated track — D4)
 | Block | What | Status | Notes |
