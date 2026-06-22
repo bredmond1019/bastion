@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-22 — phase1-blockB complete: TUI render loop and event-driven monitor
+
+Phase 1 Block B shipped and reviewed in 2 attempts (PASS). The implementation added `src/monitor/app.rs` (pure `App` state model: `WorkflowRun` list, `GraphLayout`, selected-run/node cursors, navigation methods `next_node`/`prev_node`/`next_run`/`prev_run`, `replace_runs` with cursor clamping, exhaustively unit-tested including bounds and empty-input cases), `src/monitor/ui.rs` (two-pane ratatui render: left graph pane with nodes positioned by `GraphLayout`, colored by `RunStatus`, selected node highlighted; right detail pane with status/timing/error/model/token counts/truncated input+output; pure helpers `status_color`, `status_symbol`, `format_node_detail` unit-tested for every `RunStatus` arm), and `src/monitor/events.rs` + `src/monitor/mod.rs` (event loop with `tokio::select!` over keyboard and DB-poll interval, terminal-safe exit restoring alternate screen + raw mode, full wiring in `monitor::run`). A first review returned PARTIAL because the `## Notes` smoke-test section in tasks.md was still a placeholder (Rule 6 / acceptance criterion not met). The fix pass recorded three degrade-path scenarios without the live orchestrator (missing `DATABASE_URL` → config error, bad DB URL → connection error, DB connected but schema absent → query error) plus the `--help` output; the live render/navigation/poll-cycle path is noted as requiring Docker and is deferred to the next orchestrator bring-up. 265 tests pass; all gating checks green. `docs/index.md` is flagged for a `monitor.md` addition (the document agent did not need to patch existing docs but noted the missing reference page). Next: phase1-blockC per master-plan.md.
+
+```
+4baafae docs: update docs for phase1-blockB
+dbae28d fix: fix pass 2 for phase1-blockB — record smoke-test in ## Notes
+fabce97 feat: implement phase1-blockB — TUI render loop for bastion monitor
+```
+
+---
+
 ## 2026-06-21 — phase5-blockG follow-ups: D9 decision + cross-repo brain sync + handoff
 
 Post-wrap-up work captured the critical finding from Block G's fix pass as decision D9: `bastion ask` readiness detection must key off `classify_state(pane_current_command) == SessionState::Running` rather than an exact `"claude"` process-name string match, because Claude Code v2.1.185 renames its process via `pthread_setname_np` to its version string. D9 recorded in `planning/decisions/D9-claude-readiness-via-classify-state.md` and added to `planning/decisions/index.md` (commit `3f767eb`). Updated the cross-repo brain coordination doc `~/agentic-portfolio`: status line, §2 changelog (v0.1.0 implemented + D9 note, no contract change), and §3 matrix (Blocks F & G → Done, item 4 session-mode provider → unblocked) — committed in the brain repo as `1dd4103`. Wrote `planning/handoff.md` for the next session documenting Phase 5 complete A–G and the gate on orchestrator D28 before phase1-blockB can unblock.
