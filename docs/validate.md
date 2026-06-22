@@ -57,7 +57,7 @@ pub struct ValidationError {
 
 | Module | File | Public function | Status |
 |---|---|---|---|
-| `frontmatter` | `src/validate/frontmatter.rs` | `validate_frontmatter(content: &str, file: &Path) -> Vec<ValidationError>` | Stub (Task 2) |
+| `frontmatter` | `src/validate/frontmatter.rs` | `validate_frontmatter(content: &str, file: &Path) -> Vec<ValidationError>` | Implemented (Task 2) |
 | `links` | `src/validate/links.rs` | `validate_links(content: &str, file: &Path) -> Vec<ValidationError>` | Stub (Task 3) |
 | `report` | `src/validate/report.rs` | `render_report(errors: &[ValidationError], files_scanned: usize) -> String` | Stub (Task 4) |
 
