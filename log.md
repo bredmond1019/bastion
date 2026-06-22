@@ -10,6 +10,18 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-22 — phase2-blockB complete: bastion costs LLM spend summary
+
+Phase 2 Block B (`bastion costs`) shipped and reviewed in a single attempt (PASS). The implementation delivered `bastion costs --last <window>` (windows: `7d`, `30d`, `all`) backed by an exhaustive pure-logic test suite and a thin Postgres I/O shell. A new `src/costs/pricing.rs` holds the hardcoded model price table (`ModelPrice { input_per_mtok, output_per_mtok }`) seeded with all current Claude models and retired models present in existing fixtures; `estimate_usd` is a pure function returning `0.0` for unknown models. `Window` enum + `parse_window` + `within_window` handle the three windows case-insensitively; `now: DateTime<Utc>` is injected as a parameter to keep `within_window` testable without I/O. `aggregate` groups `WorkflowRun` slices by workflow name (summing tokens and USD per node, recording unpriced models), sorts by USD descending, and computes a totals row; `render_table` returns a fixed-width `String` (Workflow 30, Runs 6, Tokens In/Out 12, Est. USD 10) with a TOTAL row and an unpriced-model notice. The thin `db::costs::fetch_all_runs` reuses `parse_event_row` from `db::workflows` (widened to `pub(crate)`) — no JSON parsing logic was duplicated. Graceful degradation covers missing `DATABASE_URL` and unreachable Postgres (both produce `eprintln!` + `Ok(())`). 30 new tests raised the baseline from 272 to 302; all four gating checks pass. The full end-to-end smoke test (`bastion costs` against a live orchestrator DB) is deferred per Rule 6 — an `#[ignore]` integration stub is in place. Documentation: `docs/costs.md` created (operator reference); `docs/index.md` and `docs/data-contract.md` updated; no NEEDS_REVIEW flags. Next: phase3-blockA (bastion run — trigger workflows via `POST /`).
+
+```
+7aed418 docs: update docs for phase2-blockB
+b83124d feat: implement bastion costs (phase2-blockB)
+b71418d chore: add spec for phase2-blockB
+```
+
+---
+
 ## 2026-06-22 — phase2-blockA close-out: docs/index.md row + phase2-blockB handoff
 
 Closed out phase2-blockA by adding the inspect.md navigation table row to docs/index.md (commit f09cf1f), clearing the document stage's NEEDS_REVIEW flag. Wrote planning/handoff.md handing off to phase2-blockB (bastion costs).

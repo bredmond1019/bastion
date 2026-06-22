@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — phase2-blockA complete (bastion inspect shipped; 272 tests, PASS in 2 review attempts). Next: phase2-blockB (bastion costs).
-**Current focus:** phase2-blockB — bastion costs (next block per master-plan.md)
+**Last updated:** 2026-06-22 — phase2-blockB complete (bastion costs shipped; 302 tests, PASS in 1 review attempt). Next: phase3-blockA (bastion run).
+**Current focus:** phase3-blockA — bastion run
 
 ---
 
@@ -36,7 +36,7 @@ description: Current state and progress tracker for bastion.
 | Block | What | Status | Notes |
 |---|---|---|---|
 | Block A | bastion inspect | Done | Static post-mortem graph view shipped: `src/monitor/events.rs` widened 3 functions to `pub(crate)`; `src/inspect/mod.rs` replaced `todo!()` with full static loop reusing monitor graph/UI primitives. `build_inspect_app` exhaustively unit-tested (9 cases). 272 tests pass (net +7 over 265 baseline). PASS in 2 review attempts (fix: deferred smoke-test record written to tasks.md § Notes per Rule 6). `docs/inspect.md` created; `docs/index.md` flagged NEEDS_REVIEW for inspect.md row addition. |
-| Block B | bastion costs | Not started | |
+| Block B | bastion costs | Done | LLM spend summary shipped: `bastion costs --last <window>` with hardcoded pricing table (`src/costs/pricing.rs`), pure `parse_window`/`within_window`/`aggregate`/`render_table` logic, thin `db::costs::fetch_all_runs` I/O shell reusing `parse_event_row`. 302 tests pass (+30 over 272 baseline). PASS in 1 review attempt. Smoke test deferred per Rule 6 (orchestrator stack not up). Docs: `docs/costs.md` created; `docs/index.md` + `docs/data-contract.md` updated. |
 
 ### Phase 5 — Session Management (independent, ungated track — D4)
 | Block | What | Status | Notes |
