@@ -60,9 +60,14 @@ cargo run -- send work cargo test   # send keystrokes + Enter without attaching
 cargo run -- attach work       # hand the terminal to tmux (Ctrl-b d to detach)
 cargo run -- capture work      # print the session's recent pane output
 cargo run -- kill work         # remove the session
+
+# Workflow observability (needs the orchestrator stack up — ./scripts/dev.sh):
+cargo run -- monitor               # live TUI graph of the active workflow run
+cargo run -- monitor --workflow-id <id>   # monitor a specific run
 ```
 
-See [docs/sessions.md](docs/sessions.md) for the full session-control reference.
+See [docs/sessions.md](docs/sessions.md) for the full session-control reference and
+[docs/monitor.md](docs/monitor.md) for the live monitor reference.
 
 ### Commands
 
@@ -75,7 +80,7 @@ See [docs/sessions.md](docs/sessions.md) for the full session-control reference.
 | `send <session> <cmd...>` | Shipped | Send keystrokes + Enter without attaching |
 | `capture <session> [--lines N]` | Shipped | Print a session's recent pane output without attaching |
 | `kill <session>` | Shipped | Remove a session |
-| `monitor` | Planned | Live TUI graph monitor (Phase 1; gated on the orchestrator) |
+| `monitor [--workflow-id ID]` | Shipped | Live two-pane TUI graph monitor — graph pane (nodes colored by state) + node detail pane; polls the orchestrator DB every `BASTION_POLL_INTERVAL`s |
 | `inspect <run_id>` | Planned | Static post-mortem graph view |
 | `costs` | Planned | LLM spend summary |
 | `run <workflow>` | Planned | Trigger a workflow via the FastAPI API |
@@ -113,6 +118,7 @@ bastion/
 |---|---|
 | [docs/index.md](docs/index.md) | Router for `docs/` |
 | [docs/sessions.md](docs/sessions.md) | Session-control surface — verb reference + operator workflow |
+| [docs/monitor.md](docs/monitor.md) | Live monitor surface — keybindings, two-pane layout, flags, degrade paths |
 | [docs/data-contract.md](docs/data-contract.md) | Orchestrator field mappings (monitor track) |
 | [planning/context.md](planning/context.md) | Orientation + governing principles |
 | [planning/master-plan.md](planning/master-plan.md) | Strategy + phase specifications |
