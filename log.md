@@ -10,6 +10,16 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-22 — phase2-blockA close-out: docs/index.md row + phase2-blockB handoff
+
+Closed out phase2-blockA by adding the inspect.md navigation table row to docs/index.md (commit f09cf1f), clearing the document stage's NEEDS_REVIEW flag. Wrote planning/handoff.md handing off to phase2-blockB (bastion costs).
+
+```
+Working tree clean — handoff.md committed separately; substantive work in f09cf1f.
+```
+
+---
+
 ## 2026-06-22 — phase2-blockA complete: bastion inspect static TUI
 
 Phase 2 Block A (`bastion inspect`) shipped and reviewed in 2 attempts (PASS). The implementation widened three functions in `src/monitor/events.rs` to `pub(crate)` (`setup_terminal`, `restore_terminal`, `handle_key`) with no behavior changes, then replaced the `todo!()` stub in `src/inspect/mod.rs` with a complete static render loop. The key design: `build_inspect_app` (pure, exhaustively unit-tested with 9 cases) constructs the `App` for a single fetched run — running `build_layout` when a workflow graph is available, falling back to `None` otherwise. The thin I/O shell `run()` degrades gracefully on all three failure modes (missing `DATABASE_URL`, unknown run ID, unreachable graph API). `run_static_loop` is a plain sync function with blocking `crossterm::event::read()` — no `tokio::select!`, no poll interval, one DB load only. Navigation and exit key handling are fully inherited from `monitor::events::handle_key`. A first review returned PARTIAL because `planning/phase2-blockA/tasks.md § Notes` still had the placeholder; the fix pass replaced it with the deferred smoke-test record per CLAUDE.md Rule 6. 272 tests pass (net +7 over the 265 baseline); all gating checks green. Documentation: `docs/inspect.md` created (operator reference covering usage, layout, keybindings, degrade paths, key internals); `docs/monitor.md` updated with a Related link to inspect.md; `docs/index.md` flagged NEEDS_REVIEW for the missing inspect.md table row (to be added manually). Next: phase2-blockB (bastion costs).
