@@ -104,7 +104,7 @@ pub async fn run_event_loop(
 
 // ── Terminal lifecycle helpers ─────────────────────────────────────────────────
 
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
+pub(crate) fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -112,7 +112,9 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
     Terminal::new(backend).map_err(Into::into)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
+pub(crate) fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+) -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -123,7 +125,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) 
 
 /// Handle a single `KeyEvent`, mutating `App` navigation state.
 /// Pure from the perspective of I/O: no terminal or DB access.
-fn handle_key(app: &mut App, key: KeyEvent) {
+pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     match key.code {
         // Quit
         KeyCode::Char('q') | KeyCode::Esc => app.quit(),
