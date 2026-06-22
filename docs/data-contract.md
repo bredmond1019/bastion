@@ -17,13 +17,23 @@ pins the version bastion is built against and maps each contract field to bastio
 
 ---
 
-## Read path (Hybrid, v1.x)
+## Read paths (v1.x)
+
+### Monitor / Inspect (Hybrid)
 
 - Live monitor polls **PostgreSQL** `events.task_context` directly (read-only).
 - The **DAG edges** come from `GET /workflows/{type}/graph` (HTTP) — the only source of edges and
   of not-yet-run nodes.
 - Join the two on **node class name**.
 - Reserved for later: an orchestrator HTTP read API (`GET /events/{id}`) — do not depend on it.
+
+### Costs (DB-only)
+
+- `db::costs::fetch_all_runs` issues `SELECT id, workflow_type, task_context FROM events` over
+  **all** rows (active and completed), assembling each via `db::workflows::parse_event_row`
+  (the same shared parse path as monitor/inspect — no duplicated JSON parsing).
+- No graph endpoint is used; token fields are extracted from `node_runs[*].usage`.
+- Window filtering (`7d`, `30d`, `all`) is applied in pure Rust after the full-table fetch.
 
 ---
 
@@ -80,5 +90,5 @@ are `Option`. `input` is null unless the node is an LLM node.
 
 1. Read the canonical changelog; update the **Pinned Contract Version** above.
 2. Update any changed field mappings here.
-3. Update affected Rust types (`db::workflows`, `api::client`, `monitor::graph`).
+3. Update affected Rust types (`db::workflows`, `db::costs`, `api::client`, `monitor::graph`).
 4. Note it in `planning/status.md`.

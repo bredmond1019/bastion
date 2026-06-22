@@ -14,6 +14,7 @@ User-facing documentation for bastion. For internal strategy and progress, see `
 | [sessions.md](sessions.md) | Session-control surface — TUI dashboard (`bastion` / `bastion tui`) + `sessions` / `attach` / `new` / `kill` / `send` / `capture` / `ask` verb reference + operator workflow |
 | [monitor.md](monitor.md) | Live monitor surface — `bastion monitor`: two-pane graph TUI, keybindings, `--workflow-id` flag, poll cadence, degrade paths |
 | [inspect.md](inspect.md) | Static post-mortem graph TUI — `bastion inspect <run-id>`: one-shot DB load, no polling, nodes colored by status |
+| [costs.md](costs.md) | LLM spend summary — `bastion costs --last <window>`: per-workflow token totals and estimated USD cost for `7d`, `30d`, or `all` |
 | [claude-code-workflow.md](claude-code-workflow.md) | Hands-on guide — use bastion to open a tmux session, launch Claude Code in it, and drive it (attach vs. send/capture), including from a phone |
 | [data-contract.md](data-contract.md) | Orchestrator field mappings — the execution state the monitor track reads (pinned to the orchestrator's contract) |
 
