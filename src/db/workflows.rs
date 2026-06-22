@@ -65,14 +65,14 @@ pub async fn get_run_state(db_url: &str, run_id: &str) -> Result<WorkflowRun> {
 
 /// Raw columns fetched from the `events` table.
 #[derive(sqlx::FromRow)]
-struct EventRow {
-    id: String,
-    workflow_type: String,
-    task_context: serde_json::Value,
+pub(crate) struct EventRow {
+    pub(crate) id: String,
+    pub(crate) workflow_type: String,
+    pub(crate) task_context: serde_json::Value,
 }
 
 /// Parse one `EventRow` into a `WorkflowRun` using the Task-2 parsing layer.
-fn parse_event_row(row: EventRow) -> Result<WorkflowRun> {
+pub(crate) fn parse_event_row(row: EventRow) -> Result<WorkflowRun> {
     let nodes = parse_task_context(&row.task_context)
         .with_context(|| format!("failed to parse task_context for run '{}'", row.id))?;
 
