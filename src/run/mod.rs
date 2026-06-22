@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::db::health::{self, DbStatus};
 
 pub async fn trigger(_workflow: String, _args: Option<String>, _monitor: bool) -> Result<()> {
-    todo!("Phase 3: POST to FastAPI /workflows/{{name}}/run, optionally enter monitor")
+    todo!("Phase 3: POST / with {{workflow_type, data}} → 202 {{task_id}}, optionally enter monitor")
 }
 
 pub async fn status() -> Result<()> {
