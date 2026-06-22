@@ -82,4 +82,24 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+### Smoke-test results (Task 5 — 2026-06-22)
+
+**`cargo run -- validate src/validate/fixtures` (expect non-zero):**
+```
+src/validate/fixtures/bad-frontmatter.md:4: empty-field: required field `description` is present but empty
+src/validate/fixtures/broken-links.md:14: broken-link: broken link: nonexistent-file.md
+2 error(s) across 2 file(s)
+Error: 2 error(s) found
+EXIT CODE: 1
+```
+Result: PASS — non-zero exit, bad-frontmatter/broken-link errors reported correctly.
+
+**`cargo run -- validate src/validate/fixtures/good.md` (expect zero):**
+```
+no issues found across 1 file(s)
+EXIT CODE: 0
+```
+Result: PASS — clean summary, exit 0.
+
+**No new crate dependency:** OKF frontmatter parsed with a minimal line-based parser (no `serde_yaml`). `Cargo.toml` and `Cargo.lock` are unchanged from when the block started.
