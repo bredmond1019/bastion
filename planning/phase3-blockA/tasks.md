@@ -56,4 +56,18 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+**Deferred smoke test (Rule 6 — thin I/O shell):** Needs the orchestrator stack running
+(`./scripts/dev.sh` in `../python-orchestration-system`). Fold into the same session as the
+other deferred smoke tests (costs / inspect / monitor):
+
+1. `bastion run <real_workflow_type>` — confirm `task_id: <uuid>` printed and matches the
+   orchestrator's `202` response body.
+2. `bastion run <workflow> --args '{"k":1}'` — confirm `data` forwarded correctly (check
+   orchestrator logs or task output).
+3. `bastion run <workflow> --monitor` — confirm drops into `bastion monitor` filtered to that
+   `task_id` after printing it.
+4. `bastion run unknown_type` — confirm the `422` surfaces a clear error message (not a panic)
+   listing valid workflow types.
+5. `bastion run <workflow> --args 'not-json'` — confirm fast-fail before any network call with
+   parse error message.

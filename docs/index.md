@@ -16,6 +16,7 @@ User-facing documentation for bastion. For internal strategy and progress, see `
 | [inspect.md](inspect.md) | Static post-mortem graph TUI — `bastion inspect <run-id>`: one-shot DB load, no polling, nodes colored by status |
 | [costs.md](costs.md) | LLM spend summary — `bastion costs --last <window>`: per-workflow token totals and estimated USD cost for `7d`, `30d`, or `all` |
 | [claude-code-workflow.md](claude-code-workflow.md) | Hands-on guide — use bastion to open a tmux session, launch Claude Code in it, and drive it (attach vs. send/capture), including from a phone |
+| [run.md](run.md) | Workflow trigger — `bastion run <workflow> [--args '{}'] [--monitor]`: POST to orchestrator, print `task_id`, optional monitor hand-off |
 | [data-contract.md](data-contract.md) | Orchestrator field mappings — the execution state the monitor track reads (pinned to the orchestrator's contract) |
 
 ## Internal context (planning/)
