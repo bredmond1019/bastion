@@ -65,4 +65,5 @@ cargo build --release
 ```
 
 ## Notes
-<!-- filled in as work happens -->
+
+**Smoke test:** Deferred — orchestrator stack (`./scripts/dev.sh` in `../python-orchestration-system`) not available in this environment. The thin I/O shell (`run` + `run_static_loop`) will be smoke-tested when the stack is next up; record observation here at that time, consistent with CLAUDE.md Rule 6.
