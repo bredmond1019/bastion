@@ -58,8 +58,28 @@ pub struct ValidationError {
 | Module | File | Public function | Status |
 |---|---|---|---|
 | `frontmatter` | `src/validate/frontmatter.rs` | `validate_frontmatter(content: &str, file: &Path) -> Vec<ValidationError>` | Stub (Task 2) |
-| `links` | `src/validate/links.rs` | `validate_links(content: &str, file: &Path) -> Vec<ValidationError>` | Stub (Task 3) |
+| `links` | `src/validate/links.rs` | `validate_links(content: &str, file: &Path) -> Vec<ValidationError>` | Implemented (Task 3) |
 | `report` | `src/validate/report.rs` | `render_report(errors: &[ValidationError], files_scanned: usize) -> String` | Stub (Task 4) |
+
+## Link Checking (`src/validate/links.rs`)
+
+Implemented in Task 3. All link-logic lives in pure functions; only `validate_links` touches the filesystem.
+
+### Public API
+
+| Function | Signature | Description |
+|---|---|---|
+| `extract_links` | `fn extract_links(content: &str) -> Vec<(String, usize)>` | Parses all `[text](target)` inline links in `content`; returns `(target, line_number)` pairs (1-based). Strips optional `"title"` / `'title'` suffixes from the target. |
+| `is_skipped_target` | `fn is_skipped_target(target: &str) -> bool` | Returns `true` for `http://`, `https://`, `mailto:` prefixes and pure `#`-anchors. All other targets (relative paths) return `false` and are checked. |
+| `split_fragment` | `fn split_fragment(target: &str) -> (&str, Option<&str>)` | Splits a link target into `(file_portion, fragment)`. Returns `("", Some(fragment))` for pure anchors. |
+| `resolve_link_path` | `fn resolve_link_path(target: &str, containing_file: &Path) -> PathBuf` | Resolves the file portion of a relative link against the containing file's parent directory. Fragment is discarded before resolution. |
+| `validate_links` | `fn validate_links(content: &str, file: &Path) -> Vec<ValidationError>` | Thin I/O shell: calls the pure helpers and calls `.exists()` on each resolved relative path; emits `ValidationError { kind: BrokenLink }` for each missing target. |
+
+### Behaviour Notes
+
+- External URLs (`http://`, `https://`), `mailto:` links, and pure `#`-anchors are never flagged — they are skipped by `is_skipped_target`.
+- Fragment-qualified relative links (e.g. `guide.md#section`) check only the file portion; anchor resolution within the target file is out of scope.
+- Line numbers in `BrokenLink` errors are 1-based and match the source line of the `[text](target)` syntax.
 
 ## Exit Behaviour
 
