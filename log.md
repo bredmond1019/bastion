@@ -10,6 +10,17 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-22 — phase3-blockB complete: bastion validate shipped
+
+All five tasks of phase3-blockB shipped and passed review on first attempt. The `bastion validate` module validates OKF-frontmatter-bearing content (markdown and MDX files): it scans a directory recursively, validates required fields (`type`, `title`, `description`), checks relative links for existence, and reports errors with file + line in a greppable format. Task 1 (skeleton, types, file discovery) implemented `find_markdown_files` with exhaustive unit tests covering recursion, extension filtering, hidden-directory/target skipping, single-file args, and deterministic ordering; defined shared `ValidationError`/`ErrorKind` types with stable labels. Task 2 (frontmatter validation) added `extract_frontmatter` and `validate_frontmatter` with a line-based YAML parser detecting missing/malformed/empty required fields; 24 unit tests cover all cases. Task 3 (link checking) added `extract_links` and `validate_links` logic distinguishing external/anchor/relative links; only relative file targets are checked for existence. Task 4 (report rendering, fixtures, integration) shipped `render_report` with greppable per-error lines and summary totals; added three test fixtures (good.md, bad-frontmatter.md, broken-links.md) demonstrating both good and bad cases; 14 unit tests + fixture-driven integration cases; all 404 tests pass. Task 5 (validation gate) confirmed all four gating checks pass (cargo fmt, clippy, test, build --release) and manually smoke-tested the I/O shell: `cargo run -- validate src/validate/fixtures` exits non-zero with exactly the two expected errors; `cargo run -- validate <clean-dir>` exits zero with a clean summary. Architecture: pure functions (`find_markdown_files`, `extract_frontmatter`, `validate_frontmatter`, link classification/resolution, `validate_links`, `render_report`) exhaustively unit-tested against fixtures; thin `run` I/O shell smoke-tested and recorded in `planning/phase3-blockB/tasks.md § Notes` per Rule 6. No new crate dependencies (`Cargo.toml`/`Cargo.lock` unchanged). 404 tests pass (+88 over 316 baseline). PASS in first review attempt for all 5 tasks. Next: phase5-blockA (bastion sessions, already 7/7 blocks complete from prior sessions).
+
+```diff
+ planning/handoff.md | 60 -
+ 1 file changed, 60 deletions(-)
+```
+
+---
+
 ### 2026-06-22 (task 5 — validation/smoke-test gate)
 
 Task 5 was a pure validation gate: run all four gating checks (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`) and manually smoke-test the `run` I/O shell to confirm the implementation from tasks 1–4 is correct. All four checks passed. Smoke tests confirmed the expected behavior: `cargo run -- validate src/validate/fixtures` exits non-zero with exactly 2 errors (one empty-field in bad-frontmatter.md, one broken-link in broken-links.md); `cargo run -- validate src/validate/fixtures/good.md` exits zero with a clean summary. Review verdict was PASS — all acceptance criteria met, all gating checks pass, fixtures prove the implementation works correctly. Documentation was patched to replace the deferred smoke-test placeholder with actual results. Next: phase5-blockA — bastion sessions (session control surface foundation).
