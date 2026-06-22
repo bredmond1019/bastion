@@ -81,10 +81,11 @@ See [docs/sessions.md](docs/sessions.md) for the full session-control reference 
 | `capture <session> [--lines N]` | Shipped | Print a session's recent pane output without attaching |
 | `kill <session>` | Shipped | Remove a session |
 | `monitor [--workflow-id ID]` | Shipped | Live two-pane TUI graph monitor — graph pane (nodes colored by state) + node detail pane; polls the orchestrator DB every `BASTION_POLL_INTERVAL`s |
-| `inspect <run_id>` | Planned | Static post-mortem graph view |
-| `costs` | Planned | LLM spend summary |
-| `run <workflow>` | Planned | Trigger a workflow via the FastAPI API |
-| `validate <path>` | Planned | Markdown/MDX content validation |
+| `inspect <run_id>` | Shipped | Static post-mortem graph TUI — one-shot DB load, nodes colored by status |
+| `costs [--last W]` | Shipped | LLM spend summary — per-workflow token totals and estimated USD for `7d`, `30d`, or `all` |
+| `run <workflow> [--args '{}'] [--monitor]` | Shipped | POST to orchestrator, print `task_id`; optional live-monitor hand-off |
+| `validate <path>` | Shipped | Recursively validate `.md`/`.mdx` OKF frontmatter and relative links; greppable report, exits non-zero on errors |
+| `ask --session S --prompt-file P --out O` | Shipped | Send a prompt file to a Claude session and wait for the output file; creates the session if absent |
 
 ## Configuration
 
