@@ -10,6 +10,33 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-22 — /sdlc-run wrap-up: phase2-blockB shipped + phase3-blockA handoff
+
+Shipped phase2-blockB (`bastion costs`) via `/sdlc-run` with PASS in 1 review attempt. The implementation delivered `bastion costs --last <window>` supporting windows `7d`, `30d`, and `all`, backed by an exhaustive pure-logic test suite (302 tests, +30 over 272 baseline) and a thin Postgres I/O shell. Created `src/costs/pricing.rs` with a hardcoded model price table (`ModelPrice { input_per_mtok, output_per_mtok }`) seeded with all current Claude models and existing fixtures; `estimate_usd(model, tokens_in, tokens_out)` returns `0.0` for unknown models. `Window` enum + `parse_window(s)` + `within_window(window, now, started_at)` handle the three windows case-insensitively, with `now` injected as a parameter to keep `within_window` pure and testable. `aggregate(runs, window, now)` groups `WorkflowRun` slices by workflow name, sums tokens and USD per node, records unpriced models, and sorts by USD descending; `render_table(summary)` returns a fixed-width `String` (Workflow 30, Runs 6, Tokens In/Out 12, Est. USD 10) with a TOTAL row and unpriced-model notice when any exist. The thin `db::costs::fetch_all_runs` reuses `parse_event_row` from `db::workflows` (widened to `pub(crate)`) — no JSON parsing logic duplicated. Graceful degradation covers missing `DATABASE_URL` and unreachable Postgres (both produce `eprintln!` + `Ok(())`). All four gating checks pass. The full end-to-end smoke test (`bastion costs` against a live orchestrator DB) is deferred per Rule 6 — an `#[ignore]` integration stub is in place, and the deferral is recorded in `planning/phase2-blockB/tasks.md § Notes`. Documentation: `docs/costs.md` created (operator reference); `docs/index.md` and `docs/data-contract.md` updated. Data contract remains pinned at v1.0.0 (phase2-blockB only reads existing `node_runs[*].usage` fields, no shape change). Updated brain docs: `~/agentic-portfolio` (current focus → phase3-blockA, Phase 2 Block B row → Done) and `~/agentic-portfolio` (bastion quick status updated). Wrote `planning/handoff.md` for the next block, phase3-blockA (bastion run).
+
+```diff
+Cargo.lock                                       |  82 +++
+ Cargo.toml                                       |   1 +
+ docs/costs.md                                    |  94 +++
+ docs/data-contract.md                            |  14 +-
+ docs/index.md                                    |   1 +
+ log.md                                           |  12 +
+ planning/phase2-blockB/sdlc/reports/document.md  |  32 ++
+ planning/phase2-blockB/sdlc/reports/implement.md | 126 ++++
+ planning/phase2-blockB/sdlc/reports/review.md    |  68 +++
+ planning/phase2-blockB/sdlc/reports/test.md      |  56 ++
+ planning/phase2-blockB/sdlc/reports/workflow.md  |  67 +++
+ planning/phase2-blockB/tasks.md                  |  74 +++
+ planning/status.md                               |   6 +-
+ src/costs/mod.rs                                 | 697 ++++++++++++++++++++++-
+ src/costs/pricing.rs                             | 124 ++++
+ src/db/costs.rs                                  |  57 ++
+ src/db/workflows.rs                              |  10 +-
+ 17 files changed, 1508 insertions(+), 13 deletions(-)
+```
+
+---
+
 ## 2026-06-22 — phase2-blockB complete: bastion costs LLM spend summary
 
 Phase 2 Block B (`bastion costs`) shipped and reviewed in a single attempt (PASS). The implementation delivered `bastion costs --last <window>` (windows: `7d`, `30d`, `all`) backed by an exhaustive pure-logic test suite and a thin Postgres I/O shell. A new `src/costs/pricing.rs` holds the hardcoded model price table (`ModelPrice { input_per_mtok, output_per_mtok }`) seeded with all current Claude models and retired models present in existing fixtures; `estimate_usd` is a pure function returning `0.0` for unknown models. `Window` enum + `parse_window` + `within_window` handle the three windows case-insensitively; `now: DateTime<Utc>` is injected as a parameter to keep `within_window` testable without I/O. `aggregate` groups `WorkflowRun` slices by workflow name (summing tokens and USD per node, recording unpriced models), sorts by USD descending, and computes a totals row; `render_table` returns a fixed-width `String` (Workflow 30, Runs 6, Tokens In/Out 12, Est. USD 10) with a TOTAL row and an unpriced-model notice. The thin `db::costs::fetch_all_runs` reuses `parse_event_row` from `db::workflows` (widened to `pub(crate)`) — no JSON parsing logic was duplicated. Graceful degradation covers missing `DATABASE_URL` and unreachable Postgres (both produce `eprintln!` + `Ok(())`). 30 new tests raised the baseline from 272 to 302; all four gating checks pass. The full end-to-end smoke test (`bastion costs` against a live orchestrator DB) is deferred per Rule 6 — an `#[ignore]` integration stub is in place. Documentation: `docs/costs.md` created (operator reference); `docs/index.md` and `docs/data-contract.md` updated; no NEEDS_REVIEW flags. Next: phase3-blockA (bastion run — trigger workflows via `POST /`).
