@@ -17,6 +17,20 @@ PostgreSQL) and **process/session control** (shells out to tmux, no database).
 - **PostgreSQL** — *optional*. Only the workflow-observability track (`monitor`, `costs`) reads it;
   it points at the Python orchestrator's database. The session surface runs with **no database** (D4).
 
+### Bringing up the orchestrator (for `monitor` / `costs`)
+
+The workflow-observability track reads the Python orchestrator's PostgreSQL. To bring up the
+orchestrator stack (Postgres + Redis + FastAPI on `:8080` + Celery worker, in a tmux session), run
+**from the `python-orchestration-system/` repo**:
+
+```bash
+./scripts/dev.sh        # START — ensures Postgres + Redis are up, launches FastAPI + Celery
+./scripts/dev.sh stop   # STOP  — tears the dev tmux session down
+```
+
+`monitor` and `costs` need this running (or at least its Postgres reachable at `DATABASE_URL`).
+The session-control surface does not — it never touches the database (D4).
+
 ## Setup
 
 ```bash

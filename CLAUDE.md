@@ -64,6 +64,15 @@ BASTION_POLL_INTERVAL=2
 
 `DATABASE_URL` must point to the **Python orchestrator's PostgreSQL** instance. `bastion` reads from it directly (no changes to the Python side required).
 
+To bring that instance up, run the orchestrator's dev stack **from the `python-orchestration-system/` repo** (starts Postgres + Redis + FastAPI on `:8080` + Celery in a tmux session):
+
+```bash
+./scripts/dev.sh        # START
+./scripts/dev.sh stop   # STOP
+```
+
+Only the observability track (`monitor`, `costs`) needs this; the session surface runs DB-free (D4).
+
 ## Directory map
 
 ```
