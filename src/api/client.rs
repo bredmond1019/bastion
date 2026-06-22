@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Outcome of probing the orchestrator's `/health` endpoint.
@@ -15,6 +15,36 @@ pub enum ApiStatus {
 struct HealthBody {
     status: String,
     version: String,
+}
+
+/// Request body for `POST /` — the generic workflow dispatcher.
+/// Serializes as `{ "workflow_type": "...", "data": {...} }`.
+#[derive(Debug, Serialize)]
+struct TriggerRequest {
+    workflow_type: String,
+    data: serde_json::Value,
+}
+
+/// Response body for `POST /` — `202 { "task_id": "...", "message": "..." }`.
+#[derive(Debug, Deserialize)]
+struct TaskAccepted {
+    task_id: String,
+    #[allow(dead_code)]
+    message: String,
+}
+
+/// Build a `TriggerRequest` from a workflow type and optional data payload.
+/// A `None` data argument serializes as `"data": {}` (empty object), matching
+/// the orchestrator's `data: dict` field.
+/// Pure function — no I/O — so it is unit-testable without a live server.
+fn trigger_body(
+    workflow_type: impl Into<String>,
+    data: Option<serde_json::Value>,
+) -> TriggerRequest {
+    TriggerRequest {
+        workflow_type: workflow_type.into(),
+        data: data.unwrap_or_else(|| serde_json::Value::Object(Default::default())),
+    }
 }
 
 /// `GET /workflows/{type}/graph` body — the static DAG (data contract §7).
@@ -65,14 +95,34 @@ impl ApiClient {
             .context("decoding workflow graph body")
     }
 
+    /// Returns the trigger URL for `POST /` — base URL with any trailing slash preserved as a
+    /// single `/`, so both `http://host:8080` and `http://host:8080/` produce `http://host:8080/`.
+    fn trigger_url(&self) -> String {
+        format!("{}/", self.base_url.trim_end_matches('/'))
+    }
+
     pub async fn trigger_workflow(
         &self,
-        _workflow_type: &str,
-        _data: Option<serde_json::Value>,
+        workflow_type: &str,
+        data: Option<serde_json::Value>,
     ) -> Result<String> {
         // Orchestrator's generic dispatcher: POST / with {workflow_type, data}
         // → 202 {task_id, message} (data contract §7). Returns the task_id.
-        todo!("Phase 3: POST / with {{workflow_type, data}}, return task_id")
+        let url = self.trigger_url();
+        let body = trigger_body(workflow_type, data);
+        self.client
+            .post(&url)
+            .json(&body)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .context("sending trigger request to orchestrator")?
+            .error_for_status()
+            .context("orchestrator trigger endpoint returned an error status (check workflow_type and data)")?
+            .json::<TaskAccepted>()
+            .await
+            .context("decoding trigger response body")
+            .map(|accepted| accepted.task_id)
     }
 
     pub async fn rerun_node(&self, _run_id: &str, _node_id: &str) -> Result<()> {
@@ -163,5 +213,46 @@ mod tests {
     fn health_url_no_trailing_slash() {
         let client = ApiClient::new("http://localhost:8000");
         assert_eq!(client.health_url(), "http://localhost:8000/health");
+    }
+
+    // ── trigger_body ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn trigger_body_some_data_serializes_correctly() {
+        let data = serde_json::json!({"key": "value", "count": 42});
+        let body = trigger_body("my_workflow", Some(data));
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["workflow_type"], "my_workflow");
+        assert_eq!(json["data"]["key"], "value");
+        assert_eq!(json["data"]["count"], 42);
+    }
+
+    #[test]
+    fn trigger_body_none_data_serializes_as_empty_object() {
+        let body = trigger_body("my_workflow", None);
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["workflow_type"], "my_workflow");
+        assert_eq!(json["data"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn trigger_body_workflow_type_preserved() {
+        let body = trigger_body("research_workflow", None);
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["workflow_type"], "research_workflow");
+    }
+
+    // ── trigger_url ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn trigger_url_trailing_slash_stripped_and_readded() {
+        let client = ApiClient::new("http://localhost:8080/");
+        assert_eq!(client.trigger_url(), "http://localhost:8080/");
+    }
+
+    #[test]
+    fn trigger_url_no_trailing_slash_appended() {
+        let client = ApiClient::new("http://localhost:8080");
+        assert_eq!(client.trigger_url(), "http://localhost:8080/");
     }
 }
