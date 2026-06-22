@@ -7,26 +7,20 @@ description: Block-level orchestration summary for phase3-blockB (bastion valida
 # Spec Orchestration Report — phase3-blockB
 
 **Date:** 2026-06-22
-**Overall verdict:** PARTIAL
-**Tasks merged:** 2  |  **Escalated:** 1  |  **Skipped:** 2  |  **Playwright:** SKIP
+**Overall verdict:** PASS
+**Tasks merged:** 2  |  **Escalated:** 0  |  **Skipped:** 0  |  **Playwright:** SKIP
 
 ## Outcome by Task
 | Task | Result | Verdict | Merge | Commit | Notes |
 |---|---|---|---|---|---|
-| 1 | merged | PASS | auto | 5f9cb28 | — |
-| 2 | merged | PASS | auto | 1b25822 | — |
-| 3 | escalate | PASS | — | — | merge conflict: docs/validate.md |
-| 4 | skipped | — | — | — | blocked by upstream escalation |
-| 5 | skipped | — | — | — | blocked by upstream escalation |
+| 4 | merged | PASS | auto | 0792efe | — |
+| 5 | merged | PASS | auto | fa93157 | — |
 
 ## Playwright Verification
 _Skipped — no tasks merged, nothing to verify._
 
 ## Escalations (need your attention)
-- **Task 3** — verdict PASS. 
-    - Review: `planning/phase3-blockB/sdlc/reports/task3-review.md`
-    - Worktree (preserved): `/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase3-blockb-task3` (branch `phase3-blockb-task3`)
-    - Reasons: merge conflict: docs/validate.md
+_None._
 
 ## Resume
 After fixing any blocker (or editing planning/phase3-blockB/sdlc/execution-plan.json), re-run:  /sdlc-block phase3-blockB
@@ -42,14 +36,12 @@ outTok = output-token delta ("—" when no +Nk budget target was set). These orc
 sequentially, so their outTok is clean. NOTE: per-task outTok for tasks that ran in a PARALLEL wave is
 shared-pool-contaminated and is reported there as "— (parallel)" rather than a misleading number (D12).
 
-**Total orchestrator outTok:** 9893
+**Total orchestrator outTok:** 7380
 
 | Stage | Model | promptTok | outTok |
 |---|---|---|---|
-| pre-flight | sonnet | 947 | 819 |
-| harness-config | sonnet | 294 | 528 |
-| analyze | opus | 1855 | 3483 |
-| write-plan | haiku | 974 | 2149 |
-| merge-1 | sonnet | 962 | 997 |
-| merge-2 | sonnet | 962 | 939 |
-| merge-3 | sonnet | 962 | 978 |
+| pre-flight | sonnet | 947 | 920 |
+| harness-config | sonnet | 294 | 542 |
+| analyze | opus | 1855 | 3946 |
+| merge-4 | sonnet | 962 | 977 |
+| merge-5 | sonnet | 965 | 995 |

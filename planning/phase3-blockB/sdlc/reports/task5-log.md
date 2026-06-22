@@ -11,7 +11,7 @@ description: Wrap-up summary for Task 5 (validate smoke-test gate) of phase3-blo
 **Verdict:** PASS
 **Date:** 2026-06-22
 **Branch:** phase3-blockb-task5-7
-**Applied:** false
+**Applied:** true
 
 ---
 

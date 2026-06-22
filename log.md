@@ -10,6 +10,30 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+### 2026-06-22 (task 5 — validation/smoke-test gate)
+
+Task 5 was a pure validation gate: run all four gating checks (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`) and manually smoke-test the `run` I/O shell to confirm the implementation from tasks 1–4 is correct. All four checks passed. Smoke tests confirmed the expected behavior: `cargo run -- validate src/validate/fixtures` exits non-zero with exactly 2 errors (one empty-field in bad-frontmatter.md, one broken-link in broken-links.md); `cargo run -- validate src/validate/fixtures/good.md` exits zero with a clean summary. Review verdict was PASS — all acceptance criteria met, all gating checks pass, fixtures prove the implementation works correctly. Documentation was patched to replace the deferred smoke-test placeholder with actual results. Next: phase5-blockA — bastion sessions (session control surface foundation).
+
+```
+8703bb2 docs: update docs for phase3-blockB-task5
+c7d7a70 feat: implement phase3-blockB-task5
+47a5d16 chore: init worktree phase3-blockb-task5-7
+```
+
+---
+
+### 2026-06-22 (task 4 — Report rendering, fixtures, and integration tests)
+
+Task 4 completed: implemented `render_report` in `src/validate/report.rs` with a greppable output format (`<file>:<line>: <kind-label>: <message>`), errors grouped and sorted by file then line, and an accurate summary line. Added three test fixtures (good.md, bad-frontmatter.md, broken-links.md) demonstrating OKF validation and broken-link detection. Added 14 unit tests covering all error kinds, multi-file sorting, unique-file counting, and fixture-driven integration cases; all 404 tests pass. All gating checks pass (fmt, clippy, test, build --release). Review was PASS in 1 attempt — all acceptance criteria for Task 4 met, no issues found. Next: Task 5 — manually smoke-test `cargo run -- validate src/validate/fixtures` and `cargo run -- validate <clean-dir>` to verify exit codes and output format per CLAUDE.md Rule 6.
+
+```
+313344c docs: update docs for phase3-blockB-task4
+bbd2b83 feat(validate): implement render_report, add fixtures and integration tests
+59b5c47 chore: init worktree phase3-blockb-task4
+```
+
+---
+
 ### 2026-06-22 (task 1 — module skeleton, shared types, and file discovery)
 
 Implemented the module skeleton for `bastion validate`: `src/validate/mod.rs` now contains the shared `ValidationError` and `ErrorKind` types with all five error variants and stable lowercase label methods; the `find_markdown_files` pure function recursively discovers `.md` and `.mdx` files, skips hidden dirs/files and `target/`, handles both directory and single-file arguments, and returns a sorted list (tested exhaustively with 12 unit tests covering recursion, extension filtering, hidden/target skip, single-file arg, determinism); the `run` I/O shell calls file discovery, reads each file, invokes the frontmatter + links validation stubs, collects all errors, prints the report, and returns non-zero exit on any errors. Created stub modules `src/validate/{frontmatter,links,report}.rs` with correct signatures so the crate compiles and the dispatch stays valid. All 328 tests pass, all gating checks green. Verdict PASS in 1 review attempt. Next: Task 2 — Frontmatter validation (OKF fields).

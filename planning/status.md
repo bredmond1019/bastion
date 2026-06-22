@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — phase3-blockB in progress (Task 2 complete; Tasks 1–2 done; Tasks 3–5 next — Link validation, report rendering, and fixture validation remaining)
-**Current focus:** phase3-blockB — Task 3: Link checking
+**Last updated:** 2026-06-22 — phase3-blockB complete (all 5 tasks done); phase5-blockA next — Session control surface foundation
+**Current focus:** phase5-blockA — bastion sessions (tmux integration + session listing)
 
 ---
 
@@ -42,7 +42,7 @@ description: Current state and progress tracker for bastion.
 | Block | What | Status | Notes |
 |---|---|---|---|
 | Block A | bastion run | Done | Workflow trigger shipped: `trigger_workflow` (api/client.rs) and `run::trigger` (run/mod.rs). Pure helpers `trigger_body` (None→`{}` default), `trigger_url` (trailing-slash normalisation), `parse_args` (JSON validation + non-object rejection), `format_trigger_success` (greppable `task_id:` line). 316 tests pass (+14 over 302 baseline). PASS in 1 review attempt. Live smoke test deferred (needs orchestrator stack); recorded in tasks.md §Notes per Rule 6. Docs: `docs/run.md` created; `docs/index.md` flagged NEEDS_REVIEW for run.md row. |
-| Block B | bastion validate | In progress | Task 2 complete: Frontmatter validation implemented. 24 exhaustive unit tests pass (pure `extract_frontmatter` + `validate_frontmatter` covering all required fields, structural errors, and line-number assertions). All gating checks green. Next: Task 3 (link checking). |
+| Block B | bastion validate | Done | Tasks 1–5 complete. Module skeleton, frontmatter validation, link checking, report rendering, and fixtures all implemented and tested. Validation gate passed: all four gating checks (fmt, clippy, 404 tests, release build) pass. Smoke tests verify correct behavior on both clean and dirty fixtures. No new crate dependencies added. Ready for merge. |
 
 ### Phase 5 — Session Management (independent, ungated track — D4)
 | Block | What | Status | Notes |
