@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — phase1-blockB complete (TUI render loop + event-driven updates; 265 tests, PASS in 2 review attempts). Next: phase1-blockC or next phase1 block per master-plan.md.
-**Current focus:** phase1-blockC (next block per master-plan.md)
+**Last updated:** 2026-06-22 — Phase 1 complete (bastion monitor shipped; 265 tests, PASS in 2 review attempts). Next: phase2-blockA (bastion inspect).
+**Current focus:** phase2-blockA — bastion inspect (next block per master-plan.md; D2 gate lifted)
 
 ---
 

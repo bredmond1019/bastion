@@ -10,6 +10,32 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-22 — phase1-blockB complete: session wrap-up + D28 verification + monitor docs + phase2 handoff
+
+Phase 1 Block B is now complete with full integration verified. The TUI render loop implementation shipped via four src/monitor/ stubs (app.rs state model, ui.rs ratatui two-pane render, events.rs tokio::select! event loop over keyboard and DB polls, mod.rs wiring) for the live workflow graph monitor: nodes are positioned by topological layout from Block A's data layer, colored by RunStatus, and the detail pane surfaces the selected run's timing/errors/model/token counts/I/O. PASS in 2 review attempts; 265 tests pass; all gating checks green. Cross-repo verification: orchestrator D28 (incremental node-level persistence via task_context callbacks written at every node boundary, not terminal-only completion) confirmed landed in python-orchestration-system, lifting the bastion D2 gate on the monitor's read contract and unblocking Phase 1 as a whole. Documented the orchestrator dev.sh stack (./scripts/dev.sh START/stop commands for bringing up the observability track) in orchestrator README/CLAUDE/spec to align Phase 1 bring-up. Ran /update-docs which added docs/monitor.md (TUI operator reference for live usage, keyboard navigation, terminal safety), auto-synced the README command table against cli.rs (catching a lingering no-op F5 refresh test assertion in the process), and flipped the monitor row from Planned to Shipped. Wrote planning/handoff.md to correct the phantom "phase1-blockC" focus — Phase 1 is complete with both Blocks A & B Done per master-plan.md; the real next block is phase2-blockA (bastion inspect).
+
+```diff
+ CLAUDE.md                                        |   9 +
+ README.md                                        |  24 +-
+ docs/index.md                                    |   1 +
+ docs/monitor.md                                  |  86 ++++
+ log.md                                           |  12 +
+ planning/phase1-blockB/sdlc/reports/document.md  |  36 ++
+ planning/phase1-blockB/sdlc/reports/implement.md |  99 ++++
+ planning/phase1-blockB/sdlc/reports/review.md    |  79 +++
+ planning/phase1-blockB/sdlc/reports/test.md      |  56 +++
+ planning/phase1-blockB/sdlc/reports/workflow.md  |  63 +++
+ planning/phase1-blockB/tasks.md                  |  55 ++-
+ planning/status.md                               |   6 +-
+ src/monitor/app.rs                               | 365 +++++++++++++-
+ src/monitor/events.rs                            | 388 ++++++++++++++-
+ src/monitor/mod.rs                               |  86 +++-
+ src/monitor/ui.rs                                | 583 ++++++++++++++++++++++-
+ 16 files changed, 1932 insertions(+), 16 deletions(-)
+```
+
+---
+
 ## 2026-06-22 — phase1-blockB complete: TUI render loop and event-driven monitor
 
 Phase 1 Block B shipped and reviewed in 2 attempts (PASS). The implementation added `src/monitor/app.rs` (pure `App` state model: `WorkflowRun` list, `GraphLayout`, selected-run/node cursors, navigation methods `next_node`/`prev_node`/`next_run`/`prev_run`, `replace_runs` with cursor clamping, exhaustively unit-tested including bounds and empty-input cases), `src/monitor/ui.rs` (two-pane ratatui render: left graph pane with nodes positioned by `GraphLayout`, colored by `RunStatus`, selected node highlighted; right detail pane with status/timing/error/model/token counts/truncated input+output; pure helpers `status_color`, `status_symbol`, `format_node_detail` unit-tested for every `RunStatus` arm), and `src/monitor/events.rs` + `src/monitor/mod.rs` (event loop with `tokio::select!` over keyboard and DB-poll interval, terminal-safe exit restoring alternate screen + raw mode, full wiring in `monitor::run`). A first review returned PARTIAL because the `## Notes` smoke-test section in tasks.md was still a placeholder (Rule 6 / acceptance criterion not met). The fix pass recorded three degrade-path scenarios without the live orchestrator (missing `DATABASE_URL` → config error, bad DB URL → connection error, DB connected but schema absent → query error) plus the `--help` output; the live render/navigation/poll-cycle path is noted as requiring Docker and is deferred to the next orchestrator bring-up. 265 tests pass; all gating checks green. `docs/index.md` is flagged for a `monitor.md` addition (the document agent did not need to patch existing docs but noted the missing reference page). Next: phase1-blockC per master-plan.md.
