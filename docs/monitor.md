@@ -81,6 +81,8 @@ is surfaced as a banner rather than killing the TUI — the next successful tick
 
 ## Related
 
+- [inspect.md](inspect.md) — static post-mortem view of a completed run (no polling); use this
+  after a run finishes.
 - [data-contract.md](data-contract.md) — the orchestrator field mappings the monitor reads.
 - [sessions.md](sessions.md) — the other surface (tmux session control), reachable as the bare
   `bastion` / `bastion tui` dashboard.
