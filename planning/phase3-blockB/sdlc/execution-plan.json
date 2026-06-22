@@ -1,0 +1,127 @@
+{
+  "blockId": "phase3-blockB",
+  "additiveFiles": [],
+  "tasks": {
+    "1": {
+      "num": 1,
+      "title": "Module skeleton, shared types, and file discovery",
+      "dependsOn": [],
+      "evidence": "Owns src/validate/mod.rs; creates stub files frontmatter.rs, links.rs, report.rs; defines shared ValidationError/ErrorKind types and find_markdown_files walker. Foundational — no prior task referenced.",
+      "filesCreated": [
+        "src/validate/mod.rs",
+        "src/validate/frontmatter.rs",
+        "src/validate/links.rs",
+        "src/validate/report.rs"
+      ],
+      "filesModified": [],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    },
+    "2": {
+      "num": 2,
+      "title": "Frontmatter validation (OKF fields)",
+      "dependsOn": [
+        1
+      ],
+      "evidence": "**dependsOn: 1.** Owns src/validate/frontmatter.rs (stub created by Task 1) and consumes the shared ValidationError/ErrorKind types defined in mod.rs by Task 1.",
+      "filesCreated": [],
+      "filesModified": [
+        "src/validate/frontmatter.rs"
+      ],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    },
+    "3": {
+      "num": 3,
+      "title": "Link checking",
+      "dependsOn": [
+        1
+      ],
+      "evidence": "**dependsOn: 1.** Owns src/validate/links.rs (stub created by Task 1) and consumes shared ValidationError/ErrorKind (BrokenLink) types from mod.rs by Task 1.",
+      "filesCreated": [],
+      "filesModified": [
+        "src/validate/links.rs"
+      ],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    },
+    "4": {
+      "num": 4,
+      "title": "Report rendering, fixtures, and integration",
+      "dependsOn": [
+        1,
+        2,
+        3
+      ],
+      "evidence": "**dependsOn: 1, 2, 3.** Integration test(s) run validate_frontmatter (Task 2) + validate_links (Task 3) over fixtures; render_report fills the report.rs stub created by Task 1.",
+      "filesCreated": [
+        "src/validate/report.rs",
+        "src/validate/fixtures/good.md",
+        "src/validate/fixtures/bad-frontmatter.md",
+        "src/validate/fixtures/broken-links.md"
+      ],
+      "filesModified": [],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    },
+    "5": {
+      "num": 5,
+      "title": "Validate",
+      "dependsOn": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "evidence": "Runs the full validation suite and smoke-tests the run I/O shell over the fixtures from Task 4 (cargo run -- validate src/validate/fixtures), exercising all prior tasks' output. Final gate.",
+      "filesCreated": [],
+      "filesModified": [],
+      "recommendBreakdown": false,
+      "breakdownReason": ""
+    }
+  },
+  "waves": [
+    {
+      "label": "Wave 1",
+      "parallel": false,
+      "tasks": [
+        1
+      ],
+      "mergeOrder": [
+        1
+      ]
+    },
+    {
+      "label": "Wave 2",
+      "parallel": true,
+      "tasks": [
+        2,
+        3
+      ],
+      "mergeOrder": [
+        2,
+        3
+      ]
+    },
+    {
+      "label": "Wave 3",
+      "parallel": false,
+      "tasks": [
+        4
+      ],
+      "mergeOrder": [
+        4
+      ]
+    },
+    {
+      "label": "Wave 4",
+      "parallel": false,
+      "tasks": [
+        5
+      ],
+      "mergeOrder": [
+        5
+      ]
+    }
+  ]
+}
