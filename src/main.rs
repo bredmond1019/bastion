@@ -8,6 +8,7 @@ mod config;
 mod costs;
 mod db;
 mod inspect;
+mod man;
 mod monitor;
 mod run;
 mod sessions;
@@ -75,6 +76,7 @@ async fn main() -> Result<()> {
                     anyhow::anyhow!("{e}")
                 })
             }
+            Commands::Man { out } => man::run(out),
         },
     }
 }

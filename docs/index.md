@@ -19,6 +19,7 @@ User-facing documentation for bastion. For internal strategy and progress, see `
 | [run.md](run.md) | Workflow trigger — `bastion run <workflow> [--args '{}'] [--monitor]`: POST to orchestrator, print `task_id`, optional monitor hand-off |
 | [validate.md](validate.md) | Content validation — `bastion validate <path>`: file discovery rules, `ValidationError`/`ErrorKind` types, submodule contracts, exit behaviour |
 | [data-contract.md](data-contract.md) | Orchestrator field mappings — the execution state the monitor track reads (pinned to the orchestrator's contract) |
+| [config.md](config.md) | Configuration reference — env vars, `~/.config/bastion/config.toml` format, and precedence rules |
 
 ## Internal context (planning/)
 

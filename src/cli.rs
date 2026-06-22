@@ -4,7 +4,28 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "bastion",
-    about = "Control panel for the agentic engineering stack"
+    version,
+    about = "Control panel for the agentic engineering stack",
+    long_about = "\
+bastion is a personal Rust CLI that serves as the unified control panel for the agentic \
+engineering stack. It exposes two surfaces:\n\n\
+  Workflow observability — live and post-mortem views of workflow execution backed by the \
+Python orchestrator's PostgreSQL database (`monitor`, `inspect`, `costs`, `run`, `status`).\n\n\
+  Process / session control — tmux session management without any database dependency \
+(`sessions`, `attach`, `new`, `kill`, `send`, `capture`, `ask`).\n\n\
+Configuration is read from env vars (highest precedence), then from \
+~/.config/bastion/config.toml (or $XDG_CONFIG_HOME/bastion/config.toml), then from \
+built-in defaults.",
+    after_help = "\
+Examples:\n  \
+bastion sessions                          # list tmux sessions\n  \
+bastion monitor                           # live workflow graph (all active runs)\n  \
+bastion monitor --workflow-id abc123      # live graph for one run\n  \
+bastion costs --last 7d                   # LLM spend for the last 7 days\n  \
+bastion validate ./docs                   # validate markdown/MDX content\n  \
+bastion run my-workflow --args '{\"k\":1}'  # trigger a workflow via FastAPI\n  \
+bastion man                               # print the roff man page to stdout\n  \
+bastion man --out /tmp/man               # write bastion.1 to a directory"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -13,9 +34,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Launch the interactive session dashboard
+    /// Launch the interactive session dashboard (default when no subcommand is given)
     Tui,
-    /// Live TUI graph monitor for workflow execution
+    /// Live TUI graph monitor for workflow execution (reads orchestrator PostgreSQL)
     Monitor {
         /// Filter to a specific workflow ID (shows all active runs if omitted)
         #[arg(short, long)]
@@ -26,34 +47,34 @@ pub enum Commands {
         /// Run ID to inspect
         run_id: String,
     },
-    /// Validate markdown/MDX content
+    /// Validate markdown/MDX content files for front-matter, link integrity, and lint rules
     Validate {
         /// Path to content directory (defaults to current dir)
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// Show LLM cost summary
+    /// Summarise LLM token spend aggregated from the orchestrator database
     Costs {
-        /// Time window (e.g. "7d", "30d", "all")
+        /// Time window — "7d", "30d", or "all"
         #[arg(long, default_value = "7d")]
         last: String,
     },
-    /// Trigger a workflow run via the FastAPI API
+    /// Trigger a workflow run via the FastAPI orchestrator API
     Run {
         /// Workflow name to trigger
         workflow: String,
-        /// JSON args to pass to the workflow
+        /// JSON args to pass to the workflow (e.g. '{"key": "value"}')
         #[arg(long)]
         args: Option<String>,
         /// Drop into `bastion monitor` after triggering
         #[arg(long)]
         monitor: bool,
     },
-    /// Quick stack health check (non-TUI)
+    /// Quick stack health check — prints orchestrator API + DB reachability (non-TUI)
     Status,
-    /// List tmux sessions with last-line output
+    /// List all tmux sessions with their last line of pane output
     Sessions,
-    /// Attach to an existing tmux session
+    /// Attach your terminal to an existing tmux session
     Attach {
         /// Name of the session to attach to
         session: String,
@@ -87,7 +108,7 @@ pub enum Commands {
         #[arg(long)]
         lines: Option<usize>,
     },
-    /// Run a single Claude Code turn against an interactive tmux session
+    /// Run a single Claude Code turn against an interactive tmux session and collect its output
     Ask {
         /// tmux session name to use (created if absent)
         #[arg(long)]
@@ -108,6 +129,14 @@ pub enum Commands {
         #[arg(long, default_value = "claude --permission-mode bypassPermissions")]
         launch_cmd: String,
     },
+    /// Generate a roff man page for bastion
+    #[command(hide = true)]
+    Man {
+        /// Write bastion.1 (and one page per subcommand) into this directory instead of
+        /// printing to stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -115,7 +144,57 @@ pub enum Commands {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn clap_debug_assert_passes() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn long_help_contains_examples_block() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            help.contains("bastion sessions"),
+            "long help should include sessions example"
+        );
+        assert!(
+            help.contains("bastion monitor"),
+            "long help should include monitor example"
+        );
+        assert!(
+            help.contains("bastion costs"),
+            "long help should include costs example"
+        );
+    }
+
+    #[test]
+    fn long_help_mentions_both_surfaces() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            help.contains("observability") || help.contains("workflow"),
+            "long help should mention workflow observability surface"
+        );
+        assert!(
+            help.contains("session") || help.contains("tmux"),
+            "long help should mention session control surface"
+        );
+    }
+
+    #[test]
+    fn man_subcommand_parses() {
+        let cli = Cli::try_parse_from(["bastion", "man"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Man { out: None })));
+    }
+
+    #[test]
+    fn man_out_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "man", "--out", "/tmp/man"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Man { out: Some(_) })));
+        if let Some(Commands::Man { out: Some(p) }) = cli.command {
+            assert_eq!(p, PathBuf::from("/tmp/man"));
+        }
+    }
 
     #[test]
     fn bare_bastion_parses_to_none() {
