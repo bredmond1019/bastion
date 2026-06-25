@@ -10,6 +10,17 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-25 — phase6-blockA code-review fixes merged to main
+
+Phase 6 Block A went through code review post-implementation, yielding 7 findings that were addressed and merged to main. Fixes applied: doc_id-based node id resolution (edge targets keyed by correct identifier), duplicate edge deduplication (removing redundant `[[link]]` references), double-parse eliminated (consolidated YAML frontmatter parsing), HashSet<&str> borrow handling (proper lifetime management in graph construction), double error reporting fixed (removed redundant error wrapping layers), query.rs deleted (consolidated query logic into brain/mod.rs for simpler exports), and parse_frontmatter reuse (deduplicated across okf.rs and validate.rs). All findings incorporated without architectural rework; 522 tests pass; commit 0eff723 merged to main. Next: phase6-blockB (Multi-workspace Brain — graph reader over per-repo/per-client roots).
+
+```diff
+planning/handoff.md | 41 ++++++++++++++++++++++-------------------
+ 1 file changed, 22 insertions(+), 19 deletions(-)
+```
+
+---
+
 ## 2026-06-25 — phase6-blockA complete: `bastion brain` structural query subcommand shipped
 
 Phase 6 Block A shipped across five tasks with a PASS verdict on the first review attempt. Task 1 scaffolded `src/brain/` with the OKF reader (`okf.rs`): pure `parse_okf_doc`, `extract_title_from_frontmatter`, and `build_node_edge_lists` functions that convert `[[link]]` corpora into typed `OkfDoc`/`OkfEdge` structs, with a clippy collapsible-if fix (iterator adapter chain replacing nested if/if-let). Task 2 implemented `BrainGraph` — a petgraph `DiGraph` wrapper with node-index map, typed `BrainError`, shortest path (A* with unit costs), topological sort, and bidirectional DFS/BFS traversal helpers. Task 3 added `src/brain/query.rs` with three pure semantic query functions — `dependents` (direct predecessors), `blast_radius` (BFS transitive reverse), and `lineage` (DFS transitive forward) — backed by 15 unit tests grounded in the fixture decision topology. Task 4 wired the `bastion brain` CLI: `BrainQuery` enum with mutually-exclusive `--dependents`/`--blast-radius`/`--lineage` flags and `--root` target, a thin synchronous `run()` I/O shell reusing `validate::find_markdown_files` for corpus discovery, 10 new unit tests plus 6 CLI parse tests, and smoke-tested against the real brain repo. Task 5 was a pure validation pass confirming all four gating checks pass (cargo fmt, clippy, 522 tests, release build) with no Dgraph dependency. Key design decisions: node ids use filename stems (matching OKF wiki-link convention), edges with unresolved targets are silently dropped at build time (consistent with okf.rs policy), and `brain::run()` is synchronous/DB-free per D4/D5. Next: phase6-blockB (Multi-workspace Brain).
