@@ -23,6 +23,21 @@ bastion has **two surfaces** under one roof (brain D21 / bastion D4):
 1. **Workflow observability** (`monitor`, `inspect`, `costs`, `run`) — reads the orchestrator's PostgreSQL state. The phases below (0–4) build this. Phase 1 is gated by D2.
 2. **Process / session control** (`status`, `sessions` family) — shells out to tmux to manage the long-running Claude Code sessions on the Mac Mini. Phase 5 builds this. It depends on neither Postgres nor the orchestrator and is therefore an **independent, ungated track** — workable at any time, accessible from desktop or phone via SSH over Tailscale.
 
+A third track (**Phases 6–10**) is bastion's slice of the **Bastion program** — the five-layer
+practice OS planned in the brain at `planning/bastion-product/` and governed by brain decisions
+**D24** (the Python/Rust seam — Rust harvested as a tested parts-bin, never a second engine), **D25**
+(bastion stays **read-only** for state; every mutation — abort, PR — is *triggered* through the Engine
+or Factory, never performed by bastion directly), and **D26** (Bastion = the system, `bastion` = this
+Console binary; **demand-first** ordering; the Brain spans docs *and* code *and* memory; MCP is split
+into a Python server + a Rust client). In that program the **Console (`bastion`)** owns the
+deterministic, model-free substrate: structural graph queries over the Brain, exact cost + budget
+control, the tracing/observability spine, Brain-integrity validation, an MCP client, a local-model
+node, and the proactive scanner that *triggers* self-healing PRs. These phases are sequenced to follow
+the program's **demand-first wave order** (D26), not bastion-internal dependency; the per-phase notes
+below map each bastion phase to its program wave. The Brain is the named moat — the layer competitors
+can't trivially clone — so the Console's job here is to make it queryable, fresh, correct, observable,
+and self-healing. This track is opportunistic and ungated; pick up blocks as the need appears.
+
 ## Architecture / Design Overview
 
 `bastion` is an **observer, never a writer** of the Python orchestrator. It reconstructs a live run
@@ -259,6 +274,348 @@ Build order is strict and incremental — each verb ships only when reached for.
 
 ---
 
+## Bastion-program track (Phases 6–10) — orientation
+
+Phases 6–10 are **bastion's execution slice of the cross-repo Bastion program** (brain
+`planning/bastion-product/master-plan.md`). That program is wave-ordered **demand-first** (D26) across
+five repos and uses global block letters **A–S**; the blocks whose execution home is the Console land
+here. Each bastion phase below corresponds to one program **wave**, and each block notes its **program
+letter** (e.g. *program Block Q*) so the two plans stay cross-referenceable. bastion block letters are
+**local to each phase** (Block A, B, C…) per the `phaseN-blockX` convention `/generate-tasks` parses —
+they are *not* the program's global letters.
+
+Cross-cutting rules for this whole track:
+- **D25 — read-only state, triggered mutations.** bastion never writes orchestrator state or merges a
+  PR. It *reads* (Postgres, files) and *triggers* (an Engine abort endpoint, an `sdlc-flow` run). Every
+  block that "acts" does so by calling out, never by direct mutation.
+- **D24 — vendor, don't depend.** Rust crates are copied from the read-only `workflow-engine-rs` /
+  `claude-sdk-rs` portfolio repos into bastion and adapted here; they are never live dependencies.
+- **Consolidate the harvested error model.** The `claude-sdk-rs` `C001–C014` taxonomy is vendored
+  **once** (Phase 7 Block A) into `src/observ/errors.rs`; later blocks (e.g. the local-model node)
+  reuse it rather than re-vendoring.
+- Several blocks are the **bastion half of a cross-repo block**; their orchestrator/base-template peer
+  is called out under *Out of scope* as a prerequisite for the combined claim. The bastion half is
+  authored to be independently shippable.
+
+> Distant blocks (Phases 8–10) carry the full skeleton but are **forward-looking** — expect their
+> Files / interface lines to need refinement when each becomes next.
+
+---
+
+## Phase 6 — Brain & code retrieval (program Wave 1)
+
+Deepen the Brain with **structural** retrieval (the model-free, Console-side twin of the Engine's
+semantic retrieval) and extend it from docs to **code**. Per `ownership.md`, code is just another
+corpus that is both semantic (Engine) and structural (Console). This phase vendors the
+`knowledge_graph` crate and runs its algorithms over graphs derived from the OKF `[[link]]` corpus and,
+later, from source.
+
+### Block A — Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph *(program Block A)*
+- **What:** Vendor the `knowledge_graph` crate (A\*, Dijkstra, topological sort, traversal; PageRank +
+  community detection available for Phase 8) from `workflow-engine-rs` into bastion, **decoupled from
+  its Dgraph backing**, and run its algorithms over a graph derived from the OKF corpus — markdown
+  documents as nodes, `[[link]]` references as edges. Expose a `bastion brain` subcommand answering
+  structural questions: dependents ("what depends on D21"), blast-radius ("what breaks if the data
+  contract changes"), and lineage ("trace a decision's lineage").
+- **Why:** Program Wave 1, the retrieval-depth foundation everything else in this track leans on. A
+  self-contained crate that *adds* structural retrieval rather than duplicating the Engine's semantic
+  retrieval. The OKF brain is *already* a graph (docs joined by `[[links]]`).
+- **Files:**
+  - *New* `src/brain/mod.rs` (subcommand entry + wiring)
+  - *New* `src/brain/graph.rs` (vendored `knowledge_graph` algorithms, Dgraph-free)
+  - *New* `src/brain/okf.rs` (pure OKF reader: parse frontmatter + extract `[[link]]` edges → node/edge lists)
+  - *New* `src/brain/query.rs` (pure dependents / blast-radius / lineage queries over the built graph)
+  - *New* `src/brain/fixtures/` (small OKF corpus fixture for tests)
+  - *Modified* `src/cli.rs` (add `brain` subcommand + flags), `src/main.rs` (dispatch), `Cargo.toml` (vendored-crate deps; reuse `petgraph` if it suffices)
+- **Interfaces / shared surface:** Consumes the OKF `[[link]]` convention as the edge contract. The
+  graph builder's `(root) → (nodes, edges)` signature and `graph.rs` algorithm API are the shared
+  surface Blocks B and C (and Phase 8) build on.
+- **Out of scope:** No Dgraph stand-up (file-derived graph only). No semantic/pgvector retrieval (Engine
+  / program Block B — stays Python). No semantic+structural merge into one ranked answer (the query
+  router — a later per-consumer decision). No code graph yet (Block C). No integrity checks yet (Phase
+  8). Source repo `workflow-engine-rs` is read-only.
+- **Acceptance criteria:** `bastion brain` returns correct dependents/lineage for a known OKF node (e.g.
+  D20's dependents match its stated relations); the graph is built from the live brain repo corpus; the
+  vendored crate compiles with **no** Dgraph dependency; per CLAUDE.md Rule 6 the pure OKF→graph builder
+  and query functions are exhaustively unit-tested against the fixture and the thin file-walk I/O shell
+  is smoke-tested + recorded in `tasks.md §Notes`; gated checks pass (`cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+### Block B — Multi-workspace Brain (bastion graph reader over per-repo / per-client roots) *(program Block C, bastion half)*
+- **What:** Generalize the bastion graph reader to point at an **arbitrary knowledge workspace** (a
+  config/CLI-provided root) and to address **multiple** workspaces (per-repo, per-client), not only this
+  repo's hardcoded path. Same OKF + graph behavior over any conforming directory, selectable by name.
+  This is the Console half of the cross-repo multi-workspace block.
+- **Why:** Program Wave 1. Proves the Brain is a *capability* over any knowledge dir, not a hardcode of
+  one repo — the groundwork the code corpora (Block C), entity/memory, and the loop-proof all need.
+- **Files:**
+  - *Modified* `src/brain/okf.rs` (take a workspace root parameter — keep it pure: root in, node/edge lists out)
+  - *Modified* `src/brain/mod.rs` (resolve the workspace root from flag/config; address by name)
+  - *Modified* `src/cli.rs` (`--workspace` / `--knowledge-dir` on the `brain` subcommand)
+  - *Modified* `src/config.rs` (workspace registry + default; follow the existing env > file > built-in precedence)
+  - *New* `src/brain/fixtures/portable/` (a second, non-repo OKF workspace fixture)
+- **Interfaces / shared surface:** Produces/consumes a shared **"knowledge workspace" convention** (a
+  named root + OKF expectations) consumed identically by the Python RAG reader and this graph reader.
+  Builds on Block A's `(root) → (nodes, edges)` signature.
+- **Out of scope:** The Python indexer/retriever multi-workspace generalization (program Block C
+  orchestrator half — separate repo, separate sitting; the combined "multi-workspace Brain" claim needs
+  both, but this half is independently shippable). De-opinionating the OKF format. Multi-brain switching
+  UX beyond name selection. Packaging/install. **Cross-repo prerequisite:** program Block B (semantic
+  store) for the semantic half; this block is structural-only.
+- **Acceptance criteria:** the bastion graph reader indexes and answers over a **second**, non-repo OKF
+  workspace selected by `--workspace` / config; the default still resolves to the brain repo; a
+  portability fixture is covered; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
+  `cargo test`, `cargo build --release`).
+
+### Block C — Structural code navigation (code-as-graph) *(program Block Q)*
+- **What:** Console-side exact symbol / definition / reference lookup and a **code-as-graph** (imports,
+  calls) alongside the docs-as-graph — answering "where is this defined, what calls it, what breaks if I
+  change it." Deterministic and model-free (tree-sitter / ripgrep over source), reusing Block A's
+  `knowledge_graph` algorithms over a graph built from code.
+- **Why:** Program Wave 1. The structural twin of the Engine's semantic code search (program Block P),
+  mirroring how Block A is the structural twin of semantic doc retrieval. Fast, exact, offline — the
+  Console's wheelhouse.
+- **Files:**
+  - *New* `src/brain/code.rs` (source → symbols/defs/refs extraction via tree-sitter; pure where possible)
+  - *New* `src/brain/code_graph.rs` (build the imports/calls graph; run `graph.rs` queries over it)
+  - *New* `src/brain/fixtures/code/` (small multi-file source fixture for tests)
+  - *Modified* `src/cli.rs` (a `bastion brain code` / `bastion code` surface for def/refs/dependents), `src/main.rs` (dispatch), `Cargo.toml` (tree-sitter grammar deps)
+- **Interfaces / shared surface:** Reuses `src/brain/graph.rs` (Block A) and the workspace-root resolver
+  (Block B) over a code-derived graph. Produces a Console code-navigation surface.
+- **Out of scope:** Semantic "how does X work" code search (program Block P — Engine/Python). Cross-repo
+  refactoring or edits. Whole-repo call-graph completeness for every language (scope to the project's
+  primary languages; note coverage). Source repo `workflow-engine-rs` read-only.
+- **Acceptance criteria:** `bastion` returns the correct definition + references for a known symbol in a
+  target repo and answers a code-dependents query over the fixture; extraction respects
+  function/class/symbol boundaries; per Rule 6 the pure extraction/graph logic is unit-tested and the
+  file-walk shell smoke-tested + recorded in `tasks.md §Notes`; gated checks pass (`cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+---
+
+## Phase 7 — Observability & control (program Wave 2)
+
+Give the operator a real spine: see what is happening, what it costs, and stop it. Today bastion has
+**no** structured logging/tracing/metrics (errors are `eprintln!`), `costs` is retroactive estimation,
+and there is **no** kill switch or budget enforcement. Much of the machinery is **under-harvested Rust
+code** (`claude-sdk-rs` ships the `C001–C014` taxonomy + telemetry hooks; `workflow-engine-mcp` ships
+circuit breakers + metrics). Per D25, control actions *trigger* the Engine; they never mutate it.
+
+### Block A — Tracing + structured-error spine *(program Block H)*
+- **What:** Introduce `tracing` (spans + structured fields) across bastion and vendor the
+  `claude-sdk-rs` **`C001–C014` error taxonomy + `ErrorContext`** as the Console's error model,
+  replacing the ad-hoc `eprintln!` / bare-`anyhow` surface. Every command emits structured events
+  (start, outcome, duration, error code) to a local rolling log; add a `--verbose` / `--json-logs`
+  surface.
+- **Why:** Program Wave 2, and foundational for the rest of this track — you cannot alert on, cap, or
+  self-heal what you cannot see. Harvests the *telemetry half* of `claude-sdk-rs` that D24 left on the
+  table; the taxonomy is vendored **once here** and reused by later blocks.
+- **Files:**
+  - *New* `src/observ/mod.rs` (tracing init + structured event emission helpers)
+  - *New* `src/observ/errors.rs` (vendored `C001–C014` taxonomy + `ErrorContext`; the Console error model)
+  - *Modified* `src/main.rs` (init tracing/subscriber; top-level error → `C0xx` mapping), `src/cli.rs` (global `--verbose` / `--json-logs` flags), `Cargo.toml` (`tracing`, `tracing-subscriber`)
+- **Interfaces / shared surface:** Produces a structured event stream + the `C0xx` error model that
+  every later block (cost alerts, kill, integrity findings, scanner) emits into. Per-command event
+  emission is folded into each command module incrementally (append-style within those modules).
+- **Out of scope:** Distributed tracing / OpenTelemetry export (later, only if a backend is stood up).
+  Orchestrator-side tracing (the Engine owns its own). A metrics backend/dashboard. Source repo
+  read-only.
+- **Acceptance criteria:** every subcommand emits a structured start/outcome/duration event; errors
+  carry a `C0xx` code + context; `--json-logs` produces machine-parseable output; the vendored taxonomy
+  compiles in bastion; per Rule 6 event-emission and error-code mapping are unit-tested; gated checks
+  pass (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+### Block B — Vendor `workflow-engine-core` token counter → exact `bastion costs` *(program Block D)*
+- **What:** Vendor the `workflow-engine-core` token counter (real `tiktoken-rs`, `cl100k_base` /
+  `o200k_base` encoders) into bastion and replace the current hardcoded-pricing **estimation** in
+  `bastion costs` with **exact** token counts feeding the USD spend summary. Minimal surface change —
+  `bastion costs` already exists (Phase 2 Block B).
+- **Why:** Program Wave 2. Exact > estimated, available as a library for free — and the input the
+  budget/kill controls (Block C) act on.
+- **Files:**
+  - *New* `src/costs/tokens.rs` (vendored exact token counter; pure `count(text, model) → usize`)
+  - *Modified* `src/costs/mod.rs` (use exact counts in `aggregate`/`render`), `src/costs/pricing.rs` (feed exact counts into the USD math), `Cargo.toml` (add `tiktoken-rs`)
+- **Interfaces / shared surface:** Consumes the orchestrator's cost/usage fields in the **D20 data
+  contract**. Produces exact token/cost figures (the spend signal Block C watches). No data-contract
+  change (read path).
+- **Out of scope:** Re-pricing logic / new pricing tables beyond what `bastion costs` has. Budget
+  enforcement, `--watch`, kill (Block C). Source repo read-only.
+- **Acceptance criteria:** `bastion costs` reports counts that **match** the tiktoken encoders for a
+  known input (exact, not estimated); a unit test asserts exact-count parity on a fixed sample
+  (element-level); the vendored counter compiles in bastion; gated checks pass (`cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+### Block C — Cost as a budgeted resource: `--watch`, alerts, `bastion kill`, pre-dispatch gate *(program Block I, bastion half)*
+- **What:** Make cost *actionable*: a live `bastion costs --watch`, configurable **budget thresholds
+  with alerts**, a **kill switch** (`bastion kill <run>`) that aborts a run by **calling a new
+  orchestrator abort endpoint** (the Engine performs the cancel + terminal stamp — D25), and a
+  **pre-dispatch budget gate** so `bastion run` refuses/warns when a run would exceed the ceiling.
+- **Why:** Program Wave 2. Retroactive estimation is not control; this closes *observe spend → cap
+  spend → stop spend*. The kill is operator/threshold-triggered with confirmation, never silent.
+- **Files:**
+  - *New* `src/costs/watch.rs` (live spend-watch loop emitting `observ` events), `src/costs/budget.rs` (pure threshold + gate evaluation), `src/run/kill.rs` (kill → orchestrator abort call)
+  - *Modified* `src/api/client.rs` (call the new abort endpoint), `src/cli.rs` (`costs --watch`, `kill` subcommand, `run` budget-gate flag), `src/config.rs` (budget thresholds)
+- **Interfaces / shared surface:** Consumes D20 cost/usage fields and Block A's event stream (to alert
+  on). **Produces two new D20 contract additions** — an authenticated abort endpoint and a budget-gate
+  field/response — bumped per the CLAUDE.md D20 protocol and re-pinned in bastion's `data-contract.md`.
+  Consumes Block B's exact counts (estimates work until B lands).
+- **Out of scope:** The orchestrator-side abort endpoint + server-side budget enforcement (program Block
+  I orchestrator half — the enforcement point; this block is the Console surface + trigger). Per-client
+  billing. Direct Celery/Redis manipulation by bastion (D2/D25 — the Engine owns the abort). Silent
+  auto-kill.
+- **Acceptance criteria:** `bastion costs --watch` shows live spend; crossing a threshold emits an alert
+  event; `bastion kill <run>` aborts via the orchestrator endpoint and the run reaches terminal state in
+  `node_runs`; `bastion run` honors the budget gate; the pure budget/gate logic is unit-tested per Rule
+  6 and the contract additions are recorded in `data-contract.md`; gated checks pass (`cargo fmt
+  --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+---
+
+## Phase 8 — Client-grade Brain integrity (program Wave 3)
+
+Make the Brain *trustworthy*, not just searchable: catch correctness defects deterministically, before
+they ever reach an LLM. This is the **hard** anti-hallucination layer (prompt-based grounding is soft),
+and the Rust graph code already supports it. Forward-looking — refine Files when it becomes next.
+
+### Block A — Deterministic Brain-integrity validation *(program Block K)*
+- **What:** Extend `bastion validate` + the Phase 6 Block A graph to catch defects deterministically:
+  broken `[[links]]`, orphan nodes, stale cross-references (a doc points at a section/decision that
+  moved or changed), and **structurally-contradictory decisions** (two decisions making opposite claims
+  on the same topic). Use `knowledge_graph`'s **PageRank + community detection** to surface the
+  most-central docs and detect drift / isolated clusters.
+- **Why:** Program Wave 3. A deterministic graph check is a *hard* correctness guarantee — the single
+  highest-leverage anti-hallucination move on the corpus side, and the structured findings it produces
+  feed the Phase 10 self-healing loop.
+- **Files:**
+  - *New* `src/validate/integrity.rs` (broken-link / orphan / stale-ref / contradiction checks over the brain graph; emits a structured findings record)
+  - *Modified* `src/validate/mod.rs` (`--integrity` mode + report), `src/brain/graph.rs` (expose PageRank / community outputs if not already), `src/cli.rs` (`validate --integrity`)
+- **Interfaces / shared surface:** Consumes the OKF `[[link]]` graph (Phase 6 Block A) + OKF frontmatter
+  conventions. Produces a structured **integrity-findings** record — the documented input contract for
+  Phase 10 Block A.
+- **Out of scope:** LLM-judged *semantic* contradiction (this block is deterministic/structural only;
+  fuzzy contradiction detection is a later LLM-assisted refinement — program Block L, Engine-side).
+  Auto-fixing (Phase 10). Answer-time grounding (program Block L). **Depends on** Phase 6 Block A.
+- **Acceptance criteria:** `bastion validate --integrity` reports broken links, orphans, stale refs, and
+  structurally-contradictory decisions over the live brain with **zero false positives** on a curated
+  fixture; PageRank / community outputs are exposed; the findings record is documented as the Phase 10
+  contract; per Rule 6 the pure check logic is unit-tested against fixtures; gated checks pass (`cargo
+  fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+---
+
+## Phase 9 — Protocol & local inference (program Wave 4)
+
+Give the Console a protocol seam (MCP client) and its own offline brain (a Python-free local-model
+path). Forward-looking — refine Files when each becomes next.
+
+### Block A — Vendor `workflow-engine-mcp` → Console MCP / tool client *(program Block E, bastion half)*
+- **What:** Vendor the multi-transport (`HTTP` / `WS` / `stdio`) MCP client with connection pooling from
+  `workflow-engine-mcp` into bastion as the Console's protocol/tool client. Demonstrate it against an
+  existing MCP server (the crate ships example servers); built together with the Engine's
+  Brain-as-MCP-**server** (program Block R) as distinct seam halves (D26).
+- **Why:** Program Wave 4 — the protocol seam. `brain-rag` Layer 3 = MCP; this is the *client* side that
+  connects Console ↔ Brain-as-MCP-server ↔ tools.
+- **Files:**
+  - *New* `src/mcp/mod.rs` (client entry + optional demo subcommand wiring), `src/mcp/client.rs` (vendored MCP client + connection pooling), `src/mcp/transport.rs` (HTTP / WS / stdio)
+  - *Modified* `src/cli.rs` (optional `mcp` demo subcommand to list/invoke a tool), `src/main.rs` (dispatch), `Cargo.toml` (transport deps as needed)
+- **Interfaces / shared surface:** Produces a Console-side **MCP client** across three transports. Uses
+  Phase 7 Block A's `C0xx` error model for transport/process errors. The **Brain-as-MCP-server**
+  (program Block R, Python) is the server peer — its contract is defined there.
+- **Out of scope:** Building the Brain-as-MCP-server (program Block R, python-orchestration — the
+  prerequisite for the end-to-end Brain-query claim; this block targets the crate's example servers for
+  acceptance). Wiring specific brain tools. Auth beyond what the vendored client provides. Source repo
+  read-only.
+- **Acceptance criteria:** bastion connects to an MCP example server over at least one transport and
+  lists/invokes a tool; the vendored client compiles in bastion; a transport round-trip test passes
+  (mock or example server); gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
+  `cargo test`, `cargo build --release`).
+
+### Block B — Seed the Rust local-model node from the `claude-sdk-rs` spine *(program Block F)*
+- **What:** Vendor two patterns from `claude-sdk-rs` into a small Rust **local-model runner** in
+  bastion: the subprocess→typed→streaming spine (→ a local/open-weight node driving Ollama /
+  `llama-cli`) and the embedded SQLite session store (→ local-first `bastion ask` conversation memory,
+  no Postgres). Reuse the `C001–C014` error model already vendored in Phase 7 Block A (`src/observ/errors.rs`)
+  rather than re-vendoring it. Give `bastion ask` a Python-free local-model path, selected by flag.
+- **Why:** Program Wave 4 — local inference via a CLI binary is on the **Rust** side of the seam (D24):
+  the Console gets an offline brain for quick summarization / commit messages / cost estimates without
+  round-tripping through Celery. Ties to brain decision **D23** (Ollama-on-M2).
+- **Files:**
+  - *New* `src/sessions/local_model.rs` (subprocess→typed→streaming spine driving Ollama / `llama-cli`; pure command/arg construction + typed parse split from the spawn, per Rule 6)
+  - *New* `src/sessions/memory.rs` (embedded SQLite conversation store — schema + pure query/serialization helpers over a thin `rusqlite` shell)
+  - *Modified* `src/sessions/ask.rs` (route to `local_model` when a local-model flag/config is set — additive), `src/cli.rs` (`ask` flags selecting the local model + model name), `Cargo.toml` (`rusqlite` + any local-model deps)
+- **Interfaces / shared surface:** Consumes brain decision **D23**'s local-model strategy (Ollama /
+  `llama-cli` CLI as the driven process) and **reuses** Phase 7 Block A's `C0xx` error model. Produces a
+  Rust local-model node + local SQLite conversation store for `bastion ask`.
+- **Out of scope:** The Python open-weight node (program/orchestrator Project H / D19 / D23 Python side)
+  — stays Python; this is **not** a competing local-inference stack (D24 guardrail). A general inference
+  service. Option D's compile-to-Rust runtime. **Replacing** the existing Claude-Code-session path in
+  `bastion ask` (the local path is additive, flag-selected). Re-vendoring the error taxonomy (reuse
+  Phase 7 Block A). Source repo read-only.
+- **Acceptance criteria:** `bastion ask` answers a one-turn prompt against a local model with **no**
+  Python process involved; conversation history persists in local SQLite across turns; per Rule 6 the
+  pure logic (command/arg construction, typed parse, SQLite query/serialization) is exhaustively
+  unit-tested and the spawn/poll I/O shell smoke-tested + recorded in `tasks.md §Notes`; the `sessions/`
+  surface's DB-free (D4 — the Postgres pool) and synchronous (D5) invariants are preserved (the SQLite
+  store is local sessions memory, **not** the orchestrator Postgres); gated checks pass (`cargo fmt
+  --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+---
+
+## Phase 10 — Self-healing loop (program Wave 5)
+
+The synthesis: the Brain finds its own problems and *triggers* fixes for human review — the
+`sdlc-flow` pattern run **proactively** instead of spec-driven. Per D25, bastion **detects and
+triggers**; the Factory **authors the PR**; a human **reviews the draft**; nothing auto-merges.
+Forward-looking — refine Files when each becomes next.
+
+### Block A — Proactive scanner → issue backlog *(program Block M)*
+- **What:** A scheduled `bastion doctor` (or equivalent) that runs the available scans — Phase 8 Block A
+  Brain integrity, plus cross-repo health (test/lint/build status, doc staleness) — and writes findings
+  to a **persistent OKF issue backlog** with dedup, priority, and dismiss/defer semantics (so the same
+  finding isn't re-filed every run).
+- **Why:** Program Wave 5. `sdlc-flow` is reactive (spec-in → PR-out); there is no proactive detector
+  today. The backlog is the missing front half of self-healing and is what stops duplicate work and
+  lets a human triage.
+- **Files:**
+  - *New* `src/doctor/mod.rs` (scan orchestration + `doctor` subcommand), `src/doctor/backlog.rs` (OKF issue-backlog writer: dedup, priority, dismiss/defer — pure record logic over a thin file shell)
+  - *Modified* `src/cli.rs` (`doctor` subcommand), `src/main.rs` (dispatch), `Cargo.toml` (if new deps needed)
+- **Interfaces / shared surface:** Consumes Phase 8 Block A integrity findings + repo health signals +
+  Phase 7 Block A events. Produces the **issue-backlog record** (OKF docs) — the documented input for
+  Block B. The backlog is a *trigger artifact*, not a mutation (D25).
+- **Out of scope:** Fixing anything (Block B). Scanning external/non-brain repos beyond health status.
+  Auto-triage of fuzzy findings (human-triaged in the backlog). **Depends on** Phase 7 Block A
+  (events) + Phase 8 Block A (integrity findings).
+- **Acceptance criteria:** a scheduled run produces a deduped, prioritized backlog; re-running does not
+  duplicate open findings; dismissed/deferred findings stay suppressed; per Rule 6 dedup + dismissal
+  logic is unit-tested; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
+  `cargo test`, `cargo build --release`).
+
+### Block B — Findings → spec → draft PR via `sdlc-flow` *(program Block N, bastion half)*
+- **What:** For clear-cut backlog items, generate a machine-authored spec and **trigger `sdlc-flow`**
+  (base-template) to take it spec → fix → review → **draft PR for human review**. bastion triggers and
+  links the resulting PR back to the backlog item; on landing, the item closes (preventing
+  re-proposal). bastion never authors the PR itself or merges (D25).
+- **Why:** Program Wave 5 — closes the self-healing loop ("self-improve when it finds issues and create
+  PRs to fix things for human review, just like `sdlc-flow`"). Reuses the audited PR-terminating engine
+  rather than reimplementing PR creation in bastion.
+- **Files:**
+  - *New* `src/doctor/dispatch.rs` (findings → spec; trigger `sdlc-flow`; record the backlog↔PR link)
+  - *Modified* `src/doctor/mod.rs` (wire the dispatch step), `src/doctor/backlog.rs` (close item on landed PR), `src/cli.rs` (a `doctor --fix` / dispatch flag)
+- **Interfaces / shared surface:** Consumes the Block A backlog record. Produces a draft PR via
+  `sdlc-flow` + a backlog↔PR link. Uses `sdlc-flow`'s existing review gate / triage / `state.json`
+  unchanged; **does not** use `--auto-merge`.
+- **Out of scope:** The base-template **findings→spec entry point** + self-healing-PR label convention
+  (program Block N base-template half — the Factory-side prerequisite). Auto-merge (human reviews every
+  self-healing PR — D25). Fixes outside what `sdlc-flow`'s review gate can verify. Fuzzy/ambiguous
+  findings (only clear-cut items are auto-specced). **Depends on** Phase 10 Block A.
+- **Acceptance criteria:** a seeded clear-cut finding produces a draft PR through `sdlc-flow` with the
+  review gate passing in the target repo; the PR is labeled self-healing and linked to its backlog item;
+  a landed fix closes the item so it is not re-proposed; bastion performs no direct merge (D25 upheld);
+  per Rule 6 the pure findings→spec + link logic is unit-tested; gated checks pass (`cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+---
+
 ## Quick Reference Sequence Table
 
 | Phase | Block | What | Why | Role in destination |
@@ -278,10 +635,33 @@ Build order is strict and incremental — each verb ships only when reached for.
 | 5 | E | Session TUI view | Ergonomic operator surface | Pleasant from a phone |
 | 5 | F | Activity indicator + trust observer | Honest session state (running vs idle); pre-flight the Claude trust prompt | Trustworthy at-a-glance from a phone |
 | 5 | G | `bastion ask` (one Claude Code turn) | Stable command for the orchestrator's `CLAUDE_CODE_SESSION` LLM provider | Subscription-billed, observable LLM nodes |
+| 6 | A | Vendor `knowledge_graph`; structural query over the OKF `[[link]]` graph *(prog. A, Wave 1)* | Adds structural retrieval (deps / blast-radius / lineage) | The Brain answers "what is connected", not just "what is similar" |
+| 6 | B | Multi-workspace Brain — graph reader over per-repo/per-client roots *(prog. C½, Wave 1)* | Brain as a capability over any OKF workspace, not one repo | Groundwork for code corpora, memory, loop-proof |
+| 6 | C | Structural code navigation (code-as-graph) *(prog. Q, Wave 1)* | Exact def/refs/dependents over source, model-free | "Ask my own system how my own code is wired" |
+| 7 | A | Tracing + `C0xx` structured-error spine *(prog. H, Wave 2)* | You can't cap/alert/self-heal what you can't see | The observability foundation for the whole track |
+| 7 | B | Vendor tiktoken counter → exact `bastion costs` *(prog. D, Wave 2)* | Exact > estimated, as a library for free | Console reports exact, not estimated, spend |
+| 7 | C | Cost as a budgeted resource: `--watch`, alerts, `bastion kill`, gate *(prog. I½, Wave 2)* | Observe spend → cap spend → stop spend (D25 trigger) | Operator control over runaway cost |
+| 8 | A | Deterministic Brain-integrity validation *(prog. K, Wave 3)* | A hard correctness guarantee vs. soft prompt grounding | The real anti-hallucination layer; feeds self-healing |
+| 9 | A | Vendor `workflow-engine-mcp` → Console MCP / tool client *(prog. E½, Wave 4)* | Protocol seam (Layer 3 client) for the Brain-MCP server | Console speaks MCP across HTTP/WS/stdio |
+| 9 | B | Rust local-model node from the `claude-sdk-rs` spine *(prog. F, Wave 4)* | Python-free local inference for `bastion ask` (D23) | The Console gets its own offline brain |
+| 10 | A | Proactive scanner → issue backlog *(prog. M, Wave 5)* | The missing proactive front-half of self-healing | The Brain finds its own problems |
+| 10 | B | Findings → spec → draft PR via `sdlc-flow` (no auto-merge) *(prog. N½, Wave 5)* | Triggers fixes for human review; reuses the audited engine (D25) | The Brain proposes its own fixes |
 
 > Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
 > Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any
 > time, including before the monitor track completes.
+>
+> Phases 6–10 are **bastion's slice of the cross-repo Bastion program** (brain
+> `planning/bastion-product/`, governed by brain **D24 / D25 / D26**), sequenced to follow the
+> program's **demand-first wave order** (the `Wave N` tag on each row), not bastion-internal
+> dependency. Each row notes its **program block letter** (`prog. X`); `½` marks the bastion half of a
+> cross-repo block whose orchestrator/base-template peer is a prerequisite for the *combined* claim (the
+> bastion half is independently shippable). This whole track is **opportunistic and ungated** — pull
+> blocks as the need appears. Within it the only hard local prerequisites are: 6B/6C build on 6A;
+> 7C builds on 7A (and is strengthened by 7B); 8A builds on 6A; 9B reuses 7A's error model;
+> 10A builds on 7A + 8A; 10B builds on 10A. Program blocks **B, J, L, O, P, R, S, G** are **not** here
+> — they execute in python-orchestration / base-template / the brain (G, the loop-proof, is coordinated
+> from bastion but builds no bastion code; its artifact lands in the brain's `docs/content/`).
 
 ---
 
