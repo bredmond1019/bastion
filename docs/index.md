@@ -20,6 +20,7 @@ User-facing documentation for bastion. For internal strategy and progress, see `
 | [validate.md](validate.md) | Content validation — `bastion validate <path>`: file discovery rules, `ValidationError`/`ErrorKind` types, submodule contracts, exit behaviour |
 | [data-contract.md](data-contract.md) | Orchestrator field mappings — the execution state the monitor track reads (pinned to the orchestrator's contract) |
 | [config.md](config.md) | Configuration reference — env vars, `~/.config/bastion/config.toml` format, and precedence rules |
+| [brain.md](brain.md) | OKF knowledge-graph queries — `bastion brain`: corpus discovery, `--dependents` / `--blast-radius` / `--lineage` modes, output format, degradation paths |
 
 ## Internal context (planning/)
 
