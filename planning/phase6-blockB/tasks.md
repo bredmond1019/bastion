@@ -23,7 +23,7 @@ Generalize the bastion brain graph reader to address an **arbitrary, named knowl
 - **Tests (Rule 6):** exhaustively unit-test `resolve_workspace_root` — explicit root wins over name; named lookup hits; unknown name → typed error; `default_workspace` fallback; no-config built-in default; and `parse_file` round-trips a `[workspaces]` table.
 - **Files:** *Modified* `src/config.rs`.
 
-### 2. Portable (non-repo) OKF workspace fixture + okf portability coverage
+### 2. [~] Portable (non-repo) OKF workspace fixture + okf portability coverage
 - Create `src/brain/fixtures/portable/` — a **second, non-repo** OKF corpus in a different domain than Block A's decision graph (e.g. a small client/project knowledge dir: a handful of interlinked `.md` nodes with OKF frontmatter, at least one lineage chain and one unresolved `[[link]]`), proving the reader is not hardcoded to this repo's ids.
 - In `src/brain/okf.rs`, add a portability test module asserting `build_node_edge_lists` over the portable-fixture docs produces the expected nodes/edges (distinct ids from Block A's fixture) — demonstrating the pure reader works over *any* conforming corpus. No production code change is expected here; if one proves necessary, keep `okf` pure (root in / lists out) and justify in `## Notes`.
 - **Files:** *New* `src/brain/fixtures/portable/*.md`; *Modified* `src/brain/okf.rs` (tests).
