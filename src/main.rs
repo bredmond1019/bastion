@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 mod api;
+mod brain;
 mod cli;
 mod config;
 mod costs;
