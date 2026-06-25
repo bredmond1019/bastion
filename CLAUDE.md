@@ -90,7 +90,8 @@ bastion/
 │   ├── validate/       ← markdown/MDX content validation
 │   ├── costs/          ← LLM spend summary
 │   ├── run/            ← workflow trigger + stack health check
-│   └── sessions/       ← tmux session control (Phase 5; shells to tmux, no DB) — D4
+│   ├── sessions/       ← tmux session control (Phase 5; shells to tmux, no DB) — D4
+│   └── brain/          ← OKF corpus reader + petgraph structural queries (Phase 6)
 └── Cargo.toml
 ```
 
