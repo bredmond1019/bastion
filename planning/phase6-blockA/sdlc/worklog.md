@@ -29,3 +29,6 @@ Validated: gating checks (fast tripwire)
 
 ## Docs
 Patched: none | Created: /Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/docs/brain.md
+
+## Wrap-up — PASS
+Next: phase6-blockB — Multi-workspace Brain (graph reader over per-repo/per-client roots)
