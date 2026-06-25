@@ -941,7 +941,6 @@ Return via StructuredOutput:
   decisions: any non-obvious choices (empty array if none)
   notes: one-line status
 `, withModel({ label: `${isFix ? 'fix' : 'implement'}-${taskNum}-${attempt}`, schema: STAGE_SCHEMA, phase: 'Tasks' }, isFix ? fixModel : MODEL.implement))
-    recordFilesRead(stageResult)
 
     if (!stageResult) {
       log(`Task ${taskNum} attempt ${attempt}: agent returned null.`)
