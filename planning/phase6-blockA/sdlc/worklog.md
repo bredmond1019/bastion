@@ -21,3 +21,8 @@ Validated: gating checks (fast tripwire)
 What: Wired bastion brain subcommand: thin I/O shell (run()), BrainQuery enum + pure helpers, CLI (Brain variant with mutually-exclusive --dependents/--blast-radius/--lineage + --root), main.rs dispatch; 10 new unit tests + 6 CLI parse tests; smoke tested; 522 tests pass.
 Decisions: Used filename-stem node ids (no-frontmatter docs) for smoke test corpus since the real brain repo uses filename-stem wiki links that don't match slugified frontmatter title node ids — documented this constraint in ## Notes.; Made brain::run() synchronous (not async) since it is DB-free and all I/O is blocking filesystem reads, consistent with the sessions surface pattern (D4/D5).; Reused crate::validate::find_markdown_files for corpus discovery rather than duplicating the directory-walking logic.
 Validated: gating checks (fast tripwire)
+
+## Task 5 — PASSED (1 attempt)
+What: Task 5 (validate): all validation commands pass — cargo fmt, clippy, test (522 passed), build --release; no Dgraph dependency confirmed
+Decisions: Task 5 is purely a validation task with no code changes required — all implementation was completed in Tasks 1–4; no new commit needed
+Validated: gating checks (fast tripwire)
