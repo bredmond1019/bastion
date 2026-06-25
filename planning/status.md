@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-22 — phase4-blockA complete (config file support + help/man polish; 428 tests, PASS). Phase 3, Phase 4 Block A, and Phase 5 all done. Next: Phase 4 remaining items when orchestrator D28 Phases 4–5 land (SSE streaming, TUI node re-run); no unblocked work in queue.
-**Current focus:** Phase 4 — remaining items blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run)
+**Last updated:** 2026-06-25 — master-plan extended with the **Bastion-program track (Phases 6–10)**: bastion's execution slice of the cross-repo Bastion program (brain `planning/bastion-product/`, governed by brain D24/D25/D26), sequenced demand-first by D26 wave. 11 new blocks added, all Not started. Phases 0–3, Phase 4 Block A, and Phase 5 remain done; Phase 4 Blocks B–C still blocked on orchestrator D28 Phases 4–5.
+**Current focus:** Bastion-program track — first runnable block is **phase6-blockA** (vendor `knowledge_graph` → structural OKF query). The track is opportunistic/ungated (D26). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
 
 ---
 
@@ -62,6 +62,45 @@ description: Current state and progress tracker for bastion.
 | Block F | session activity indicator + Claude trust observer | Done | Activity indicator shipped: `classify_state(pane_current_command)` replaces session_attached as the state source; detached-but-running sessions now correctly show `running (cmd)`. Trust observer shipped: new `claude_state.rs` reads `~/.claude.json` as a read-only observer and prints advisory trust pre-flight on `bastion new --dir`. 36 new tests (145 → 181). All gating checks green. PASS in 1 review attempt. Smoke-tested DB-free (D4) and synchronous (D5). |
 | Block G | `bastion ask` (one Claude Code turn) | Done | `bastion ask` shipped: pure `done_path`/`trigger_text`/`poll_plan`/`has_session_args` helpers; `AskError` enum (`UntrustedDir`, `Tmux`, `Launch`, `Timeout`); thin I/O shell (ensure session+Claude → send trigger → poll `<out>.done`). 26 new tests (181 → 206+). All gating checks green. PASS in 2 review attempts (fix: `classify_state()==Running` replaces exact `"claude"` string check, since Claude Code v2.1.185 sets `ucomm` to its version string). Smoke-tested: cold start → PONG written → exit 0; warm reuse (no relaunch); timeout → exit 1 + stderr; untrusted dir → fail fast; unknown dir → proceeds. DB-free (D4) and synchronous (D5) confirmed. |
 
+### Bastion-program track (Phases 6–10) — demand-first by D26 wave
+
+> bastion's execution slice of the cross-repo Bastion program (brain `planning/bastion-product/`,
+> governed by brain **D24 / D25 / D26**). Sequenced to follow the program's demand-first **wave**
+> order, not bastion-internal dependency. `prog.` = the program's global block letter; `½` = the
+> bastion half of a cross-repo block (orchestrator/base-template peer is a prerequisite for the
+> *combined* claim; the bastion half is independently shippable). Opportunistic and ungated.
+
+#### Phase 6 — Brain & code retrieval (Wave 1)
+| Block | What | Prog. | Status | Notes |
+|---|---|---|---|---|
+| Block A | Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph | A | Not started | Foundational — no deps. First runnable block of the track. |
+| Block B | Multi-workspace Brain — graph reader over per-repo/per-client roots | C½ | Not started | Builds on 6A. Cross-repo peer: program Block B/C (orchestrator semantic + multi-workspace). |
+| Block C | Structural code navigation (code-as-graph) | Q | Not started | Builds on 6A. Structural twin of semantic code search (program Block P, Engine). |
+
+#### Phase 7 — Observability & control (Wave 2)
+| Block | What | Prog. | Status | Notes |
+|---|---|---|---|---|
+| Block A | Tracing + `C0xx` structured-error spine | H | Not started | Foundational for the track. Vendors the `claude-sdk-rs` error taxonomy once (`src/observ/errors.rs`). |
+| Block B | Vendor tiktoken counter → exact `bastion costs` | D | Not started | Swaps the Phase 2 Block B estimation core for exact counts. No deps. |
+| Block C | Cost as a budgeted resource: `--watch`, alerts, `bastion kill`, gate | I½ | Not started | Builds on 7A (7B strengthens). D25 — kill *triggers* an orchestrator abort endpoint; D20 contract bump. |
+
+#### Phase 8 — Client-grade Brain integrity (Wave 3)
+| Block | What | Prog. | Status | Notes |
+|---|---|---|---|---|
+| Block A | Deterministic Brain-integrity validation | K | Not started | Builds on 6A. The hard anti-hallucination layer; produces the findings record Phase 10 consumes. Forward-looking. |
+
+#### Phase 9 — Protocol & local inference (Wave 4)
+| Block | What | Prog. | Status | Notes |
+|---|---|---|---|---|
+| Block A | Vendor `workflow-engine-mcp` → Console MCP / tool client | E½ | Not started | Built with the Python Brain-as-MCP-server (program Block R). Uses 7A's `C0xx` model. Forward-looking. |
+| Block B | Rust local-model node from the `claude-sdk-rs` spine | F | Not started | Python-free `bastion ask` path (D23). Reuses 7A's error model; DB-free (D4) / synchronous (D5) preserved. Forward-looking. |
+
+#### Phase 10 — Self-healing loop (Wave 5)
+| Block | What | Prog. | Status | Notes |
+|---|---|---|---|---|
+| Block A | Proactive scanner → issue backlog | M | Not started | Builds on 7A + 8A. Writes an OKF issue backlog (dedup/priority/dismiss). Forward-looking. |
+| Block B | Findings → spec → draft PR via `sdlc-flow` (no auto-merge) | N½ | Not started | Builds on 10A. D25 — bastion *triggers* `sdlc-flow`; never authors/merges the PR. Cross-repo peer: base-template findings→spec entry point. Forward-looking. |
+
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
 
 ---
@@ -71,6 +110,7 @@ description: Current state and progress tracker for bastion.
 *Record deviations from the plan and notable in-flight choices here. Promote durable ones to
 `decisions/` via `/log-work`.*
 
+- **2026-06-25 — Bastion-program track added to the master-plan (Phases 6–10).** Extracted bastion's execution slice of the reorganized cross-repo Bastion program (brain `planning/bastion-product/`, now 20 blocks A–S across 7 phases, governed by brain **D24** Python/Rust seam, **D25** read-only-state/triggered-mutations, **D26** Bastion-the-system naming + demand-first ordering + code-aware Brain + MCP client/server split). Pulled in all 11 bastion-touching blocks (program A, C½, Q, H, D, I½, K, E½, F, M, N½), organized into bastion Phases 6–10 mapped one-to-one onto program **Waves 1–5** (demand-first, *not* moat-first). Excluded as non-bastion: program B, J, L, O, P, R, S (orchestrator/brain) and G (loop-proof — coordinated from bastion, artifact in the brain's `docs/content/`). Notable cross-repo seams to honor: D25 (kill + self-healing PR *trigger* the Engine/Factory, bastion never mutates), D20 contract bump for the abort/budget-gate endpoints (Phase 7 Block C), and single-vendor of the `C001–C014` error taxonomy in Phase 7 Block A (reused by Phase 9 Block B). An earlier moat-first Phase 6/7 draft was discarded and regenerated against the new source. First runnable block: **phase6-blockA**.
 - **2026-06-21 — Orchestrator D28 confirmed landed → phase1-blockB unblocked.** Verified in `../python-orchestration-system` that the monitor's read contract is now fully satisfied on the orchestrator side: (1) incremental node-level persistence — `Workflow.run()` takes an `on_progress` callback (`app/core/workflow.py:126,158,168`) the worker wires to `persist_progress` (`app/worker/tasks.py:52`), so `task_context.node_runs` is now written at every node boundary, not only at terminal completion (the original D2/D28 gate); (2) per-node status/timing/input/output/token stamping in `core/task.py` + `nodes/agent.py` + `nodes/tool_use.py`; (3) DAG edges via `GET /workflows` + `GET /workflows/{type}/graph` (`app/api/graph.py`). Orchestrator status log records D28 "Done (2026-06-20)" — all 8 tasks merged via /sdlc-block, 244 tests. D28 Phases 4 (status column) and 5 (SSE push) remain deferred *by original scope* and do not block Block B (the 2s poll over incremental Postgres state is exactly what D2/D3 designed for). bastion **D2** gate lifted. Consumed + deleted `planning/handoff.md`.
 - **2026-06-21 — Phase 5 Block G added: `bastion ask` for the cross-repo Claude Code LLM provider.** The Python orchestrator is adding two ways to run an LLM node on Claude Code (subscription): a headless `claude-agent-sdk` mode (no bastion dependency) and a `CLAUDE_CODE_SESSION` mode that drives the live interactive session **through bastion** so the turn is observable in `bastion sessions`. Block G adds `bastion ask` — one command (ensure session+Claude → fixed trigger → wait for `<out>.done`) — as the stable contract the orchestrator shells out to. Surface is pinned in the brain at `agentic-portfolio/docs/integrations/claude-code-llm-provider.md` §2 (`bastion ask` v0.1.0); spec at `planning/phase5-blockG/tasks.md`. Reuses Block F's `classify_state` (skip relaunch) + trust observer (fail fast on untrusted dir). DB-free (D4) + synchronous (D5) preserved.
 - **2026-06-21 — Phase 5 Block F rule 6 backfill + doc drift fix.** The live smoke test that the pipeline skipped (Detached sessions showing running command vs idle shell, and trust pre-flight) was backfilled manually against tmux 3.6b this session and recorded in planning/phase5-blockF/tasks.md ## Notes (Rule 6 coverage bar met). A doc audit discovered README.md had drifted: missing the `capture` verb shipped back in Block D + the table and examples were out of sync. Root cause: `/document` was not reconciling the README command table against the evolving `src/cli.rs` Commands enum. Fixed in `.claude/commands/document.md` so `/document` now auto-syncs the README table on any cli.rs changes. Added a "Verifying the surface" runbook to docs/sessions.md covering how to smoke-test blocks manually (session creation, attach, send, capture, kill).
