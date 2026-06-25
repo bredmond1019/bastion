@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-25 — master-plan extended with the **Bastion-program track (Phases 6–10)**: bastion's execution slice of the cross-repo Bastion program (brain `planning/bastion-product/`, governed by brain D24/D25/D26), sequenced demand-first by D26 wave. 11 new blocks added, all Not started. Phases 0–3, Phase 4 Block A, and Phase 5 remain done; Phase 4 Blocks B–C still blocked on orchestrator D28 Phases 4–5.
-**Current focus:** Bastion-program track — first runnable block is **phase6-blockA** (vendor `knowledge_graph` → structural OKF query). The track is opportunistic/ungated (D26). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
+**Last updated:** 2026-06-25 — phase6-blockA complete: `bastion brain` subcommand shipped with petgraph-backed BrainGraph, structural OKF query layer (dependents/blast-radius/lineage), and full CLI wiring. 522 tests pass. PASS verdict.
+**Current focus:** Bastion-program track — **phase6-blockB** (Multi-workspace Brain — graph reader over per-repo/per-client roots). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
 
 ---
 
@@ -73,7 +73,7 @@ description: Current state and progress tracker for bastion.
 #### Phase 6 — Brain & code retrieval (Wave 1)
 | Block | What | Prog. | Status | Notes |
 |---|---|---|---|---|
-| Block A | Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph | A | Not started | Foundational — no deps. First runnable block of the track. |
+| Block A | Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph | A | Done | petgraph-backed BrainGraph + structural query layer (dependents/blast-radius/lineage) + `bastion brain` CLI wired. 522 tests pass. PASS 2026-06-25. |
 | Block B | Multi-workspace Brain — graph reader over per-repo/per-client roots | C½ | Not started | Builds on 6A. Cross-repo peer: program Block B/C (orchestrator semantic + multi-workspace). |
 | Block C | Structural code navigation (code-as-graph) | Q | Not started | Builds on 6A. Structural twin of semantic code search (program Block P, Engine). |
 

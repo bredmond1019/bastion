@@ -1,6 +1,6 @@
 # Task Spec — Phase 6, Block A
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-25 (PASS — all 5 tasks)
 
 ## Goal
 Vendor the `knowledge_graph` algorithms (Dgraph-free) into bastion and expose a `bastion brain` subcommand that answers structural questions — dependents, blast-radius, lineage — over the graph derived from the OKF `[[link]]` corpus.

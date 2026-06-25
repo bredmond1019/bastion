@@ -10,6 +10,27 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-25 — phase6-blockA complete: `bastion brain` structural query subcommand shipped
+
+Phase 6 Block A shipped across five tasks with a PASS verdict on the first review attempt. Task 1 scaffolded `src/brain/` with the OKF reader (`okf.rs`): pure `parse_okf_doc`, `extract_title_from_frontmatter`, and `build_node_edge_lists` functions that convert `[[link]]` corpora into typed `OkfDoc`/`OkfEdge` structs, with a clippy collapsible-if fix (iterator adapter chain replacing nested if/if-let). Task 2 implemented `BrainGraph` — a petgraph `DiGraph` wrapper with node-index map, typed `BrainError`, shortest path (A* with unit costs), topological sort, and bidirectional DFS/BFS traversal helpers. Task 3 added `src/brain/query.rs` with three pure semantic query functions — `dependents` (direct predecessors), `blast_radius` (BFS transitive reverse), and `lineage` (DFS transitive forward) — backed by 15 unit tests grounded in the fixture decision topology. Task 4 wired the `bastion brain` CLI: `BrainQuery` enum with mutually-exclusive `--dependents`/`--blast-radius`/`--lineage` flags and `--root` target, a thin synchronous `run()` I/O shell reusing `validate::find_markdown_files` for corpus discovery, 10 new unit tests plus 6 CLI parse tests, and smoke-tested against the real brain repo. Task 5 was a pure validation pass confirming all four gating checks pass (cargo fmt, clippy, 522 tests, release build) with no Dgraph dependency. Key design decisions: node ids use filename stems (matching OKF wiki-link convention), edges with unresolved targets are silently dropped at build time (consistent with okf.rs policy), and `brain::run()` is synchronous/DB-free per D4/D5. Next: phase6-blockB (Multi-workspace Brain).
+
+```
+53b5851 chore: flow state — docs
+8f0e80b docs: update docs for phase6-blockA
+e83d95e chore: flow state — task 5 passed
+0fb5465 chore: flow state — task 4 passed
+fe54c32 feat: implement phase6-blockA-task4
+fea578e chore: flow state — task 3 passed
+1e80daf feat: implement phase6-blockA-task3
+7d23b72 chore: flow state — task 2 passed
+d7e3fa0 feat: implement phase6-blockA-task2
+110071f chore: flow state — task 1 passed
+a92ace0 fix: fix pass 1 for phase6-blockA-task1
+423b638 feat: scaffold src/brain/ with pure OKF reader and fixtures (phase6-blockA task1)
+```
+
+---
+
 ## 2026-06-24 — Harness pull from base-template (b8ebbf7)
 
 Pulled the full current `base-template` harness (commit `b8ebbf71c20445de65195037aa24bfe00bbf080b`)
