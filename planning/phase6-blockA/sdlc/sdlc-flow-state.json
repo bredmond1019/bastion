@@ -2,10 +2,10 @@
   "spec_slug": "phase6-blockA",
   "branch": "phase6-blockA-flow",
   "started_at": "2026-06-25T18:30:59Z",
-  "updated_at": "2026-06-25T18:30:59Z",
+  "updated_at": "2026-06-25T18:35:47Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -34,6 +34,24 @@
         "src/brain/fixtures/unlinked.md",
         "src/brain/fixtures/index.md",
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/okf.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Implement BrainGraph (petgraph-backed DiGraph wrapper with shortest path, toposort, DFS/BFS traversal, typed errors) in src/brain/graph.rs; flip mod.rs stub to real pub mod graph.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used A* with unit costs (no heuristic) as the shortest-path primitive — equivalent to BFS for unweighted graphs and directly available via petgraph::algo::astar without a custom Dijkstra wrapper.",
+        "Edges with unknown from/to ids are silently skipped in BrainGraph::build (consistent with okf.rs policy of dropping unresolved links rather than erroring at build time).",
+        "fixture_corpus_topology test uses stem-fallback (no-frontmatter) docs so node ids equal file stems and match the [[link]] targets in fixture content; frontmatter-based ids would not match without slug-aware link resolution (deferred to query.rs or a later task)."
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/graph.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/mod.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
