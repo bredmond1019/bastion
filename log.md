@@ -10,6 +10,17 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-24 — Harness pull from base-template (b8ebbf7)
+
+Pulled the full current `base-template` harness (commit `b8ebbf71c20445de65195037aa24bfe00bbf080b`)
+into `.claude/`. Added the **`/sdlc-flow`** engine (D30–D33; shared-worktree sequential flow, one end
+review, PR wrap-up), **`/generate-master-plan`** + the **block-definition planning seam** (D34:
+`/generate-tasks --from`, `/plan`-as-block, hardened block skeleton), the **plan-quality floor** (D35:
+clarify-or-abort, never fabricate), and the TAC8 commands (`/patch`, `/conditional_docs`, the `e2e/`
+template library). All engines `node --check` clean; command/engine files byte-identical to base.
+`planning/harness.json` untouched. Provenance stamped in `planning/.template-version`.
+
+
 ## 2026-06-22 — phase4-blockA complete: config file + help/man polish shipped
 
 Phase 4 Block A shipped in a single pipeline run with a PASS verdict on the first review attempt. Three tasks were delivered: (1) `~/.config/bastion/config.toml` support added to `src/config.rs` — new `FileConfig` struct, pure `parse_file` and `config_path` functions, `Config::from_sources` implementing three-layer precedence (env > file > built-in default), and rewired `load()` that silently degrades on missing/unreadable files but propagates `ConfigError::MalformedFile` on broken TOML; (2) `bastion --help` enrichment in `src/cli.rs` — `long_about` describing both surfaces and config layering, `after_help` with concrete usage examples, tightened per-subcommand doc strings, clap debug-assert and rendered-help tests added; (3) new hidden `bastion man` subcommand backed by pure `render_man()` in `src/man.rs` using `clap_mangen`, thin `write_man_pages` I/O shell for `--out <dir>`, 4 pure tests (non-empty, `.TH` header, command name, determinism). New crates: `toml = "0.8"` and `clap_mangen = "0.2"`. Tests grew from 404 to 428 (+24). All four gating checks passed clean. No issues found in review. Two remaining Phase 4 items (SSE streaming, TUI node re-run) remain intentionally deferred pending orchestrator D28 Phases 4–5. Next: no unblocked work in queue; phase4-blockB and phase4-blockC blocked on orchestrator.

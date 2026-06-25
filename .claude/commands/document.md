@@ -36,17 +36,10 @@ Examples:
 7. Read the implement report. Extract the **Files Created or Modified** table. This is the
    authoritative list of changed source files — do not guess from git or the spec.
 
-8. Read every file in `docs/` **plus the repo-root `README.md`**. For each, check whether it
-   references any of the changed source files (look for `**Source:**` annotations, code paths,
-   class/function/component names that appear in the changed files). Build a map:
-   `{ doc_path → [changed_source_files_it_covers] }`. If no docs reference any changed file, note
-   "No docs affected" and skip to step 10.
-   - **CLI surface check (README command table).** If the changed files include `src/cli.rs` (a new
-     or changed subcommand), treat `README.md` as affected: reconcile its **Commands** table and the
-     "Running locally" example block against the current `Commands` enum — every shipped verb has a
-     row with the right status/flags, and no row describes a verb that no longer exists. This is the
-     one cross-check that does not depend on a `**Source:**` annotation, because the README command
-     table mirrors `cli.rs` by convention, not by reference.
+8. Read every file in `docs/`. For each doc, check whether it references any of the changed
+   source files (look for `**Source:**` annotations, code paths, class/function/component names that
+   appear in the changed files). Build a map: `{ doc_path → [changed_source_files_it_covers] }`.
+   If no docs reference any changed file, note "No docs affected" and skip to step 10.
 
 9. For each affected doc + changed source pair:
    a. Read the full current doc and the full changed source file.
@@ -62,9 +55,6 @@ Examples:
 ## Rules
 
 - **Surgical only.** Never rewrite a doc section not covered by the changed source files.
-- **Keep the README command table in sync with `cli.rs`.** When a subcommand ships or changes, the
-  repo-root `README.md` Commands table and example block must reflect it — the `docs/` updates alone
-  leave the README one block behind.
 - **Source is authoritative.** If the doc and source disagree, the source wins.
 - **No invention.** Do not add new sections or cover APIs not already in the doc — that is `/generate-new-docs` territory.
 - **Never touch** `planning/`, `log.md`, `status.md`, or `CLAUDE.md`.
@@ -76,7 +66,6 @@ Examples:
 - Review report (derived from $ARGUMENTS) — read first; gate on PASS
 - Implement report (derived from $ARGUMENTS) — for the changed file list
 - `docs/` — all existing reference docs
-- `README.md` (repo root) — its Commands table + example block mirror `src/cli.rs`
 - Changed source files identified from the implement report
 
 ## Report

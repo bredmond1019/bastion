@@ -71,21 +71,10 @@ Return the subagent's result to the user.
      ```
    - Register it in `planning/decisions/index.md` by appending a row to the table (newest at
      the bottom — append-only; never edit or renumber prior entries).
-6. **Data-contract sync check.** Ask: did this work consume orchestrator state in a way the pinned
-   contract doesn't yet cover, or rely on a field/endpoint not in it? The orchestrator **owns** the
-   contract, so:
-   - Any *shape* change must land first in `../python-orchestration-system/docs/data-contract.md`
-     (version bump + changelog), then be re-pinned here.
-   - When the canonical version changes, update the **Pinned Contract Version** + field mappings in
-     `docs/data-contract.md` and note it in `planning/status.md`.
-   - Verify the pinned version in `docs/data-contract.md` still matches the canonical header.
-   - Keeps bastion and the orchestrator in sync (brain D20 / orchestrator D30 / bastion D3). If
-     nothing touched the contract, skip silently.
+6. Never edit the master plan file (`master-plan.md`).
 
-7. Never edit the master plan file (`master-plan.md`).
-
-8. **Sync the company brain.** After status.md and log.md are confirmed:
-   - Read `../docs/projects/bastion.md` in the company brain.
+7. **Sync the company brain.** After status.md and log.md are confirmed:
+   - Read `../docs/projects/{{SLUG}}.md` in the company brain.
    - Update the **Current Status** date and focus line to match the new status.md state.
    - Update the Status column in this project's progress table for any rows that changed.
    - Open `../README.md` and find the Quick Status subsection for THIS project (the `###`
@@ -102,5 +91,5 @@ Return the subagent's result to the user.
 - `planning/status.md`
 - The current `planning/<name>/tasks.md`
 - `log.md`
-- `../docs/projects/bastion.md` (brain sync target)
+- `../docs/projects/{{SLUG}}.md` (brain sync target)
 - `../README.md` (brain sync target)
