@@ -32,3 +32,6 @@ Patched: none | Created: /Users/brandon/Dev/agentic-portfolio/bastion/trees/phas
 
 ## Wrap-up — PASS
 Next: phase6-blockB — Multi-workspace Brain (graph reader over per-repo/per-client roots)
+
+## PR
+https://github.com/bredmond1019/bastion/pull/1
