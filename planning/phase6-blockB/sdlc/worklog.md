@@ -9,3 +9,8 @@ Validated: gating checks (fast tripwire)
 What: Added portable OKF fixture corpus (client/project domain) and 6 portability tests in okf.rs proving build_node_edge_lists works over any conforming corpus, not just the bastion decision graph.
 Decisions: Used include_str! macros in the test module to embed fixture files at compile time, keeping tests self-contained without filesystem I/O; Chose a client/project knowledge domain (proj-overview, team-roster, req-doc, tech-spec, stale-note) to maximally differentiate from the Block A decision-graph domain (d3, d20, d21, d4); No production code changes required — build_node_edge_lists was already pure and corpus-agnostic as stated in the task spec
 Validated: gating checks (fast tripwire)
+
+## Task 3 — PASSED (1 attempt)
+What: Wire --workspace/--knowledge-dir flag through CLI and brain::run for named workspace selection; --root changed to Option<PathBuf>; workspace registry loaded DB-free in main.rs
+Decisions: Changed --root from PathBuf with default_value='.' to Option<PathBuf> so the resolver can distinguish 'unset' from an explicit path — required for correct precedence (explicit > workspace > default > builtin); Used visible_alias for --knowledge-dir so it appears in --help output as documented in the spec; load_workspace_registry errors (malformed file) propagate as anyhow errors rather than silently degrading, matching the existing config.rs contract where malformed TOML is always an error
+Validated: gating checks (fast tripwire)

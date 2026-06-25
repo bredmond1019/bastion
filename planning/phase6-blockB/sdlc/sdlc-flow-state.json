@@ -2,10 +2,10 @@
   "spec_slug": "phase6-blockB",
   "branch": "phase6-blockB-flow",
   "started_at": "2026-06-25T22:59:57Z",
-  "updated_at": "2026-06-25T23:04:54Z",
+  "updated_at": "2026-06-25T23:11:12Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -43,6 +43,26 @@
         "src/brain/fixtures/portable/req-doc.md",
         "src/brain/fixtures/portable/tech-spec.md",
         "src/brain/fixtures/portable/stale-note.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Wire --workspace/--knowledge-dir flag through CLI and brain::run for named workspace selection; --root changed to Option<PathBuf>; workspace registry loaded DB-free in main.rs",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Changed --root from PathBuf with default_value='.' to Option<PathBuf> so the resolver can distinguish 'unset' from an explicit path — required for correct precedence (explicit > workspace > default > builtin)",
+        "Used visible_alias for --knowledge-dir so it appears in --help output as documented in the spec",
+        "load_workspace_registry errors (malformed file) propagate as anyhow errors rather than silently degrading, matching the existing config.rs contract where malformed TOML is always an error"
+      ],
+      "files_changed": [
+        "src/cli.rs",
+        "src/brain/mod.rs",
+        "src/main.rs",
+        "planning/phase6-blockB/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
