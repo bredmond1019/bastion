@@ -78,6 +78,25 @@ async fn main() -> Result<()> {
                 })
             }
             Commands::Man { out } => man::run(out),
+            // Brain is DB-free (D4) and synchronous — lives on the knowledge-graph surface.
+            Commands::Brain {
+                dependents,
+                blast_radius,
+                lineage,
+                root,
+            } => {
+                let query = if let Some(id) = dependents {
+                    brain::BrainQuery::Dependents(id)
+                } else if let Some(id) = blast_radius {
+                    brain::BrainQuery::BlastRadius(id)
+                } else if let Some(id) = lineage {
+                    brain::BrainQuery::Lineage(id)
+                } else {
+                    // Unreachable: clap ArgGroup enforces exactly one of the three flags.
+                    unreachable!("clap ArgGroup guarantees exactly one query flag is set")
+                };
+                brain::run(query, root)
+            }
         },
     }
 }
