@@ -10,11 +10,7 @@ pub mod okf;
 
 pub mod graph;
 
-/// Phase 6 Block A — Task 3 placeholder: structural query functions.
-///
-/// Implement `src/brain/query.rs` and replace this inline stub with
-/// `pub mod query;` pointing at that file.
-pub mod query {}
+pub mod query;
 
 use anyhow::Result;
 
