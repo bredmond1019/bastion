@@ -17,10 +17,20 @@ bastion brain [--dependents <NODE_ID>
               | --blast-radius <NODE_ID>
               | --lineage <NODE_ID>]
               [--root <DIR>]
+              [--workspace <NAME> | --knowledge-dir <NAME>]
 ```
 
 Exactly one of `--dependents`, `--blast-radius`, or `--lineage` is required.
-`--root` defaults to the current directory when omitted.
+
+The corpus root is resolved with the following precedence (highest to lowest):
+
+1. `--root <DIR>` — explicit override; always wins.
+2. `--workspace <NAME>` (alias: `--knowledge-dir`) — looks up `NAME` in the `[workspaces]`
+   table in `~/.config/bastion/config.toml`.
+3. `default_workspace` in the config file — resolved from the same registry.
+4. Built-in default: current directory (`.`).
+
+An unknown workspace name (step 2 or 3) is a fatal error with a clear message.
 
 ## Query Modes
 
@@ -55,14 +65,16 @@ node id (`grep "\td20"`).
 
 `run()` in `src/brain/mod.rs`:
 
-1. **Discovers** all `.md` and `.mdx` files under `--root` using
+1. **Resolves** the effective corpus root via `config::resolve_workspace_root` —
+   pure, DB-free, using the workspace registry loaded from the config file.
+2. **Discovers** all `.md` and `.mdx` files under the resolved root using
    `validate::find_markdown_files` (recursive, skips hidden dirs and `target/`).
-2. **Reads** each file; individual unreadable files are skipped with a warning on
+3. **Reads** each file; individual unreadable files are skipped with a warning on
    stderr — the corpus continues to be built from the remaining files.
-3. **Parses** each file into a `BrainNode` and its outgoing `BrainEdge` list via
+4. **Parses** each file into a `BrainNode` and its outgoing `BrainEdge` list via
    `okf::build_node_edge_lists`.
-4. **Builds** the directed graph via `BrainGraph::build`.
-5. **Runs** the requested query and prints the greppable report.
+5. **Builds** the directed graph via `BrainGraph::build`.
+6. **Runs** the requested query and prints the greppable report.
 
 ## Node Identity
 
@@ -96,7 +108,7 @@ any known node.
 | `query_label(query)` | `fn` | Returns the stable output prefix label for a query variant (`"dependent"`, `"blast-radius"`, `"lineage"`). |
 | `query_node_id(query)` | `fn` | Extracts the target node id string from any `BrainQuery` variant. |
 | `format_result_line(label, node)` | `fn` | Formats one result as `"<label>: <id>\t<path>"`. |
-| `run(query, root)` | `fn` | Thin I/O shell — discovers corpus, builds graph, runs query, prints report. Returns `Err` on empty corpus or unknown node id. |
+| `run(query, explicit_root, workspace, registry)` | `fn` | Thin I/O shell — resolves corpus root via workspace registry, discovers corpus, builds graph, runs query, prints report. Returns `Err` on unknown workspace name, empty corpus, or unknown node id. |
 
 ### `src/brain/okf.rs`
 
@@ -132,14 +144,19 @@ any known node.
 
 | Condition | Behaviour |
 |---|---|
-| No `.md`/`.mdx` files found under `--root` | Prints message on stderr; exits non-zero. |
+| Unknown `--workspace` / `default_workspace` name | Prints clear error on stderr; exits non-zero. |
+| No `.md`/`.mdx` files found under resolved root | Prints message on stderr; exits non-zero. |
 | Individual file unreadable | Warning on stderr; file skipped; corpus continues. |
 | `[[link]]` target not in corpus | Edge silently dropped at graph-build time. |
 | Node id not found in graph | Prints message on stderr; exits non-zero. |
 
 ## Test Fixtures (`src/brain/fixtures/`)
 
-Five fixture files mirror a realistic decisions corpus for unit and integration tests:
+Two fixture corpora are embedded at compile time for unit and integration tests.
+
+### Decision-graph corpus (`src/brain/fixtures/`)
+
+Five files mirror a realistic decisions corpus:
 
 | Fixture | Role |
 |---|---|
@@ -149,6 +166,21 @@ Five fixture files mirror a realistic decisions corpus for unit and integration 
 | `d21.md` | Links to `d4` |
 | `d4.md` | Leaf — no outgoing links |
 | `unlinked.md` | Isolated node — no links in or out |
+
+### Portable corpus (`src/brain/fixtures/portable/`)
+
+A second, domain-independent corpus (client/project knowledge) used to verify
+that `build_node_edge_lists` is corpus-agnostic and not hardwired to the
+decision-graph domain:
+
+| Fixture | Role |
+|---|---|
+| `index.md` | Registry — links to all corpus members |
+| `proj-overview.md` | Project overview — links to `team-roster` and `req-doc` |
+| `team-roster.md` | Team roster — links to `proj-overview` |
+| `req-doc.md` | Requirements doc — links to `tech-spec` |
+| `tech-spec.md` | Technical spec — leaf |
+| `stale-note.md` | Isolated node — no links in or out |
 
 ## Notes
 
