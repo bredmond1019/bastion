@@ -91,6 +91,18 @@ fn extract_frontmatter(content: &str) -> ParseResult {
     ParseResult::UnterminatedFence { open_line }
 }
 
+/// Parse frontmatter from `content`, returning the block if present and well-formed.
+///
+/// Returns `None` if the file has no frontmatter, the fence is unterminated, or any
+/// interior line is malformed. Callers that only need field values (not validation
+/// errors) use this instead of `validate_frontmatter`.
+pub(crate) fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
+    match extract_frontmatter(content) {
+        ParseResult::Ok(fm) => Some(fm),
+        _ => None,
+    }
+}
+
 // ── Validation ────────────────────────────────────────────────────────────────
 
 /// Validate the OKF frontmatter of `content` belonging to `file`.
