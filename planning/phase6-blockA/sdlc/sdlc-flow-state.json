@@ -2,10 +2,10 @@
   "spec_slug": "phase6-blockA",
   "branch": "phase6-blockA-flow",
   "started_at": "2026-06-25T18:30:59Z",
-  "updated_at": "2026-06-25T18:35:47Z",
+  "updated_at": "2026-06-25T18:39:41Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -51,6 +51,23 @@
       ],
       "files_changed": [
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/graph.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Add src/brain/query.rs with three pure structural query functions (dependents, blast_radius, lineage) over BrainGraph, with 15 unit tests covering happy paths, edge cases, and unknown-id error paths; update mod.rs to replace inline stub.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "dependents delegates to BrainGraph::predecessors (direct incoming edges only, not transitive), blast_radius to reachable_reverse (BFS transitive reverse), lineage to reachable_forward (DFS transitive forward) — these are thin wrappers that give semantic names to the underlying graph algorithms from Task 2",
+        "fixture_graph in query tests mirrors the decision topology from Task 1 fixtures (d3, d20, d21, d4, unlinked) to keep tests grounded in realistic corpus shapes"
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/query.rs",
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/mod.rs"
       ],
       "commit": "",
