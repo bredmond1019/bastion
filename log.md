@@ -10,6 +10,24 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-25 — phase6-blockB complete: multi-workspace Brain shipped
+
+Phase 6 Block B delivered multi-workspace support for `bastion brain` across four tasks with a PASS verdict. Task 1 extended `FileConfig` in `config.rs` with `workspaces`/`default_workspace` fields, added `ConfigError::UnknownWorkspace(String)`, and implemented a pure `resolve_workspace_root` resolver (explicit-root > named-workspace > default-workspace > built-in-dot precedence) plus a DB-free `load_workspace_registry` loader — 13 new unit tests covering all resolver paths and TOML round-trip. Task 2 added a portable OKF fixture corpus under `src/brain/fixtures/portable/` (client/project domain, maximally distinct from the Block A decision-graph domain) and 6 portability tests in `okf.rs` proving `build_node_edge_lists` is corpus-agnostic; no production code changes were required. Task 3 wired `--workspace <NAME>` (with `--knowledge-dir` as a visible alias) through `src/cli.rs`, `src/brain/mod.rs`, and `src/main.rs` — `--root` changed to `Option<PathBuf>` to distinguish unset from explicit, and malformed config files propagate as anyhow errors. Task 4 confirmed all four gating checks pass (cargo fmt, clippy, 517 tests, release build) with no `DATABASE_URL` set, preserving the DB-free guarantee of D4. Key decisions: `ConfigError::UnknownWorkspace` kept in the single error enum (consistent with existing convention); `--root` made optional so the resolver can implement correct precedence; `load_workspace_registry` degrades silently on absent files but propagates on malformed TOML. Next: phase6-blockC (Structural code navigation — code-as-graph).
+
+```
+16b7ab6 chore: flow state — docs
+1ed949c docs: update docs for phase6-blockB
+588f2a9 chore: phase6-blockB task4 — all validation commands pass, DB-free confirmed
+4c6935a chore: flow state — task 3 passed
+b16eb80 feat: wire --workspace selection through CLI and brain::run (phase6-blockB task3)
+2a25840 chore: flow state — task 2 passed
+7ea4e07 feat: implement phase6-blockB-task2
+5a23c37 chore: flow state — task 1 passed
+26939ba feat: implement phase6-blockB-task1
+```
+
+---
+
 ## 2026-06-25 — phase6-blockA code-review fixes merged to main
 
 Phase 6 Block A went through code review post-implementation, yielding 7 findings that were addressed and merged to main. Fixes applied: doc_id-based node id resolution (edge targets keyed by correct identifier), duplicate edge deduplication (removing redundant `[[link]]` references), double-parse eliminated (consolidated YAML frontmatter parsing), HashSet<&str> borrow handling (proper lifetime management in graph construction), double error reporting fixed (removed redundant error wrapping layers), query.rs deleted (consolidated query logic into brain/mod.rs for simpler exports), and parse_frontmatter reuse (deduplicated across okf.rs and validate.rs). All findings incorporated without architectural rework; 522 tests pass; commit 0eff723 merged to main. Next: phase6-blockB (Multi-workspace Brain — graph reader over per-repo/per-client roots).
