@@ -8,11 +8,7 @@
 
 pub mod okf;
 
-/// Phase 6 Block A — Task 2 placeholder: BrainGraph petgraph wrapper.
-///
-/// Implement `src/brain/graph.rs` and replace this inline stub with
-/// `pub mod graph;` pointing at that file.
-pub mod graph {}
+pub mod graph;
 
 /// Phase 6 Block A — Task 3 placeholder: structural query functions.
 ///
