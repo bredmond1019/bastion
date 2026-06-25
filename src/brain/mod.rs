@@ -1,14 +1,7 @@
 // `bastion brain` — structural knowledge-graph queries over the OKF corpus.
-//
-// Phase 6 Block A implementation sequence:
-//   Task 1: pure OKF reader (`okf.rs`) + fixtures.
-//   Task 2: `graph.rs` — BrainGraph wrapper over petgraph (Dgraph-free algorithms).
-//   Task 3: `query.rs` — dependents / blast-radius / lineage queries.
-//   Task 4 (current): thin I/O shell + CLI dispatch wired into `run()`.
 
 pub mod graph;
 pub mod okf;
-pub mod query;
 
 use std::path::PathBuf;
 
@@ -99,9 +92,9 @@ pub fn run(query: BrainQuery, root: PathBuf) -> Result<()> {
     let node_id = query_node_id(&query);
 
     let results = match &query {
-        BrainQuery::Dependents(id) => query::dependents(&g, id),
-        BrainQuery::BlastRadius(id) => query::blast_radius(&g, id),
-        BrainQuery::Lineage(id) => query::lineage(&g, id),
+        BrainQuery::Dependents(id) => g.predecessors(id),
+        BrainQuery::BlastRadius(id) => g.reachable_reverse(id),
+        BrainQuery::Lineage(id) => g.reachable_forward(id),
     };
 
     match results {
@@ -115,10 +108,7 @@ pub fn run(query: BrainQuery, root: PathBuf) -> Result<()> {
             }
             Ok(())
         }
-        Err(e) => {
-            eprintln!("brain: {e}");
-            anyhow::bail!("{e}");
-        }
+        Err(e) => anyhow::bail!("brain: {e}"),
     }
 }
 

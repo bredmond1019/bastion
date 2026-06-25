@@ -4,18 +4,21 @@
 // suitable for feeding into `BrainGraph::build`. All functions here are
 // deterministic over their inputs and carry no filesystem or network calls.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 /// A node in the brain graph, derived from a single OKF markdown document.
 ///
-/// `id` is the stable slug (frontmatter `title` slug or filename stem).
+/// `id` is the stable slug: the OKF `doc_id` frontmatter field when present,
+/// otherwise the filename stem. This matches the convention that `[[link]]` targets
+/// use short stable slugs (doc_id or stem), not slugified full titles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrainNode {
-    /// Stable identifier — slugified frontmatter title, falling back to filename stem.
+    /// Stable identifier — OKF `doc_id` frontmatter field, falling back to filename stem.
     pub id: String,
-    /// Human-readable title from OKF frontmatter, or the filename stem if absent.
+    /// Human-readable title from OKF frontmatter `title` field, or the filename stem if absent.
     pub title: String,
     /// Absolute or relative path to the source file.
     pub path: PathBuf,
@@ -29,73 +32,36 @@ pub struct BrainEdge {
     pub to: String,
 }
 
-// ── Pure helpers ──────────────────────────────────────────────────────────────
-
-/// Derive a slug from a human-readable title: lowercase, spaces to hyphens,
-/// drop any character that is not alphanumeric, `-`, or `_`.
-fn slugify(title: &str) -> String {
-    title
-        .to_lowercase()
-        .chars()
-        .map(|c| if c == ' ' { '-' } else { c })
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect()
-}
-
-/// Extract the `title` value from OKF YAML frontmatter in `content`.
-///
-/// Rules (mirrors `frontmatter.rs`):
-/// - First line must be exactly `---`.
-/// - Scans for a `title: <value>` key inside the block until the closing `---`.
-/// - Returns `None` if the block is absent, unterminated, or has no `title` field.
-fn extract_title_from_frontmatter(content: &str) -> Option<String> {
-    let mut lines = content.lines();
-
-    // First line must be the opening fence.
-    match lines.next() {
-        Some(line) if line.trim_end() == "---" => {}
-        _ => return None,
-    }
-
-    // Collect the title candidate while scanning; only return it if the closing
-    // fence is reached (unterminated fence → None).
-    let mut found_title: Option<String> = None;
-
-    for line in lines {
-        let trimmed = line.trim_end();
-        if trimmed == "---" {
-            // Closing fence — return whatever we found (may be None).
-            return found_title;
-        }
-        if found_title.is_none() {
-            found_title = trimmed
-                .strip_prefix("title:")
-                .map(|rest| rest.trim().to_string())
-                .filter(|v| !v.is_empty());
-        }
-    }
-
-    // No closing fence found — unterminated block.
-    None
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Parse a single OKF document into a `BrainNode`.
 ///
-/// The node `id` is derived by slugifying the frontmatter `title` field.
-/// If the frontmatter block is absent or has no `title`, the filename stem is used
-/// as both `id` and `title`.
+/// The node `id` is the OKF `doc_id` frontmatter field — the short, stable kebab-case
+/// slug that `[[link]]` targets are expected to match. Falls back to the filename stem
+/// when `doc_id` is absent or the file has no valid frontmatter.
 ///
-/// Returns `None` only if `path` has no valid filename stem (which is practically
-/// impossible for real paths).
+/// The `title` comes from the frontmatter `title` field, falling back to the filename stem.
+///
+/// Returns `None` only if `path` has no valid filename stem (practically impossible for
+/// real paths).
 pub fn parse_okf_node(content: &str, path: &Path) -> Option<BrainNode> {
     let stem = path.file_stem()?.to_string_lossy().to_string();
 
-    let (id, title) = match extract_title_from_frontmatter(content) {
-        Some(raw_title) => (slugify(&raw_title), raw_title),
-        None => (stem.clone(), stem),
-    };
+    let fm = crate::validate::frontmatter::parse_frontmatter(content);
+
+    let id = fm
+        .as_ref()
+        .and_then(|f| f.fields.get("doc_id"))
+        .map(|(v, _)| v.clone())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| stem.clone());
+
+    let title = fm
+        .as_ref()
+        .and_then(|f| f.fields.get("title"))
+        .map(|(v, _)| v.clone())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| stem.clone());
 
     Some(BrainNode {
         id,
@@ -138,33 +104,39 @@ pub fn extract_okf_links(content: &str) -> Vec<String> {
 ///
 /// - Each `(path, content)` pair produces exactly one `BrainNode` (if parseable).
 /// - `[[link]]` targets in the content become `BrainEdge { from: node.id, to: slug }`.
-/// - Edges whose `to` slug does not resolve to any known node id are **skipped**
-///   (unresolved link targets are silently dropped, not recorded as errors here).
+/// - Duplicate `[[link]]` targets within a single document are deduplicated — a
+///   document referencing the same node twice produces one edge, not two.
+/// - Edges whose `to` slug does not resolve to any known node id are silently dropped.
 /// - Paths that fail to produce a node (no stem) are skipped.
 ///
-/// Returns `(nodes, edges)`. `edges` only contains resolved references.
+/// Returns `(nodes, edges)`. `edges` only contains resolved, deduplicated references.
 pub fn build_node_edge_lists(docs: &[(PathBuf, String)]) -> (Vec<BrainNode>, Vec<BrainEdge>) {
-    // First pass: build nodes and collect the id set.
+    // First pass: parse nodes and record path→id so the edge pass doesn't re-parse.
     let mut nodes: Vec<BrainNode> = Vec::new();
+    let mut id_by_path: HashMap<&PathBuf, String> = HashMap::new();
     for (path, content) in docs {
         if let Some(node) = parse_okf_node(content, path) {
+            id_by_path.insert(path, node.id.clone());
             nodes.push(node);
         }
     }
 
-    let known_ids: std::collections::HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    // Borrow ids from already-parsed nodes — no clone needed for the lookup set.
+    let known_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
 
-    // Second pass: extract edges, filtering to resolved targets.
+    // Second pass: extract edges using cached ids; deduplicate [[link]] targets per doc
+    // so a document that references the same node twice produces only one edge.
     let mut edges: Vec<BrainEdge> = Vec::new();
     for (path, content) in docs {
-        // Resolve the from-node id for this document.
-        let from_id = match parse_okf_node(content, path) {
-            Some(n) => n.id,
+        let from_id = match id_by_path.get(path) {
+            Some(id) => id,
             None => continue,
         };
 
-        for target in extract_okf_links(content) {
-            if known_ids.contains(&target) {
+        let unique_targets: HashSet<String> = extract_okf_links(content).into_iter().collect();
+
+        for target in unique_targets {
+            if known_ids.contains(target.as_str()) {
                 edges.push(BrainEdge {
                     from: from_id.clone(),
                     to: target,
@@ -183,73 +155,27 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    // ── slugify ───────────────────────────────────────────────────────────────
-
-    #[test]
-    fn slugify_lowercases_and_replaces_spaces() {
-        assert_eq!(slugify("Hello World"), "hello-world");
-    }
-
-    #[test]
-    fn slugify_strips_special_chars() {
-        assert_eq!(slugify("D20 — Data Contract"), "d20--data-contract");
-    }
-
-    #[test]
-    fn slugify_preserves_hyphens_and_underscores() {
-        assert_eq!(slugify("d20_contract-v2"), "d20_contract-v2");
-    }
-
-    #[test]
-    fn slugify_empty_string() {
-        assert_eq!(slugify(""), "");
-    }
-
-    // ── extract_title_from_frontmatter ────────────────────────────────────────
-
-    #[test]
-    fn extract_title_present() {
-        let content = "---\ntype: Decision\ntitle: My Title\ndescription: Desc\n---\n# Body";
-        assert_eq!(
-            extract_title_from_frontmatter(content),
-            Some("My Title".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_title_no_frontmatter() {
-        let content = "# No frontmatter here";
-        assert_eq!(extract_title_from_frontmatter(content), None);
-    }
-
-    #[test]
-    fn extract_title_unterminated_fence() {
-        let content = "---\ntitle: Unterminated\n# no closing fence";
-        assert_eq!(extract_title_from_frontmatter(content), None);
-    }
-
-    #[test]
-    fn extract_title_missing_field() {
-        let content = "---\ntype: Decision\ndescription: No title here\n---\n";
-        assert_eq!(extract_title_from_frontmatter(content), None);
-    }
-
-    #[test]
-    fn extract_title_empty_value() {
-        let content = "---\ntitle: \ndescription: Desc\n---\n";
-        assert_eq!(extract_title_from_frontmatter(content), None);
-    }
-
     // ── parse_okf_node ────────────────────────────────────────────────────────
 
     #[test]
-    fn parse_node_with_frontmatter_title() {
+    fn parse_node_doc_id_takes_priority_over_stem() {
+        let content =
+            "---\ntype: Decision\ndoc_id: d3\ntitle: D3 — Use petgraph\ndescription: Desc\n---\n";
+        let path = PathBuf::from("planning/decisions/D3-use-petgraph.md");
+        let node = parse_okf_node(content, &path).unwrap();
+        assert_eq!(node.id, "d3", "doc_id overrides the filename stem");
+        assert_eq!(node.title, "D3 — Use petgraph");
+        assert_eq!(node.path, path);
+    }
+
+    #[test]
+    fn parse_node_falls_back_to_stem_when_no_doc_id() {
         let content = "---\ntype: Decision\ntitle: D3 — Use petgraph\ndescription: Desc\n---\n";
         let path = PathBuf::from("planning/decisions/d3.md");
         let node = parse_okf_node(content, &path).unwrap();
+        // No doc_id → id is the filename stem, not a slugified title.
+        assert_eq!(node.id, "d3");
         assert_eq!(node.title, "D3 — Use petgraph");
-        // id is slugified title
-        assert!(node.id.starts_with("d3"));
         assert_eq!(node.path, path);
     }
 
@@ -329,6 +255,13 @@ mod tests {
         (PathBuf::from(format!("fixtures/{stem}.md")), content)
     }
 
+    fn make_doc_with_id(stem: &str, doc_id: &str, body: &str) -> (PathBuf, String) {
+        let content = format!(
+            "---\ntype: Decision\ndoc_id: {doc_id}\ntitle: Fixture {stem}\ndescription: Test fixture.\n---\n{body}"
+        );
+        (PathBuf::from(format!("fixtures/{stem}.md")), content)
+    }
+
     #[test]
     fn build_single_node_no_edges() {
         let docs = vec![make_doc("d3", "D3 — petgraph", "No links here.")];
@@ -338,18 +271,38 @@ mod tests {
     }
 
     #[test]
-    fn build_two_nodes_one_edge() {
+    fn build_resolved_edge_with_doc_id() {
+        // doc_id on each node; [[link]] target matches doc_id, not stem.
         let docs = vec![
-            make_doc("d3", "D3", "References [[d3--petgraph]]."), // self-ref slug test
-            make_doc("d20", "D20 — Contract", "References [[d3--petgraph]]."),
+            make_doc_with_id("long-filename-d3", "d3", ""),
+            make_doc_with_id("long-filename-d20", "d20", "References [[d3]]."),
         ];
-        // d3's id = slugify("D3") = "d3"
-        // d20's id = slugify("D20 — Contract") ≈ "d20--contract"
-        // "d3--petgraph" is not a known id → edges dropped (unresolved)
         let (nodes, edges) = build_node_edge_lists(&docs);
         assert_eq!(nodes.len(), 2);
-        // No resolved edges because "d3--petgraph" is not a node id.
-        assert!(edges.is_empty());
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from, "d20");
+        assert_eq!(edges[0].to, "d3");
+    }
+
+    #[test]
+    fn build_duplicate_links_produce_single_edge() {
+        // A document referencing the same target twice must produce only one edge.
+        let docs = vec![
+            (
+                PathBuf::from("f/a.md"),
+                "[[b]] appears twice [[b]].".to_string(),
+            ),
+            (PathBuf::from("f/b.md"), "Leaf.".to_string()),
+        ];
+        let (nodes, edges) = build_node_edge_lists(&docs);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(
+            edges.len(),
+            1,
+            "duplicate [[b]] must produce exactly one edge"
+        );
+        assert_eq!(edges[0].from, "a");
+        assert_eq!(edges[0].to, "b");
     }
 
     #[test]
