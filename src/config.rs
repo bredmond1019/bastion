@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -7,15 +8,24 @@ pub enum ConfigError {
     MissingVar(&'static str),
     #[error("config file is malformed: {0}")]
     MalformedFile(String),
+    #[error("unknown workspace '{0}' — not found in [workspaces] registry")]
+    UnknownWorkspace(String),
 }
 
 /// Fields mirroring env vars — all optional; used as the fallback layer beneath env vars.
 /// Unknown keys are silently ignored (no `deny_unknown_fields`).
+///
+/// The `[workspaces]` table maps short names to corpus root paths; `default_workspace`
+/// names the entry used when neither `--root` nor `--workspace` is supplied.
 #[derive(Debug, serde::Deserialize, Default, PartialEq)]
 pub struct FileConfig {
     pub database_url: Option<String>,
     pub api_base_url: Option<String>,
     pub poll_interval: Option<u64>,
+    /// Named workspace roots: `[workspaces]` TOML table → name → absolute path.
+    pub workspaces: Option<HashMap<String, PathBuf>>,
+    /// Default workspace name — used when `--workspace` is omitted.
+    pub default_workspace: Option<String>,
 }
 
 /// Parse TOML `contents` into a `FileConfig`.
@@ -41,6 +51,68 @@ pub fn config_path(xdg_config_home: Option<String>, home: Option<String>) -> Opt
                 .join("bastion")
                 .join("config.toml")
         })
+    }
+}
+
+/// Resolve the effective corpus root for `bastion brain`.
+///
+/// Precedence (highest → lowest):
+/// 1. `explicit_root` — supplied via `--root <path>` (always wins).
+/// 2. `workspace_name` — look up in `file.workspaces`; unknown name → typed error.
+/// 3. `file.default_workspace` — resolve from registry; unknown name → typed error.
+/// 4. Built-in default: `PathBuf::from(".")` (Block A behavior preserved).
+///
+/// Pure function — no I/O, no `DATABASE_URL` dependency.
+pub fn resolve_workspace_root(
+    explicit_root: Option<PathBuf>,
+    workspace_name: Option<&str>,
+    file: &FileConfig,
+) -> Result<PathBuf, ConfigError> {
+    // 1. Explicit --root wins.
+    if let Some(root) = explicit_root {
+        return Ok(root);
+    }
+
+    let registry = file.workspaces.as_ref();
+
+    // 2. Named --workspace lookup.
+    if let Some(name) = workspace_name {
+        return match registry.and_then(|m| m.get(name)) {
+            Some(path) => Ok(path.clone()),
+            None => Err(ConfigError::UnknownWorkspace(name.to_string())),
+        };
+    }
+
+    // 3. default_workspace from config.
+    if let Some(ref default_name) = file.default_workspace {
+        return match registry.and_then(|m| m.get(default_name.as_str())) {
+            Some(path) => Ok(path.clone()),
+            None => Err(ConfigError::UnknownWorkspace(default_name.clone())),
+        };
+    }
+
+    // 4. Built-in default.
+    Ok(PathBuf::from("."))
+}
+
+/// Load **only** the workspace registry from the config file — DB-free.
+///
+/// Reads the config file identified by `config_path(xdg_config_home, home)`, parses it,
+/// and returns the resulting `FileConfig` (which carries the workspace table).
+///
+/// Degradation contract:
+/// - Config file absent or unreadable → returns `FileConfig::default()` (empty registry).
+/// - Config file present but malformed → returns `ConfigError::MalformedFile`.
+pub fn load_workspace_registry(
+    xdg_config_home: Option<String>,
+    home: Option<String>,
+) -> Result<FileConfig, ConfigError> {
+    match config_path(xdg_config_home, home) {
+        Some(path) => match std::fs::read_to_string(&path) {
+            Ok(contents) => parse_file(&contents),
+            Err(_) => Ok(FileConfig::default()),
+        },
+        None => Ok(FileConfig::default()),
     }
 }
 
@@ -169,6 +241,7 @@ mod tests {
             database_url: Some("postgres://from-file/db".into()),
             api_base_url: Some("http://file:9000".into()),
             poll_interval: Some(10),
+            ..Default::default()
         };
         let c = Config::from_sources(
             (
@@ -190,6 +263,7 @@ mod tests {
             database_url: Some("postgres://file/db".into()),
             api_base_url: Some("http://file:7777".into()),
             poll_interval: Some(15),
+            ..Default::default()
         };
         let c = Config::from_sources((None, None, None), file).expect("should parse");
         assert_eq!(c.database_url, "postgres://file/db");
@@ -203,6 +277,7 @@ mod tests {
             database_url: Some("postgres://default-test/db".into()),
             api_base_url: None,
             poll_interval: None,
+            ..Default::default()
         };
         let c = Config::from_sources((None, None, None), file).expect("should parse");
         assert_eq!(c.api_base_url, "http://localhost:8080");
@@ -215,6 +290,7 @@ mod tests {
             database_url: Some("postgres://file-only/db".into()),
             api_base_url: None,
             poll_interval: None,
+            ..Default::default()
         };
         let c = Config::from_sources((None, None, None), file).expect("should parse");
         assert_eq!(c.database_url, "postgres://file-only/db");
@@ -309,5 +385,137 @@ unknown_future_key = "ignored"
     fn config_path_xdg_takes_precedence_over_home() {
         let path = config_path(Some("/xdg".into()), Some("/home".into()));
         assert!(path.unwrap().starts_with("/xdg"));
+    }
+
+    // ─── parse_file: [workspaces] table ──────────────────────────────────────
+
+    #[test]
+    fn parse_file_workspace_table_round_trips() {
+        let toml = r#"
+database_url = "postgres://ws/db"
+default_workspace = "brain"
+
+[workspaces]
+brain = "/Users/alice/brain"
+client-a = "/Users/alice/clients/a"
+"#;
+        let fc = parse_file(toml).expect("valid TOML with [workspaces] should parse");
+        assert_eq!(fc.database_url.as_deref(), Some("postgres://ws/db"));
+        assert_eq!(fc.default_workspace.as_deref(), Some("brain"));
+
+        let ws = fc
+            .workspaces
+            .as_ref()
+            .expect("[workspaces] should be present");
+        assert_eq!(ws.get("brain"), Some(&PathBuf::from("/Users/alice/brain")));
+        assert_eq!(
+            ws.get("client-a"),
+            Some(&PathBuf::from("/Users/alice/clients/a"))
+        );
+    }
+
+    #[test]
+    fn parse_file_missing_workspace_table_yields_none() {
+        let toml = r#"database_url = "postgres://no-ws/db""#;
+        let fc = parse_file(toml).expect("TOML without [workspaces] should parse");
+        assert!(fc.workspaces.is_none());
+        assert!(fc.default_workspace.is_none());
+    }
+
+    #[test]
+    fn parse_file_empty_workspace_table_is_accepted() {
+        let toml = "[workspaces]\n";
+        let fc = parse_file(toml).expect("empty [workspaces] table should parse");
+        // An empty TOML table deserialises to Some(empty map) or None depending on serde.
+        // Either is acceptable — the resolver handles both.
+        if let Some(ws) = &fc.workspaces {
+            assert!(ws.is_empty());
+        }
+    }
+
+    // ─── resolve_workspace_root ───────────────────────────────────────────────
+
+    fn make_registry(entries: &[(&str, &str)]) -> FileConfig {
+        let mut map = HashMap::new();
+        for (name, path) in entries {
+            map.insert(name.to_string(), PathBuf::from(path));
+        }
+        FileConfig {
+            workspaces: Some(map),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_explicit_root_wins_over_everything() {
+        let mut fc = make_registry(&[("brain", "/registry/brain")]);
+        fc.default_workspace = Some("brain".into());
+        let result =
+            resolve_workspace_root(Some(PathBuf::from("/explicit/root")), Some("brain"), &fc)
+                .unwrap();
+        assert_eq!(result, PathBuf::from("/explicit/root"));
+    }
+
+    #[test]
+    fn resolve_named_workspace_hits_registry() {
+        let fc = make_registry(&[("brain", "/repos/brain"), ("client-a", "/repos/client-a")]);
+        let result = resolve_workspace_root(None, Some("client-a"), &fc).unwrap();
+        assert_eq!(result, PathBuf::from("/repos/client-a"));
+    }
+
+    #[test]
+    fn resolve_unknown_workspace_name_is_typed_error() {
+        let fc = make_registry(&[("brain", "/repos/brain")]);
+        let err = resolve_workspace_root(None, Some("missing"), &fc).unwrap_err();
+        assert_eq!(err, ConfigError::UnknownWorkspace("missing".into()));
+    }
+
+    #[test]
+    fn resolve_unknown_workspace_name_contains_the_name() {
+        let fc = make_registry(&[]);
+        let err = resolve_workspace_root(None, Some("ghost"), &fc).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ghost"),
+            "error message should include the unknown name"
+        );
+    }
+
+    #[test]
+    fn resolve_default_workspace_fallback() {
+        let mut fc = make_registry(&[("brain", "/repos/brain")]);
+        fc.default_workspace = Some("brain".into());
+        let result = resolve_workspace_root(None, None, &fc).unwrap();
+        assert_eq!(result, PathBuf::from("/repos/brain"));
+    }
+
+    #[test]
+    fn resolve_default_workspace_unknown_is_typed_error() {
+        let mut fc = make_registry(&[("brain", "/repos/brain")]);
+        fc.default_workspace = Some("nonexistent".into());
+        let err = resolve_workspace_root(None, None, &fc).unwrap_err();
+        assert_eq!(err, ConfigError::UnknownWorkspace("nonexistent".into()));
+    }
+
+    #[test]
+    fn resolve_no_config_returns_dot() {
+        let fc = FileConfig::default();
+        let result = resolve_workspace_root(None, None, &fc).unwrap();
+        assert_eq!(result, PathBuf::from("."));
+    }
+
+    #[test]
+    fn resolve_registry_present_but_no_workspace_arg_and_no_default_returns_dot() {
+        let fc = make_registry(&[("brain", "/repos/brain")]);
+        // No --workspace, no default_workspace — fall through to built-in default.
+        let result = resolve_workspace_root(None, None, &fc).unwrap();
+        assert_eq!(result, PathBuf::from("."));
+    }
+
+    #[test]
+    fn resolve_explicit_root_wins_even_with_no_registry() {
+        let fc = FileConfig::default();
+        let result = resolve_workspace_root(Some(PathBuf::from("/my/root")), None, &fc).unwrap();
+        assert_eq!(result, PathBuf::from("/my/root"));
     }
 }
