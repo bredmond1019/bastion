@@ -14,3 +14,6 @@ Validated: gating checks (fast tripwire)
 What: Wire --workspace/--knowledge-dir flag through CLI and brain::run for named workspace selection; --root changed to Option<PathBuf>; workspace registry loaded DB-free in main.rs
 Decisions: Changed --root from PathBuf with default_value='.' to Option<PathBuf> so the resolver can distinguish 'unset' from an explicit path — required for correct precedence (explicit > workspace > default > builtin); Used visible_alias for --knowledge-dir so it appears in --help output as documented in the spec; load_workspace_registry errors (malformed file) propagate as anyhow errors rather than silently degrading, matching the existing config.rs contract where malformed TOML is always an error
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow/docs/brain.md, /Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow/docs/config.md
