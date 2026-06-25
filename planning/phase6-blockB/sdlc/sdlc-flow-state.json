@@ -1,0 +1,42 @@
+{
+  "spec_slug": "phase6-blockB",
+  "branch": "phase6-blockB-flow",
+  "started_at": "2026-06-25T22:59:57Z",
+  "updated_at": "2026-06-25T22:59:57Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow",
+  "status": "running",
+  "current_task": 1,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added workspace registry + pure resolver to config.rs: FileConfig extended with workspaces/default_workspace fields, ConfigError::UnknownWorkspace variant, pure resolve_workspace_root() with explicit-root > named-workspace > default-workspace > built-in-dot precedence, and DB-free load_workspace_registry() loader; 13 new tests covering all resolver paths and TOML round-trip.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used ConfigError::UnknownWorkspace(String) variant (not a separate WorkspaceError type) to keep the single error enum pattern consistent with the existing codebase",
+        "resolve_workspace_root returns PathBuf::from('.') as built-in default to preserve Block A behavior exactly",
+        "load_workspace_registry silently degrades to FileConfig::default() on absent/unreadable config file (same contract as Config::load) but propagates MalformedFile on parse errors"
+      ],
+      "files_changed": [
+        "src/config.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": null,
+    "findings": [],
+    "attempts": 0
+  },
+  "docs": {
+    "changed": [],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  }
+}
