@@ -68,12 +68,10 @@ fn extract_title_from_frontmatter(content: &str) -> Option<String> {
             return found_title;
         }
         if found_title.is_none() {
-            if let Some(rest) = trimmed.strip_prefix("title:") {
-                let value = rest.trim().to_string();
-                if !value.is_empty() {
-                    found_title = Some(value);
-                }
-            }
+            found_title = trimmed
+                .strip_prefix("title:")
+                .map(|rest| rest.trim().to_string())
+                .filter(|v| !v.is_empty());
         }
     }
 
