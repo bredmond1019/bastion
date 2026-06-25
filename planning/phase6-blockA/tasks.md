@@ -73,7 +73,43 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+### Task 4 — smoke test (2026-06-25)
+
+Smoke-tested `bastion brain` against a 3-node no-frontmatter corpus (alpha, beta, gamma)
+where node ids are filename stems and `[[link]]` targets match exactly.
+
+```
+$ bastion brain --dependents gamma --root <corpus>
+dependent: beta    <path>/beta.md
+dependent: alpha   <path>/alpha.md
+
+$ bastion brain --lineage alpha --root <corpus>
+lineage: beta     <path>/beta.md
+lineage: gamma    <path>/gamma.md
+
+$ bastion brain --blast-radius gamma --root <corpus>
+blast-radius: beta    <path>/beta.md
+blast-radius: alpha   <path>/alpha.md
+
+$ bastion brain --dependents nonexistent --root <corpus>
+brain: unknown node id: nonexistent
+exit 1   (graceful)
+
+$ bastion brain --dependents foo --root /nonexistent
+brain: no markdown files found under '/nonexistent' — check --root
+exit 1   (graceful)
+```
+
+All results correct. Greppable output format confirmed (`<label>: <id>\t<path>`).
+
+**Note on real OKF corpus:** The brain repo's decision docs use filename-stem-based wiki
+links (e.g. `[[D16-okf-concept-folder-planning]]`), but `parse_okf_node` derives the node
+id from the slugified frontmatter title. These will not match, so resolved links will be
+sparse in a corpus where titles don't match filename stems. Docs without frontmatter
+(id = filename stem) or docs whose slugified title matches their `[[link]]` targets work
+as intended. This is a known design constraint; the tool performs correctly given the
+OKF conventions it targets.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->

@@ -137,6 +137,35 @@ pub enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Query the OKF brain knowledge graph for structural relationships
+    ///
+    /// Builds a directed graph from the [[link]] corpus under --root and answers
+    /// structural questions: which nodes depend on a given node (--dependents),
+    /// what is transitively affected if it changes (--blast-radius), or what does
+    /// it transitively reference (--lineage).
+    ///
+    /// Output is one greppable line per result: `<relation>: <id>\t<path>`.
+    ///
+    /// Exactly one of --dependents, --blast-radius, or --lineage must be supplied.
+    #[command(group(
+        clap::ArgGroup::new("query-mode")
+            .required(true)
+            .args(["dependents", "blast_radius", "lineage"])
+    ))]
+    Brain {
+        /// Show nodes that directly reference <NODE_ID> via [[link]] (incoming edges)
+        #[arg(long, value_name = "NODE_ID")]
+        dependents: Option<String>,
+        /// Show all nodes transitively affected by a change to <NODE_ID>
+        #[arg(long, value_name = "NODE_ID")]
+        blast_radius: Option<String>,
+        /// Show all nodes that <NODE_ID> transitively references (forward reachability)
+        #[arg(long, value_name = "NODE_ID")]
+        lineage: Option<String>,
+        /// Root directory of the OKF corpus to scan (defaults to current directory)
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -301,6 +330,106 @@ mod tests {
         assert!(
             Cli::try_parse_from(["bastion", "ask", "--session", "s", "--prompt-file", "/p"])
                 .is_err()
+        );
+    }
+
+    // ── Brain subcommand ──────────────────────────────────────────────────────
+
+    #[test]
+    fn brain_dependents_parses() {
+        let cli = Cli::try_parse_from(["bastion", "brain", "--dependents", "d20"]).unwrap();
+        match cli.command {
+            Some(Commands::Brain {
+                dependents,
+                blast_radius,
+                lineage,
+                root,
+            }) => {
+                assert_eq!(dependents, Some("d20".to_string()));
+                assert!(blast_radius.is_none());
+                assert!(lineage.is_none());
+                assert_eq!(root, PathBuf::from("."));
+            }
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_blast_radius_parses() {
+        let cli = Cli::try_parse_from(["bastion", "brain", "--blast-radius", "d20"]).unwrap();
+        match cli.command {
+            Some(Commands::Brain {
+                dependents,
+                blast_radius,
+                lineage,
+                root,
+            }) => {
+                assert!(dependents.is_none());
+                assert_eq!(blast_radius, Some("d20".to_string()));
+                assert!(lineage.is_none());
+                assert_eq!(root, PathBuf::from("."));
+            }
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_lineage_parses() {
+        let cli = Cli::try_parse_from(["bastion", "brain", "--lineage", "d3"]).unwrap();
+        match cli.command {
+            Some(Commands::Brain {
+                dependents,
+                blast_radius,
+                lineage,
+                root,
+            }) => {
+                assert!(dependents.is_none());
+                assert!(blast_radius.is_none());
+                assert_eq!(lineage, Some("d3".to_string()));
+                assert_eq!(root, PathBuf::from("."));
+            }
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_root_flag_overrides_default() {
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "brain",
+            "--dependents",
+            "d20",
+            "--root",
+            "/path/to/brain",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Brain { root, .. }) => {
+                assert_eq!(root, PathBuf::from("/path/to/brain"));
+            }
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_no_query_flag_fails() {
+        // None of the mutually-exclusive query flags → parse should fail.
+        assert!(Cli::try_parse_from(["bastion", "brain"]).is_err());
+    }
+
+    #[test]
+    fn brain_two_query_flags_fails() {
+        // Two mutually-exclusive flags → parse should fail.
+        assert!(
+            Cli::try_parse_from([
+                "bastion",
+                "brain",
+                "--dependents",
+                "d20",
+                "--lineage",
+                "d20"
+            ])
+            .is_err()
         );
     }
 }
