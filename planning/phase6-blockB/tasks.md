@@ -1,6 +1,6 @@
 # Task Spec — Phase 6, Block B
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-25
 
 ## Goal
 Generalize the bastion brain graph reader to address an **arbitrary, named knowledge workspace** (per-repo / per-client root) selectable by `--workspace` or config, with the default still resolving to the brain repo — the Console half of the cross-repo multi-workspace block.
@@ -36,7 +36,7 @@ Generalize the bastion brain graph reader to address an **arbitrary, named knowl
 - **Files:** *Modified* `src/cli.rs`, `src/brain/mod.rs`, `src/main.rs`.
 - **Depends on:** Tasks 1 & 2.
 
-### 4. Validate
+### 4. [~] Validate
 - Run the Validation Commands listed below and confirm all pass.
 - Confirm `bastion brain` still runs with **no `DATABASE_URL`** set (DB-free, D4) — workspace resolution must not introduce a DB requirement.
 
