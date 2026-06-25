@@ -2,10 +2,10 @@
   "spec_slug": "phase6-blockA",
   "branch": "phase6-blockA-flow",
   "started_at": "2026-06-25T18:30:59Z",
-  "updated_at": "2026-06-25T18:39:41Z",
+  "updated_at": "2026-06-25T18:50:29Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow",
   "status": "running",
-  "current_task": 3,
+  "current_task": 4,
   "tasks": {
     "1": {
       "status": "passed",
@@ -69,6 +69,26 @@
       "files_changed": [
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/query.rs",
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockA-flow/src/brain/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Wired bastion brain subcommand: thin I/O shell (run()), BrainQuery enum + pure helpers, CLI (Brain variant with mutually-exclusive --dependents/--blast-radius/--lineage + --root), main.rs dispatch; 10 new unit tests + 6 CLI parse tests; smoke tested; 522 tests pass.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used filename-stem node ids (no-frontmatter docs) for smoke test corpus since the real brain repo uses filename-stem wiki links that don't match slugified frontmatter title node ids — documented this constraint in ## Notes.",
+        "Made brain::run() synchronous (not async) since it is DB-free and all I/O is blocking filesystem reads, consistent with the sessions surface pattern (D4/D5).",
+        "Reused crate::validate::find_markdown_files for corpus discovery rather than duplicating the directory-walking logic."
+      ],
+      "files_changed": [
+        "src/brain/mod.rs",
+        "src/cli.rs",
+        "src/main.rs",
+        "planning/phase6-blockA/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"

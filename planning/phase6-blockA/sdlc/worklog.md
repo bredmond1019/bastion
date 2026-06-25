@@ -16,3 +16,8 @@ Validated: gating checks (fast tripwire)
 What: Add src/brain/query.rs with three pure structural query functions (dependents, blast_radius, lineage) over BrainGraph, with 15 unit tests covering happy paths, edge cases, and unknown-id error paths; update mod.rs to replace inline stub.
 Decisions: dependents delegates to BrainGraph::predecessors (direct incoming edges only, not transitive), blast_radius to reachable_reverse (BFS transitive reverse), lineage to reachable_forward (DFS transitive forward) — these are thin wrappers that give semantic names to the underlying graph algorithms from Task 2; fixture_graph in query tests mirrors the decision topology from Task 1 fixtures (d3, d20, d21, d4, unlinked) to keep tests grounded in realistic corpus shapes
 Validated: gating checks (fast tripwire)
+
+## Task 4 — PASSED (1 attempt)
+What: Wired bastion brain subcommand: thin I/O shell (run()), BrainQuery enum + pure helpers, CLI (Brain variant with mutually-exclusive --dependents/--blast-radius/--lineage + --root), main.rs dispatch; 10 new unit tests + 6 CLI parse tests; smoke tested; 522 tests pass.
+Decisions: Used filename-stem node ids (no-frontmatter docs) for smoke test corpus since the real brain repo uses filename-stem wiki links that don't match slugified frontmatter title node ids — documented this constraint in ## Notes.; Made brain::run() synchronous (not async) since it is DB-free and all I/O is blocking filesystem reads, consistent with the sessions surface pattern (D4/D5).; Reused crate::validate::find_markdown_files for corpus discovery rather than duplicating the directory-walking logic.
+Validated: gating checks (fast tripwire)
