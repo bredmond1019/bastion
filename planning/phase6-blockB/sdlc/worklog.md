@@ -20,3 +20,6 @@ Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow/d
 
 ## Wrap-up — PASS
 Next: phase6-blockC (Structural code navigation — code-as-graph, program Block Q)
+
+## PR
+https://github.com/bredmond1019/bastion/pull/2

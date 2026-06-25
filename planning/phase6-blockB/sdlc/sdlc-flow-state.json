@@ -2,7 +2,7 @@
   "spec_slug": "phase6-blockB",
   "branch": "phase6-blockB-flow",
   "started_at": "2026-06-25T22:59:57Z",
-  "updated_at": "2026-06-25T23:22:23Z",
+  "updated_at": "2026-06-25T23:24:32Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow",
   "status": "done",
   "current_task": 4,
@@ -95,7 +95,7 @@
   },
   "bail_reason": null,
   "pr": {
-    "url": null,
-    "number": null
+    "url": "https://github.com/bredmond1019/bastion/pull/2",
+    "number": 2
   }
 }
