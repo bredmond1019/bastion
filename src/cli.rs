@@ -139,10 +139,10 @@ pub enum Commands {
     },
     /// Query the OKF brain knowledge graph for structural relationships
     ///
-    /// Builds a directed graph from the [[link]] corpus under --root and answers
-    /// structural questions: which nodes depend on a given node (--dependents),
-    /// what is transitively affected if it changes (--blast-radius), or what does
-    /// it transitively reference (--lineage).
+    /// Builds a directed graph from the [[link]] corpus under --root (or the workspace
+    /// resolved via --workspace / config default) and answers structural questions:
+    /// which nodes depend on a given node (--dependents), what is transitively affected
+    /// if it changes (--blast-radius), or what does it transitively reference (--lineage).
     ///
     /// Output is one greppable line per result: `<relation>: <id>\t<path>`.
     ///
@@ -162,9 +162,14 @@ pub enum Commands {
         /// Show all nodes that <NODE_ID> transitively references (forward reachability)
         #[arg(long, value_name = "NODE_ID")]
         lineage: Option<String>,
-        /// Root directory of the OKF corpus to scan (defaults to current directory)
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
+        /// Root directory of the OKF corpus to scan (explicit override; takes precedence
+        /// over --workspace and the config default)
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Named workspace from the [workspaces] registry in the bastion config file
+        /// (~/.config/bastion/config.toml).  Alias: --knowledge-dir.
+        #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
+        workspace: Option<String>,
     },
 }
 
@@ -344,11 +349,14 @@ mod tests {
                 blast_radius,
                 lineage,
                 root,
+                workspace,
             }) => {
                 assert_eq!(dependents, Some("d20".to_string()));
                 assert!(blast_radius.is_none());
                 assert!(lineage.is_none());
-                assert_eq!(root, PathBuf::from("."));
+                // --root is now Option<PathBuf>; unset when not supplied
+                assert!(root.is_none());
+                assert!(workspace.is_none());
             }
             other => panic!("expected Brain, got {other:?}"),
         }
@@ -363,11 +371,13 @@ mod tests {
                 blast_radius,
                 lineage,
                 root,
+                workspace,
             }) => {
                 assert!(dependents.is_none());
                 assert_eq!(blast_radius, Some("d20".to_string()));
                 assert!(lineage.is_none());
-                assert_eq!(root, PathBuf::from("."));
+                assert!(root.is_none());
+                assert!(workspace.is_none());
             }
             other => panic!("expected Brain, got {other:?}"),
         }
@@ -382,18 +392,20 @@ mod tests {
                 blast_radius,
                 lineage,
                 root,
+                workspace,
             }) => {
                 assert!(dependents.is_none());
                 assert!(blast_radius.is_none());
                 assert_eq!(lineage, Some("d3".to_string()));
-                assert_eq!(root, PathBuf::from("."));
+                assert!(root.is_none());
+                assert!(workspace.is_none());
             }
             other => panic!("expected Brain, got {other:?}"),
         }
     }
 
     #[test]
-    fn brain_root_flag_overrides_default() {
+    fn brain_root_flag_sets_some() {
         let cli = Cli::try_parse_from([
             "bastion",
             "brain",
@@ -404,8 +416,78 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::Brain { root, .. }) => {
-                assert_eq!(root, PathBuf::from("/path/to/brain"));
+            Some(Commands::Brain {
+                root, workspace, ..
+            }) => {
+                assert_eq!(root, Some(PathBuf::from("/path/to/brain")));
+                assert!(workspace.is_none());
+            }
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_workspace_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "brain",
+            "--dependents",
+            "d20",
+            "--workspace",
+            "client-a",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Brain {
+                root, workspace, ..
+            }) => {
+                assert!(root.is_none());
+                assert_eq!(workspace, Some("client-a".to_string()));
+            }
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_knowledge_dir_alias_parses() {
+        // --knowledge-dir is a documented alias for --workspace
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "brain",
+            "--dependents",
+            "d20",
+            "--knowledge-dir",
+            "my-notes",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Brain { workspace, .. }) => {
+                assert_eq!(workspace, Some("my-notes".to_string()));
+            }
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_root_and_workspace_both_accepted() {
+        // clap allows both; resolver gives --root precedence
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "brain",
+            "--dependents",
+            "d20",
+            "--root",
+            "/explicit",
+            "--workspace",
+            "brain",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Brain {
+                root, workspace, ..
+            }) => {
+                assert_eq!(root, Some(PathBuf::from("/explicit")));
+                assert_eq!(workspace, Some("brain".to_string()));
             }
             other => panic!("expected Brain, got {other:?}"),
         }
