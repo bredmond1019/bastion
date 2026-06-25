@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-25 — phase6-blockA complete: `bastion brain` subcommand shipped with petgraph-backed BrainGraph, structural OKF query layer (dependents/blast-radius/lineage), and full CLI wiring. 522 tests pass. PASS verdict.
-**Current focus:** Bastion-program track — **phase6-blockB** (Multi-workspace Brain — graph reader over per-repo/per-client roots). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
+**Last updated:** 2026-06-25 — phase6-blockB complete: multi-workspace Brain shipped — workspace registry + pure resolver in config.rs, portable OKF fixture corpus, `--workspace`/`--knowledge-dir` CLI flag wired through brain::run, DB-free confirmed. 517 tests pass. PASS verdict.
+**Current focus:** Bastion-program track — **phase6-blockC** (Structural code navigation — code-as-graph). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
 
 ---
 
@@ -74,7 +74,7 @@ description: Current state and progress tracker for bastion.
 | Block | What | Prog. | Status | Notes |
 |---|---|---|---|---|
 | Block A | Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph | A | Done | petgraph-backed BrainGraph + structural query layer (dependents/blast-radius/lineage) + `bastion brain` CLI wired. 522 tests pass. PASS 2026-06-25. |
-| Block B | Multi-workspace Brain — graph reader over per-repo/per-client roots | C½ | Not started | Builds on 6A. Cross-repo peer: program Block B/C (orchestrator semantic + multi-workspace). |
+| Block B | Multi-workspace Brain — graph reader over per-repo/per-client roots | C½ | Done | Workspace registry + pure resolver in config.rs; portable OKF fixture corpus; `--workspace`/`--knowledge-dir` CLI flag; DB-free confirmed. 517 tests pass. PASS 2026-06-25. |
 | Block C | Structural code navigation (code-as-graph) | Q | Not started | Builds on 6A. Structural twin of semantic code search (program Block P, Engine). |
 
 #### Phase 7 — Observability & control (Wave 2)
