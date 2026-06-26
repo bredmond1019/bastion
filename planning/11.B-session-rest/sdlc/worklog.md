@@ -18,3 +18,7 @@ Validated: gating checks (fast tripwire)
 What: Created src/serve/handlers/sessions.rs with six session REST handlers (list/pane/send/key/create/delete) wrapping tmux via web::block, plus a pure tmux_error_to_status helper (503/404/500 mapping) with 11 unit tests; routes mounted in the protected /api scope with integration auth tests.
 Decisions: Used web::block with move closures capturing owned Strings to satisfy Send + 'static bounds — references inside the closure body borrow the moved values safely; tmux_error_to_status uses downcast_ref::<TmuxError> to inspect the error chain without changing anyhow::Error propagation elsewhere; NotInstalled and NoServer both map to C001 (BinaryNotFound) since both indicate tmux is unavailable at the system level; Integration test for GET /api/sessions accepts either 200 (real tmux) or 503 (CI without tmux) per Rule 6 — live behavior is smoke-tested, not asserted in-process; delete_session route registered at /sessions/{name} (not /sessions/{name}/) to match the pattern used by other path-param routes
 Validated: gating checks (fast tripwire)
+
+## Task 3 — PASSED (1 attempt)
+What: Session REST handlers with six routes (list/pane/send/key/create/delete) mounted under bearer-protected /api scope, with pure tmux_error_to_status helper mapping to 503/404/500 and full unit test coverage
+Validated: gating checks (fast tripwire)
