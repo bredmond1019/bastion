@@ -18,3 +18,6 @@ Validated: gating checks (fast tripwire)
 ## Task 4 — PASSED (1 attempt)
 What: Ran all validation commands (fmt/clippy/test/build — all pass, 577 tests) and recorded manual smoke-test of bastion code --def/--refs/--dependents against the live src/ tree in ## Notes, completing phase6-blockC Task 4.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow/docs/brain.md | Created: /Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow/docs/code.md
