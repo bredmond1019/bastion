@@ -189,9 +189,26 @@ pub fn find_rust_files(root: &Path) -> Vec<PathBuf> {
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!(
+                "code: skipping unreadable directory '{}': {e}",
+                dir.display()
+            );
+            return;
+        }
     };
-    let mut children: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    let mut children: Vec<PathBuf> = entries
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry.path()),
+            Err(err) => {
+                eprintln!(
+                    "code: skipping unreadable dir entry under '{}': {err}",
+                    dir.display()
+                );
+                None
+            }
+        })
+        .collect();
     children.sort();
 
     for path in children {
@@ -252,6 +269,14 @@ pub fn run_code(
                 eprintln!("code: skipping unreadable file '{}': {e}", file.display());
             }
         }
+    }
+
+    if sources.is_empty() {
+        anyhow::bail!(
+            "code: all {} .rs files under '{}' were unreadable — check permissions",
+            files.len(),
+            root.display()
+        );
     }
 
     // Extract symbols and refs from all files.

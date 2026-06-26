@@ -113,6 +113,11 @@ pub fn extract_symbols(source: &str, path: &Path) -> Vec<CodeSymbol> {
             r#"(impl_item type: (type_identifier) @name)"#,
             SymbolKind::Impl,
         ),
+        // Generic impl blocks: `impl<T> Container<T>` — type field is generic_type
+        (
+            r#"(impl_item type: (generic_type type: (type_identifier) @name))"#,
+            SymbolKind::Impl,
+        ),
     ];
 
     for (query_src, kind) in queries {
@@ -171,6 +176,8 @@ pub fn extract_refs(source: &str, path: &Path) -> Vec<CodeRef> {
         r#"(use_declaration argument: (scoped_identifier name: (identifier) @name))"#,
         // use imports with bare identifier: use alpha
         r#"(use_declaration argument: (identifier) @name)"#,
+        // turbofish calls: foo::<u32>() — function field is generic_function
+        r#"(call_expression function: (generic_function function: (identifier) @name))"#,
     ];
 
     for query_src in query_patterns {
@@ -516,6 +523,33 @@ mod tests {
             .find(|s| s.name == "utils" && s.kind == SymbolKind::Mod);
         assert!(found.is_some(), "expected mod utils");
         assert_eq!(found.unwrap().line, 1);
+    }
+
+    #[test]
+    fn extract_symbols_generic_impl() {
+        let src = "impl<T> Container<T> { pub fn len(&self) -> usize { 0 } }";
+        let syms = extract_symbols(src, Path::new("container.rs"));
+        let found = syms
+            .iter()
+            .find(|s| s.name == "Container" && s.kind == SymbolKind::Impl);
+        assert!(
+            found.is_some(),
+            "generic impl<T> Container<T> must yield Impl symbol; got: {:?}",
+            debug_syms(&syms)
+        );
+        assert_eq!(found.unwrap().line, 1);
+    }
+
+    #[test]
+    fn extract_refs_turbofish_call() {
+        let src = r#"fn foo() { let v = parse::<u32>("42"); }"#;
+        let refs = extract_refs(src, Path::new("foo.rs"));
+        let found = refs.iter().any(|r| r.name == "parse");
+        assert!(
+            found,
+            "turbofish call parse::<u32>() must yield a ref; refs: {:?}",
+            debug_refs(&refs)
+        );
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
