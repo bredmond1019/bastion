@@ -1,7 +1,13 @@
 ---
 type: Reference
 title: validate — Markdown/MDX Content Validation
-description: Reference for `bastion validate <path>`: file discovery, shared error types, and subcommand wiring.
+description: "Reference for `bastion validate <path>`: file discovery, shared error types, and subcommand wiring."
+doc_id: validate
+layer: [console]
+project: bastion
+status: active
+keywords: [validation, frontmatter, OKF, markdown, link checking, ValidationError]
+related: [brain, docs-index]
 ---
 
 # validate — Markdown/MDX Content Validation

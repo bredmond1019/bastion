@@ -2,6 +2,12 @@
 type: Reference
 title: Live Monitor Surface
 description: Operator reference for `bastion monitor` — the live two-pane TUI graph view of workflow execution (keybindings, layout, flags, poll cadence, degrade paths).
+doc_id: monitor
+layer: [console]
+project: bastion
+status: active
+keywords: [monitor, TUI, workflow graph, live poll, ratatui, node states, orchestrator]
+related: [inspect, data-contract, sessions, costs]
 ---
 
 # Live Monitor

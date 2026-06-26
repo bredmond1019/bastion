@@ -1,7 +1,13 @@
 ---
 type: Reference
 title: code — Symbol-Level Code Graph Queries
-description: Reference for `bastion code`: deterministic tree-sitter extraction over Rust source, symbol definition / reference / dependents lookup, output format, root resolution, and degradation paths.
+description: "Reference for `bastion code`: deterministic tree-sitter extraction over Rust source, symbol definition / reference / dependents lookup, output format, root resolution, and degradation paths."
+doc_id: code
+layer: [console]
+project: bastion
+status: active
+keywords: [code graph, tree-sitter, symbol lookup, Rust, definition, references, dependents]
+related: [brain, config]
 ---
 
 # code — Symbol-Level Code Graph Queries

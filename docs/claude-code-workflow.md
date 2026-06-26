@@ -2,6 +2,12 @@
 type: Guide
 title: Running Claude Code through bastion
 description: A hands-on walkthrough for using bastion's session surface to spin up a tmux session, launch Claude Code in it, and drive it — interactively via attach or hands-off via send/capture — including from a phone over SSH.
+doc_id: claude-code-workflow
+layer: [console]
+project: bastion
+status: active
+keywords: [Claude Code, tmux sessions, workflow, send, capture, attach, Tailscale]
+related: [sessions]
 ---
 
 # Running Claude Code through bastion

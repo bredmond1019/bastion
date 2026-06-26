@@ -2,6 +2,12 @@
 type: Reference
 title: Configuration
 description: How bastion reads its configuration — env vars, config file, and built-in defaults.
+doc_id: config
+layer: [console]
+project: bastion
+status: active
+keywords: [configuration, environment variables, config file, workspace registry, precedence, TOML]
+related: [observ, serve-api, brain]
 ---
 
 # Configuration

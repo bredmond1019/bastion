@@ -2,6 +2,12 @@
 type: Reference
 title: Manual SDLC command lifecycle
 description: The step-by-step slash-command pipeline (Phase 1–7) that the automated engines drive end-to-end — for running the SDLC with human checkpoints between stages.
+doc_id: commands
+layer: [console, factory]
+project: bastion
+status: active
+keywords: [slash commands, SDLC pipeline, manual lifecycle, implement, test, review, document]
+related: [workflows-index, sdlc-flow, sdlc-run, sdlc-task]
 ---
 
 # Manual SDLC command lifecycle
