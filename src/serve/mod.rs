@@ -33,6 +33,7 @@
 
 pub mod auth;
 pub mod dto;
+pub mod handlers;
 pub mod ws;
 
 use actix_web::{App, HttpResponse, HttpServer, web};
@@ -77,8 +78,33 @@ pub fn run(addr: String, token: String) -> Result<()> {
 async fn run_server(addr: String, token: String) -> Result<()> {
     HttpServer::new(move || {
         // Protected scope — bearer auth enforced on all children.
-        // Later blocks add more routes here (e.g. /api/sessions, /api/costs).
-        let protected = web::scope("/api").wrap(BearerAuthMiddleware::new(token.clone()));
+        let protected = web::scope("/api")
+            .wrap(BearerAuthMiddleware::new(token.clone()))
+            // ── Session routes ──────────────────────────────────────────────
+            .route(
+                "/sessions",
+                web::get().to(handlers::sessions::list_sessions),
+            )
+            .route(
+                "/sessions",
+                web::post().to(handlers::sessions::create_session),
+            )
+            .route(
+                "/sessions/{name}/pane",
+                web::get().to(handlers::sessions::get_pane),
+            )
+            .route(
+                "/sessions/{name}/send",
+                web::post().to(handlers::sessions::send),
+            )
+            .route(
+                "/sessions/{name}/key",
+                web::post().to(handlers::sessions::send_key),
+            )
+            .route(
+                "/sessions/{name}",
+                web::delete().to(handlers::sessions::delete_session),
+            );
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
         // The /ws route is a separate scope so its upgrade semantics are distinct
@@ -121,7 +147,32 @@ mod tests {
             InitError = (),
         >,
     > {
-        let protected = web::scope("/api").wrap(BearerAuthMiddleware::new(TEST_TOKEN));
+        let protected = web::scope("/api")
+            .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
+            .route(
+                "/sessions",
+                web::get().to(handlers::sessions::list_sessions),
+            )
+            .route(
+                "/sessions",
+                web::post().to(handlers::sessions::create_session),
+            )
+            .route(
+                "/sessions/{name}/pane",
+                web::get().to(handlers::sessions::get_pane),
+            )
+            .route(
+                "/sessions/{name}/send",
+                web::post().to(handlers::sessions::send),
+            )
+            .route(
+                "/sessions/{name}/key",
+                web::post().to(handlers::sessions::send_key),
+            )
+            .route(
+                "/sessions/{name}",
+                web::delete().to(handlers::sessions::delete_session),
+            );
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
             .route("", web::get().to(ws::echo::ws_handler));
@@ -319,6 +370,111 @@ mod tests {
             resp.status(),
             200,
             "correct token on protected route must return 200; got {}",
+            resp.status()
+        );
+    }
+
+    // ── session routes — bearer auth enforced ─────────────────────────────
+
+    #[actix_web::test]
+    async fn get_sessions_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app()).await;
+        let req = test::TestRequest::get().uri("/api/sessions").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/sessions without token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_sessions_rejects_wrong_token_with_401() {
+        let app = test::init_service(build_app()).await;
+        let req = test::TestRequest::get()
+            .uri("/api/sessions")
+            .insert_header(("authorization", "Bearer wrong-token"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/sessions with wrong token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_sessions_with_valid_token_returns_200_json_array() {
+        // Live tmux behaviour is smoke-tested, not asserted in-process (Rule 6).
+        // This test only verifies that the route is wired and produces a JSON
+        // array (empty when tmux is not running in CI — list_sessions_raw
+        // returns an error that the handler maps to 503, OR no sessions exist
+        // and we get 200 []).  We accept either: 200 with array OR 503.
+        let app = test::init_service(build_app()).await;
+        let req = test::TestRequest::get()
+            .uri("/api/sessions")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        let status = resp.status().as_u16();
+        assert!(
+            status == 200 || status == 503,
+            "GET /api/sessions must return 200 or 503; got {status}"
+        );
+        if status == 200 {
+            let body: serde_json::Value = test::read_body_json(resp).await;
+            assert!(
+                body.is_array(),
+                "GET /api/sessions 200 body must be a JSON array; got {body}"
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn post_sessions_send_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app()).await;
+        let req = test::TestRequest::post()
+            .uri("/api/sessions/work/send")
+            .set_json(serde_json::json!({"keys": "hello"}))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "POST /api/sessions/work/send without token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn post_sessions_key_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app()).await;
+        let req = test::TestRequest::post()
+            .uri("/api/sessions/work/key")
+            .set_json(serde_json::json!({"key": "Escape"}))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "POST /api/sessions/work/key without token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn delete_session_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app()).await;
+        let req = test::TestRequest::delete()
+            .uri("/api/sessions/work")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "DELETE /api/sessions/work without token must return 401; got {}",
             resp.status()
         );
     }
