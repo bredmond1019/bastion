@@ -10,6 +10,23 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-26 — phase11-blockB complete: Session REST + named-key helper shipped
+
+Phase 11 Block B delivered the full session REST surface on `bastion serve` across six tasks with a PASS verdict. Task 1 added `send_named_key_args`/`send_named_keys_args` pure builders and thin execution shells to `src/sessions/tmux.rs`, enabling named-key dispatch (Escape, arrows, C-c, bare Enter) without `-l`/`--` flags, with element-wise unit tests proving exact argv ordering and absence of literal flags. Task 2 appended `SessionDto`, `PaneDto`, `SendBody`, `KeyBody`, and `NewSessionBody` to `src/serve/dto.rs` with serde round-trip and missing-field tests. Task 3 created `src/serve/handlers/sessions.rs` with six async handlers wrapping synchronous tmux functions via `web::block`, plus a pure `tmux_error_to_status` helper mapping tmux degradation to 503/404/500 with unit tests across all branches. Task 4 wired all six routes under the bearer-protected `/api` scope in `src/serve/mod.rs` using `web::resource()` groupings (bare `.route()` returns 404 for unregistered methods; `web::resource()` correctly returns 405 as the spec requires), with integration tests for 401 rejection, 200+JSON-array on `GET /api/sessions`, and 405 on wrong method. Task 5 bumped `docs/serve-api.md` to v0.1 with a full Session REST section (six routes, DTOs, named-key accepted values, degradation mapping). Task 6 ran all validation gates (fmt/clippy/test/build all pass, 775 tests) and smoke-tested all six routes plus 401 enforcement against a live `bastion serve` instance; results recorded in tasks.md Notes per Rule 6. Next: phase11-blockC (WebSocket hub + live pane streaming).
+
+```
+15e1ef7 chore: flow state — docs
+16ed605 docs: update docs for 11.B-session-rest
+7279a95 chore: flow state — task 6 passed
+2296e0b feat: implement 11.B-session-rest-task6
+818b06b chore: flow state — task 5 passed
+9dbffad feat: implement 11.B-session-rest-task5
+efd490a chore: flow state — task 4 passed
+0d29b4a feat: implement 11.B-session-rest-task4
+```
+
+---
+
 ## 2026-06-26 — phase11-blockA complete: serve scaffold + serve-api contract v0 shipped
 
 Phase 11 Block A delivered the foundational `bastion serve` HTTP+WebSocket API across seven tasks with a PASS verdict from code review (fixes applied). Task 1 settled the runtime-spike integration risk: actix System spawns on its own thread and integrates cleanly with bastion's tokio-main runtime via `actix_web::rt::System::new().block_on(serve::run(...))` — no async coupling required, full isolation proven. Task 2 added `Commands::Serve { addr: Option<String>, token: Option<String> }` CLI arm, DB-free `load_serve_config()` reading `BASTION_SERVE_ADDR` (default 0.0.0.0:4317) and mandatory `BASTION_SERVE_TOKEN`, with config merge + missing-token error path unit-tested per Rule 6. Task 3 implemented `src/serve/auth.rs` bearer-token middleware with pure `token_matches()` logic exhaustively unit-tested (present/absent header, scheme variations, correct/wrong token). Task 4 added `src/serve/dto.rs` with `HealthResponse`, `WsFrameEnvelope`, serde round-trip unit tests. Task 5 built the minimal `/ws` accept+echo actor in `src/serve/ws/echo.rs` with pure frame helpers unit-tested, I/O shell smoke-tested via websocat and recorded. Task 6 authored `docs/serve-api.md` v0 (OKF frontmatter) documenting base URL/tailnet bind, bearer scheme + 401, GET /health, /ws upgrade behavior, frame envelope skeleton for later blocks. Task 7 ran validation (all four gating checks: fmt, clippy, 720 tests, release build). Code review (2026-06-26) found 7 confirmed findings: empty token bypass in config (missing `is_empty()` check → token required now enforced), continuation frames dropped in EchoActor (buffering restored), `/ws` scope missing from `build_app()` (route added), `health()` not using `HealthResponse::ok()` type-safe constructor (refactored), misleading ping documentation (corrected), 401 response body using integer code field instead of correct format (fixed), and unnecessary `String` allocation in auth middleware (replaced with `&str`). All seven fixes applied to PR #5 branch; `/update-docs --patch` patched `serve-api.md` (3 sections: bearer comparison claim, 401 body format, binary frame behaviour) and `config.md` (MissingServeToken variant, ServeConfig.token mandatory, build_serve_config purity). 723 tests pass. Acceptance criteria verified: `bastion serve` boots, serves `/health` + `/ws` echo with bearer auth over tailnet bind; runtime spike documented; `docs/serve-api.md` v0 committed; docs/index.md updated; gated checks green.
