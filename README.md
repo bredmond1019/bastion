@@ -86,6 +86,8 @@ See [docs/sessions.md](docs/sessions.md) for the full session-control reference 
 | `run <workflow> [--args '{}'] [--monitor]` | Shipped | POST to orchestrator, print `task_id`; optional live-monitor hand-off |
 | `validate <path>` | Shipped | Recursively validate `.md`/`.mdx` OKF frontmatter and relative links; greppable report, exits non-zero on errors |
 | `ask --session S --prompt-file P --out O` | Shipped | Send a prompt file to a Claude session and wait for the output file; creates the session if absent |
+| `brain (--dependents\|--blast-radius\|--lineage) <NODE_ID> [--root DIR] [--workspace NAME]` | Shipped | Structural queries over the OKF `[[link]]` graph: direct dependents, transitive blast radius, or full lineage |
+| `code (--def\|--refs\|--dependents) <SYMBOL> [--root DIR] [--workspace NAME]` | Shipped | Symbol-level code graph queries via tree-sitter: definition sites, call/import references, or direct dependents |
 
 ## Configuration
 
@@ -145,6 +147,8 @@ bastion/
 | [docs/monitor.md](docs/monitor.md) | Live monitor surface — keybindings, two-pane layout, flags, degrade paths |
 | [docs/data-contract.md](docs/data-contract.md) | Orchestrator field mappings (monitor track) |
 | [docs/config.md](docs/config.md) | Configuration reference — env vars, config file, precedence |
+| [docs/brain.md](docs/brain.md) | OKF knowledge-graph queries — `bastion brain`: corpus discovery, `--dependents` / `--blast-radius` / `--lineage`, workspace resolution |
+| [docs/code.md](docs/code.md) | Symbol-level code graph queries — `bastion code`: tree-sitter extraction, `--def` / `--refs` / `--dependents`, degradation paths |
 | [planning/context.md](planning/context.md) | Orientation + governing principles |
 | [planning/master-plan.md](planning/master-plan.md) | Strategy + phase specifications |
 | [planning/status.md](planning/status.md) | Current progress |
