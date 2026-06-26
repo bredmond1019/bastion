@@ -10,6 +10,8 @@ pub enum ConfigError {
     MalformedFile(String),
     #[error("unknown workspace '{0}' — not found in [workspaces] registry")]
     UnknownWorkspace(String),
+    #[error("no [workspaces] table in config — add [workspaces] to ~/.config/bastion/config.toml")]
+    NoWorkspaceRegistry,
 }
 
 /// Fields mirroring env vars — all optional; used as the fallback layer beneath env vars.
@@ -77,7 +79,10 @@ pub fn resolve_workspace_root(
 
     // 2. Named --workspace lookup.
     if let Some(name) = workspace_name {
-        return match registry.and_then(|m| m.get(name)) {
+        let Some(m) = registry else {
+            return Err(ConfigError::NoWorkspaceRegistry);
+        };
+        return match m.get(name) {
             Some(path) => Ok(path.clone()),
             None => Err(ConfigError::UnknownWorkspace(name.to_string())),
         };
@@ -85,7 +90,10 @@ pub fn resolve_workspace_root(
 
     // 3. default_workspace from config.
     if let Some(ref default_name) = file.default_workspace {
-        return match registry.and_then(|m| m.get(default_name.as_str())) {
+        let Some(m) = registry else {
+            return Err(ConfigError::NoWorkspaceRegistry);
+        };
+        return match m.get(default_name.as_str()) {
             Some(path) => Ok(path.clone()),
             None => Err(ConfigError::UnknownWorkspace(default_name.clone())),
         };
@@ -133,18 +141,11 @@ impl Config {
     pub fn load() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
 
-        // Resolve optional config file — absent or unreadable → silently degrade.
-        // Present but malformed → propagate ConfigError::MalformedFile.
-        let file_config = match config_path(
+        // Absent or unreadable → silently degrade; malformed → propagate MalformedFile.
+        let file_config = load_workspace_registry(
             std::env::var("XDG_CONFIG_HOME").ok(),
             std::env::var("HOME").ok(),
-        ) {
-            Some(path) => match std::fs::read_to_string(&path) {
-                Ok(contents) => parse_file(&contents)?,
-                Err(_) => FileConfig::default(),
-            },
-            None => FileConfig::default(),
-        };
+        )?;
 
         Self::from_sources(
             (
@@ -502,6 +503,25 @@ client-a = "/Users/alice/clients/a"
         let fc = FileConfig::default();
         let result = resolve_workspace_root(None, None, &fc).unwrap();
         assert_eq!(result, PathBuf::from("."));
+    }
+
+    #[test]
+    fn resolve_named_workspace_with_no_registry_is_no_registry_error() {
+        // workspaces: None (no [workspaces] section) — distinct from an empty registry.
+        let fc = FileConfig::default();
+        let err = resolve_workspace_root(None, Some("brain"), &fc).unwrap_err();
+        assert_eq!(err, ConfigError::NoWorkspaceRegistry);
+    }
+
+    #[test]
+    fn resolve_default_workspace_with_no_registry_is_no_registry_error() {
+        // default_workspace set but no [workspaces] table — should not say "not found in registry".
+        let fc = FileConfig {
+            default_workspace: Some("brain".into()),
+            ..Default::default()
+        };
+        let err = resolve_workspace_root(None, None, &fc).unwrap_err();
+        assert_eq!(err, ConfigError::NoWorkspaceRegistry);
     }
 
     #[test]

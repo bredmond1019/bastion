@@ -72,16 +72,13 @@ pub fn run(
 ) -> Result<()> {
     // Pure: resolve the effective corpus root (no DB, no Config::load).
     let root = crate::config::resolve_workspace_root(explicit_root, workspace.as_deref(), registry)
-        .map_err(|e| {
-            eprintln!("brain: {e}");
-            anyhow::anyhow!("{e}")
-        })?;
+        .map_err(anyhow::Error::from)?;
 
     // I/O: discover corpus files.
     let files = crate::validate::find_markdown_files(&root);
     if files.is_empty() {
         eprintln!(
-            "brain: no markdown files found under '{}' — check --root",
+            "brain: no markdown files found under '{}' — check --root or --workspace",
             root.display()
         );
         anyhow::bail!("empty corpus at '{}'", root.display());

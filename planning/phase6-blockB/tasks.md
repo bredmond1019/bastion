@@ -87,6 +87,27 @@ Exit: 1
 **Default (no --workspace/--root) resolves to ".":** covered by
 `resolve_no_config_returns_dot` unit test in config.rs.
 
+### Code-review fixes smoke tests (2026-06-25)
+
+**Success path — --workspace resolves from config registry:**
+```
+$ XDG_CONFIG_HOME=/tmp/cfg cargo run -- brain --workspace portable --dependents proj-overview
+# config: [workspaces] portable = "src/brain/fixtures/portable"
+dependent: team-roster    src/brain/fixtures/portable/team-roster.md
+dependent: portable-index src/brain/fixtures/portable/index.md
+Exit: 0
+```
+Full I/O path exercised: config file read → `[workspaces]` deserialized → `resolve_workspace_root`
+name-lookup branch → `find_markdown_files` → query results.
+
+**NoWorkspaceRegistry error — no config file + --workspace:**
+```
+$ XDG_CONFIG_HOME=/nonexistent cargo run -- brain --workspace portable --dependents proj-overview
+Error: no [workspaces] table in config — add [workspaces] to ~/.config/bastion/config.toml
+Exit: 1
+```
+Distinct from "unknown workspace name" — correctly distinguishes absent registry from missing key.
+
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
 _No amendments yet._
