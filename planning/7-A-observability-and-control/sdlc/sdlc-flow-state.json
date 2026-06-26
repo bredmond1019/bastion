@@ -2,10 +2,10 @@
   "spec_slug": "7-A-observability-and-control",
   "branch": "7-A-observability-and-control-flow-2",
   "started_at": "2026-06-26T14:14:02Z",
-  "updated_at": "2026-06-26T14:14:02Z",
+  "updated_at": "2026-06-26T14:18:26Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -21,6 +21,25 @@
         "src/observ/errors.rs",
         "src/observ/mod.rs",
         "src/main.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added tracing + tracing-subscriber deps, CommandEvent pure record builder (start/success/error/to_json), emit_start/emit_outcome thin tracing shells, and init_tracing subscriber installer; all pure logic exhaustively unit-tested (606 tests pass).",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "tracing macros are safe to call without a subscriber installed (they are no-ops), so emit_* helpers are directly unit-testable without mocking — no special guard needed",
+        "init_tracing is the only true thin I/O shell (installs global subscriber); smoke-test documented in spec Notes per Rule 6",
+        "EventPhase::Start arm in emit_outcome match is a defensive no-op — cannot be reached via the public API but keeps the match exhaustive without unreachable!()"
+      ],
+      "files_changed": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/observ/mod.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -81,13 +100,37 @@
         "filesReadKb": null,
         "inTokEst": 592,
         "outTok": 2283
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 265,
+        "filesReadKb": null,
+        "inTokEst": 265,
+        "outTok": 1037
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 920,
+        "filesReadKb": null,
+        "inTokEst": 920,
+        "outTok": 8695
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 592,
+        "filesReadKb": null,
+        "inTokEst": 592,
+        "outTok": 1825
       }
     ],
     "total": {
-      "promptTokEst": 2803,
+      "promptTokEst": 4580,
       "filesReadKb": 0,
-      "inTokEst": 2803,
-      "outTok": 17632
+      "inTokEst": 4580,
+      "outTok": 29189
     }
   }
 }
