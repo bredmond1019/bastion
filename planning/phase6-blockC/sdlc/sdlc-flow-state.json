@@ -1,0 +1,102 @@
+{
+  "spec_slug": "phase6-blockC",
+  "branch": "phase6-blockC-flow",
+  "started_at": "2026-06-26T00:33:53Z",
+  "updated_at": "2026-06-26T00:55:21Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow",
+  "status": "done",
+  "current_task": 4,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Add tree-sitter extraction module: SymbolKind/CodeSymbol/CodeRef types plus extract_symbols() and extract_refs() with 24 exhaustive unit tests against three .rs.fixture files",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used tree-sitter = 0.25 with tree-sitter-rust = 0.24 (0.24/0.24 has ABI version mismatch; 0.25/0.24 is the compatible pair)",
+        "Used tree_sitter::StreamingIterator re-export instead of adding streaming-iterator as a direct dependency",
+        "Named fixtures .rs.fixture (not .rs) to keep cargo fmt from touching them — confirmed they are not formatted",
+        "Separate query per SymbolKind rather than one combined query to keep kind→capture mapping straightforward"
+      ],
+      "files_changed": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/brain/mod.rs",
+        "src/brain/code.rs",
+        "src/brain/fixtures/code/lib.rs.fixture",
+        "src/brain/fixtures/code/consumer.rs.fixture",
+        "src/brain/fixtures/code/util.rs.fixture"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Add code-as-graph layer: pure build_code_node_edge_lists/find_definition/find_references, run_code I/O shell, find_rust_files walker, Code CLI subcommand (--def/--refs/--dependents ArgGroup), and full unit test coverage",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "From-id rule: enclosing symbol = last symbol in the same file at or before the ref's line number (partition_point binary search); refs with no preceding symbol (e.g. top-level use statements before any fn) are silently dropped — no enclosing symbol means no resolvable from-id, so no edge",
+        "BrainNode.id = symbol.name (not file stem) so graph edges between symbols work correctly with BrainGraph.predecessors/reachable_reverse",
+        "Duplicate (from, to) edge pairs are deduplicated via a HashSet before being pushed, mirroring okf::build_node_edge_lists"
+      ],
+      "files_changed": [
+        "src/brain/code_graph.rs",
+        "src/brain/mod.rs",
+        "src/cli.rs",
+        "src/main.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Wire Code subcommand CLI surface: ArgGroup requiring exactly one of --def/--refs/--dependents, --root/--workspace flags, parse tests, and DB-free dispatch to brain::code_graph::run_code",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Task 3 (CLI wiring) was implemented in the same commit as Task 2 (6ad32ea) by the previous agent — both the Code variant in cli.rs and the dispatch arm in main.rs were added together with code_graph.rs"
+      ],
+      "files_changed": [
+        "src/cli.rs",
+        "src/main.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Ran all validation commands (fmt/clippy/test/build — all pass, 577 tests) and recorded manual smoke-test of bastion code --def/--refs/--dependents against the live src/ tree in ## Notes, completing phase6-blockC Task 4.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "planning/phase6-blockC/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": "PASS",
+    "findings": [],
+    "attempts": 1
+  },
+  "docs": {
+    "changed": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow/docs/brain.md"
+    ],
+    "created": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow/docs/code.md"
+    ]
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": "https://github.com/bredmond1019/bastion/pull/3",
+    "number": 3
+  }
+}

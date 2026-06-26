@@ -97,6 +97,8 @@ any known node.
 | `brain::okf` | `src/brain/okf.rs` | Pure OKF parser: `BrainNode`, `BrainEdge`, `build_node_edge_lists` |
 | `brain::graph` | `src/brain/graph.rs` | `BrainGraph` petgraph wrapper: `build`, `predecessors`, `reachable_forward`, `reachable_reverse`, `shortest_path`, `toposort`, `has_path` |
 | `brain::query` | `src/brain/query.rs` | Semantic query wrappers: `dependents`, `blast_radius`, `lineage` |
+| `brain::code` | `src/brain/code.rs` | Pure tree-sitter extraction: `SymbolKind`, `CodeSymbol`, `CodeRef`, `extract_symbols`, `extract_refs` (Rust grammar only; no I/O) |
+| `brain::code_graph` | `src/brain/code_graph.rs` | Code-as-graph layer: `CodeQuery`, `build_code_node_edge_lists`, `find_definition`, `find_references`, format helpers, `find_rust_files`, `run_code` I/O shell |
 
 ## Public API Summary
 
@@ -139,6 +141,30 @@ any known node.
 | `dependents(g, id)` | Thin wrapper over `BrainGraph::predecessors`. |
 | `blast_radius(g, id)` | Thin wrapper over `BrainGraph::reachable_reverse`. |
 | `lineage(g, id)` | Thin wrapper over `BrainGraph::reachable_forward`. |
+
+### `src/brain/code.rs`
+
+| Item | Kind | Description |
+|---|---|---|
+| `SymbolKind` | enum | `Fn` / `Struct` / `Enum` / `Trait` / `Mod` / `Impl` — category of a Rust symbol definition. |
+| `CodeSymbol` | struct | `name: String`, `kind: SymbolKind`, `path: PathBuf`, `line: usize` — a definition found in source. |
+| `CodeRef` | struct | `name: String`, `path: PathBuf`, `line: usize` — a call site or `use` import reference. |
+| `extract_symbols(source, path)` | `fn` | Pure: returns all symbol definitions in `source` via tree-sitter-rust. Recovers from partial/malformed source without panicking. |
+| `extract_refs(source, path)` | `fn` | Pure: returns all call sites and `use` import references in `source`. Refs to extern/std symbols are included; the graph layer drops unresolved refs. |
+
+### `src/brain/code_graph.rs`
+
+| Item | Kind | Description |
+|---|---|---|
+| `CodeQuery` | enum | `Def(String)` / `Refs(String)` / `Dependents(String)` — the structural query to run against the code graph. |
+| `build_code_node_edge_lists(symbols, refs)` | `fn` | Pure: maps `CodeSymbol`/`CodeRef` pairs into `(Vec<BrainNode>, Vec<BrainEdge>)` consumable by `BrainGraph::build`. One node per symbol (`id` = symbol name); one edge per ref that resolves both `from` (enclosing symbol) and `to` (known symbol name). Deduplicates `(from, to)` pairs. |
+| `find_definition<'a>(symbols, name)` | `fn` | Pure: returns all `CodeSymbol`s whose `name` matches `name` (definition lookup). |
+| `find_references<'a>(refs, name)` | `fn` | Pure: returns all `CodeRef`s whose `name` matches `name` (call sites + use imports). |
+| `format_def_line(sym)` | `fn` | Formats a definition result as `"def: <name>\t<path>:<line>"`. |
+| `format_ref_line(r)` | `fn` | Formats a reference result as `"ref: <name>\t<path>:<line>"`. |
+| `format_dependent_line(node)` | `fn` | Formats a dependent result as `"dependent: <id>\t<path>"`. |
+| `find_rust_files(root)` | `fn` | Walks `root` recursively, returns all `.rs` files in sorted order. Skips hidden directories and `target/`. |
+| `run_code(query, explicit_root, workspace, registry)` | `fn` | Thin I/O shell: resolves scan root, discovers `.rs` files, reads them (skipping unreadable with stderr warnings), runs extraction, builds the graph, dispatches the query, prints greppable output. Returns `Err` on unknown workspace name, empty source tree, or unknown symbol. |
 
 ## Degradation Paths
 

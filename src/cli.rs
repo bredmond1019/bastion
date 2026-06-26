@@ -171,6 +171,46 @@ pub enum Commands {
         #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
         workspace: Option<String>,
     },
+
+    /// Query the code-as-graph surface for symbol definitions, references, and dependents
+    ///
+    /// Builds a directed symbol graph from `.rs` source files under --root (or the workspace
+    /// resolved via --workspace / config default) using tree-sitter extraction (deterministic,
+    /// no LLM) and answers structural questions:
+    /// which file defines a symbol (--def), what are its call/import sites (--refs),
+    /// or which symbols directly call it (--dependents).
+    ///
+    /// Output is one greppable line per result:
+    ///   def:       `def: <name>\t<path>:<line>`
+    ///   refs:      `ref: <name>\t<path>:<line>`
+    ///   dependents: `dependent: <name>\t<path>`
+    ///
+    /// Exactly one of --def, --refs, or --dependents must be supplied.
+    /// Coverage: Rust (.rs) files only; other languages are skipped.
+    #[command(group(
+        clap::ArgGroup::new("code-query-mode")
+            .required(true)
+            .args(["def", "refs", "dependents"])
+    ))]
+    Code {
+        /// Find the definition(s) of <SYMBOL> (file + line)
+        #[arg(long, value_name = "SYMBOL")]
+        def: Option<String>,
+        /// Find all call sites and use imports of <SYMBOL>
+        #[arg(long, value_name = "SYMBOL")]
+        refs: Option<String>,
+        /// Find symbols that directly call <SYMBOL> (direct predecessors in the code graph)
+        #[arg(long, value_name = "SYMBOL")]
+        dependents: Option<String>,
+        /// Root directory of the Rust source tree to scan (explicit override; takes precedence
+        /// over --workspace and the config default)
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Named workspace from the [workspaces] registry in the bastion config file.
+        /// Alias: --knowledge-dir.
+        #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
+        workspace: Option<String>,
+    },
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -512,6 +552,134 @@ mod tests {
                 "d20"
             ])
             .is_err()
+        );
+    }
+
+    // ── Code subcommand ───────────────────────────────────────────────────────
+
+    #[test]
+    fn code_def_parses() {
+        let cli = Cli::try_parse_from(["bastion", "code", "--def", "alpha"]).unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                def,
+                refs,
+                dependents,
+                root,
+                workspace,
+            }) => {
+                assert_eq!(def, Some("alpha".to_string()));
+                assert!(refs.is_none());
+                assert!(dependents.is_none());
+                assert!(root.is_none());
+                assert!(workspace.is_none());
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_refs_parses() {
+        let cli = Cli::try_parse_from(["bastion", "code", "--refs", "alpha"]).unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                def,
+                refs,
+                dependents,
+                ..
+            }) => {
+                assert!(def.is_none());
+                assert_eq!(refs, Some("alpha".to_string()));
+                assert!(dependents.is_none());
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_dependents_parses() {
+        let cli = Cli::try_parse_from(["bastion", "code", "--dependents", "render"]).unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                def,
+                refs,
+                dependents,
+                ..
+            }) => {
+                assert!(def.is_none());
+                assert!(refs.is_none());
+                assert_eq!(dependents, Some("render".to_string()));
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_root_flag_sets_some() {
+        let cli =
+            Cli::try_parse_from(["bastion", "code", "--def", "alpha", "--root", "/src"]).unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                root, workspace, ..
+            }) => {
+                assert_eq!(root, Some(PathBuf::from("/src")));
+                assert!(workspace.is_none());
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_workspace_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "code",
+            "--def",
+            "alpha",
+            "--workspace",
+            "bastion-src",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                root, workspace, ..
+            }) => {
+                assert!(root.is_none());
+                assert_eq!(workspace, Some("bastion-src".to_string()));
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_knowledge_dir_alias_parses() {
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "code",
+            "--def",
+            "alpha",
+            "--knowledge-dir",
+            "my-src",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Code { workspace, .. }) => {
+                assert_eq!(workspace, Some("my-src".to_string()));
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_no_query_flag_fails() {
+        // ArgGroup requires exactly one of --def / --refs / --dependents.
+        assert!(Cli::try_parse_from(["bastion", "code"]).is_err());
+    }
+
+    #[test]
+    fn code_two_query_flags_fails() {
+        assert!(
+            Cli::try_parse_from(["bastion", "code", "--def", "alpha", "--refs", "alpha"]).is_err()
         );
     }
 }

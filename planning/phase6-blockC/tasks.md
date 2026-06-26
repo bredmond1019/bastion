@@ -1,6 +1,6 @@
 # Task Spec — Phase 6, Block C
 
-**Status:** Not started · **Last run:** never
+**Status:** Complete · **Last run:** 2026-06-25
 
 ## Goal
 Add a Console-side, deterministic **code-as-graph** surface — exact symbol definition / reference / dependents lookup over source — alongside the docs-as-graph, reusing Block A's `BrainGraph` algorithms and Block B's workspace-root resolver.
@@ -59,8 +59,38 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+**Task 1 — fixture formatting:** The `.rs` fixture files in `src/brain/fixtures/code/` are touched by `cargo fmt --check`. They were renamed to `.rs.fixture` suffix and loaded via `include_str!` to avoid formatter interference.
+
+**Coverage scope:** Extraction covers Rust (`.rs`) files only. Files in other languages are skipped silently. The tree-sitter Rust grammar is used for deterministic, LLM-free parsing.
+
+**Task 4 — Validation (2026-06-25):**
+
+All gated checks pass:
+- `cargo fmt --check` — PASS
+- `cargo clippy -- -D warnings` — PASS
+- `cargo test` — PASS (577 tests, 0 failures)
+- `cargo build --release` — PASS
+
+Manual smoke-test of the file-walk I/O shell against `src/` (the crate's own source tree):
+
+```
+$ bastion code --def run_code --root src
+def: run_code	src/brain/code_graph.rs:224
+
+$ bastion code --refs build_code_node_edge_lists --root src
+ref: build_code_node_edge_lists	src/brain/code_graph.rs:266
+ref: build_code_node_edge_lists	src/brain/code_graph.rs:376
+... (16 call/use sites total)
+
+$ bastion code --dependents build_code_node_edge_lists --root src
+dependent: reachable_reverse_render_includes_main_consumer	src/brain/code_graph.rs
+dependent: run_code	src/brain/code_graph.rs
+... (16 dependent symbols total, all test fns + run_code in code_graph.rs)
+```
+
+`bastion code --help` renders correctly and ArgGroup enforces mutual exclusivity of `--def`/`--refs`/`--dependents`. Root resolution is DB-free (no `DATABASE_URL` needed).
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-06-25 [task 3] CLI wiring (Commands::Code ArgGroup in cli.rs, dispatch arm in main.rs) was implemented in the same commit as task 2 (6ad32ea) rather than as a separate step. Both tasks passed independently; no scope was dropped.

@@ -1,5 +1,7 @@
 // `bastion brain` — structural knowledge-graph queries over the OKF corpus.
 
+pub mod code;
+pub mod code_graph;
 pub mod graph;
 pub mod okf;
 

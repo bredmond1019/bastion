@@ -38,6 +38,10 @@ file**, append-only — never edit a settled decision; supersede it with a new o
   — the `bastion ask` cold-start readiness check keys off `classify_state == Running` rather than
   matching the foreground process name against `"claude"`, because Claude Code renames its process to
   its version string. Builds on D5; reuses the Block F classifier.
+- [D10: Code graph uses qualified node IDs to prevent name collisions](./D10-code-graph-qualified-node-ids.md)
+  — code-as-graph `BrainNode.id` uses `file_stem::kind::name` (e.g. `lib::struct::Widget`) so
+  `struct Widget` and `impl Widget` in the same file get distinct, reachable nodes. `BrainGraph`
+  gains `name_index` + `predecessors_by_name` for bare-name CLI queries. Phase 6 Block C.
 
 <!-- Add a row per decision as they are made. Record new ones with /log-decision-style atomic
      files (D2, D3, …). -->

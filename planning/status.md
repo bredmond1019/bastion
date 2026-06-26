@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-26 — phase6-blockC shipped via sdlc-flow + PR #3 (PASS); code-review found 8 findings, 4 quick fixes applied + committed, 4 deferred fixes pending merge. 579 tests pass.
-**Current focus:** Bastion-program track — **phase6-blockC** (Structural code navigation — code-as-graph, PR #3 deferred fixes pending). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
+**Last updated:** 2026-06-26 — phase6-blockC fully merged: all 4 code-review deferred fixes applied (qualified IDs D10, grouped use imports, OnceLock hoisting, single parse). 588 tests pass.
+**Current focus:** Bastion-program track — **phase7-blockA** (Tracing + `C0xx` structured-error spine). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
 
 ---
 
@@ -75,7 +75,7 @@ description: Current state and progress tracker for bastion.
 |---|---|---|---|---|
 | Block A | Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph | A | Done | petgraph-backed BrainGraph + structural query layer (dependents/blast-radius/lineage) + `bastion brain` CLI wired. 522 tests pass. PASS 2026-06-25. |
 | Block B | Multi-workspace Brain — graph reader over per-repo/per-client roots | C½ | Done | Workspace registry + pure resolver in config.rs; portable OKF fixture corpus; `--workspace`/`--knowledge-dir` CLI flag; DB-free confirmed. Code-review fixes: MalformedFile propagation, NoWorkspaceRegistry variant, double-print, empty-corpus hint, Config::load dedup. 519 tests pass. PASS 2026-06-25. |
-| Block C | Structural code navigation (code-as-graph) | Q | PR pending | Tasks 1–4 shipped via sdlc-flow; code-review found 8 findings (4 quick fixes applied + committed, 4 deferred); PR #3 awaiting deferred fixes before merge. 579 tests pass. PASS verdict. |
+| Block C | Structural code navigation (code-as-graph) | Q | Done | tree-sitter symbol/ref extraction; code-as-graph layer reusing BrainGraph; `bastion code --def/--refs/--dependents` CLI surface. Code-review: 8 findings, all resolved (4 inline + 4 deferred: qualified IDs D10, grouped use imports, OnceLock hoisting, single parse). 588 tests pass. PASS 2026-06-26. |
 
 #### Phase 7 — Observability & control (Wave 2)
 | Block | What | Prog. | Status | Notes |

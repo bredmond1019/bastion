@@ -105,6 +105,31 @@ async fn main() -> Result<()> {
                 )?;
                 brain::run(query, root, workspace, &registry)
             }
+            // Code is DB-free and synchronous — lives on the knowledge-graph surface.
+            // Resolves the scan root from the workspace registry (no DATABASE_URL required).
+            Commands::Code {
+                def,
+                refs,
+                dependents,
+                root,
+                workspace,
+            } => {
+                let query = if let Some(name) = def {
+                    brain::code_graph::CodeQuery::Def(name)
+                } else if let Some(name) = refs {
+                    brain::code_graph::CodeQuery::Refs(name)
+                } else if let Some(name) = dependents {
+                    brain::code_graph::CodeQuery::Dependents(name)
+                } else {
+                    // Unreachable: clap ArgGroup enforces exactly one of the three flags.
+                    unreachable!("clap ArgGroup guarantees exactly one code query flag is set")
+                };
+                let registry = config::load_workspace_registry(
+                    std::env::var("XDG_CONFIG_HOME").ok(),
+                    std::env::var("HOME").ok(),
+                )?;
+                brain::code_graph::run_code(query, root, workspace, &registry)
+            }
         },
     }
 }

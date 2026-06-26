@@ -10,6 +10,23 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-25 — phase6-blockC complete: structural code-as-graph navigation shipped
+
+Phase 6 Block C delivered `bastion code` — a deterministic, LLM-free, tree-sitter-backed code-as-graph surface — across four tasks with a PASS verdict on the first review attempt. Task 1 added `tree-sitter` + `tree-sitter-rust` to `Cargo.toml` (resolving an ABI version mismatch: 0.25/0.24 is the compatible pair), created a multi-file `.rs.fixture` corpus under `src/brain/fixtures/code/` (renamed to avoid `cargo fmt` interference), and implemented `src/brain/code.rs` with pure `extract_symbols`/`extract_refs` functions backed by per-kind tree-sitter queries — 24 exhaustive unit tests against three fixture files, including a partial-parse boundary case. Task 2 added `src/brain/code_graph.rs` with a pure `build_code_node_edge_lists` function (mapping symbols → `BrainNode`, resolved refs → `BrainEdge`, deduplicating edges via HashSet, dropping unresolved/extern refs silently), `find_definition`/`find_references` query helpers, and a thin `run_code` I/O shell reusing `config::resolve_workspace_root` and a local `find_rust_files` walker (skips hidden dirs and `target/`, sorted). Task 3's CLI wiring (`Commands::Code` ArgGroup in `src/cli.rs`, dispatch arm in `src/main.rs`) was implemented in the same commit as Task 2 by the implementing agent. Task 4 was a pure validation pass confirming all four gating checks pass (cargo fmt, clippy, 577 tests, release build) with a manual smoke test of `--def`/`--refs`/`--dependents` against the live `src/` tree recorded in `## Notes`. Key design decisions: `BrainNode.id` = symbol name (not file stem) so BrainGraph edges between symbols resolve correctly; from-id uses a binary-search partition to find the enclosing symbol (refs before any symbol in a file are silently dropped); tree-sitter `StreamingIterator` re-exported from the `tree-sitter` crate (no additional dep). Next: phase7-blockA (Tracing + `C0xx` structured-error spine).
+
+```
+8c2ee56 docs: update docs for phase6-blockC
+b3866d5 chore: flow state — task 4 passed
+ac14863 feat: implement phase6-blockC-task4
+f20215c chore: flow state — task 3 passed
+f06249f chore: flow state — task 2 passed
+6ad32ea feat: implement phase6-blockC-task2
+7c8a591 chore: flow state — task 1 passed
+5d9003d feat: add tree-sitter extraction module (phase6-blockC task 1)
+```
+
+---
+
 ## 2026-06-25 — phase6-blockB code-review: 6 findings fixed and merged
 
 Phase 6 Block B underwent code review after completion, yielding six findings that were addressed and merged. Fixes applied: MalformedFile error propagation (`unwrap_or_default` → `?` in `main.rs` so a malformed `config.toml` exits with a diagnostic), double-print elimination (removed `eprintln!` from `map_err` in `brain::run`; single print via anyhow's top-level handler), `ConfigError::NoWorkspaceRegistry` new variant (distinguishes "no `[workspaces]` table" from "key absent in registry" — two new unit tests), empty-corpus hint updated ("check --root or --workspace"), `Config::load` deduplication (delegates to `load_workspace_registry` — one file-read implementation), and Rule 6 smoke test completeness (recorded success-path and `NoWorkspaceRegistry` error-path runs in `tasks.md § Notes`). 519 tests pass. All four gating checks pass.
