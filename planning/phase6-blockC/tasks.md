@@ -93,4 +93,4 @@ dependent: run_code	src/brain/code_graph.rs
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-06-25 [task 3] CLI wiring (Commands::Code ArgGroup in cli.rs, dispatch arm in main.rs) was implemented in the same commit as task 2 (6ad32ea) rather than as a separate step. Both tasks passed independently; no scope was dropped.

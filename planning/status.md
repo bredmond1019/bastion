@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-25 — phase6-blockB complete: multi-workspace Brain shipped + code-review fixes merged. 519 tests pass. PASS verdict.
-**Current focus:** Bastion-program track — **phase6-blockC** (Structural code navigation — code-as-graph). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
+**Last updated:** 2026-06-25 — phase6-blockC complete: structural code-as-graph navigation shipped. 577 tests pass. PASS verdict.
+**Current focus:** Bastion-program track — **phase7-blockA** (Tracing + `C0xx` structured-error spine). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
 
 ---
 
@@ -75,7 +75,7 @@ description: Current state and progress tracker for bastion.
 |---|---|---|---|---|
 | Block A | Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph | A | Done | petgraph-backed BrainGraph + structural query layer (dependents/blast-radius/lineage) + `bastion brain` CLI wired. 522 tests pass. PASS 2026-06-25. |
 | Block B | Multi-workspace Brain — graph reader over per-repo/per-client roots | C½ | Done | Workspace registry + pure resolver in config.rs; portable OKF fixture corpus; `--workspace`/`--knowledge-dir` CLI flag; DB-free confirmed. Code-review fixes: MalformedFile propagation, NoWorkspaceRegistry variant, double-print, empty-corpus hint, Config::load dedup. 519 tests pass. PASS 2026-06-25. |
-| Block C | Structural code navigation (code-as-graph) | Q | Not started | Builds on 6A. Structural twin of semantic code search (program Block P, Engine). |
+| Block C | Structural code navigation (code-as-graph) | Q | Done | tree-sitter symbol/ref extraction; code-as-graph layer reusing BrainGraph; `bastion code --def/--refs/--dependents` CLI surface. 577 tests pass. PASS 2026-06-25. |
 
 #### Phase 7 — Observability & control (Wave 2)
 | Block | What | Prog. | Status | Notes |
