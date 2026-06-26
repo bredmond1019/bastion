@@ -23,6 +23,17 @@ User-facing documentation for bastion. For internal strategy and progress, see `
 | [brain.md](brain.md) | OKF knowledge-graph queries — `bastion brain`: corpus discovery, `--dependents` / `--blast-radius` / `--lineage` modes, output format, degradation paths |
 | [code.md](code.md) | Symbol-level code graph queries — `bastion code`: tree-sitter extraction, `--def` / `--refs` / `--dependents` modes, output format, degradation paths |
 
+## SDLC workflows (docs/workflows/)
+
+| Doc | Contents |
+|---|---|
+| [workflows/index.md](workflows/index.md) | Engine ladder overview + committed-state model |
+| [workflows/sdlc-run.md](workflows/sdlc-run.md) | `sdlc-run` — full spec, in-place on main |
+| [workflows/sdlc-task.md](workflows/sdlc-task.md) | `sdlc-task` — lean single-unit implement→test→fix→commit |
+| [workflows/sdlc-flow.md](workflows/sdlc-flow.md) | `sdlc-flow` — shared worktree, per-task loop, one PR |
+| [workflows/sdlc-block.md](workflows/sdlc-block.md) | `sdlc-block` — block-level roadmap orchestrator, branch train |
+| [workflows/commands.md](workflows/commands.md) | Ad-hoc planning + utility commands reference |
+
 ## Internal context (planning/)
 
 | Doc | Contents |
