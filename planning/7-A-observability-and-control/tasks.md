@@ -112,6 +112,19 @@ output). The pure `CommandEvent` builders/serializers are exhaustively asserted 
   exits 0.
 - All 653 unit tests pass; `cargo fmt --check`, `cargo clippy`, `cargo build --release` all clean.
 
+### Task 5 validation (2026-06-26)
+- `cargo fmt --check` — clean (no output).
+- `cargo clippy -- -D warnings` — clean (0 warnings).
+- `cargo test` — 653 passed; 0 failed; 3 ignored.
+- `cargo build --release` — clean.
+- All acceptance criteria confirmed:
+  - `src/observ/errors.rs` defines `C001`–`C014`; `Display` and `code()` exhaustively unit-tested.
+  - `is_recoverable()` returns true for the 5 recoverable variants, false for all others — unit-tested.
+  - Dispatch instrumentation emits start + outcome events per subcommand (smoke-tested in Task 4).
+  - `--json-logs` / `--verbose` flags present and wired (smoke-tested in Task 3).
+  - No `claude-sdk-rs` crate dependency; taxonomy fully vendored in `src/observ/`.
+  - Pure logic exhaustively unit-tested without I/O; error/degradation paths covered (Rule 6).
+
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
 _No amendments yet._
