@@ -6,7 +6,7 @@
 //
 // Phase 6 Block A — Task 2.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use petgraph::{
     Direction,
@@ -42,6 +42,12 @@ pub struct BrainGraph {
     pub(crate) graph: DiGraph<BrainNode, ()>,
     /// Maps stable node id → petgraph `NodeIndex`.
     pub(crate) index: HashMap<String, NodeIndex>,
+    /// Maps bare node title → all matching `NodeIndex` values.
+    ///
+    /// Used by [`predecessors_by_name`] for bare-name lookups in the code surface,
+    /// where qualified ids (`file_stem::kind::name`) are stored in `index` but CLI
+    /// queries arrive as bare symbol names.
+    pub(crate) name_index: HashMap<String, Vec<NodeIndex>>,
 }
 
 impl BrainGraph {
@@ -51,11 +57,14 @@ impl BrainGraph {
     pub fn build(nodes: Vec<BrainNode>, edges: Vec<BrainEdge>) -> Self {
         let mut graph: DiGraph<BrainNode, ()> = DiGraph::new();
         let mut index: HashMap<String, NodeIndex> = HashMap::new();
+        let mut name_index: HashMap<String, Vec<NodeIndex>> = HashMap::new();
 
         for node in nodes {
             let id = node.id.clone();
+            let title = node.title.clone();
             let idx = graph.add_node(node);
             index.insert(id, idx);
+            name_index.entry(title).or_default().push(idx);
         }
 
         for edge in edges {
@@ -64,7 +73,11 @@ impl BrainGraph {
             }
         }
 
-        Self { graph, index }
+        Self {
+            graph,
+            index,
+            name_index,
+        }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -131,6 +144,31 @@ impl BrainGraph {
             .map(|nx| self.graph[nx].clone())
             .collect();
         Ok(succs)
+    }
+
+    /// Direct predecessors of all nodes whose **title** matches `name`.
+    ///
+    /// Unlike [`predecessors`], this accepts a bare symbol name and searches
+    /// `name_index` — the multi-valued reverse map from `node.title`. Used by
+    /// the code-graph surface where node ids are qualified (`lib::struct::Widget`)
+    /// but CLI queries arrive as bare names (`Widget`).
+    ///
+    /// Returns an empty vec when no node has the given title (not an error).
+    /// Deduplicates predecessor nodes when multiple targets share the same name.
+    pub fn predecessors_by_name(&self, name: &str) -> Vec<BrainNode> {
+        let Some(indices) = self.name_index.get(name) else {
+            return vec![];
+        };
+        let mut seen: HashSet<NodeIndex> = HashSet::new();
+        let mut result = Vec::new();
+        for &target in indices {
+            for nx in self.graph.neighbors_directed(target, Direction::Incoming) {
+                if seen.insert(nx) {
+                    result.push(self.graph[nx].clone());
+                }
+            }
+        }
+        result
     }
 
     // ── Shortest path ─────────────────────────────────────────────────────────

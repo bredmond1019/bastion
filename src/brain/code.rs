@@ -7,10 +7,19 @@
 //! # Coverage
 //! Extraction scope is the **Rust language only**, using the `tree-sitter-rust`
 //! grammar. Symbol kinds: `Fn`, `Struct`, `Enum`, `Trait`, `Mod`, `Impl`.
-//! Reference kinds: direct function calls, method calls, and `use` import paths.
+//! Reference kinds: direct function calls, method calls, and `use` import paths
+//! (simple, scoped, and grouped).
 //! Other languages in the scan root are silently skipped by the file-walk layer.
+//!
+//! # Performance
+//! Query patterns are compiled once per process via `OnceLock` statics and reused
+//! across all calls. Each call creates its own `QueryCursor` (stateful, not `Sync`).
+//! `extract_all` parses the source tree once and runs all queries against it, halving
+//! tree-sitter parse overhead relative to calling `extract_symbols` + `extract_refs`
+//! independently.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 
@@ -66,6 +75,126 @@ pub struct CodeRef {
     pub line: usize,
 }
 
+// ── Compiled query statics ────────────────────────────────────────────────────
+
+// Each pattern is compiled exactly once per process; `OnceLock` is re-entrant
+// safe and `Query` is `Send + Sync` (tree-sitter 0.22+).
+
+fn symbol_queries() -> &'static [(Query, SymbolKind)] {
+    static QUERIES: OnceLock<Vec<(Query, SymbolKind)>> = OnceLock::new();
+    QUERIES.get_or_init(|| {
+        let lang = rust_language();
+        let patterns: &[(&str, SymbolKind)] = &[
+            (
+                r#"(function_item name: (identifier) @name)"#,
+                SymbolKind::Fn,
+            ),
+            (
+                r#"(struct_item name: (type_identifier) @name)"#,
+                SymbolKind::Struct,
+            ),
+            (
+                r#"(enum_item name: (type_identifier) @name)"#,
+                SymbolKind::Enum,
+            ),
+            (
+                r#"(trait_item name: (type_identifier) @name)"#,
+                SymbolKind::Trait,
+            ),
+            (r#"(mod_item name: (identifier) @name)"#, SymbolKind::Mod),
+            (
+                r#"(impl_item type: (type_identifier) @name)"#,
+                SymbolKind::Impl,
+            ),
+            // Generic impl blocks: `impl<T> Container<T>` — type field is generic_type
+            (
+                r#"(impl_item type: (generic_type type: (type_identifier) @name))"#,
+                SymbolKind::Impl,
+            ),
+        ];
+        patterns
+            .iter()
+            .filter_map(|(src, kind)| Query::new(&lang, src).ok().map(|q| (q, kind.clone())))
+            .collect()
+    })
+}
+
+fn ref_queries() -> &'static [Query] {
+    static QUERIES: OnceLock<Vec<Query>> = OnceLock::new();
+    QUERIES.get_or_init(|| {
+        let lang = rust_language();
+        let patterns: &[&str] = &[
+            // Direct function calls: alpha()
+            r#"(call_expression function: (identifier) @name)"#,
+            // Method calls: widget.render()
+            r#"(call_expression function: (field_expression field: (field_identifier) @name))"#,
+            // use imports with scoped path — last segment: use lib::alpha
+            r#"(use_declaration argument: (scoped_identifier name: (identifier) @name))"#,
+            // use imports with bare identifier: use alpha
+            r#"(use_declaration argument: (identifier) @name)"#,
+            // turbofish calls: foo::<u32>() — function field is generic_function
+            r#"(call_expression function: (generic_function function: (identifier) @name))"#,
+            // grouped use imports — bare identifiers: use std::{io, fmt}
+            r#"(use_list (identifier) @name)"#,
+            // grouped use imports — scoped identifiers: use std::{io::Write, fmt::Display}
+            r#"(use_list (scoped_identifier name: (identifier) @name))"#,
+        ];
+        patterns
+            .iter()
+            .filter_map(|src| Query::new(&lang, src).ok())
+            .collect()
+    })
+}
+
+// ── Internal tree helpers ─────────────────────────────────────────────────────
+
+fn symbols_from_tree(bytes: &[u8], tree: &tree_sitter::Tree, path: &Path) -> Vec<CodeSymbol> {
+    let mut symbols = Vec::new();
+    for (query, kind) in symbol_queries() {
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), bytes);
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let name = match cap.node.utf8_text(bytes) {
+                    Ok(t) => t.to_string(),
+                    Err(_) => continue,
+                };
+                let line = cap.node.start_position().row + 1;
+                symbols.push(CodeSymbol {
+                    name,
+                    kind: kind.clone(),
+                    path: path.to_path_buf(),
+                    line,
+                });
+            }
+        }
+    }
+    symbols
+}
+
+fn refs_from_tree(bytes: &[u8], tree: &tree_sitter::Tree, path: &Path) -> Vec<CodeRef> {
+    let mut refs = Vec::new();
+    for query in ref_queries() {
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), bytes);
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let name = match cap.node.utf8_text(bytes) {
+                    Ok(t) => t.to_string(),
+                    Err(_) => continue,
+                };
+                let line = cap.node.start_position().row + 1;
+                refs.push(CodeRef {
+                    name,
+                    path: path.to_path_buf(),
+                    line,
+                });
+            }
+        }
+    }
+    refs
+}
+
 // ── Pure extraction ───────────────────────────────────────────────────────────
 
 /// Extract all symbol definitions from `source` using tree-sitter.
@@ -85,66 +214,7 @@ pub fn extract_symbols(source: &str, path: &Path) -> Vec<CodeSymbol> {
     let Some(tree) = parser.parse(source, None) else {
         return vec![];
     };
-    let bytes = source.as_bytes();
-    let mut symbols = Vec::new();
-
-    // Each tuple: (tree-sitter query pattern, SymbolKind to assign matched captures).
-    // All queries target the `@name` capture — the identifier or type-identifier node
-    // that holds the symbol's name text.
-    let queries: &[(&str, SymbolKind)] = &[
-        (
-            r#"(function_item name: (identifier) @name)"#,
-            SymbolKind::Fn,
-        ),
-        (
-            r#"(struct_item name: (type_identifier) @name)"#,
-            SymbolKind::Struct,
-        ),
-        (
-            r#"(enum_item name: (type_identifier) @name)"#,
-            SymbolKind::Enum,
-        ),
-        (
-            r#"(trait_item name: (type_identifier) @name)"#,
-            SymbolKind::Trait,
-        ),
-        (r#"(mod_item name: (identifier) @name)"#, SymbolKind::Mod),
-        (
-            r#"(impl_item type: (type_identifier) @name)"#,
-            SymbolKind::Impl,
-        ),
-        // Generic impl blocks: `impl<T> Container<T>` — type field is generic_type
-        (
-            r#"(impl_item type: (generic_type type: (type_identifier) @name))"#,
-            SymbolKind::Impl,
-        ),
-    ];
-
-    for (query_src, kind) in queries {
-        let query = match Query::new(&lang, query_src) {
-            Ok(q) => q,
-            Err(_) => continue,
-        };
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, tree.root_node(), bytes);
-        while let Some(m) = matches.next() {
-            for cap in m.captures {
-                let name = match cap.node.utf8_text(bytes) {
-                    Ok(t) => t.to_string(),
-                    Err(_) => continue,
-                };
-                let line = cap.node.start_position().row + 1; // row is 0-indexed
-                symbols.push(CodeSymbol {
-                    name,
-                    kind: kind.clone(),
-                    path: path.to_path_buf(),
-                    line,
-                });
-            }
-        }
-    }
-
-    symbols
+    symbols_from_tree(source.as_bytes(), &tree, path)
 }
 
 /// Extract all references (call sites and `use` imports) from `source` via tree-sitter.
@@ -154,6 +224,9 @@ pub fn extract_symbols(source: &str, path: &Path) -> Vec<CodeSymbol> {
 /// - Method call: `widget.render()` → name `render`
 /// - `use` import with scoped path: `use lib::alpha` → name `alpha`
 /// - `use` import with bare identifier: `use alpha` → name `alpha`
+/// - Turbofish call: `parse::<u32>()` → name `parse`
+/// - Grouped `use` import: `use std::{io, fmt}` → names `io`, `fmt`
+/// - Grouped scoped `use` import: `use std::{io::Read, fmt::Display}` → `Read`, `Display`
 pub fn extract_refs(source: &str, path: &Path) -> Vec<CodeRef> {
     let lang = rust_language();
     let mut parser = Parser::new();
@@ -163,47 +236,27 @@ pub fn extract_refs(source: &str, path: &Path) -> Vec<CodeRef> {
     let Some(tree) = parser.parse(source, None) else {
         return vec![];
     };
-    let bytes = source.as_bytes();
-    let mut refs = Vec::new();
+    refs_from_tree(source.as_bytes(), &tree, path)
+}
 
-    // Each query targets the `@name` capture — the leaf identifier of the reference.
-    let query_patterns: &[&str] = &[
-        // Direct function calls: alpha()
-        r#"(call_expression function: (identifier) @name)"#,
-        // Method calls: widget.render()
-        r#"(call_expression function: (field_expression field: (field_identifier) @name))"#,
-        // use imports with scoped path — last segment: use lib::alpha
-        r#"(use_declaration argument: (scoped_identifier name: (identifier) @name))"#,
-        // use imports with bare identifier: use alpha
-        r#"(use_declaration argument: (identifier) @name)"#,
-        // turbofish calls: foo::<u32>() — function field is generic_function
-        r#"(call_expression function: (generic_function function: (identifier) @name))"#,
-    ];
-
-    for query_src in query_patterns {
-        let query = match Query::new(&lang, query_src) {
-            Ok(q) => q,
-            Err(_) => continue,
-        };
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, tree.root_node(), bytes);
-        while let Some(m) = matches.next() {
-            for cap in m.captures {
-                let name = match cap.node.utf8_text(bytes) {
-                    Ok(t) => t.to_string(),
-                    Err(_) => continue,
-                };
-                let line = cap.node.start_position().row + 1;
-                refs.push(CodeRef {
-                    name,
-                    path: path.to_path_buf(),
-                    line,
-                });
-            }
-        }
+/// Extract all symbols and references from `source` in a single parse.
+///
+/// Equivalent to calling `extract_symbols` + `extract_refs` but parses the
+/// source tree only once, halving tree-sitter overhead when both are needed.
+pub fn extract_all(source: &str, path: &Path) -> (Vec<CodeSymbol>, Vec<CodeRef>) {
+    let lang = rust_language();
+    let mut parser = Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return (vec![], vec![]);
     }
-
-    refs
+    let Some(tree) = parser.parse(source, None) else {
+        return (vec![], vec![]);
+    };
+    let bytes = source.as_bytes();
+    (
+        symbols_from_tree(bytes, &tree, path),
+        refs_from_tree(bytes, &tree, path),
+    )
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -550,6 +603,84 @@ mod tests {
             "turbofish call parse::<u32>() must yield a ref; refs: {:?}",
             debug_refs(&refs)
         );
+    }
+
+    // ── grouped use imports (Fix 2) ───────────────────────────────────────────
+
+    #[test]
+    fn extract_refs_grouped_use_bare_identifiers() {
+        // use std::{io, fmt} — both io and fmt must be captured as refs
+        let src = "use std::{io, fmt};";
+        let refs = extract_refs(src, Path::new("imports.rs"));
+        let names: Vec<&str> = refs.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"io"),
+            "grouped use must yield ref 'io'; refs: {names:?}"
+        );
+        assert!(
+            names.contains(&"fmt"),
+            "grouped use must yield ref 'fmt'; refs: {names:?}"
+        );
+    }
+
+    #[test]
+    fn extract_refs_grouped_use_scoped_identifiers() {
+        // use std::{io::Read, fmt::Display} — Read and Display must be captured
+        let src = "use std::{io::Read, fmt::Display};";
+        let refs = extract_refs(src, Path::new("imports.rs"));
+        let names: Vec<&str> = refs.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"Read"),
+            "grouped scoped use must yield ref 'Read'; refs: {names:?}"
+        );
+        assert!(
+            names.contains(&"Display"),
+            "grouped scoped use must yield ref 'Display'; refs: {names:?}"
+        );
+    }
+
+    #[test]
+    fn extract_refs_grouped_use_nested() {
+        // use std::{io::{self, Write}, fmt} — Write and fmt must be captured
+        // (io is a path component, not an imported name at this level)
+        let src = "use std::{io::{self, Write}, fmt};";
+        let refs = extract_refs(src, Path::new("imports.rs"));
+        let names: Vec<&str> = refs.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"Write"),
+            "nested grouped use must yield ref 'Write'; refs: {names:?}"
+        );
+        assert!(
+            names.contains(&"fmt"),
+            "nested grouped use must yield ref 'fmt'; refs: {names:?}"
+        );
+    }
+
+    // ── extract_all: single-parse equivalence ─────────────────────────────────
+
+    #[test]
+    fn extract_all_matches_separate_calls() {
+        // extract_all must return the same symbols and refs as calling each separately.
+        let (all_syms, all_refs) = extract_all(LIB_FIXTURE, Path::new("lib.rs"));
+        let sep_syms = extract_symbols(LIB_FIXTURE, Path::new("lib.rs"));
+        let sep_refs = extract_refs(LIB_FIXTURE, Path::new("lib.rs"));
+        assert_eq!(
+            all_syms.len(),
+            sep_syms.len(),
+            "extract_all symbol count must match extract_symbols"
+        );
+        assert_eq!(
+            all_refs.len(),
+            sep_refs.len(),
+            "extract_all ref count must match extract_refs"
+        );
+    }
+
+    #[test]
+    fn extract_all_empty_source_returns_empty() {
+        let (syms, refs) = extract_all("", Path::new("empty.rs"));
+        assert!(syms.is_empty());
+        assert!(refs.is_empty());
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
