@@ -57,7 +57,7 @@ Stand up `bastion serve` — an actix-web HTTP+WebSocket network face that boots
 - The actor I/O shell is smoke-tested (connect with `websocat`, send a frame, observe the echo) and the result recorded in `## Notes` per Rule 6; any pure frame-handling helper is unit-tested.
 - *Primary files:* `src/serve/ws/echo.rs` (+ route wiring in `src/serve/mod.rs`).
 
-### 6. `docs/serve-api.md` v0 contract + index
+### 6. [~] `docs/serve-api.md` v0 contract + index
 - *New* `docs/serve-api.md` (OKF frontmatter): v0 contract documenting the base URL/tailnet bind, the bearer-auth scheme + 401 behavior, `GET /health` (shape + auth policy), the `/ws` upgrade + echo behavior, and the **frame envelope skeleton** later blocks extend. State the version explicitly as **v0** (later blocks bump to v0.1+).
 - Update `docs/index.md` to add the `serve-api.md` row (Rule 7).
 - *Primary files:* `docs/serve-api.md`, `docs/index.md`.

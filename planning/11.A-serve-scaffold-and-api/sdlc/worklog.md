@@ -24,3 +24,7 @@ Validated: gating checks (fast tripwire)
 What: Add minimal /ws accept+echo actor: EchoActor (actix-web-actors) echoes text frames back, wired behind BearerAuthMiddleware at /ws scope in serve/mod.rs, with pure echo_text helper exhaustively unit-tested (6 cases).
 Decisions: The /ws route is mounted as a separate scope (not under /api) to keep WS upgrade semantics distinct from REST; both scopes are protected by BearerAuthMiddleware.
 Validated: gating checks (fast tripwire)
+
+## Task 6 — PASSED (1 attempt)
+What: Published docs/serve-api.md v0 contract (base URL, bearer-auth, GET /health, /ws echo, frame envelope) and added its row to docs/index.md
+Validated: gating checks (fast tripwire)
