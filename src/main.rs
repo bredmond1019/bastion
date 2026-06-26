@@ -97,13 +97,12 @@ async fn main() -> Result<()> {
                     // Unreachable: clap ArgGroup enforces exactly one of the three flags.
                     unreachable!("clap ArgGroup guarantees exactly one query flag is set")
                 };
-                // Load workspace registry DB-free: reads only the [workspaces] table from
-                // the config file; missing/unreadable file degrades silently to empty registry.
+                // Load workspace registry DB-free: absent/unreadable → empty registry;
+                // malformed TOML → propagated error (non-zero exit with diagnostic).
                 let registry = config::load_workspace_registry(
                     std::env::var("XDG_CONFIG_HOME").ok(),
                     std::env::var("HOME").ok(),
-                )
-                .unwrap_or_default();
+                )?;
                 brain::run(query, root, workspace, &registry)
             }
         },
