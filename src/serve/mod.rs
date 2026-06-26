@@ -38,7 +38,6 @@ pub mod ws;
 use actix_web::{App, HttpResponse, HttpServer, web};
 use anyhow::Result;
 use auth::BearerAuthMiddleware;
-use serde_json::json;
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -47,10 +46,7 @@ use serde_json::json;
 /// Auth policy: public (no bearer token required). This matches the
 /// [`docs/serve-api.md`](../../docs/serve-api.md) v0 contract (Task 6).
 async fn health() -> HttpResponse {
-    HttpResponse::Ok().json(json!({
-        "status": "ok",
-        "service": "bastion"
-    }))
+    HttpResponse::Ok().json(dto::HealthResponse::ok())
 }
 
 // ── Server boot ───────────────────────────────────────────────────────────────
@@ -115,7 +111,7 @@ mod tests {
 
     const TEST_TOKEN: &str = "test-secret-token";
 
-    /// Build the test app with the same routing as production, using a fixed test token.
+    /// Build the test app mirroring production routing exactly, using a fixed test token.
     fn build_app() -> actix_web::App<
         impl actix_web::dev::ServiceFactory<
             actix_web::dev::ServiceRequest,
@@ -126,10 +122,14 @@ mod tests {
         >,
     > {
         let protected = web::scope("/api").wrap(BearerAuthMiddleware::new(TEST_TOKEN));
+        let ws_scope = web::scope("/ws")
+            .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
+            .route("", web::get().to(ws::echo::ws_handler));
 
         App::new()
             .service(web::resource("/health").route(web::get().to(health)))
             .service(protected)
+            .service(ws_scope)
     }
 
     // ── health handler — happy path ────────────────────────────────────────
@@ -319,6 +319,41 @@ mod tests {
             resp.status(),
             200,
             "correct token on protected route must return 200; got {}",
+            resp.status()
+        );
+    }
+
+    // ── /ws scope auth — bearer enforced on WS upgrade ────────────────────
+
+    #[actix_web::test]
+    async fn ws_scope_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app()).await;
+
+        let req = test::TestRequest::get().uri("/ws").to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /ws without token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn ws_scope_rejects_wrong_token_with_401() {
+        let app = test::init_service(build_app()).await;
+
+        let req = test::TestRequest::get()
+            .uri("/ws")
+            .insert_header(("authorization", "Bearer wrong-token"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /ws with wrong token must return 401; got {}",
             resp.status()
         );
     }
