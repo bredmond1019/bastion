@@ -12,6 +12,80 @@ pub enum ConfigError {
     UnknownWorkspace(String),
     #[error("no [workspaces] table in config — add [workspaces] to ~/.config/bastion/config.toml")]
     NoWorkspaceRegistry,
+    #[error("BASTION_SERVE_TOKEN must be set — supply a bearer token via env or --token")]
+    MissingServeToken,
+}
+
+// ── ServeConfig ───────────────────────────────────────────────────────────────
+
+/// DB-free configuration for `bastion serve`.
+///
+/// Does NOT require `DATABASE_URL`. The token is mandatory — a missing token is
+/// a typed [`ConfigError::MissingServeToken`], never a silent empty default.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServeConfig {
+    /// Bind address (e.g. `"0.0.0.0:4317"`).
+    pub addr: String,
+    /// Bearer token that protected routes enforce.
+    pub token: String,
+}
+
+impl ServeConfig {
+    /// Default bind address — Tailscale-reachable, port 4317.
+    const DEFAULT_ADDR: &'static str = "0.0.0.0:4317";
+}
+
+/// Build a [`ServeConfig`] by merging CLI flags (highest precedence) over env vars (middle)
+/// over built-in defaults (lowest).
+///
+/// `addr_flag` and `token_flag` come from the CLI `--addr`/`--token` flags (may be `None`).
+/// `addr_env` and `token_env` come from `BASTION_SERVE_ADDR` and `BASTION_SERVE_TOKEN`
+/// respectively (may be `None` when not set).
+///
+/// **Pure function — no I/O, no env access.** Call from `load_serve_config` or tests directly.
+///
+/// # Errors
+/// Returns [`ConfigError::MissingServeToken`] when neither flag nor env provides a token,
+/// or when the resolved token is an empty string (e.g. `BASTION_SERVE_TOKEN=`).
+pub fn build_serve_config(
+    addr_flag: Option<String>,
+    token_flag: Option<String>,
+    addr_env: Option<String>,
+    token_env: Option<String>,
+) -> Result<ServeConfig, ConfigError> {
+    let addr = addr_flag
+        .or(addr_env)
+        .unwrap_or_else(|| ServeConfig::DEFAULT_ADDR.to_string());
+
+    let token = token_flag
+        .or(token_env)
+        .filter(|s| !s.is_empty())
+        .ok_or(ConfigError::MissingServeToken)?;
+
+    Ok(ServeConfig { addr, token })
+}
+
+/// Load [`ServeConfig`] from environment variables + `.env` file.
+///
+/// **DB-free** — does not read or require `DATABASE_URL`.
+///
+/// CLI flag values (from clap) should be passed in as `addr_flag` / `token_flag` and take
+/// precedence over the env values read here.
+///
+/// # Errors
+/// Returns [`ConfigError::MissingServeToken`] when neither `--token` nor `BASTION_SERVE_TOKEN`
+/// is set.
+pub fn load_serve_config(
+    addr_flag: Option<String>,
+    token_flag: Option<String>,
+) -> Result<ServeConfig, ConfigError> {
+    dotenvy::dotenv().ok();
+    build_serve_config(
+        addr_flag,
+        token_flag,
+        std::env::var("BASTION_SERVE_ADDR").ok(),
+        std::env::var("BASTION_SERVE_TOKEN").ok(),
+    )
 }
 
 /// Fields mirroring env vars — all optional; used as the fallback layer beneath env vars.
@@ -537,5 +611,104 @@ client-a = "/Users/alice/clients/a"
         let fc = FileConfig::default();
         let result = resolve_workspace_root(Some(PathBuf::from("/my/root")), None, &fc).unwrap();
         assert_eq!(result, PathBuf::from("/my/root"));
+    }
+
+    // ─── build_serve_config ───────────────────────────────────────────────────
+
+    #[test]
+    fn serve_config_flag_wins_over_env() {
+        // CLI --addr and --token both override the env values.
+        let sc = build_serve_config(
+            Some("127.0.0.1:9000".into()),
+            Some("flag-token".into()),
+            Some("0.0.0.0:1111".into()),
+            Some("env-token".into()),
+        )
+        .unwrap();
+        assert_eq!(sc.addr, "127.0.0.1:9000");
+        assert_eq!(sc.token, "flag-token");
+    }
+
+    #[test]
+    fn serve_config_env_fills_gap_when_no_flags() {
+        // Env values are used when CLI flags are absent.
+        let sc = build_serve_config(
+            None,
+            None,
+            Some("10.0.0.1:5000".into()),
+            Some("env-secret".into()),
+        )
+        .unwrap();
+        assert_eq!(sc.addr, "10.0.0.1:5000");
+        assert_eq!(sc.token, "env-secret");
+    }
+
+    #[test]
+    fn serve_config_default_addr_when_both_omit() {
+        // Neither flag nor env provides addr → built-in default.
+        let sc = build_serve_config(None, Some("tok".into()), None, None).unwrap();
+        assert_eq!(sc.addr, "0.0.0.0:4317");
+    }
+
+    #[test]
+    fn serve_config_flag_addr_with_env_token() {
+        // Mixed: addr from flag, token from env.
+        let sc = build_serve_config(
+            Some("192.168.1.5:8080".into()),
+            None,
+            None,
+            Some("env-tok".into()),
+        )
+        .unwrap();
+        assert_eq!(sc.addr, "192.168.1.5:8080");
+        assert_eq!(sc.token, "env-tok");
+    }
+
+    #[test]
+    fn serve_config_missing_token_is_typed_error() {
+        // Neither --token nor BASTION_SERVE_TOKEN → MissingServeToken.
+        let err = build_serve_config(None, None, None, None).unwrap_err();
+        assert_eq!(err, ConfigError::MissingServeToken);
+    }
+
+    #[test]
+    fn serve_config_missing_token_error_message_is_descriptive() {
+        let err = build_serve_config(None, None, None, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("BASTION_SERVE_TOKEN"),
+            "error should mention the env var name; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn serve_config_token_from_flag_alone_succeeds() {
+        // Env is absent; CLI flag alone satisfies the mandatory token.
+        let sc = build_serve_config(None, Some("only-flag-token".into()), None, None).unwrap();
+        assert_eq!(sc.token, "only-flag-token");
+        assert_eq!(sc.addr, "0.0.0.0:4317"); // default addr
+    }
+
+    #[test]
+    fn serve_config_token_from_env_alone_succeeds() {
+        // CLI flag absent; env alone satisfies the mandatory token.
+        let sc = build_serve_config(None, None, None, Some("only-env-token".into())).unwrap();
+        assert_eq!(sc.token, "only-env-token");
+    }
+
+    #[test]
+    fn serve_config_empty_env_token_is_typed_error() {
+        // BASTION_SERVE_TOKEN="" (set but empty) must be treated the same as absent.
+        // An empty token would cause every protected request to return 401 with no
+        // way to authenticate — the server must refuse to start.
+        let err = build_serve_config(None, None, None, Some(String::new())).unwrap_err();
+        assert_eq!(err, ConfigError::MissingServeToken);
+    }
+
+    #[test]
+    fn serve_config_empty_flag_token_is_typed_error() {
+        // --token "" (empty string from CLI) must also be rejected.
+        let err = build_serve_config(None, Some(String::new()), None, None).unwrap_err();
+        assert_eq!(err, ConfigError::MissingServeToken);
     }
 }

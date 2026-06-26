@@ -1,0 +1,397 @@
+{
+  "spec_slug": "11.A-serve-scaffold-and-api",
+  "branch": "11.A-serve-scaffold-and-api-flow",
+  "started_at": "2026-06-26T18:52:24Z",
+  "updated_at": "2026-06-26T19:33:40Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow",
+  "status": "done",
+  "current_task": 7,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Task 1: actix runtime spike — added actix-web 4.9/actix-web-actors 4.3/actix 0.13/futures 0.3 deps, created src/serve/mod.rs with pub fn run() using thread+System integration, GET /health handler returning JSON liveness body, 5 unit tests (200/body/405/404), all 662 tests pass.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used actix_web::rt::System::new().block_on() on a dedicated thread (not plain tokio await) — future-proofs for WS actors (Task 5) which need an Arbiter that tokio-only context lacks.",
+        "Used web::resource('/health') instead of web::route() so POST returns 405 Method Not Allowed rather than 404.",
+        "Extracted run_server() as a separate async fn so it can be tested independently via actix_web::test utilities without binding a port."
+      ],
+      "files_changed": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/main.rs",
+        "src/serve/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added Commands::Serve CLI arm, dispatch, and DB-free ServeConfig with full unit tests",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "build_serve_config is a pure function taking four Option<String> parameters (addr_flag, token_flag, addr_env, token_env) so it is fully unit-testable without I/O",
+        "MissingServeToken is a new typed ConfigError variant rather than reusing MissingVar so the error message is serve-specific",
+        "dispatch arm uses spawn_blocking + single ? to propagate both JoinError (converted) and inner serve::run errors"
+      ],
+      "files_changed": [
+        "src/cli.rs",
+        "src/config.rs",
+        "src/main.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Bearer-token auth middleware wired into serve: pure token_matches() exhaustively tested, BearerAuthMiddleware enforces Authorization: Bearer on /api scope, /health stays public, 18 new tests added (693 total pass)",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Bearer scheme matching is case-sensitive (Bearer not bearer) — matches RFC 7617 and rejects common typos",
+        "Both Transform and Service impl bounds require B: MessageBody + 'static to allow map_into_boxed_body() on the success path, unifying both branches to ServiceResponse<BoxBody>",
+        "Protected routes placed under /api scope (not top-level) so Task 5 /ws can be wired in as /api/ws or a peer scope without restructuring",
+        "Rc used (not Arc) for token and service inside the middleware since actix runs single-threaded workers"
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/src/serve/auth.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/src/serve/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added src/serve/dto.rs with serde DTOs (HealthResponse, WsFrame, WsFrameKind, ErrorPayload) and exhaustive round-trip tests; exposed dto module from serve/mod.rs",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "WsFrame uses a flat struct with kind+payload fields (not adjacently-tagged enum) so the Flutter client can dispatch on kind before parsing payload",
+        "WsFrameKind serializes with serde rename_all = snake_case matching the serve-api contract wire format",
+        "ErrorPayload is a separate named struct (not an inline serde_json::Value) to give the error surface a typed contract from day one"
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/src/serve/dto.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/src/serve/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "5": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Add minimal /ws accept+echo actor: EchoActor (actix-web-actors) echoes text frames back, wired behind BearerAuthMiddleware at /ws scope in serve/mod.rs, with pure echo_text helper exhaustively unit-tested (6 cases).",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "The /ws route is mounted as a separate scope (not under /api) to keep WS upgrade semantics distinct from REST; both scopes are protected by BearerAuthMiddleware."
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/src/serve/mod.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/src/serve/ws/mod.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/src/serve/ws/echo.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "6": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Published docs/serve-api.md v0 contract (base URL, bearer-auth, GET /health, /ws echo, frame envelope) and added its row to docs/index.md",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/docs/serve-api.md",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/docs/index.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "7": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Task 7 validation: all four gated checks pass (fmt, clippy, 719 tests, release build)",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "planning/11.A-serve-scaffold-and-api/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": "PASS",
+    "findings": [],
+    "attempts": 2
+  },
+  "docs": {
+    "changed": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/docs/config.md"
+    ],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": "https://github.com/bredmond1019/bastion/pull/5",
+    "number": 5
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 786,
+        "filesReadKb": null,
+        "inTokEst": 786,
+        "outTok": 8130
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 233,
+        "filesReadKb": null,
+        "inTokEst": 233,
+        "outTok": 693
+      },
+      {
+        "label": "update-task-1",
+        "model": "haiku",
+        "promptTokEst": 261,
+        "filesReadKb": null,
+        "inTokEst": 261,
+        "outTok": 1091
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 909,
+        "filesReadKb": null,
+        "inTokEst": 909,
+        "outTok": 16759
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 584,
+        "filesReadKb": null,
+        "inTokEst": 584,
+        "outTok": 1968
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 261,
+        "filesReadKb": null,
+        "inTokEst": 261,
+        "outTok": 1185
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 909,
+        "filesReadKb": null,
+        "inTokEst": 909,
+        "outTok": 13742
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 584,
+        "filesReadKb": null,
+        "inTokEst": 584,
+        "outTok": 1532
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 261,
+        "filesReadKb": null,
+        "inTokEst": 261,
+        "outTok": 1265
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 909,
+        "filesReadKb": null,
+        "inTokEst": 909,
+        "outTok": 13737
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 584,
+        "filesReadKb": null,
+        "inTokEst": 584,
+        "outTok": 2087
+      },
+      {
+        "label": "update-task-4",
+        "model": "haiku",
+        "promptTokEst": 261,
+        "filesReadKb": null,
+        "inTokEst": 261,
+        "outTok": 988
+      },
+      {
+        "label": "implement-4-1",
+        "model": "sonnet",
+        "promptTokEst": 909,
+        "filesReadKb": null,
+        "inTokEst": 909,
+        "outTok": 6471
+      },
+      {
+        "label": "test-4-1",
+        "model": "haiku",
+        "promptTokEst": 584,
+        "filesReadKb": null,
+        "inTokEst": 584,
+        "outTok": 2069
+      },
+      {
+        "label": "update-task-5",
+        "model": "haiku",
+        "promptTokEst": 261,
+        "filesReadKb": null,
+        "inTokEst": 261,
+        "outTok": 1056
+      },
+      {
+        "label": "implement-5-1",
+        "model": "sonnet",
+        "promptTokEst": 909,
+        "filesReadKb": null,
+        "inTokEst": 909,
+        "outTok": 6582
+      },
+      {
+        "label": "test-5-1",
+        "model": "haiku",
+        "promptTokEst": 584,
+        "filesReadKb": null,
+        "inTokEst": 584,
+        "outTok": 2559
+      },
+      {
+        "label": "update-task-6",
+        "model": "haiku",
+        "promptTokEst": 261,
+        "filesReadKb": null,
+        "inTokEst": 261,
+        "outTok": 963
+      },
+      {
+        "label": "implement-6-1",
+        "model": "sonnet",
+        "promptTokEst": 909,
+        "filesReadKb": null,
+        "inTokEst": 909,
+        "outTok": 4828
+      },
+      {
+        "label": "test-6-1",
+        "model": "haiku",
+        "promptTokEst": 584,
+        "filesReadKb": null,
+        "inTokEst": 584,
+        "outTok": 2175
+      },
+      {
+        "label": "update-task-7",
+        "model": "haiku",
+        "promptTokEst": 261,
+        "filesReadKb": null,
+        "inTokEst": 261,
+        "outTok": 942
+      },
+      {
+        "label": "implement-7-1",
+        "model": "sonnet",
+        "promptTokEst": 909,
+        "filesReadKb": null,
+        "inTokEst": 909,
+        "outTok": 2423
+      },
+      {
+        "label": "test-7-1",
+        "model": "haiku",
+        "promptTokEst": 584,
+        "filesReadKb": null,
+        "inTokEst": 584,
+        "outTok": 2290
+      },
+      {
+        "label": "review-1",
+        "model": "sonnet",
+        "promptTokEst": 1005,
+        "filesReadKb": null,
+        "inTokEst": 1005,
+        "outTok": 4106
+      },
+      {
+        "label": "triage:consolidated review:1",
+        "model": "sonnet",
+        "promptTokEst": 466,
+        "filesReadKb": null,
+        "inTokEst": 466,
+        "outTok": 927
+      },
+      {
+        "label": "review-fix-1",
+        "model": "sonnet",
+        "promptTokEst": 532,
+        "filesReadKb": null,
+        "inTokEst": 532,
+        "outTok": 5329
+      },
+      {
+        "label": "review-2",
+        "model": "sonnet",
+        "promptTokEst": 1005,
+        "filesReadKb": null,
+        "inTokEst": 1005,
+        "outTok": 2630
+      },
+      {
+        "label": "docs",
+        "model": "sonnet",
+        "promptTokEst": 571,
+        "filesReadKb": null,
+        "inTokEst": 571,
+        "outTok": 4108
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 848,
+        "filesReadKb": null,
+        "inTokEst": 848,
+        "outTok": 4753
+      },
+      {
+        "label": "pr-create",
+        "model": "sonnet",
+        "promptTokEst": 770,
+        "filesReadKb": null,
+        "inTokEst": 770,
+        "outTok": 1824
+      }
+    ],
+    "total": {
+      "promptTokEst": 18494,
+      "filesReadKb": 0,
+      "inTokEst": 18494,
+      "outTok": 119212
+    }
+  }
+}

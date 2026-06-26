@@ -186,6 +186,24 @@ pub enum Commands {
         workspace: Option<String>,
     },
 
+    /// Start the HTTP+WebSocket network face (Tailscale-reachable)
+    ///
+    /// Binds an actix-web server on the configured address (default 0.0.0.0:4317) and
+    /// enforces mandatory bearer-token auth on protected routes.  Exposes:
+    ///   GET  /health   — public liveness probe (no auth required)
+    ///   GET  /ws       — WebSocket upgrade endpoint (bearer token required)
+    ///
+    /// The bearer token must be supplied via BASTION_SERVE_TOKEN (or --token).
+    /// The bind address can be overridden via BASTION_SERVE_ADDR (or --addr).
+    Serve {
+        /// Bind address (overrides BASTION_SERVE_ADDR; default 0.0.0.0:4317)
+        #[arg(long)]
+        addr: Option<String>,
+        /// Bearer token for protected routes (overrides BASTION_SERVE_TOKEN; mandatory)
+        #[arg(long)]
+        token: Option<String>,
+    },
+
     /// Query the code-as-graph surface for symbol definitions, references, and dependents
     ///
     /// Builds a directed symbol graph from `.rs` source files under --root (or the workspace
@@ -758,5 +776,64 @@ mod tests {
         let cli = Cli::try_parse_from(["bastion", "-v"]).unwrap();
         assert!(cli.verbose);
         assert!(cli.command.is_none());
+    }
+
+    // ── Serve subcommand ─────────────────────────────────────────────────────
+
+    #[test]
+    fn serve_parses_with_no_flags() {
+        // Flags are optional at the CLI level (config can supply them).
+        let cli = Cli::try_parse_from(["bastion", "serve"]).unwrap();
+        match cli.command {
+            Some(Commands::Serve { addr, token }) => {
+                assert!(addr.is_none(), "addr should default to None");
+                assert!(token.is_none(), "token should default to None");
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serve_addr_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "serve", "--addr", "127.0.0.1:9999"]).unwrap();
+        match cli.command {
+            Some(Commands::Serve { addr, token }) => {
+                assert_eq!(addr, Some("127.0.0.1:9999".to_string()));
+                assert!(token.is_none());
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serve_token_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "serve", "--token", "my-secret"]).unwrap();
+        match cli.command {
+            Some(Commands::Serve { addr, token }) => {
+                assert!(addr.is_none());
+                assert_eq!(token, Some("my-secret".to_string()));
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serve_both_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "serve",
+            "--addr",
+            "0.0.0.0:4317",
+            "--token",
+            "secret-token",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Serve { addr, token }) => {
+                assert_eq!(addr, Some("0.0.0.0:4317".to_string()));
+                assert_eq!(token, Some("secret-token".to_string()));
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
     }
 }
