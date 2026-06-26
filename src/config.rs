@@ -45,7 +45,8 @@ impl ServeConfig {
 /// **Pure function — no I/O, no env access.** Call from `load_serve_config` or tests directly.
 ///
 /// # Errors
-/// Returns [`ConfigError::MissingServeToken`] when neither flag nor env provides a token.
+/// Returns [`ConfigError::MissingServeToken`] when neither flag nor env provides a token,
+/// or when the resolved token is an empty string (e.g. `BASTION_SERVE_TOKEN=`).
 pub fn build_serve_config(
     addr_flag: Option<String>,
     token_flag: Option<String>,
@@ -58,6 +59,7 @@ pub fn build_serve_config(
 
     let token = token_flag
         .or(token_env)
+        .filter(|s| !s.is_empty())
         .ok_or(ConfigError::MissingServeToken)?;
 
     Ok(ServeConfig { addr, token })
@@ -692,5 +694,21 @@ client-a = "/Users/alice/clients/a"
         // CLI flag absent; env alone satisfies the mandatory token.
         let sc = build_serve_config(None, None, None, Some("only-env-token".into())).unwrap();
         assert_eq!(sc.token, "only-env-token");
+    }
+
+    #[test]
+    fn serve_config_empty_env_token_is_typed_error() {
+        // BASTION_SERVE_TOKEN="" (set but empty) must be treated the same as absent.
+        // An empty token would cause every protected request to return 401 with no
+        // way to authenticate — the server must refuse to start.
+        let err = build_serve_config(None, None, None, Some(String::new())).unwrap_err();
+        assert_eq!(err, ConfigError::MissingServeToken);
+    }
+
+    #[test]
+    fn serve_config_empty_flag_token_is_typed_error() {
+        // --token "" (empty string from CLI) must also be rejected.
+        let err = build_serve_config(None, Some(String::new()), None, None).unwrap_err();
+        assert_eq!(err, ConfigError::MissingServeToken);
     }
 }

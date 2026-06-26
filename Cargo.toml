@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 actix = "0.13"
+actix-http = "3"
 actix-web = "4.9"
 actix-web-actors = "4.3"
 anyhow = "1.0.102"

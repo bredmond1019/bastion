@@ -100,24 +100,25 @@ where
     forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let header_value = req
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-
         let token = self.token.clone();
         let svc = self.service.clone();
 
         Box::pin(async move {
-            let matches = token_matches(header_value.as_deref(), &token);
+            // Extract the header inside the async block — req is owned here,
+            // so no intermediate String allocation is needed.
+            let header_value = req
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok());
+
+            let matches = token_matches(header_value, &token);
             if matches {
                 // Map the inner body type to BoxBody so both branches unify.
                 svc.call(req).await.map(|r| r.map_into_boxed_body())
             } else {
                 let (http_req, _payload) = req.into_parts();
                 let resp = HttpResponse::Unauthorized()
-                    .json(serde_json::json!({"error": "unauthorized", "code": 401}));
+                    .json(serde_json::json!({"error": "unauthorized", "code": "unauthorized"}));
                 Ok(ServiceResponse::new(http_req, resp).map_into_boxed_body())
             }
         })
