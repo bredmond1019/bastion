@@ -36,3 +36,6 @@ Validated: gating checks (fast tripwire)
 ## Task 6 — PASSED (1 attempt)
 What: Ran validation suite (cargo fmt/clippy/test/build all pass, 775 tests) and smoke-tested all six session REST endpoints plus 401 enforcement against a live bastion serve instance; recorded results in tasks.md Notes.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/docs/index.md, /Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/docs/sessions.md

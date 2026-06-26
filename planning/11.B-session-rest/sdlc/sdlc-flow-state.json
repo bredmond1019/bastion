@@ -2,9 +2,9 @@
   "spec_slug": "11.B-session-rest",
   "branch": "11.B-session-rest-flow",
   "started_at": "2026-06-26T20:59:47Z",
-  "updated_at": "2026-06-26T22:07:52Z",
+  "updated_at": "2026-06-26T22:12:10Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow",
-  "status": "running",
+  "status": "docs",
   "current_task": 6,
   "tasks": {
     "1": {
@@ -99,12 +99,15 @@
     }
   },
   "review": {
-    "verdict": null,
+    "verdict": "PASS",
     "findings": [],
-    "attempts": 0
+    "attempts": 1
   },
   "docs": {
-    "changed": [],
+    "changed": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/docs/index.md",
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/docs/sessions.md"
+    ],
     "created": []
   },
   "bail_reason": null,
@@ -273,13 +276,29 @@
         "filesReadKb": null,
         "inTokEst": 564,
         "outTok": 4051
+      },
+      {
+        "label": "review-1",
+        "model": "sonnet",
+        "promptTokEst": 969,
+        "filesReadKb": null,
+        "inTokEst": 969,
+        "outTok": 3512
+      },
+      {
+        "label": "docs",
+        "model": "sonnet",
+        "promptTokEst": 546,
+        "filesReadKb": null,
+        "inTokEst": 546,
+        "outTok": 4026
       }
     ],
     "total": {
-      "promptTokEst": 11123,
+      "promptTokEst": 12638,
       "filesReadKb": 0,
-      "inTokEst": 11123,
-      "outTok": 50460
+      "inTokEst": 12638,
+      "outTok": 57998
     }
   }
 }
