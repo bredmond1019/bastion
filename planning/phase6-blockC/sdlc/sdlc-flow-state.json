@@ -2,10 +2,10 @@
   "spec_slug": "phase6-blockC",
   "branch": "phase6-blockC-flow",
   "started_at": "2026-06-26T00:33:53Z",
-  "updated_at": "2026-06-26T00:33:53Z",
+  "updated_at": "2026-06-26T00:40:42Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -27,6 +27,26 @@
         "src/brain/fixtures/code/lib.rs.fixture",
         "src/brain/fixtures/code/consumer.rs.fixture",
         "src/brain/fixtures/code/util.rs.fixture"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Add code-as-graph layer: pure build_code_node_edge_lists/find_definition/find_references, run_code I/O shell, find_rust_files walker, Code CLI subcommand (--def/--refs/--dependents ArgGroup), and full unit test coverage",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "From-id rule: enclosing symbol = last symbol in the same file at or before the ref's line number (partition_point binary search); refs with no preceding symbol (e.g. top-level use statements before any fn) are silently dropped — no enclosing symbol means no resolvable from-id, so no edge",
+        "BrainNode.id = symbol.name (not file stem) so graph edges between symbols work correctly with BrainGraph.predecessors/reachable_reverse",
+        "Duplicate (from, to) edge pairs are deduplicated via a HashSet before being pushed, mirroring okf::build_node_edge_lists"
+      ],
+      "files_changed": [
+        "src/brain/code_graph.rs",
+        "src/brain/mod.rs",
+        "src/cli.rs",
+        "src/main.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
