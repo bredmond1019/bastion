@@ -36,18 +36,11 @@ pub fn echo_text(received: &str) -> String {
 // ── WebSocket actor ────────────────────────────────────────────────────────────
 
 /// Actix WS actor that echoes every received text frame back to the client.
+#[derive(Default)]
 pub struct EchoActor {
     /// Accumulation buffer for fragmented text messages (Continuation frames).
     /// `None` when no continuation sequence is in progress.
     continuation_buf: Option<Vec<u8>>,
-}
-
-impl Default for EchoActor {
-    fn default() -> Self {
-        Self {
-            continuation_buf: None,
-        }
-    }
 }
 
 impl Actor for EchoActor {
