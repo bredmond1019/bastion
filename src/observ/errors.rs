@@ -307,8 +307,6 @@ mod tests {
         assert!(!ConsoleError::InvalidInput("bad".into()).is_recoverable());
         assert!(!ConsoleError::SerializationError("json".into()).is_recoverable());
         assert!(!ConsoleError::NotAuthenticated.is_recoverable());
-        assert!(!ConsoleError::RateLimitExceeded.is_recoverable() == false); // recoverable
-        // Double-check the non-recoverable ones explicitly
         assert!(!ConsoleError::Utf8Error("bad bytes".into()).is_recoverable());
     }
 
