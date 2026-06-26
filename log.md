@@ -10,6 +10,23 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-26 — phase11-blockA complete: `bastion serve` scaffold + serve-api contract v0 shipped
+
+Phase 11 Block A delivered the actix-web HTTP+WebSocket network face for `bastion serve` across seven tasks with a PASS verdict (one review fix pass). Task 1 settled the runtime-spike integration risk: a dedicated thread running `actix_web::rt::System::new().block_on(...)` is the correct approach (not plain tokio await) because actix-web-actors WS actors need an Arbiter that a pure-tokio context cannot provide — the decision is documented in `tasks.md §Notes` and captured in the module doc. Task 2 added `Commands::Serve` to the CLI, a pure `build_serve_config` function (DB-free: reads only `BASTION_SERVE_ADDR`/`BASTION_SERVE_TOKEN`), and a typed `MissingServeToken` error variant. Task 3 implemented `BearerAuthMiddleware` in `src/serve/auth.rs` with a pure `token_matches` helper exhaustively unit-tested (18 new tests); `/health` stays public, all other routes require the token. Task 4 added serde DTOs (`HealthResponse`, `WsFrame`, `WsFrameKind`, `ErrorPayload`) in `src/serve/dto.rs` with round-trip tests; `WsFrame` uses a flat struct (kind+payload) so the Flutter client can dispatch on `kind` before parsing payload. Task 5 wired an `EchoActor` (`actix-web-actors`) at `/ws` — smoke-tested live with websocat, echo round-trip confirmed. Task 6 published `docs/serve-api.md` v0 (base URL, bearer-auth policy, `GET /health`, `/ws` echo, frame envelope) and added its row to `docs/index.md`. Task 7 validated all four gating checks (fmt/clippy/719 tests/release build). Next: Phase 11 Block B (next Console API surface).
+
+```
+10832d1 chore: flow state — docs
+f5b7a5e docs: update docs for 11.A-serve-scaffold-and-api
+8f45e0c chore: flow state — review pass 1
+6c1ed46 fix: review pass 1 for 11.A-serve-scaffold-and-api
+d4064cc chore: flow state — task 7 passed
+4d29afb feat: implement 11.A-serve-scaffold-and-api-task7
+a40e913 chore: flow state — task 6 passed
+95a55c9 feat: implement 11.A-serve-scaffold-and-api-task6
+```
+
+---
+
 ## 2026-06-26 — phase7-blockA post-merge: code-review fixes, docs patch, worktree clean
 
 A medium-effort code review with `--fix` applied five confirmed findings: removed triple-stderr bug from the `ask` dispatch arm (spurious `eprintln!` printing both to stderr and through tracing), reordered keyword heuristics in `classify_error()` to test configuration errors before tmux/process errors (was incorrectly checking in the wrong order), replaced silent `EventPhase::Start` no-op match arm with `unreachable!()` to flag dead code, removed a misplaced double-negation tautology assertion from the wrong test function, and added four missing unit tests for keyword-based error classification paths (BinaryNotFound, BinaryNotFound variant 2, McpError, ConfigError per CLAUDE.md Rule 6). `/update-docs --patch` fixed a spurious field in `docs/observ.md`'s ErrorContext struct documentation, added `observ.md` to the `docs/index.md` navigation table, and added `src/observ/` to the CLAUDE.md directory map. `/clean-worktree` fast-forward merged the phase7-blockA branch into main and removed the worktree. All 657 tests pass on HEAD. Observability spine is now productionized with confirmed testing, finalized docs, and clean integration.
