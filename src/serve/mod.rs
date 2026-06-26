@@ -33,6 +33,7 @@
 
 pub mod auth;
 pub mod dto;
+pub mod ws;
 
 use actix_web::{App, HttpResponse, HttpServer, web};
 use anyhow::Result;
@@ -80,14 +81,23 @@ pub fn run(addr: String, token: String) -> Result<()> {
 async fn run_server(addr: String, token: String) -> Result<()> {
     HttpServer::new(move || {
         // Protected scope — bearer auth enforced on all children.
-        // Task 5 wires /ws into this scope; later blocks add more routes here.
+        // Later blocks add more routes here (e.g. /api/sessions, /api/costs).
         let protected = web::scope("/api").wrap(BearerAuthMiddleware::new(token.clone()));
+
+        // Protected WebSocket scope — bearer auth enforced on upgrade.
+        // The /ws route is a separate scope so its upgrade semantics are distinct
+        // from the REST /api scope.
+        let ws_scope = web::scope("/ws")
+            .wrap(BearerAuthMiddleware::new(token.clone()))
+            .route("", web::get().to(ws::echo::ws_handler));
 
         App::new()
             // Public liveness endpoint.
             .service(web::resource("/health").route(web::get().to(health)))
-            // Protected scope (populated by later tasks/blocks).
+            // Protected REST scope (extended by later blocks).
             .service(protected)
+            // Protected WS upgrade route.
+            .service(ws_scope)
     })
     .bind(&addr)
     .map_err(anyhow::Error::from)?
