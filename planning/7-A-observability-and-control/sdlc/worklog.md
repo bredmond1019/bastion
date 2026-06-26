@@ -29,3 +29,6 @@ Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-an
 
 ## Wrap-up — PASS
 Next: phase7-blockB — vendor tiktoken counter for exact `bastion costs`
+
+## PR
+https://github.com/bredmond1019/bastion/pull/4
