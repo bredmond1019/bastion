@@ -58,7 +58,6 @@ Wraps a `ConsoleError` with an `operation: String` label for call-site context.
 
 ```rust
 pub struct ErrorContext {
-    pub code: ErrorCode,
     pub operation: String,
     pub error: ConsoleError,
 }

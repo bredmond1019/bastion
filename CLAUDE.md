@@ -83,6 +83,7 @@ bastion/
 │   ├── main.rs         ← clap dispatch
 │   ├── cli.rs          ← subcommand definitions
 │   ├── config.rs       ← env/config loading
+│   ├── observ/         ← structured error taxonomy (C001–C014) + tracing helpers (Phase 7)
 │   ├── db/             ← PostgreSQL queries (workflows, costs)
 │   ├── api/            ← reqwest client for FastAPI
 │   ├── monitor/        ← live TUI graph inspector (ratatui + petgraph)
