@@ -32,6 +32,8 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `DATABASE_URL` | Yes (unless set in config file) | — | PostgreSQL URL for the Python orchestrator's database |
 | `BASTION_API_URL` | No | `http://localhost:8080` | FastAPI orchestrator base URL |
 | `BASTION_POLL_INTERVAL` | No | `2` | Monitor poll cadence in seconds |
+| `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | Bind address for `bastion serve` |
+| `BASTION_SERVE_TOKEN` | Yes (for `bastion serve`) | — | Bearer token enforced on all protected routes; also settable via `--token` |
 
 ## Config file
 
@@ -95,6 +97,8 @@ Built-in defaults apply only when both the environment and file omit a value.
 | `MissingVar(&'static str)` | Required env var not set. |
 | `MalformedFile(String)` | Config file present but not valid TOML. |
 | `UnknownWorkspace(String)` | Named workspace not found in the `[workspaces]` registry. |
+| `NoWorkspaceRegistry` | `--workspace` used but no `[workspaces]` table exists in the config file. |
+| `MissingServeToken` | `bastion serve` started without a bearer token (neither `--token` nor `BASTION_SERVE_TOKEN` set, or either resolved to an empty string). |
 
 ### `FileConfig`
 
@@ -135,3 +139,41 @@ pub fn load_workspace_registry(
 Reads the config file (DB-free path, no `DATABASE_URL` required). Returns
 `FileConfig::default()` when the file is absent or unreadable; returns
 `ConfigError::MalformedFile` on parse errors.
+
+### `ServeConfig`
+
+DB-free configuration struct for `bastion serve`. Does not require `DATABASE_URL`.
+
+| Field | Type | Description |
+|---|---|---|
+| `addr` | `String` | Bind address (e.g. `"0.0.0.0:4317"`). Default: `0.0.0.0:4317`. |
+| `token` | `String` | Bearer token enforced by `BearerAuthMiddleware` on all protected routes. Mandatory and non-empty — absence or empty string is `ConfigError::MissingServeToken`. |
+
+### `build_serve_config`
+
+```rust
+pub fn build_serve_config(
+    addr_flag: Option<String>,
+    token_flag: Option<String>,
+    addr_env: Option<String>,
+    token_env: Option<String>,
+) -> Result<ServeConfig, ConfigError>
+```
+
+Pure function (no I/O). Merges CLI flags (highest precedence) over env vars (middle) over
+the built-in address default (`0.0.0.0:4317`). Returns `ConfigError::MissingServeToken`
+when neither `token_flag` nor `token_env` is provided, or when the resolved token is an
+empty string (e.g. `BASTION_SERVE_TOKEN=` in the environment).
+
+### `load_serve_config`
+
+```rust
+pub fn load_serve_config(
+    addr_flag: Option<String>,
+    token_flag: Option<String>,
+) -> Result<ServeConfig, ConfigError>
+```
+
+I/O wrapper around `build_serve_config`. Reads `BASTION_SERVE_ADDR` and
+`BASTION_SERVE_TOKEN` from the environment (after loading `.env` via `dotenvy`) and
+delegates to `build_serve_config`. DB-free — does not touch `DATABASE_URL`.
