@@ -19,3 +19,8 @@ Validated: gating checks (fast tripwire)
 What: Added src/serve/dto.rs with serde DTOs (HealthResponse, WsFrame, WsFrameKind, ErrorPayload) and exhaustive round-trip tests; exposed dto module from serve/mod.rs
 Decisions: WsFrame uses a flat struct with kind+payload fields (not adjacently-tagged enum) so the Flutter client can dispatch on kind before parsing payload; WsFrameKind serializes with serde rename_all = snake_case matching the serve-api contract wire format; ErrorPayload is a separate named struct (not an inline serde_json::Value) to give the error surface a typed contract from day one
 Validated: gating checks (fast tripwire)
+
+## Task 5 — PASSED (1 attempt)
+What: Add minimal /ws accept+echo actor: EchoActor (actix-web-actors) echoes text frames back, wired behind BearerAuthMiddleware at /ws scope in serve/mod.rs, with pure echo_text helper exhaustively unit-tested (6 cases).
+Decisions: The /ws route is mounted as a separate scope (not under /api) to keep WS upgrade semantics distinct from REST; both scopes are protected by BearerAuthMiddleware.
+Validated: gating checks (fast tripwire)
