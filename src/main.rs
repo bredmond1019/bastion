@@ -11,6 +11,7 @@ mod db;
 mod inspect;
 mod man;
 mod monitor;
+mod observ;
 mod run;
 mod sessions;
 mod validate;
