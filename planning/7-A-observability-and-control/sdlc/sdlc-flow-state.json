@@ -2,10 +2,10 @@
   "spec_slug": "7-A-observability-and-control",
   "branch": "7-A-observability-and-control-flow-2",
   "started_at": "2026-06-26T14:14:02Z",
-  "updated_at": "2026-06-26T14:31:41Z",
+  "updated_at": "2026-06-26T14:34:55Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2",
   "status": "running",
-  "current_task": 4,
+  "current_task": 5,
   "tasks": {
     "1": {
       "status": "passed",
@@ -77,6 +77,19 @@
       ],
       "files_changed": [
         "src/main.rs",
+        "planning/7-A-observability-and-control/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "5": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Task 5 validation complete: all 4 gate checks pass (fmt/clippy/653 tests/release build); acceptance criteria confirmed and recorded in tasks.md notes.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
         "planning/7-A-observability-and-control/tasks.md"
       ],
       "commit": "",
@@ -210,13 +223,37 @@
         "filesReadKb": null,
         "inTokEst": 592,
         "outTok": 2318
+      },
+      {
+        "label": "update-task-5",
+        "model": "haiku",
+        "promptTokEst": 265,
+        "filesReadKb": null,
+        "inTokEst": 265,
+        "outTok": 683
+      },
+      {
+        "label": "implement-5-1",
+        "model": "sonnet",
+        "promptTokEst": 920,
+        "filesReadKb": null,
+        "inTokEst": 920,
+        "outTok": 2514
+      },
+      {
+        "label": "test-5-1",
+        "model": "haiku",
+        "promptTokEst": 592,
+        "filesReadKb": null,
+        "inTokEst": 592,
+        "outTok": 3663
       }
     ],
     "total": {
-      "promptTokEst": 8134,
+      "promptTokEst": 9911,
       "filesReadKb": 0,
-      "inTokEst": 8134,
-      "outTok": 72299
+      "inTokEst": 9911,
+      "outTok": 79159
     }
   }
 }

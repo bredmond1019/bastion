@@ -19,3 +19,7 @@ Validated: gating checks (fast tripwire)
 What: Dispatch event instrumentation: every subcommand now emits start/outcome/duration events and top-level errors are mapped to C0xx codes via classify_error()
 Decisions: Extracted dispatch() async fn from main() so the instrumentation wrapper in main() is a clean single location rather than touching each command arm; classify_error() tries typed ConsoleError downcast first, then std::io::Error downcast, then keyword heuristics, defaulting to ErrorCode::InvalidInput (C006) for unclassifiable errors; cmd_name is resolved as &'static str before cli is moved into dispatch(), using map_or('tui', command_name) to handle the None/Tui case cleanly; anyhow's built-in termination handler prints the error and exits non-zero — emit_outcome is called before returning Err so no duplicate eprintln! is needed
 Validated: gating checks (fast tripwire)
+
+## Task 5 — PASSED (1 attempt)
+What: Task 5 validation complete: all 4 gate checks pass (fmt/clippy/653 tests/release build); acceptance criteria confirmed and recorded in tasks.md notes.
+Validated: gating checks (fast tripwire)
