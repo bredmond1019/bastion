@@ -28,3 +28,7 @@ Validated: gating checks (fast tripwire)
 ## Task 6 — PASSED (1 attempt)
 What: Published docs/serve-api.md v0 contract (base URL, bearer-auth, GET /health, /ws echo, frame envelope) and added its row to docs/index.md
 Validated: gating checks (fast tripwire)
+
+## Task 7 — PASSED (1 attempt)
+What: Task 7 validation: all four gated checks pass (fmt, clippy, 719 tests, release build)
+Validated: gating checks (fast tripwire)
