@@ -26,3 +26,6 @@ Validated: gating checks (fast tripwire)
 
 ## Docs
 Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/docs/config.md | Created: /Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/docs/observ.md
+
+## Wrap-up — PASS
+Next: phase7-blockB — vendor tiktoken counter for exact `bastion costs`

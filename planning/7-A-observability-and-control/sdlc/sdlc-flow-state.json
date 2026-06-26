@@ -2,9 +2,9 @@
   "spec_slug": "7-A-observability-and-control",
   "branch": "7-A-observability-and-control-flow-2",
   "started_at": "2026-06-26T14:14:02Z",
-  "updated_at": "2026-06-26T14:39:12Z",
+  "updated_at": "2026-06-26T14:42:02Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2",
-  "status": "docs",
+  "status": "done",
   "current_task": 5,
   "tasks": {
     "1": {
@@ -267,13 +267,21 @@
         "filesReadKb": null,
         "inTokEst": 580,
         "outTok": 4598
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 858,
+        "filesReadKb": null,
+        "inTokEst": 858,
+        "outTok": 4086
       }
     ],
     "total": {
-      "promptTokEst": 11507,
+      "promptTokEst": 12365,
       "filesReadKb": 0,
-      "inTokEst": 11507,
-      "outTok": 86886
+      "inTokEst": 12365,
+      "outTok": 90972
     }
   }
 }
