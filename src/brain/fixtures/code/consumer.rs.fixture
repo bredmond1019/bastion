@@ -1,0 +1,11 @@
+use lib::alpha;
+use lib::beta;
+use lib::Widget;
+
+pub fn main_consumer() {
+    alpha();
+    beta();
+    let _w = Widget { value: 0 };
+    let w2 = Widget { value: 1 };
+    w2.render();
+}

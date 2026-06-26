@@ -1,0 +1,11 @@
+pub fn alpha() {}
+
+pub fn beta() {}
+
+pub struct Widget {
+    pub value: i32,
+}
+
+impl Widget {
+    pub fn render(&self) {}
+}
