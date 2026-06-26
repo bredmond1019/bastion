@@ -241,4 +241,26 @@ The surface degrades gracefully rather than panicking:
 
 ---
 
-*Block G (`bastion ask` — one Claude Code turn) is complete. Block F (activity indicator + Claude trust observer), Block E (TUI session dashboard), and all earlier verbs remain available for scripting.*
+## Remote access via REST (bastion serve)
+
+The same session operations available at the CLI are also exposed over HTTP for remote clients
+(e.g. `bastion-ui`). `bastion serve` mounts the Session REST surface under `/api/sessions`:
+
+| CLI verb | REST equivalent |
+|---|---|
+| `bastion sessions` | `GET /api/sessions` |
+| `bastion capture <name>` | `GET /api/sessions/{name}/pane` |
+| `bastion send <name> <cmd>` | `POST /api/sessions/{name}/send` |
+| — (named-key dispatch) | `POST /api/sessions/{name}/key` |
+| `bastion new <name>` | `POST /api/sessions` |
+| `bastion kill <name>` | `DELETE /api/sessions/{name}` |
+
+The `POST /api/sessions/{name}/key` endpoint uses `tmux send-keys` without the `-l` literal
+flag, enabling named-key dispatch (e.g. `Escape`, `Up`, `C-c`) that is not possible via the
+CLI `send` verb. All REST routes require bearer-token authentication.
+
+Full contract: [serve-api.md](serve-api.md).
+
+---
+
+*Block G (`bastion ask` — one Claude Code turn) is complete. Block F (activity indicator + Claude trust observer), Block E (TUI session dashboard), and all earlier verbs remain available for scripting. Block 11.B (Session REST surface) adds remote HTTP access over `bastion serve`.*
