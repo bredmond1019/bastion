@@ -2,10 +2,10 @@
   "spec_slug": "11.A-serve-scaffold-and-api",
   "branch": "11.A-serve-scaffold-and-api-flow",
   "started_at": "2026-06-26T18:52:24Z",
-  "updated_at": "2026-06-26T18:52:24Z",
+  "updated_at": "2026-06-26T18:58:01Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -23,6 +23,25 @@
         "Cargo.lock",
         "src/main.rs",
         "src/serve/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added Commands::Serve CLI arm, dispatch, and DB-free ServeConfig with full unit tests",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "build_serve_config is a pure function taking four Option<String> parameters (addr_flag, token_flag, addr_env, token_env) so it is fully unit-testable without I/O",
+        "MissingServeToken is a new typed ConfigError variant rather than reusing MissingVar so the error message is serve-specific",
+        "dispatch arm uses spawn_blocking + single ? to propagate both JoinError (converted) and inner serve::run errors"
+      ],
+      "files_changed": [
+        "src/cli.rs",
+        "src/config.rs",
+        "src/main.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -83,13 +102,37 @@
         "filesReadKb": null,
         "inTokEst": 584,
         "outTok": 1968
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 261,
+        "filesReadKb": null,
+        "inTokEst": 261,
+        "outTok": 1185
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 909,
+        "filesReadKb": null,
+        "inTokEst": 909,
+        "outTok": 13742
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 584,
+        "filesReadKb": null,
+        "inTokEst": 584,
+        "outTok": 1532
       }
     ],
     "total": {
-      "promptTokEst": 2773,
+      "promptTokEst": 4527,
       "filesReadKb": 0,
-      "inTokEst": 2773,
-      "outTok": 28641
+      "inTokEst": 4527,
+      "outTok": 45100
     }
   }
 }
