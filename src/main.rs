@@ -25,6 +25,10 @@ use cli::{Cli, Commands};
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Install the global tracing subscriber before any dispatch.
+    // verbose/json_logs are global flags parsed by clap before the subcommand.
+    observ::init_tracing(cli.verbose, cli.json_logs);
+
     match cli.command {
         // No subcommand or explicit `tui` → interactive session dashboard.
         // Synchronous call, consistent with the other session verbs (D5).

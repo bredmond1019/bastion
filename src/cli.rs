@@ -28,6 +28,20 @@ bastion man                               # print the roff man page to stdout\n 
 bastion man --out /tmp/man               # write bastion.1 to a directory"
 )]
 pub struct Cli {
+    /// Raise log verbosity to DEBUG level (default: INFO).
+    ///
+    /// Repeated use (-v -v) is accepted but has the same effect as a single -v;
+    /// the underlying tracing filter moves from INFO to DEBUG on first use.
+    #[arg(short = 'v', long, global = true)]
+    pub verbose: bool,
+
+    /// Emit structured JSON log lines to stderr instead of human-readable text.
+    ///
+    /// Useful for machine consumers, log aggregators, or piping bastion output
+    /// into a JSON processor (e.g. `bastion --json-logs status | jq '.'`).
+    #[arg(long, global = true)]
+    pub json_logs: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -681,5 +695,68 @@ mod tests {
         assert!(
             Cli::try_parse_from(["bastion", "code", "--def", "alpha", "--refs", "alpha"]).is_err()
         );
+    }
+
+    // ── Global --verbose / --json-logs flags ─────────────────────────────────
+
+    #[test]
+    fn verbose_short_flag_sets_true() {
+        let cli = Cli::try_parse_from(["bastion", "-v", "status"]).unwrap();
+        assert!(cli.verbose, "--v should set verbose = true");
+        assert!(!cli.json_logs, "json_logs should default to false");
+    }
+
+    #[test]
+    fn verbose_long_flag_sets_true() {
+        let cli = Cli::try_parse_from(["bastion", "--verbose", "status"]).unwrap();
+        assert!(cli.verbose, "--verbose should set verbose = true");
+    }
+
+    #[test]
+    fn json_logs_flag_sets_true() {
+        let cli = Cli::try_parse_from(["bastion", "--json-logs", "status"]).unwrap();
+        assert!(cli.json_logs, "--json-logs should set json_logs = true");
+        assert!(!cli.verbose, "verbose should default to false");
+    }
+
+    #[test]
+    fn verbose_and_json_logs_together() {
+        let cli = Cli::try_parse_from(["bastion", "--verbose", "--json-logs", "sessions"]).unwrap();
+        assert!(cli.verbose);
+        assert!(cli.json_logs);
+        assert!(matches!(cli.command, Some(Commands::Sessions)));
+    }
+
+    #[test]
+    fn global_flags_default_to_false() {
+        let cli = Cli::try_parse_from(["bastion", "status"]).unwrap();
+        assert!(!cli.verbose, "verbose should default to false");
+        assert!(!cli.json_logs, "json_logs should default to false");
+    }
+
+    #[test]
+    fn global_flags_can_precede_subcommand() {
+        // Flags before subcommand
+        let cli = Cli::try_parse_from(["bastion", "--verbose", "--json-logs", "status"]).unwrap();
+        assert!(cli.verbose);
+        assert!(cli.json_logs);
+        assert!(matches!(cli.command, Some(Commands::Status)));
+    }
+
+    #[test]
+    fn global_flags_can_follow_subcommand() {
+        // clap global flags can appear after the subcommand too
+        let cli = Cli::try_parse_from(["bastion", "status", "--verbose"]).unwrap();
+        assert!(cli.verbose);
+        assert!(!cli.json_logs);
+        assert!(matches!(cli.command, Some(Commands::Status)));
+    }
+
+    #[test]
+    fn short_v_flag_no_subcommand() {
+        // -v alone (no subcommand) should parse fine (command = None)
+        let cli = Cli::try_parse_from(["bastion", "-v"]).unwrap();
+        assert!(cli.verbose);
+        assert!(cli.command.is_none());
     }
 }

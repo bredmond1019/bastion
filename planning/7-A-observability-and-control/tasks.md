@@ -73,7 +73,27 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+### Task 1 smoke test
+The `ErrorCode`, `ConsoleError`, and `ErrorContext` types compile and all unit tests pass
+(`cargo test`). No I/O executed in tests.
+
+### Task 2 smoke test
+`init_tracing` is the thin I/O shell (process-global subscriber install). It cannot be
+called more than once per process, so unit tests for `CommandEvent` and `emit_*` helpers
+run without a subscriber installed (tracing macros are no-ops in that case — no panic, no
+output). The pure `CommandEvent` builders/serializers are exhaustively asserted in tests.
+
+### Task 3 smoke test (2026-06-26)
+- `--verbose` / `-v` and `--json-logs` flags added as `global = true` to `Cli` struct.
+- `observ::init_tracing(cli.verbose, cli.json_logs)` called at the top of `main()` before
+  any dispatch.
+- Smoke: `./target/release/bastion --json-logs validate /dev/null` — subscriber installed
+  without panic; no tracing events emitted yet (those are Task 4's job). `bastion --help`
+  shows both flags with their help text.
+- `./target/release/bastion --json-logs sessions` exits cleanly (no tmux server ≠ crash).
+- All 614 unit tests pass; `cargo fmt --check`, `cargo clippy`, `cargo build --release`
+  all clean.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
