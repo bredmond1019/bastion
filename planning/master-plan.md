@@ -38,6 +38,14 @@ below map each bastion phase to its program wave. The Brain is the named moat �
 can't trivially clone — so the Console's job here is to make it queryable, fresh, correct, observable,
 and self-healing. This track is opportunistic and ungated; pick up blocks as the need appears.
 
+A fourth track (**Phase 11**) gives the Console a **network face** — `bastion serve`, an actix-web
+HTTP+WebSocket API that projects tmux/session control, repo/workflow status, and quick-actions onto
+the Tailscale tailnet so the Flutter **`bastion-ui`** app can operate the stack from a phone. It is
+bastion's server-side slice of the separate **BastionUI** cross-repo program (brain
+`planning/bastion-ui/master-plan.md`, governed by brain **D28**, upholding **D21**/**D25**). It is
+fully independent of Phases 0–10 — additive, touching only a new `src/serve/` module — and runs in
+parallel with current work.
+
 ## Architecture / Design Overview
 
 `bastion` is an **observer, never a writer** of the Python orchestrator. It reconstructs a live run
@@ -616,6 +624,204 @@ Forward-looking — refine Files when each becomes next.
 
 ---
 
+## Phase 11 — BastionUI Console API (`bastion serve`) *(independent track; brain D28)*
+
+> **A new, fully independent track** — bastion's server-side slice of the **BastionUI** cross-repo
+> program (brain `planning/bastion-ui/master-plan.md`, governed by **D28**, upholding **D21**/**D25**).
+> It grows a *network face* on the Console: `bastion serve`, an actix-web HTTP+WebSocket API that
+> projects what the CLI already does (tmux session control, repo/workflow status, quick-actions) onto
+> the Tailscale tailnet, so the Flutter `bastion-ui` app can operate the stack from a phone. **This
+> track neither blocks nor is blocked by Phases 0–10** — it touches only a new `src/serve/` module plus
+> three additive seams (`cli.rs` arm, `main.rs` dispatch, `Cargo.toml` deps), and **runs in parallel
+> with the current Phase 7 work** (Block B — tiktoken `costs`). It reuses existing `pub` substrate:
+> `sessions::tmux`/`model` (D21), `config::load_workspace_registry`, `observ` (C0xx errors), and `ask`.
+> The load-bearing output is the **`docs/serve-api.md` contract** (D20-style: this repo produces +
+> versions it; `bastion-ui` pins it). Blocks A–F are v0.1; G–I are forward-looking (post-v1).
+>
+> **Verified source facts** (read directly, 2026-06-26): `main.rs:238` is `#[tokio::main]` (`tokio`
+> "full"); tmux fns `list_sessions_raw`/`capture_pane_raw`/`new_session`/`kill_session`/`send_keys`
+> are `pub` (`tmux.rs:187–219`), `capture-pane -p` is ANSI-stripped, `send_keys` uses `-l` and
+> **cannot** send named keys (Escape/arrows/bare-Enter); `Session`/`SessionState`/`Pane` derive only
+> `Debug, Clone` (need serde DTOs); `config::load_workspace_registry` is DB-free (`config.rs:114`);
+> `ask::wait_for_claude` is **private** (`ask.rs:240`); `actix-web`/`actix` are **not yet** in
+> `Cargo.toml`. The WS actor skeleton is harvested from `rag-engine-rs/src/services/chat/` (actix 0.13
+> / actix-web 4.9 / actix-web-actors 4.3).
+
+### Block A — `serve` scaffold + serve-api contract v0 *(verification gate)* *(prog. A)*
+- **What:** New `src/serve/` module + a `Commands::Serve { addr, token }` arm; add actix deps
+  (pinned to rag-engine-rs versions for copy-compatibility); `GET /health`; a **minimal `/ws` upgrade
+  that accepts + echoes** (so the Flutter foundation has a live socket before the real hub exists);
+  **mandatory** bearer-token middleware + tailnet bind (`BASTION_SERVE_ADDR` default `0.0.0.0:4317`,
+  `BASTION_SERVE_TOKEN`); and the first cut of `docs/serve-api.md` (v0: health, auth, `/ws`, frame
+  skeleton). **Runtime spike (the one real integration risk):** the harvested server runs under
+  `#[actix_web::main]` and `actix-web-actors` WS actors need an actix `System`/Arbiter in scope, which
+  bastion's plain `#[tokio::main]` runtime does not provide — **start from running actix on its own
+  thread** (`actix_web::rt::System::new().block_on(serve::run(...))`), treating "it just works inside
+  the existing tokio runtime" as the thing to disprove. Settle this before any endpoint work.
+- **Why:** Nothing else can be built or pinned until the server boots and the contract exists; this is
+  the foundational producer the Flutter Surface pins against.
+- **Files:**
+  - *New* `src/serve/mod.rs` (actix `HttpServer` bootstrap, routing, runtime integration), `src/serve/auth.rs` (bearer middleware + tailnet bind), `src/serve/dto.rs` (serde DTOs + frame envelope), `src/serve/ws/echo.rs` (minimal accept+echo)
+  - *Modified* `src/cli.rs` (`Commands::Serve` arm), `src/main.rs` (dispatch), `src/config.rs` (`BASTION_SERVE_ADDR`/`BASTION_SERVE_TOKEN`, DB-free path), `Cargo.toml` (`actix`, `actix-web`, `actix-web-actors`, `futures`)
+  - *New* `docs/serve-api.md` (v0)
+- **Interfaces / shared surface:** **Produces** `docs/serve-api.md` v0 — the contract every later serve
+  block and every `bastion-ui` block reads/extends. Reuses `observ` for error mapping.
+- **Out of scope:** any session/status/action endpoints (later blocks); the real WS hub (Block C); all
+  Flutter work (lives in `bastion-ui`).
+- **Acceptance criteria:** `bastion serve` boots, serves `GET /health` + a `/ws` echo over a tailnet
+  bind with mandatory bearer middleware; the runtime-spike outcome is documented; `docs/serve-api.md`
+  v0 committed; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`,
+  `cargo build --release`).
+
+### Block B — Session REST + named-key helper *(prog. D)*
+- **What:** `GET /sessions`, `GET /sessions/{n}/pane?lines=N`, `POST /sessions/{n}/send`,
+  `POST /sessions/{n}/key` (named keys), `POST /sessions`, `DELETE /sessions/{n}` — wrapping
+  `sessions::tmux`/`model` via `web::block` (the tmux fns are synchronous blocking). Add
+  `tmux::send_named_key`/`send_named_keys` (`send-keys <KeyName>`, no `-l`) with pure element-wise
+  `*_args` tests (mirrors `send_keys_args`) — closes the verified gap that `send_keys` can't send
+  Escape/bare-Enter/arrows. Map tmux degradation to clean HTTP statuses via `observ`. Extend
+  `serve-api.md` to v0.1.
+- **Why:** Session control is the first pillar (the daily-friction win); REST is the simplest correct
+  surface and the named-key helper is required for approve buttons (Esc) + menu navigation.
+- **Files:**
+  - *New* `src/serve/handlers/sessions.rs` (REST handlers), `src/serve/dto.rs` additions (`SessionDto`, `PaneDto`)
+  - *Modified* `src/sessions/tmux.rs` (add `send_named_key`/`send_named_keys` + `*_args` tests), `src/serve/mod.rs` (route wiring), `docs/serve-api.md` (→ v0.1)
+- **Interfaces / shared surface:** **Produces** the session routes in `serve-api.md` v0.1. Consumes the
+  `pub` tmux fns (D21).
+- **Out of scope:** live streaming + needs-input detection (Block C); any Flutter UI.
+- **Depends on:** Block A.
+- **Acceptance criteria:** `curl` against a live server lists sessions, reads a pane, sends keys, sends
+  `Escape`, creates and kills a session; per Rule 6 the `*_args` + DTO-serde logic is unit-tested;
+  gated checks pass.
+
+### Block C — WebSocket hub + live pane + "needs input" detection *(prog. E)*
+- **What:** Adapt the `rag-engine-rs` `ChatServer`/`ChatSession` actors into `src/serve/ws/`;
+  topic-based subscriptions (`sessions`, `pane:<name>`); background poll tasks → `watch` channels →
+  fan-out (one session-list poll ~2s; ref-counted per-session pane polls only while subscribed →
+  diff-and-push). A pure `detect.rs` heuristic flags a session blocked on a permission prompt
+  (`❯ 1. Yes`/`(y/n)`/"Do you want to proceed?") → emits `event{needs_input}`. Extend `serve-api.md` to
+  v0.2 (subscribe/unsubscribe/send/send_key + sessions/pane/event/error frames).
+- **Why:** Live pane + the needs-input event are what make the phone genuinely useful (watch + alert +
+  unblock), not just a polling viewer. **Highest-risk component:** the detect heuristic + approve-key
+  mappings are coupled to Claude Code's current TUI and will drift — keep them pure + fixture-tested so
+  a layout change is a one-fixture fix.
+- **Files:**
+  - *New* `src/serve/ws/server.rs` (hub actor, adapted from `ChatServer`), `src/serve/ws/session.rs` (per-conn actor, adapted from `ChatSession`), `src/serve/poll.rs` (poll tasks → watch → fan-out), `src/serve/status/detect.rs` (pure needs-input heuristic + fixtures)
+  - *Modified* `src/serve/dto.rs` (frame union), `src/serve/mod.rs` (`/ws` upgrade → real hub), `docs/serve-api.md` (→ v0.2)
+- **Interfaces / shared surface:** **Produces** the WebSocket frame schema in `serve-api.md` v0.2.
+- **Out of scope:** status/workflow topics (Block D); Flutter rendering.
+- **Depends on:** Block A (WS scaffold), Block B (session ops reused by send/send_key frames).
+- **Acceptance criteria:** `websocat` subscribes to a pane and receives live `pane` pushes; sending keys
+  + `Escape` over the socket lands in the session; a session on a permission prompt produces
+  `event{needs_input}`; per Rule 6 the diff/seq + detect logic is unit-tested (the actor/poll I/O shell
+  smoke-tested + recorded); gated checks pass.
+
+### Block D — Repo + workflow status reads *(prog. G)*
+- **What:** `GET /repos` (enumerate `config::load_workspace_registry` roots → name, current-focus line,
+  status-table snapshot, has-handoff flag), `GET /repos/{name}/status`, `GET /repos/{name}/handoff`
+  (raw markdown), `GET /repos/{name}/workflows` (glob `planning/*/sdlc/sdlc-flow-state.json`, parse).
+  Pure parsers for `status.md` / `handoff.md` / `sdlc-flow-state.json`; `poll.rs` watches the
+  flow-state files and emits `event{workflow_done}` on a `running→done|blocked` transition. Optional
+  `gh pr` status via process call (degrade gracefully if absent). Extend `serve-api.md` to v0.3.
+- **Why:** Answers "lots of moving parts, where are we"; read-only so lower risk; reuses the registry
+  multi-workspace Brain already maintains. Completion is detected from committed git state, not pane
+  scraping.
+- **Files:**
+  - *New* `src/serve/status/repo.rs` (pure `status.md` parser), `src/serve/status/handoff.rs` (reader), `src/serve/status/flow.rs` (pure `sdlc-flow-state.json` parser), `src/serve/handlers/status.rs` (REST handlers)
+  - *Modified* `src/serve/poll.rs` (watch flow-state files → `workflow_done`), `src/serve/dto.rs` (`RepoStatusDto`, `WorkflowStateDto`), `docs/serve-api.md` (→ v0.3)
+- **Interfaces / shared surface:** Consumes the workspace registry + each repo's `planning/` file
+  conventions. **Produces** status routes + events in `serve-api.md` v0.3.
+- **Out of scope:** Engine/orchestrator run state from Postgres (Block G); Flutter rendering.
+- **Depends on:** Block A; the topic/poll plumbing from Block C.
+- **Acceptance criteria:** `curl /repos` returns every registry repo with its focus line; a simulated
+  `sdlc-flow-state.json` transition produces a `workflow_done` event over the socket; per Rule 6 the
+  parser logic is fixture-tested; gated checks pass.
+
+### Block E — Quick-action command endpoint (inject / spawn) *(prog. I)*
+- **What:** `POST /actions/command {mode, session?, name?, dir?, model?, command}` — `mode:"inject"`
+  sends the command into a chosen session; `mode:"spawn"` creates a session, launches
+  `claude --model <opus|sonnet> --permission-mode bypassPermissions`, waits for readiness (reuse the
+  `ask` readiness mechanics — `ask::wait_for_claude` is **private**, so make it `pub(crate)` or reuse
+  the public `ask()` entry), then sends the command. Returns the target session id. Extend
+  `serve-api.md` to v0.4.
+- **Why:** Turns frequent slash-commands into one-tap remote triggers in both modes Brandon uses.
+- **Files:**
+  - *New* `src/serve/handlers/actions.rs`
+  - *Modified* `src/sessions/ask.rs` (`wait_for_claude` → `pub(crate)` if reused), `src/serve/dto.rs` (`CommandRequest`/response), `src/serve/mod.rs` (route), `docs/serve-api.md` (→ v0.4)
+- **Interfaces / shared surface:** **Produces** the actions route in `serve-api.md` v0.4. Reuses session
+  ops (Block B) + `bastion ask` spawn mechanics.
+- **Out of scope:** the command list itself (app-side config in `bastion-ui`); Engine workflow triggers
+  (Block G).
+- **Depends on:** Block B, Block C.
+- **Acceptance criteria:** an inject call lands a command in a named session; a spawn call creates a
+  session with the chosen model and returns its id; per Rule 6 the request-parse/dispatch logic is
+  unit-tested (spawn I/O smoke-tested + recorded); gated checks pass.
+
+### Block F — Auth hardening, contract freeze, docs *(prog. K)*
+- **What:** Finalize the **mandatory** bearer middleware across HTTP + `/ws` upgrade; confirm
+  tailnet-only bind; add a lightweight audit log of mutating actions (send/spawn/kill) via `observ`;
+  `bastion serve` man-page entry + README/help; route all errors through `observ`; **freeze
+  `docs/serve-api.md` at v1.0.0** and record a bastion-local serve-api decision in
+  `planning/decisions/`.
+- **Why:** A server that injects keystrokes and spawns Claude with `bypassPermissions` must be locked
+  down before daily use; freezing the contract stabilizes the Surface.
+- **Files:**
+  - *New* `planning/decisions/<Dn>-serve-api-contract.md` (bastion-local serve-api decision), man-page/README serve entry
+  - *Modified* `src/serve/auth.rs` (refuse-without-token), `src/serve/mod.rs` (audit-log hook), `docs/serve-api.md` (→ v1.0.0 frozen)
+- **Interfaces / shared surface:** **Produces** `serve-api.md` v1.0.0 (frozen) + the bastion-local
+  decision.
+- **Out of scope:** any new endpoints; Flutter polish.
+- **Depends on:** Blocks B, C, D, E.
+- **Acceptance criteria:** the server refuses to start (or rejects all requests) without a token set;
+  unauthenticated requests are rejected; mutating actions are audit-logged; man page + README updated;
+  `serve-api.md` v1.0.0 committed; gated checks pass.
+
+### Block G — Engine workflow surfaces in `serve` *(prog. N; forward-looking, post-v1)*
+- **What:** Expose orchestrator workflow trigger (existing `api::client`), run state (`db/` Postgres
+  reads), and kill (proxying the orchestrator's **Block I** abort endpoint) over `serve`, using a
+  generic "workload" DTO shared with tmux sessions. Because orchestrator D28 incremental persistence
+  already ships per-node `task_context`, this can expose **live-ish per-node progress by polling**
+  `node_runs` (not just post-hoc reads) — only push-based mid-run DAG *streaming* stays out of scope.
+  *Provisional files; firm up when next.*
+- **Why:** Brings the Engine into the same mobile gateway. Build the generic workload DTO **here, when
+  Engine control arrives** — in Blocks A–F just avoid session DTO choices that would *prevent* it.
+- **Files (provisional):** *New* `src/serve/handlers/engine.rs`; *Modified* `src/serve/dto.rs` (generic `WorkloadDto`), `src/api/` + `src/db/` reuse, `docs/serve-api.md` (later version).
+- **Interfaces / shared surface:** Consumes the orchestrator API/contract (incl. its Block I abort) +
+  Postgres; **produces** Engine-workflow routes in a later `serve-api.md` version.
+- **Out of scope:** push-based mid-run DAG streaming; Flutter UI (`bastion-ui` Phase 5).
+- **Depends on:** the orchestrator's **Block I** (abort endpoint — its Wave 2); the v1 server (Blocks A–F).
+- **Acceptance criteria:** trigger + inspect + kill of an orchestrator run work over `serve`; per-node
+  state renders; gated checks pass.
+
+### Block H — Chat backend via Claude Code SDK *(prog. P; forward-looking, post-v1)*
+- **What:** A `serve` chat endpoint/WS topic backed by the **Claude Code SDK** (already a dependency in
+  the orchestrator: `claude-agent-sdk`, `app/services/claude_code/`), reusing the harvested
+  actor-streaming pattern. Backend location (bastion vs orchestrator) firmed up when built.
+  *Provisional files.*
+- **Why:** Lets Brandon think out loud with an assistant while workflows run, without leaving the app.
+- **Files (provisional):** *New* `src/serve/ws/chat.rs`; *Modified* `src/serve/dto.rs` (chat frames), `docs/serve-api.md` (later version).
+- **Interfaces / shared surface:** Consumes the Claude Code SDK; **produces** a chat topic in a later
+  `serve-api.md` version.
+- **Out of scope:** Ollama/Anthropic-API-direct backends (rejected); the Flutter chat UI.
+- **Depends on:** the v1 WebSocket foundation (Block C).
+- **Acceptance criteria:** a chat turn streams tokens back over the socket from the Claude Code SDK;
+  gated checks pass.
+
+### Block I — FCM background push relay *(prog. R server-half; forward-looking, post-v1)*
+- **What:** A Firebase Cloud Messaging relay from the Mac Mini so `needs_input` / `workflow_done`
+  events reach the phone when the app is closed; the v1 event model was designed so this bolts on
+  without rework. *Provisional files.*
+- **Why:** True background alerts (the v1 limitation is in-app/foreground-only).
+- **Files (provisional):** *New* `src/serve/push.rs` (FCM relay + device registration); *Modified* `src/serve/poll.rs` (fan-out to relay), `docs/serve-api.md` (later version).
+- **Interfaces / shared surface:** Consumes the v1 `event{...}` model; **produces** a push relay +
+  device-registration path (the `bastion-ui` FCM client is the peer half).
+- **Out of scope:** changing in-app event semantics; pushing payloads beyond minimal metadata.
+- **Depends on:** Block C (events), and the shipped v0.1 app.
+- **Acceptance criteria:** a `needs_input` event delivers a phone notification with the app closed;
+  gated checks pass.
+
+---
+
 ## Quick Reference Sequence Table
 
 | Phase | Block | What | Why | Role in destination |
@@ -646,6 +852,15 @@ Forward-looking — refine Files when each becomes next.
 | 9 | B | Rust local-model node from the `claude-sdk-rs` spine *(prog. F, Wave 4)* | Python-free local inference for `bastion ask` (D23) | The Console gets its own offline brain |
 | 10 | A | Proactive scanner → issue backlog *(prog. M, Wave 5)* | The missing proactive front-half of self-healing | The Brain finds its own problems |
 | 10 | B | Findings → spec → draft PR via `sdlc-flow` (no auto-merge) *(prog. N½, Wave 5)* | Triggers fixes for human review; reuses the audited engine (D25) | The Brain proposes its own fixes |
+| 11 | A | `serve` scaffold + serve-api v0 (runtime spike) *(BastionUI; prog. A)* | The gateway + the contract everything pins | `bastion serve` boots; Surface has a socket |
+| 11 | B | Session REST + named-key helper *(BastionUI; prog. D)* | Session control server-side; Esc/arrows now sendable | Pillar 1 server half |
+| 11 | C | WebSocket hub + live pane + needs-input *(BastionUI; prog. E)* | Live streaming + the killer phone alert | Pillar 1 realtime |
+| 11 | D | Repo + workflow status reads *(BastionUI; prog. G)* | "Where does everything stand" over the registry | Pillar 2 server half |
+| 11 | E | Quick-action endpoint (inject / spawn) *(BastionUI; prog. I)* | One-tap slash-command triggers | Pillar 3 server half |
+| 11 | F | Auth hardening + serve-api v1.0.0 freeze + docs *(BastionUI; prog. K)* | Lock down keystroke/spawn API; stabilize contract | v0.1 contract frozen |
+| 11 | G | Engine workflow surfaces in `serve` *(BastionUI; prog. N, post-v1)* | Trigger/inspect/kill runs via the gateway (D25) | Engine control server half |
+| 11 | H | Chat backend via Claude Code SDK *(BastionUI; prog. P, post-v1)* | Think out loud while building | Chat server half |
+| 11 | I | FCM background push relay *(BastionUI; prog. R, post-v1)* | Alerts when the app is closed | Background push server half |
 
 > Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
 > Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any
@@ -659,9 +874,20 @@ Forward-looking — refine Files when each becomes next.
 > bastion half is independently shippable). This whole track is **opportunistic and ungated** — pull
 > blocks as the need appears. Within it the only hard local prerequisites are: 6B/6C build on 6A;
 > 7C builds on 7A (and is strengthened by 7B); 8A builds on 6A; 9B reuses 7A's error model;
-> 10A builds on 7A + 8A; 10B builds on 10A. Program blocks **B, J, L, O, P, R, S, G** are **not** here
-> — they execute in python-orchestration / base-template / the brain (G, the loop-proof, is coordinated
-> from bastion but builds no bastion code; its artifact lands in the brain's `docs/content/`).
+> 10A builds on 7A + 8A; 10B builds on 10A. Program blocks **B, J, L, O, P, R, S, G** (of the
+> *bastion-product* program) are **not** here — they execute in python-orchestration / base-template /
+> the brain (G, the loop-proof, is coordinated from bastion but builds no bastion code; its artifact
+> lands in the brain's `docs/content/`).
+>
+> **Phase 11 (BastionUI Console API) is a fourth, fully independent track** — bastion's server-side
+> slice of the separate **BastionUI** cross-repo program (brain `planning/bastion-ui/master-plan.md`,
+> **D28**). It neither blocks nor is blocked by Phases 0–10 and **runs in parallel with the current
+> Phase 7 work**; it touches only `src/serve/` + three additive seams (`cli.rs`, `main.rs`,
+> `Cargo.toml`). Its local order is linear (A→B→C→D/E→F; G/H/I post-v1), and each block produces a
+> `docs/serve-api.md` version the Flutter `bastion-ui` repo pins. Its block letters (A–I) and program
+> tags (`prog. A/D/E/G/I/K/N/P/R`) belong to the *BastionUI* program and are unrelated to the
+> bastion-product letters above. The peer Flutter blocks execute in the `bastion-ui` repo; later
+> Engine-kill (11G) consumes the orchestrator's existing **Block I** abort endpoint.
 
 ---
 
