@@ -2,9 +2,9 @@
   "spec_slug": "11.B-session-rest",
   "branch": "11.B-session-rest-flow",
   "started_at": "2026-06-26T20:59:47Z",
-  "updated_at": "2026-06-26T22:12:10Z",
+  "updated_at": "2026-06-26T22:15:41Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow",
-  "status": "docs",
+  "status": "done",
   "current_task": 6,
   "tasks": {
     "1": {
@@ -292,13 +292,21 @@
         "filesReadKb": null,
         "inTokEst": 546,
         "outTok": 4026
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 801,
+        "filesReadKb": null,
+        "inTokEst": 801,
+        "outTok": 5204
       }
     ],
     "total": {
-      "promptTokEst": 12638,
+      "promptTokEst": 13439,
       "filesReadKb": 0,
-      "inTokEst": 12638,
-      "outTok": 57998
+      "inTokEst": 13439,
+      "outTok": 63202
     }
   }
 }
