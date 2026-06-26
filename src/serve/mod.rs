@@ -78,32 +78,39 @@ pub fn run(addr: String, token: String) -> Result<()> {
 async fn run_server(addr: String, token: String) -> Result<()> {
     HttpServer::new(move || {
         // Protected scope — bearer auth enforced on all children.
+        //
+        // Session routes use `web::resource()` (not bare `.route()`) so that
+        // actix-web returns 405 Method Not Allowed when the path matches but
+        // the HTTP method is not registered — bare `.route()` would silently
+        // return 404 in that case.
         let protected = web::scope("/api")
             .wrap(BearerAuthMiddleware::new(token.clone()))
             // ── Session routes ──────────────────────────────────────────────
-            .route(
-                "/sessions",
-                web::get().to(handlers::sessions::list_sessions),
+            // /sessions — GET (list) + POST (create)
+            .service(
+                web::resource("/sessions")
+                    .route(web::get().to(handlers::sessions::list_sessions))
+                    .route(web::post().to(handlers::sessions::create_session)),
             )
-            .route(
-                "/sessions",
-                web::post().to(handlers::sessions::create_session),
+            // /sessions/{name}/pane — GET only
+            .service(
+                web::resource("/sessions/{name}/pane")
+                    .route(web::get().to(handlers::sessions::get_pane)),
             )
-            .route(
-                "/sessions/{name}/pane",
-                web::get().to(handlers::sessions::get_pane),
+            // /sessions/{name}/send — POST only
+            .service(
+                web::resource("/sessions/{name}/send")
+                    .route(web::post().to(handlers::sessions::send)),
             )
-            .route(
-                "/sessions/{name}/send",
-                web::post().to(handlers::sessions::send),
+            // /sessions/{name}/key — POST only
+            .service(
+                web::resource("/sessions/{name}/key")
+                    .route(web::post().to(handlers::sessions::send_key)),
             )
-            .route(
-                "/sessions/{name}/key",
-                web::post().to(handlers::sessions::send_key),
-            )
-            .route(
-                "/sessions/{name}",
-                web::delete().to(handlers::sessions::delete_session),
+            // /sessions/{name} — DELETE only
+            .service(
+                web::resource("/sessions/{name}")
+                    .route(web::delete().to(handlers::sessions::delete_session)),
             );
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
@@ -147,31 +154,30 @@ mod tests {
             InitError = (),
         >,
     > {
+        // Mirror production routing exactly (same web::resource groupings for
+        // correct 405 behaviour on wrong methods).
         let protected = web::scope("/api")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
-            .route(
-                "/sessions",
-                web::get().to(handlers::sessions::list_sessions),
+            .service(
+                web::resource("/sessions")
+                    .route(web::get().to(handlers::sessions::list_sessions))
+                    .route(web::post().to(handlers::sessions::create_session)),
             )
-            .route(
-                "/sessions",
-                web::post().to(handlers::sessions::create_session),
+            .service(
+                web::resource("/sessions/{name}/pane")
+                    .route(web::get().to(handlers::sessions::get_pane)),
             )
-            .route(
-                "/sessions/{name}/pane",
-                web::get().to(handlers::sessions::get_pane),
+            .service(
+                web::resource("/sessions/{name}/send")
+                    .route(web::post().to(handlers::sessions::send)),
             )
-            .route(
-                "/sessions/{name}/send",
-                web::post().to(handlers::sessions::send),
+            .service(
+                web::resource("/sessions/{name}/key")
+                    .route(web::post().to(handlers::sessions::send_key)),
             )
-            .route(
-                "/sessions/{name}/key",
-                web::post().to(handlers::sessions::send_key),
-            )
-            .route(
-                "/sessions/{name}",
-                web::delete().to(handlers::sessions::delete_session),
+            .service(
+                web::resource("/sessions/{name}")
+                    .route(web::delete().to(handlers::sessions::delete_session)),
             );
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
@@ -475,6 +481,30 @@ mod tests {
             resp.status(),
             401,
             "DELETE /api/sessions/work without token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    // ── session routes — method/path mapping ──────────────────────────────
+
+    #[actix_web::test]
+    async fn put_sessions_returns_405_method_not_allowed() {
+        // actix-web returns 405 when a path is registered (GET + POST on
+        // /api/sessions) but the requested method (PUT) is not.
+        // This verifies route wiring: correct paths registered, wrong method
+        // → 405 not 404.
+        // Auth check happens after method dispatch, so we include the token to
+        // ensure the 405 is from method matching, not auth rejection.
+        let app = test::init_service(build_app()).await;
+        let req = test::TestRequest::put()
+            .uri("/api/sessions")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            405,
+            "PUT /api/sessions (unregistered method) must return 405; got {}",
             resp.status()
         );
     }
