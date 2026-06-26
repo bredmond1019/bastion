@@ -42,3 +42,6 @@ Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-fl
 
 ## Wrap-up — PASS
 Next: phase11-blockC (WebSocket hub + live pane streaming)
+
+## PR
+https://github.com/bredmond1019/bastion/pull/6

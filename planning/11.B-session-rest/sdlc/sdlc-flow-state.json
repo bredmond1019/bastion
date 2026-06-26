@@ -2,7 +2,7 @@
   "spec_slug": "11.B-session-rest",
   "branch": "11.B-session-rest-flow",
   "started_at": "2026-06-26T20:59:47Z",
-  "updated_at": "2026-06-26T22:15:41Z",
+  "updated_at": "2026-06-26T22:17:43Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow",
   "status": "done",
   "current_task": 6,
@@ -112,8 +112,8 @@
   },
   "bail_reason": null,
   "pr": {
-    "url": null,
-    "number": null
+    "url": "https://github.com/bredmond1019/bastion/pull/6",
+    "number": 6
   },
   "tokens": {
     "stages": [
@@ -300,13 +300,21 @@
         "filesReadKb": null,
         "inTokEst": 801,
         "outTok": 5204
+      },
+      {
+        "label": "pr-create",
+        "model": "sonnet",
+        "promptTokEst": 728,
+        "filesReadKb": null,
+        "inTokEst": 728,
+        "outTok": 1803
       }
     ],
     "total": {
-      "promptTokEst": 13439,
+      "promptTokEst": 14167,
       "filesReadKb": 0,
-      "inTokEst": 13439,
-      "outTok": 63202
+      "inTokEst": 14167,
+      "outTok": 65005
     }
   }
 }
