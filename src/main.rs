@@ -95,9 +95,6 @@ fn classify_error(err: &anyhow::Error) -> ErrorCode {
     if msg.contains("mcp server") {
         return ErrorCode::McpError;
     }
-    if msg.contains("configuration") || msg.contains("config error") {
-        return ErrorCode::ConfigError;
-    }
     if msg.contains("io error") || msg.contains("no such file") || msg.contains("broken pipe") {
         return ErrorCode::IoError;
     }
@@ -107,6 +104,9 @@ fn classify_error(err: &anyhow::Error) -> ErrorCode {
         || msg.contains("exit status")
     {
         return ErrorCode::ProcessError;
+    }
+    if msg.contains("configuration") || msg.contains("config error") {
+        return ErrorCode::ConfigError;
     }
     if msg.contains("stream closed") {
         return ErrorCode::StreamClosed;
@@ -174,10 +174,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     timeout_secs: timeout,
                     launch_cmd,
                 };
-                sessions::ask::ask(args).map_err(|e| {
-                    eprintln!("bastion ask: {e}");
-                    anyhow::anyhow!("{e}")
-                })
+                sessions::ask::ask(args).map_err(|e| anyhow::anyhow!("{e}"))
             }
             Commands::Man { out } => man::run(out),
             // Brain is DB-free (D4) and synchronous — lives on the knowledge-graph surface.
@@ -580,6 +577,30 @@ mod tests {
     fn classify_keyword_io_error() {
         let err = anyhow::anyhow!("io error: broken pipe");
         assert_eq!(classify_error(&err), ErrorCode::IoError);
+    }
+
+    #[test]
+    fn classify_keyword_binary_not_found() {
+        let err = anyhow::anyhow!("binary not found: claude is not in PATH");
+        assert_eq!(classify_error(&err), ErrorCode::BinaryNotFound);
+    }
+
+    #[test]
+    fn classify_keyword_binary_not_found_in_path() {
+        let err = anyhow::anyhow!("not found in path: /usr/local/bin");
+        assert_eq!(classify_error(&err), ErrorCode::BinaryNotFound);
+    }
+
+    #[test]
+    fn classify_keyword_mcp_server() {
+        let err = anyhow::anyhow!("mcp server error: connection refused");
+        assert_eq!(classify_error(&err), ErrorCode::McpError);
+    }
+
+    #[test]
+    fn classify_keyword_config_error() {
+        let err = anyhow::anyhow!("invalid configuration: missing required field");
+        assert_eq!(classify_error(&err), ErrorCode::ConfigError);
     }
 
     #[test]

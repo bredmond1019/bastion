@@ -123,9 +123,7 @@ pub fn emit_outcome(command: &str, duration_ms: u64, error_code: Option<&str>) -
                 "command failed"
             );
         }
-        EventPhase::Start => {
-            // Defensive: cannot be reached via emit_outcome, but kept for exhaustiveness.
-        }
+        EventPhase::Start => unreachable!("emit_outcome cannot produce a Start phase"),
     }
     event
 }
