@@ -2,9 +2,9 @@
   "spec_slug": "11.A-serve-scaffold-and-api",
   "branch": "11.A-serve-scaffold-and-api-flow",
   "started_at": "2026-06-26T18:52:24Z",
-  "updated_at": "2026-06-26T19:28:35Z",
+  "updated_at": "2026-06-26T19:31:47Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow",
-  "status": "docs",
+  "status": "done",
   "current_task": 7,
   "tasks": {
     "1": {
@@ -369,13 +369,21 @@
         "filesReadKb": null,
         "inTokEst": 571,
         "outTok": 4108
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 848,
+        "filesReadKb": null,
+        "inTokEst": 848,
+        "outTok": 4753
       }
     ],
     "total": {
-      "promptTokEst": 16876,
+      "promptTokEst": 17724,
       "filesReadKb": 0,
-      "inTokEst": 16876,
-      "outTok": 112635
+      "inTokEst": 17724,
+      "outTok": 117388
     }
   }
 }
