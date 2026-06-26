@@ -83,7 +83,41 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+### Task 1 — Runtime-spike outcome (actix System vs. plain tokio)
+
+The integration risk going in: `actix-web-actors` WS actors need an actix `System`/`Arbiter` that
+the existing `#[tokio::main]` entry-point does not provide.
+
+Two approaches were evaluated:
+
+1. **Plain tokio await** — `HttpServer::new(...).run().await` inside a tokio-spawned future.
+   Compiles and works for the plain-HTTP `/health` surface, but when `actix-web-actors` starts
+   (Block C), the WS actor needs an `Arbiter` which is absent in a pure-tokio context. Disproven
+   as a forward-safe choice.
+
+2. **Dedicated thread + actix `System`** — `actix_web::rt::System::new().block_on(...)` on a
+   dedicated OS thread spins up the actix `System`, which provides the `Arbiter`. The inner async
+   block runs `HttpServer`, `/health`, and WS actors uniformly.
+
+**Decision: approach 2 adopted.** The `serve::run` function is synchronous and blocking; the
+tokio dispatch arm calls it via `tokio::task::spawn_blocking`. This keeps the entry-point uniform
+when WS actors land in Task 5 / Block C. The integration detail is also captured in the
+`src/serve/mod.rs` module doc comment.
+
+### Task 5 — `/ws` echo smoke test (websocat, 2026-06-26)
+
+Environment: `BASTION_SERVE_ADDR=127.0.0.1:14319 BASTION_SERVE_TOKEN=smoke-token`
+
+```
+$ echo "hello-echo" | websocat -H='Authorization: Bearer smoke-token' ws://127.0.0.1:14319/ws
+hello-echo
+```
+
+Result: frame sent, identical frame echoed back, websocat exited 0. The server also correctly
+returns `401 Unauthorized` when the `Authorization` header is absent or carries the wrong token
+(exercised by the bearer-auth unit tests). The `/ws` echo actor and auth middleware are confirmed
+working end-to-end.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
