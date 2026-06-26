@@ -14,25 +14,38 @@
 //! - Walks `.rs` files, reads them, and delegates to the pure layer.
 //! - Prints one greppable output line per result, mirroring `brain::run`.
 //!
+//! # Node ID scheme (D10)
+//! Each `BrainNode` produced by this module uses a **qualified id** of the form
+//! `{file_stem}::{kind}::{name}` (e.g. `lib::struct::Widget`, `lib::impl::Widget`).
+//! This ensures that `struct Widget` and `impl Widget` in the same file produce
+//! distinct, reachable nodes — a bare-name id would cause a petgraph index collision
+//! where the second insertion silently orphans the first node.
+//!
+//! `BrainNode.title` retains the bare symbol name for display and for bare-name
+//! CLI queries via `BrainGraph::predecessors_by_name`.
+//!
 //! # From-id rule
-//! Each `BrainEdge` produced by this module uses the **enclosing symbol's name** as
+//! Each `BrainEdge` produced by this module uses the **enclosing symbol's qualified id** as
 //! `from`. The "enclosing symbol" for a `CodeRef` at line L in file F is the last
 //! symbol in F whose definition line is <= L (the innermost scope in a simple
 //! top-down scan). Refs that precede all symbols in their file (e.g. module-level
 //! `use` statements that appear before the first function) have no enclosing symbol
 //! and are silently dropped — their `from` cannot resolve to a known symbol node.
 //!
+//! When a ref's bare name resolves to multiple qualified ids (e.g. both the struct
+//! and the impl for `Widget`), an edge is emitted for each resolved target.
+//!
 //! # Coverage note
 //! Extraction scope: **Rust (.rs) files only**. Other languages in the scan root are
 //! silently skipped by the file walker. Symbol kinds covered: Fn, Struct, Enum,
 //! Trait, Mod, Impl.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::brain::code::{CodeRef, CodeSymbol};
+use crate::brain::code::{CodeRef, CodeSymbol, SymbolKind};
 use crate::brain::graph::BrainGraph;
 use crate::brain::okf::{BrainEdge, BrainNode};
 use crate::config::FileConfig;
@@ -52,86 +65,121 @@ pub enum CodeQuery {
 
 // ── Pure layer ────────────────────────────────────────────────────────────────
 
+/// Map a `SymbolKind` to a short ASCII label used in qualified node ids.
+fn kind_str(kind: &SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Fn => "fn",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Trait => "trait",
+        SymbolKind::Mod => "mod",
+        SymbolKind::Impl => "impl",
+    }
+}
+
+/// Compute the qualified node id for a symbol: `{file_stem}::{kind}::{name}`.
+///
+/// The qualified id is unique per (file, kind, name) triple — preventing the
+/// petgraph index collision that would occur with bare-name ids when `struct Widget`
+/// and `impl Widget` coexist in the same file. See D10.
+fn qualified_id(sym: &CodeSymbol) -> String {
+    let stem = sym
+        .path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    format!("{}::{}::{}", stem, kind_str(&sym.kind), sym.name)
+}
+
 /// Build `BrainNode`/`BrainEdge` lists from extracted symbols and references.
 ///
 /// Mapping rules:
-/// - One `BrainNode` per `CodeSymbol`: `id = symbol.name`, `path = symbol.path`,
-///   `title = symbol.name`.
-/// - One `BrainEdge` per `CodeRef` that (a) has a known enclosing symbol in its
-///   file and (b) references a symbol name that exists in the known-symbol set.
+/// - One `BrainNode` per `CodeSymbol`: `id = qualified_id(sym)` (D10),
+///   `title = sym.name` (bare name, for display and bare-name lookup).
+/// - One `BrainEdge` per `(enclosing_qualified_id, to_qualified_id)` pair where
+///   the enclosing symbol is resolved via the from-id rule and `to` maps a bare
+///   ref name to one or more qualified ids in the known-symbol set.
 ///   Refs to extern/std or unknown symbols are silently dropped.
 ///
-/// **From-id rule:** the `from` id for a ref at line L in file F is the name of
-/// the last symbol defined in F at or before line L. Refs with no preceding
+/// **From-id rule:** the `from` id for a ref at line L in file F is the qualified
+/// id of the last symbol defined in F at or before line L. Refs with no preceding
 /// symbol in their file are dropped (no resolvable from-id).
 pub fn build_code_node_edge_lists(
     symbols: &[CodeSymbol],
     refs: &[CodeRef],
 ) -> (Vec<BrainNode>, Vec<BrainEdge>) {
-    // Build nodes: one per symbol.
+    // Build nodes: one per symbol with a qualified, collision-free id (D10).
+    // title keeps the bare name for display and bare-name CLI queries.
     let nodes: Vec<BrainNode> = symbols
         .iter()
         .map(|s| BrainNode {
-            id: s.name.clone(),
+            id: qualified_id(s),
             title: s.name.clone(),
             path: s.path.clone(),
         })
         .collect();
 
-    // Set of known symbol names (for fast lookup when resolving ref targets).
-    let known_ids: HashSet<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    // Build a name → [qualified_id] multimap for ref-to-node resolution.
+    // A bare name may map to multiple qualified ids (e.g. struct + impl with same name).
+    let mut name_to_ids: HashMap<&str, Vec<String>> = HashMap::new();
+    for s in symbols {
+        name_to_ids
+            .entry(s.name.as_str())
+            .or_default()
+            .push(qualified_id(s));
+    }
 
-    // Build a per-file index: path → sorted Vec<(line, name)> for fast "enclosing
-    // symbol" lookup. We sort ascending by line so we can binary-search.
-    let mut file_symbol_index: std::collections::HashMap<&Path, Vec<(usize, &str)>> =
-        std::collections::HashMap::new();
+    // Build a per-file index: path → sorted Vec<(line, qualified_id)> for fast
+    // "enclosing symbol" lookup. Sorted ascending by line for binary search.
+    let mut file_symbol_index: HashMap<&Path, Vec<(usize, String)>> = HashMap::new();
     for sym in symbols {
         file_symbol_index
             .entry(sym.path.as_path())
             .or_default()
-            .push((sym.line, sym.name.as_str()));
+            .push((sym.line, qualified_id(sym)));
     }
     for entries in file_symbol_index.values_mut() {
         entries.sort_by_key(|(line, _)| *line);
     }
 
-    // Build edges: one per ref that resolves both its enclosing symbol (from) and
-    // its target name (to). Deduplicate (from, to) pairs per the OKF convention.
+    // Build edges: one per (from_qualified_id, to_qualified_id) pair.
+    // A ref whose bare name maps to N qualified ids produces N edges.
+    // Deduplicate (from, to) pairs per the OKF convention.
     let mut seen_edges: HashSet<(String, String)> = HashSet::new();
     let mut edges: Vec<BrainEdge> = Vec::new();
 
     for r in refs {
-        // Resolve `to`: must be a known symbol name.
-        if !known_ids.contains(r.name.as_str()) {
-            continue;
-        }
+        // Resolve `to`: must be a known symbol name (one or more qualified ids).
+        let to_ids = match name_to_ids.get(r.name.as_str()) {
+            Some(ids) => ids,
+            None => continue, // ref to extern/unknown symbol — drop
+        };
 
-        // Resolve `from`: last symbol in the same file with line <= ref.line.
-        let enclosing = file_symbol_index.get(r.path.as_path()).and_then(|syms| {
-            // Find the last entry with line <= r.line.
+        // Resolve `from`: qualified id of the last symbol in the same file at or before r.line.
+        let from = match file_symbol_index.get(r.path.as_path()).and_then(|syms| {
             let pos = syms.partition_point(|(line, _)| *line <= r.line);
             if pos == 0 {
                 None // No symbol precedes this ref in its file.
             } else {
-                Some(syms[pos - 1].1)
+                Some(syms[pos - 1].1.as_str())
             }
-        });
-
-        let from = match enclosing {
-            Some(name) => name,
+        }) {
+            Some(id) => id,
             None => continue, // No enclosing symbol — drop the ref.
         };
 
-        // Avoid self-loops and duplicate edges.
-        if from == r.name.as_str() {
-            continue;
-        }
-        let key = (from.to_string(), r.name.clone());
-        if seen_edges.insert(key) {
-            edges.push(BrainEdge {
-                from: from.to_string(),
-                to: r.name.clone(),
-            });
+        // Emit one edge per resolved to-id; skip self-loops and duplicates.
+        for to_id in to_ids {
+            if from == to_id.as_str() {
+                continue; // self-loop
+            }
+            let key = (from.to_string(), to_id.clone());
+            if seen_edges.insert(key) {
+                edges.push(BrainEdge {
+                    from: from.to_string(),
+                    to: to_id.clone(),
+                });
+            }
         }
     }
 
@@ -167,9 +215,12 @@ pub fn format_ref_line(r: &CodeRef) -> String {
 
 /// Format a dependent (caller) result as a greppable output line.
 ///
-/// Format: `dependent: <id>\t<path>`
+/// Uses `node.title` (bare symbol name) rather than `node.id` (qualified id)
+/// so that output is human-readable regardless of the node id scheme.
+///
+/// Format: `dependent: <title>\t<path>`
 pub fn format_dependent_line(node: &BrainNode) -> String {
-    format!("dependent: {}\t{}", node.id, node.path.display())
+    format!("dependent: {}\t{}", node.title, node.path.display())
 }
 
 // ── File walker ───────────────────────────────────────────────────────────────
@@ -233,6 +284,8 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// a stderr warning), runs extraction and graph construction, dispatches the query,
 /// and prints a greppable report.
 ///
+/// Each file is parsed once via `extract_all` (symbols + refs in one tree-sitter pass).
+///
 /// Graceful degradation mirrors `brain::run`:
 /// - Unknown workspace name → clear error, non-zero exit.
 /// - Unreadable root → clear error, non-zero exit.
@@ -244,7 +297,7 @@ pub fn run_code(
     workspace: Option<String>,
     registry: &FileConfig,
 ) -> Result<()> {
-    use crate::brain::code::{extract_refs, extract_symbols};
+    use crate::brain::code::extract_all;
 
     // Resolve scan root (no DB, no Config::load).
     let root = crate::config::resolve_workspace_root(explicit_root, workspace.as_deref(), registry)
@@ -279,12 +332,13 @@ pub fn run_code(
         );
     }
 
-    // Extract symbols and refs from all files.
+    // Extract symbols and refs from all files — one parse per file via extract_all.
     let mut all_symbols: Vec<CodeSymbol> = Vec::new();
     let mut all_refs: Vec<CodeRef> = Vec::new();
     for (path, content) in &sources {
-        all_symbols.extend(extract_symbols(content, path));
-        all_refs.extend(extract_refs(content, path));
+        let (syms, refs) = extract_all(content, path);
+        all_symbols.extend(syms);
+        all_refs.extend(refs);
     }
 
     // Build the graph for dependents queries.
@@ -313,19 +367,13 @@ pub fn run_code(
             }
         }
         CodeQuery::Dependents(name) => {
-            match graph.predecessors(name) {
-                Ok(callers) => {
-                    if callers.is_empty() {
-                        println!("# no dependent results for '{name}'");
-                    } else {
-                        for node in &callers {
-                            println!("{}", format_dependent_line(node));
-                        }
-                    }
-                }
-                Err(_) => {
-                    // Unknown symbol in the graph.
-                    println!("# no dependent results for '{name}'");
+            // Use bare-name lookup (D10): multiple qualified nodes may share the same name.
+            let callers = graph.predecessors_by_name(name);
+            if callers.is_empty() {
+                println!("# no dependent results for '{name}'");
+            } else {
+                for node in &callers {
+                    println!("{}", format_dependent_line(node));
                 }
             }
         }
@@ -347,29 +395,26 @@ mod tests {
     //
     // Topology (symbols and edges the pure layer must produce):
     //
-    //   Nodes (one per symbol):
-    //     alpha         → lib.rs.fixture line 1
-    //     beta          → lib.rs.fixture line 3
-    //     Widget        → lib.rs.fixture line 5  (Struct)
-    //     Widget        → lib.rs.fixture line 9  (Impl)   ← duplicate name, two nodes
-    //     render        → lib.rs.fixture line 10
-    //     main_consumer → consumer.rs.fixture line 5
-    //     isolated_helper → util.rs.fixture line 1
+    //   Nodes (one per symbol, qualified ids — D10):
+    //     lib::fn::alpha         → lib.rs.fixture line 1
+    //     lib::fn::beta          → lib.rs.fixture line 3
+    //     lib::struct::Widget    → lib.rs.fixture line 5
+    //     lib::impl::Widget      → lib.rs.fixture line 9  ← distinct from struct
+    //     lib::fn::render        → lib.rs.fixture line 10
+    //     consumer::fn::main_consumer → consumer.rs.fixture line 5
+    //     util::fn::isolated_helper   → util.rs.fixture line 1
     //
-    //   Edges (enclosing-symbol rule):
-    //     consumer.rs has refs:
-    //       line 1: use alpha     → before any symbol in that file → DROPPED
-    //       line 2: use beta      → before any symbol               → DROPPED
-    //       line 3: use Widget    → before any symbol               → DROPPED
-    //       line 6: call alpha    → enclosing = main_consumer (line 5) → edge main_consumer→alpha
-    //       line 7: call beta     → enclosing = main_consumer         → edge main_consumer→beta
-    //       line 10: call render  → enclosing = main_consumer         → edge main_consumer→render
+    //   Edges (enclosing-symbol rule, qualified from/to):
+    //     consumer.rs refs:
+    //       line 1: use alpha  → before any symbol → DROPPED
+    //       line 2: use beta   → before any symbol → DROPPED
+    //       line 3: use Widget → before any symbol → DROPPED
+    //       line 6: call alpha → enclosing = consumer::fn::main_consumer → edge →lib::fn::alpha
+    //       line 7: call beta  → enclosing = consumer::fn::main_consumer → edge →lib::fn::beta
+    //       line 10: call render → enclosing = consumer::fn::main_consumer → edge →lib::fn::render
     //
     //   Result: 3 edges; use-statement refs dropped (no enclosing symbol).
-    //
     //   isolated_helper has no callers → no dependents.
-    //   Widget appears twice (Struct + Impl) — both are included as nodes; dependents
-    //   queries hit on the first match found by BrainGraph.
 
     const LIB_PATH: &str = "lib.rs";
     const CONSUMER_PATH: &str = "consumer.rs";
@@ -411,9 +456,10 @@ mod tests {
     fn nodes_include_alpha() {
         let (syms, refs) = fixture_symbols_and_refs();
         let (nodes, _) = build_code_node_edge_lists(&syms, &refs);
+        // Check by title (bare name) — id is qualified (D10)
         assert!(
-            nodes.iter().any(|n| n.id == "alpha"),
-            "node 'alpha' must exist"
+            nodes.iter().any(|n| n.title == "alpha"),
+            "node with title 'alpha' must exist"
         );
     }
 
@@ -422,8 +468,8 @@ mod tests {
         let (syms, refs) = fixture_symbols_and_refs();
         let (nodes, _) = build_code_node_edge_lists(&syms, &refs);
         assert!(
-            nodes.iter().any(|n| n.id == "main_consumer"),
-            "node 'main_consumer' must exist"
+            nodes.iter().any(|n| n.title == "main_consumer"),
+            "node with title 'main_consumer' must exist"
         );
     }
 
@@ -432,8 +478,59 @@ mod tests {
         let (syms, refs) = fixture_symbols_and_refs();
         let (nodes, _) = build_code_node_edge_lists(&syms, &refs);
         assert!(
-            nodes.iter().any(|n| n.id == "isolated_helper"),
-            "node 'isolated_helper' must exist"
+            nodes.iter().any(|n| n.title == "isolated_helper"),
+            "node with title 'isolated_helper' must exist"
+        );
+    }
+
+    // ── D10: qualified id format and collision resolution ─────────────────────
+
+    #[test]
+    fn node_ids_are_qualified() {
+        let (syms, refs) = fixture_symbols_and_refs();
+        let (nodes, _) = build_code_node_edge_lists(&syms, &refs);
+        // All node ids must follow the file_stem::kind::name pattern
+        for node in &nodes {
+            assert!(
+                node.id.contains("::"),
+                "node id must be qualified (contain '::'): got '{}'",
+                node.id
+            );
+        }
+    }
+
+    #[test]
+    fn struct_and_impl_widget_are_distinct_nodes() {
+        // D10: struct Widget and impl Widget must produce two distinct, reachable nodes.
+        let (syms, refs) = fixture_symbols_and_refs();
+        let (nodes, _) = build_code_node_edge_lists(&syms, &refs);
+        let struct_node = nodes.iter().find(|n| n.id == "lib::struct::Widget");
+        let impl_node = nodes.iter().find(|n| n.id == "lib::impl::Widget");
+        assert!(
+            struct_node.is_some(),
+            "lib::struct::Widget must be a node; nodes: {:?}",
+            nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+        );
+        assert!(
+            impl_node.is_some(),
+            "lib::impl::Widget must be a node; nodes: {:?}",
+            nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn both_widget_nodes_are_reachable_in_graph() {
+        // BrainGraph must be able to look up both qualified Widget nodes.
+        let (syms, refs) = fixture_symbols_and_refs();
+        let (nodes, edges) = build_code_node_edge_lists(&syms, &refs);
+        let g = BrainGraph::build(nodes, edges);
+        assert!(
+            g.get_node("lib::struct::Widget").is_some(),
+            "lib::struct::Widget must be reachable in the graph"
+        );
+        assert!(
+            g.get_node("lib::impl::Widget").is_some(),
+            "lib::impl::Widget must be reachable in the graph"
         );
     }
 
@@ -446,8 +543,8 @@ mod tests {
         assert!(
             edges
                 .iter()
-                .any(|e| e.from == "main_consumer" && e.to == "alpha"),
-            "expected edge main_consumer→alpha; edges: {edges:?}"
+                .any(|e| e.from == "consumer::fn::main_consumer" && e.to == "lib::fn::alpha"),
+            "expected edge consumer::fn::main_consumer→lib::fn::alpha; edges: {edges:?}"
         );
     }
 
@@ -458,8 +555,8 @@ mod tests {
         assert!(
             edges
                 .iter()
-                .any(|e| e.from == "main_consumer" && e.to == "beta"),
-            "expected edge main_consumer→beta; edges: {edges:?}"
+                .any(|e| e.from == "consumer::fn::main_consumer" && e.to == "lib::fn::beta"),
+            "expected edge consumer::fn::main_consumer→lib::fn::beta; edges: {edges:?}"
         );
     }
 
@@ -470,8 +567,8 @@ mod tests {
         assert!(
             edges
                 .iter()
-                .any(|e| e.from == "main_consumer" && e.to == "render"),
-            "expected edge main_consumer→render; edges: {edges:?}"
+                .any(|e| e.from == "consumer::fn::main_consumer" && e.to == "lib::fn::render"),
+            "expected edge consumer::fn::main_consumer→lib::fn::render; edges: {edges:?}"
         );
     }
 
@@ -481,14 +578,12 @@ mod tests {
         // They have no enclosing symbol and must be dropped.
         let (syms, refs) = fixture_symbols_and_refs();
         let (_, edges) = build_code_node_edge_lists(&syms, &refs);
-        // The only valid from-id for consumer refs is main_consumer.
-        // If any edge has from != "main_consumer" from consumer.rs, that's unexpected.
+        // The only valid from-id for consumer refs is consumer::fn::main_consumer.
         for edge in &edges {
-            if edge.from != "main_consumer" {
-                // Could be from lib.rs or util.rs symbols; should be none there.
-                // Lib has no refs, util has no refs.
-                panic!("unexpected edge from non-main_consumer: {edge:?}");
-            }
+            assert_eq!(
+                edge.from, "consumer::fn::main_consumer",
+                "unexpected edge from non-main_consumer: {edge:?}"
+            );
         }
     }
 
@@ -550,7 +645,7 @@ mod tests {
         let (_, edges) = build_code_node_edge_lists(&all_syms, &refs);
         let mc_to_alpha = edges
             .iter()
-            .filter(|e| e.from == "main_consumer" && e.to == "alpha")
+            .filter(|e| e.from == "consumer::fn::main_consumer" && e.to == "lib::fn::alpha")
             .count();
         assert_eq!(
             mc_to_alpha, 1,
@@ -602,15 +697,16 @@ mod tests {
         assert!(r.is_empty());
     }
 
-    // ── Graph-level: predecessors (direct dependents) ─────────────────────────
+    // ── Graph-level: predecessors_by_name (bare-name lookup — D10) ────────────
 
     #[test]
     fn predecessors_alpha_is_main_consumer() {
         let (syms, refs) = fixture_symbols_and_refs();
         let (nodes, edges) = build_code_node_edge_lists(&syms, &refs);
         let g = BrainGraph::build(nodes, edges);
-        let preds = g.predecessors("alpha").expect("alpha must exist in graph");
-        let ids: Vec<&str> = preds.iter().map(|n| n.id.as_str()).collect();
+        // Use bare-name lookup (D10) — qualified id is lib::fn::alpha
+        let preds = g.predecessors_by_name("alpha");
+        let ids: Vec<&str> = preds.iter().map(|n| n.title.as_str()).collect();
         assert!(
             ids.contains(&"main_consumer"),
             "main_consumer must be a direct caller of alpha; got {ids:?}"
@@ -622,11 +718,11 @@ mod tests {
         let (syms, refs) = fixture_symbols_and_refs();
         let (nodes, edges) = build_code_node_edge_lists(&syms, &refs);
         let g = BrainGraph::build(nodes, edges);
-        let preds = g.predecessors("beta").expect("beta must exist in graph");
-        let ids: Vec<&str> = preds.iter().map(|n| n.id.as_str()).collect();
+        let preds = g.predecessors_by_name("beta");
+        let ids: Vec<&str> = preds.iter().map(|n| n.title.as_str()).collect();
         assert!(
             ids.contains(&"main_consumer"),
-            "main_consumer must call beta"
+            "main_consumer must call beta; got {ids:?}"
         );
     }
 
@@ -635,14 +731,23 @@ mod tests {
         let (syms, refs) = fixture_symbols_and_refs();
         let (nodes, edges) = build_code_node_edge_lists(&syms, &refs);
         let g = BrainGraph::build(nodes, edges);
-        // isolated_helper may or may not be in the graph (it's a symbol node).
-        // If present, its predecessors must be empty.
-        if let Ok(preds) = g.predecessors("isolated_helper") {
-            assert!(
-                preds.is_empty(),
-                "isolated_helper must have no callers; got {preds:?}"
-            );
-        }
+        let preds = g.predecessors_by_name("isolated_helper");
+        assert!(
+            preds.is_empty(),
+            "isolated_helper must have no callers; got {preds:?}"
+        );
+    }
+
+    #[test]
+    fn predecessors_by_name_unknown_returns_empty() {
+        let (syms, refs) = fixture_symbols_and_refs();
+        let (nodes, edges) = build_code_node_edge_lists(&syms, &refs);
+        let g = BrainGraph::build(nodes, edges);
+        let preds = g.predecessors_by_name("completely_unknown");
+        assert!(
+            preds.is_empty(),
+            "unknown name must return empty (not an error)"
+        );
     }
 
     #[test]
@@ -650,13 +755,14 @@ mod tests {
         let (syms, refs) = fixture_symbols_and_refs();
         let (nodes, edges) = build_code_node_edge_lists(&syms, &refs);
         let g = BrainGraph::build(nodes, edges);
+        // Use qualified id for reachable_reverse (takes an exact id)
         let blast = g
-            .reachable_reverse("render")
-            .expect("render must be in graph");
-        let ids: Vec<&str> = blast.iter().map(|n| n.id.as_str()).collect();
+            .reachable_reverse("lib::fn::render")
+            .expect("lib::fn::render must be in graph");
+        let titles: Vec<&str> = blast.iter().map(|n| n.title.as_str()).collect();
         assert!(
-            ids.contains(&"main_consumer"),
-            "main_consumer is in the blast radius of render; got {ids:?}"
+            titles.contains(&"main_consumer"),
+            "main_consumer is in the blast radius of render; got {titles:?}"
         );
     }
 
@@ -689,11 +795,12 @@ mod tests {
     #[test]
     fn format_dependent_line_shape() {
         let node = BrainNode {
-            id: "main_consumer".to_string(),
+            id: "consumer::fn::main_consumer".to_string(),
             title: "main_consumer".to_string(),
             path: PathBuf::from("consumer.rs"),
         };
         let line = format_dependent_line(&node);
+        // Shows bare name (title), not qualified id
         assert_eq!(line, "dependent: main_consumer\tconsumer.rs");
     }
 
