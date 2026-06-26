@@ -13,6 +13,7 @@ mod man;
 mod monitor;
 mod observ;
 mod run;
+mod serve;
 mod sessions;
 mod validate;
 
