@@ -14,3 +14,7 @@ Validated: gating checks (fast tripwire)
 What: Wire Code subcommand CLI surface: ArgGroup requiring exactly one of --def/--refs/--dependents, --root/--workspace flags, parse tests, and DB-free dispatch to brain::code_graph::run_code
 Decisions: Task 3 (CLI wiring) was implemented in the same commit as Task 2 (6ad32ea) by the previous agent — both the Code variant in cli.rs and the dispatch arm in main.rs were added together with code_graph.rs
 Validated: gating checks (fast tripwire)
+
+## Task 4 — PASSED (1 attempt)
+What: Ran all validation commands (fmt/clippy/test/build — all pass, 577 tests) and recorded manual smoke-test of bastion code --def/--refs/--dependents against the live src/ tree in ## Notes, completing phase6-blockC Task 4.
+Validated: gating checks (fast tripwire)
