@@ -32,3 +32,7 @@ Validated: gating checks (fast tripwire)
 What: Bumped docs/serve-api.md to v0.1 with full Session REST API documentation (six routes, DTOs, named-key endpoint, degradation mapping, Amendment Log entry)
 Decisions: Inserted Session REST API as Section 6 and renumbered Configuration → 7, Versioning → 8 to keep thematic grouping (infra at the end after routes); Listed named-key accepted values as a non-exhaustive table noting any tmux-recognised key or modifier combination is accepted; Described dir field omission behavior (skip_serializing_if) explicitly to clarify client expectations for NewSessionBody
 Validated: gating checks (fast tripwire)
+
+## Task 6 — PASSED (1 attempt)
+What: Ran validation suite (cargo fmt/clippy/test/build all pass, 775 tests) and smoke-tested all six session REST endpoints plus 401 enforcement against a live bastion serve instance; recorded results in tasks.md Notes.
+Validated: gating checks (fast tripwire)
