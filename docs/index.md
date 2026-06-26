@@ -21,6 +21,7 @@ User-facing documentation for bastion. For internal strategy and progress, see `
 | [data-contract.md](data-contract.md) | Orchestrator field mappings — the execution state the monitor track reads (pinned to the orchestrator's contract) |
 | [config.md](config.md) | Configuration reference — env vars, `~/.config/bastion/config.toml` format, and precedence rules |
 | [brain.md](brain.md) | OKF knowledge-graph queries — `bastion brain`: corpus discovery, `--dependents` / `--blast-radius` / `--lineage` modes, output format, degradation paths |
+| [code.md](code.md) | Symbol-level code graph queries — `bastion code`: tree-sitter extraction, `--def` / `--refs` / `--dependents` modes, output format, degradation paths |
 
 ## Internal context (planning/)
 
