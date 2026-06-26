@@ -87,7 +87,26 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+### Task 6 — Validation smoke test (2026-06-26)
+
+**Validation commands:** all four pass on the 11.B-session-rest-flow branch.
+- `cargo fmt --check` — clean
+- `cargo clippy -- -D warnings` — no warnings
+- `cargo test` — 775 tests passed, 0 failed, 3 ignored
+- `cargo build --release` — clean build
+
+**Live smoke test against `bastion serve` on `127.0.0.1:18080` with `BASTION_SERVE_TOKEN=smoke-test-token`:**
+
+1. `GET /api/sessions` — returned `[{"name":"test-bastion","state":"idle","last_line":""}]` (HTTP 200)
+2. `GET /api/sessions/test-bastion/pane?lines=5` — returned `{"session_name":"test-bastion","lines":["~/Dev/agentic-portfolio/bastion main > ..."]}` (HTTP 200)
+3. `POST /api/sessions/test-bastion/send` with `{"keys":"echo hello from bastion"}` — HTTP 204
+4. `POST /api/sessions/test-bastion/key` with `{"key":"Escape"}` — HTTP 204
+5. `POST /api/sessions` with `{"name":"smoke-test-new"}` — HTTP 201; session visible in subsequent list
+6. `DELETE /api/sessions/smoke-test-new` — HTTP 204; session gone
+7. `GET /api/sessions` with no `Authorization` header — HTTP 401 `{"code":"unauthorized","error":"unauthorized"}`
+
+All six routes respond correctly; bearer auth enforced on every session route; 401 on missing token confirmed.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
