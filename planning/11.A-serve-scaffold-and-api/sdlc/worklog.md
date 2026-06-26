@@ -14,3 +14,8 @@ Validated: gating checks (fast tripwire)
 What: Bearer-token auth middleware wired into serve: pure token_matches() exhaustively tested, BearerAuthMiddleware enforces Authorization: Bearer on /api scope, /health stays public, 18 new tests added (693 total pass)
 Decisions: Bearer scheme matching is case-sensitive (Bearer not bearer) — matches RFC 7617 and rejects common typos; Both Transform and Service impl bounds require B: MessageBody + 'static to allow map_into_boxed_body() on the success path, unifying both branches to ServiceResponse<BoxBody>; Protected routes placed under /api scope (not top-level) so Task 5 /ws can be wired in as /api/ws or a peer scope without restructuring; Rc used (not Arc) for token and service inside the middleware since actix runs single-threaded workers
 Validated: gating checks (fast tripwire)
+
+## Task 4 — PASSED (1 attempt)
+What: Added src/serve/dto.rs with serde DTOs (HealthResponse, WsFrame, WsFrameKind, ErrorPayload) and exhaustive round-trip tests; exposed dto module from serve/mod.rs
+Decisions: WsFrame uses a flat struct with kind+payload fields (not adjacently-tagged enum) so the Flutter client can dispatch on kind before parsing payload; WsFrameKind serializes with serde rename_all = snake_case matching the serve-api contract wire format; ErrorPayload is a separate named struct (not an inline serde_json::Value) to give the error surface a typed contract from day one
+Validated: gating checks (fast tripwire)
