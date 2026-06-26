@@ -1,0 +1,49 @@
+{
+  "spec_slug": "phase6-blockC",
+  "branch": "phase6-blockC-flow",
+  "started_at": "2026-06-26T00:33:53Z",
+  "updated_at": "2026-06-26T00:33:53Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow",
+  "status": "running",
+  "current_task": 1,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Add tree-sitter extraction module: SymbolKind/CodeSymbol/CodeRef types plus extract_symbols() and extract_refs() with 24 exhaustive unit tests against three .rs.fixture files",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used tree-sitter = 0.25 with tree-sitter-rust = 0.24 (0.24/0.24 has ABI version mismatch; 0.25/0.24 is the compatible pair)",
+        "Used tree_sitter::StreamingIterator re-export instead of adding streaming-iterator as a direct dependency",
+        "Named fixtures .rs.fixture (not .rs) to keep cargo fmt from touching them — confirmed they are not formatted",
+        "Separate query per SymbolKind rather than one combined query to keep kind→capture mapping straightforward"
+      ],
+      "files_changed": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/brain/mod.rs",
+        "src/brain/code.rs",
+        "src/brain/fixtures/code/lib.rs.fixture",
+        "src/brain/fixtures/code/consumer.rs.fixture",
+        "src/brain/fixtures/code/util.rs.fixture"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": null,
+    "findings": [],
+    "attempts": 0
+  },
+  "docs": {
+    "changed": [],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  }
+}
