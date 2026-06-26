@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-26 — phase7-blockA complete: tracing + C0xx structured-error spine shipped. 653 tests pass.
-**Current focus:** Bastion-program track — **phase7-blockB** (Vendor tiktoken counter → exact `bastion costs`). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
+**Last updated:** 2026-06-26 — phase11-blockA complete: serve scaffold + serve-api v0 contract shipped (code-review fixes applied, PR #5). 723 tests pass.
+**Current focus:** Bastion-program track — **phase11-blockB** (Session REST + named-key helper; blockA shipped, blockB next). Phase 7 Block B (Vendor tiktoken counter → exact `bastion costs`) and Phase 4 Blocks B–C remain deferred.
 
 ---
 
@@ -100,6 +100,13 @@ description: Current state and progress tracker for bastion.
 |---|---|---|---|---|
 | Block A | Proactive scanner → issue backlog | M | Not started | Builds on 7A + 8A. Writes an OKF issue backlog (dedup/priority/dismiss). Forward-looking. |
 | Block B | Findings → spec → draft PR via `sdlc-flow` (no auto-merge) | N½ | Not started | Builds on 10A. D25 — bastion *triggers* `sdlc-flow`; never authors/merges the PR. Cross-repo peer: base-template findings→spec entry point. Forward-looking. |
+
+### Phase 11 — BastionUI Console API (`bastion serve`) — independent parallel track (brain D28)
+| Block | What | Status | Notes |
+|---|---|---|---|
+| Block A | `serve` scaffold + serve-api contract v0 | Done | `bastion serve` boots on tailnet addr (0.0.0.0:4317 default) with mandatory bearer auth; GET /health returns liveness; /ws accepts + echoes for Flutter foundation. Runtime spike settled: actix System runs on own thread, integrates cleanly with tokio main. Task 1–7 complete + code-review fixes (7 findings: empty token bypass, dropped continuation frames, missing /ws scope, health response, misleading ping doc, 401 body format, unnecessary String alloc); `docs/serve-api.md` v0 committed with auth policy, health contract, ws envelope skeleton. 723 tests pass. PR #5 open (code-review fixes applied 2026-06-26). |
+| Block B | Session REST + named-key helper | Not started | Wraps `sessions::tmux` via `web::block`; GET/POST endpoints for session CRUD + pane capture; `send_named_key` helper for Escape/arrows. Extends serve-api.md to v0.1. Depends on Block A. |
+| Block C | WebSocket hub + live pane streaming | Not started | Adapts `rag-engine-rs` ChatServer actors; topic subscriptions; background poll → watch channels; "needs input" detection. Forward-looking. |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
 

@@ -10,6 +10,27 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-26 — phase11-blockA complete: serve scaffold + serve-api contract v0 shipped
+
+Phase 11 Block A delivered the foundational `bastion serve` HTTP+WebSocket API across seven tasks with a PASS verdict from code review (fixes applied). Task 1 settled the runtime-spike integration risk: actix System spawns on its own thread and integrates cleanly with bastion's tokio-main runtime via `actix_web::rt::System::new().block_on(serve::run(...))` — no async coupling required, full isolation proven. Task 2 added `Commands::Serve { addr: Option<String>, token: Option<String> }` CLI arm, DB-free `load_serve_config()` reading `BASTION_SERVE_ADDR` (default 0.0.0.0:4317) and mandatory `BASTION_SERVE_TOKEN`, with config merge + missing-token error path unit-tested per Rule 6. Task 3 implemented `src/serve/auth.rs` bearer-token middleware with pure `token_matches()` logic exhaustively unit-tested (present/absent header, scheme variations, correct/wrong token). Task 4 added `src/serve/dto.rs` with `HealthResponse`, `WsFrameEnvelope`, serde round-trip unit tests. Task 5 built the minimal `/ws` accept+echo actor in `src/serve/ws/echo.rs` with pure frame helpers unit-tested, I/O shell smoke-tested via websocat and recorded. Task 6 authored `docs/serve-api.md` v0 (OKF frontmatter) documenting base URL/tailnet bind, bearer scheme + 401, GET /health, /ws upgrade behavior, frame envelope skeleton for later blocks. Task 7 ran validation (all four gating checks: fmt, clippy, 720 tests, release build). Code review (2026-06-26) found 7 confirmed findings: empty token bypass in config (missing `is_empty()` check → token required now enforced), continuation frames dropped in EchoActor (buffering restored), `/ws` scope missing from `build_app()` (route added), `health()` not using `HealthResponse::ok()` type-safe constructor (refactored), misleading ping documentation (corrected), 401 response body using integer code field instead of correct format (fixed), and unnecessary `String` allocation in auth middleware (replaced with `&str`). All seven fixes applied to PR #5 branch; `/update-docs --patch` patched `serve-api.md` (3 sections: bearer comparison claim, 401 body format, binary frame behaviour) and `config.md` (MissingServeToken variant, ServeConfig.token mandatory, build_serve_config purity). 723 tests pass. Acceptance criteria verified: `bastion serve` boots, serves `/health` + `/ws` echo with bearer auth over tailnet bind; runtime spike documented; `docs/serve-api.md` v0 committed; docs/index.md updated; gated checks green.
+
+```diff
+docs/serve-api.md                                  |  68 +++++++++++++++
+docs/config.md                                    |  12 ++-
+docs/index.md                                     |   1 +
+src/cli.rs                                        |   5 ++
+src/config.rs                                     |  38 ++++++++
+src/main.rs                                       |  11 +++
+src/serve/mod.rs                                  | 102 ++++++++++++++++++++++
+src/serve/auth.rs                                 |  45 ++++++++++
+src/serve/dto.rs                                  |  32 +++++++
+src/serve/ws/echo.rs                              |  38 +++++++++
+Cargo.toml                                        |   4 +
+planning/11.A-serve-scaffold-and-api/tasks.md     |  98 +++++++++++++++++++++
+```
+
+---
+
 ## 2026-06-26 — phase7-blockA post-merge: code-review fixes, docs patch, worktree clean
 
 A medium-effort code review with `--fix` applied five confirmed findings: removed triple-stderr bug from the `ask` dispatch arm (spurious `eprintln!` printing both to stderr and through tracing), reordered keyword heuristics in `classify_error()` to test configuration errors before tmux/process errors (was incorrectly checking in the wrong order), replaced silent `EventPhase::Start` no-op match arm with `unreachable!()` to flag dead code, removed a misplaced double-negation tautology assertion from the wrong test function, and added four missing unit tests for keyword-based error classification paths (BinaryNotFound, BinaryNotFound variant 2, McpError, ConfigError per CLAUDE.md Rule 6). `/update-docs --patch` fixed a spurious field in `docs/observ.md`'s ErrorContext struct documentation, added `observ.md` to the `docs/index.md` navigation table, and added `src/observ/` to the CLAUDE.md directory map. `/clean-worktree` fast-forward merged the phase7-blockA branch into main and removed the worktree. All 657 tests pass on HEAD. Observability spine is now productionized with confirmed testing, finalized docs, and clean integration.
