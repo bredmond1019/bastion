@@ -38,3 +38,6 @@ Findings:
 1. tasks.md ## Notes section was never populated with the runtime-spike outcome or the websocat smoke-test result, violating two explicit acceptance criteria and Rule 6 of CLAUDE.md.
 2. Runtime-spike outcome (actix System integration vs. plain tokio) is not documented in ## Notes of tasks.md — the Notes section still reads '<filled in as work happens>'. The outcome IS present in src/serve/mod.rs module doc comment, but the spec explicitly requires it in ## Notes.
 3. /ws smoke-test result (websocat connect + echo observation) is not recorded in ## Notes of tasks.md — Rule 6 and both the task-level and acceptance-criteria text require this be written up there.
+
+## Docs
+Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/docs/config.md

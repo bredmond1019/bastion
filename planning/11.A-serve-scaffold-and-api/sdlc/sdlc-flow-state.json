@@ -2,9 +2,9 @@
   "spec_slug": "11.A-serve-scaffold-and-api",
   "branch": "11.A-serve-scaffold-and-api-flow",
   "started_at": "2026-06-26T18:52:24Z",
-  "updated_at": "2026-06-26T19:24:17Z",
+  "updated_at": "2026-06-26T19:28:35Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow",
-  "status": "review",
+  "status": "docs",
   "current_task": 7,
   "tasks": {
     "1": {
@@ -129,16 +129,14 @@
     }
   },
   "review": {
-    "verdict": "PARTIAL",
-    "findings": [
-      "tasks.md ## Notes section was never populated with the runtime-spike outcome or the websocat smoke-test result, violating two explicit acceptance criteria and Rule 6 of CLAUDE.md.",
-      "Runtime-spike outcome (actix System integration vs. plain tokio) is not documented in ## Notes of tasks.md — the Notes section still reads '<filled in as work happens>'. The outcome IS present in src/serve/mod.rs module doc comment, but the spec explicitly requires it in ## Notes.",
-      "/ws smoke-test result (websocat connect + echo observation) is not recorded in ## Notes of tasks.md — Rule 6 and both the task-level and acceptance-criteria text require this be written up there."
-    ],
-    "attempts": 1
+    "verdict": "PASS",
+    "findings": [],
+    "attempts": 2
   },
   "docs": {
-    "changed": [],
+    "changed": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.A-serve-scaffold-and-api-flow/docs/config.md"
+    ],
     "created": []
   },
   "bail_reason": null,
@@ -355,13 +353,29 @@
         "filesReadKb": null,
         "inTokEst": 532,
         "outTok": 5329
+      },
+      {
+        "label": "review-2",
+        "model": "sonnet",
+        "promptTokEst": 1005,
+        "filesReadKb": null,
+        "inTokEst": 1005,
+        "outTok": 2630
+      },
+      {
+        "label": "docs",
+        "model": "sonnet",
+        "promptTokEst": 571,
+        "filesReadKb": null,
+        "inTokEst": 571,
+        "outTok": 4108
       }
     ],
     "total": {
-      "promptTokEst": 15300,
+      "promptTokEst": 16876,
       "filesReadKb": 0,
-      "inTokEst": 15300,
-      "outTok": 105897
+      "inTokEst": 16876,
+      "outTok": 112635
     }
   }
 }
