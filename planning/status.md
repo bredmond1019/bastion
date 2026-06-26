@@ -13,8 +13,8 @@ related: [context, master-plan, planning-index]
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-26 — phase11-blockA complete: serve scaffold + serve-api v0 contract shipped (code-review fixes applied, PR #5). 723 tests pass.
-**Current focus:** Bastion-program track — **phase11-blockB** (Session REST + named-key helper; blockA shipped, blockB next). Phase 7 Block B (Vendor tiktoken counter → exact `bastion costs`) and Phase 4 Blocks B–C remain deferred.
+**Last updated:** 2026-06-26 — phase11-blockB complete: Session REST + named-key helper shipped (code-review fixes applied, PR #6). 771 tests pass.
+**Current focus:** Bastion-program track — **phase11-blockC** (WebSocket hub + live pane streaming; blockB shipped, blockC next for BastionUI priority). Phase 7 Block B (Vendor tiktoken counter → exact `bastion costs`) remains deferred.
 
 ---
 
@@ -111,8 +111,8 @@ related: [context, master-plan, planning-index]
 ### Phase 11 — BastionUI Console API (`bastion serve`) — independent parallel track (brain D28)
 | Block | What | Status | Notes |
 |---|---|---|---|
-| Block A | `serve` scaffold + serve-api contract v0 | Done | `bastion serve` boots on tailnet addr (0.0.0.0:4317 default) with mandatory bearer auth; GET /health returns liveness; /ws accepts + echoes for Flutter foundation. Runtime spike settled: actix System runs on own thread, integrates cleanly with tokio main. Task 1–7 complete + code-review fixes (7 findings: empty token bypass, dropped continuation frames, missing /ws scope, health response, misleading ping doc, 401 body format, unnecessary String alloc); `docs/serve-api.md` v0 committed with auth policy, health contract, ws envelope skeleton. 723 tests pass. PR #5 open (code-review fixes applied 2026-06-26). |
-| Block B | Session REST + named-key helper | Not started | Wraps `sessions::tmux` via `web::block`; GET/POST endpoints for session CRUD + pane capture; `send_named_key` helper for Escape/arrows. Extends serve-api.md to v0.1. Depends on Block A. |
+| Block A | `serve` scaffold + serve-api contract v0 | Done | `bastion serve` boots on tailnet addr (0.0.0.0:4317 default) with mandatory bearer auth; GET /health returns liveness; /ws accepts + echoes for Flutter foundation. Runtime spike settled: actix System runs on own thread, integrates cleanly with tokio main. Task 1–7 complete + code-review fixes (7 findings: empty token bypass, dropped continuation frames, missing /ws scope, health response, misleading ping doc, 401 body format, unnecessary String alloc); `docs/serve-api.md` v0 committed with auth policy, health contract, ws envelope skeleton. 723 tests pass. PR #5 merged (code-review fixes applied 2026-06-26). |
+| Block B | Session REST + named-key helper | Done | Session REST endpoints (GET/POST for list/pane/send/key/create/delete) wrapping `sessions::tmux` via `web::block`; `send_named_key` helper for Escape/arrows/bare-Enter; pure error-status mapping (tmux/no-server → 503, unknown session → 404, other → 500). Request/response DTOs (SessionDto, PaneDto, SendBody, KeyBody, NewSessionBody) with serde round-trip tests. Bearer-auth protection inherited from /api scope. `docs/serve-api.md` bumped to v0.1 with Sessions section, named-key endpoint docs, status mapping, Amendment Log. 771 tests pass. PR #6 open (code-review fixes applied 2026-06-26). |
 | Block C | WebSocket hub + live pane streaming | Not started | Adapts `rag-engine-rs` ChatServer actors; topic subscriptions; background poll → watch channels; "needs input" detection. Forward-looking. |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
