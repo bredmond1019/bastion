@@ -32,6 +32,7 @@
 //!   [`auth::BearerAuthMiddleware`], requiring `Authorization: Bearer <token>`.
 
 pub mod auth;
+pub mod dto;
 
 use actix_web::{App, HttpResponse, HttpServer, web};
 use anyhow::Result;
