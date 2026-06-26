@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-26 — phase11-blockA complete: serve scaffold + serve-api v0 contract shipped (code-review fixes applied, PR #5). 723 tests pass.
-**Current focus:** Bastion-program track — **phase11-blockB** (Session REST + named-key helper; blockA shipped, blockB next). Phase 7 Block B (Vendor tiktoken counter → exact `bastion costs`) and Phase 4 Blocks B–C remain deferred.
+**Last updated:** 2026-06-26 — phase11-blockB complete: Session REST + named-key helper shipped; all six routes live under bearer-protected /api scope; 775 tests pass.
+**Current focus:** Bastion-program track — **phase11-blockC** (WebSocket hub + live pane streaming; blockB shipped). Phase 7 Block B (Vendor tiktoken counter → exact `bastion costs`) and Phase 4 Blocks B–C remain deferred.
 
 ---
 
@@ -105,7 +105,7 @@ description: Current state and progress tracker for bastion.
 | Block | What | Status | Notes |
 |---|---|---|---|
 | Block A | `serve` scaffold + serve-api contract v0 | Done | `bastion serve` boots on tailnet addr (0.0.0.0:4317 default) with mandatory bearer auth; GET /health returns liveness; /ws accepts + echoes for Flutter foundation. Runtime spike settled: actix System runs on own thread, integrates cleanly with tokio main. Task 1–7 complete + code-review fixes (7 findings: empty token bypass, dropped continuation frames, missing /ws scope, health response, misleading ping doc, 401 body format, unnecessary String alloc); `docs/serve-api.md` v0 committed with auth policy, health contract, ws envelope skeleton. 723 tests pass. PR #5 open (code-review fixes applied 2026-06-26). |
-| Block B | Session REST + named-key helper | Not started | Wraps `sessions::tmux` via `web::block`; GET/POST endpoints for session CRUD + pane capture; `send_named_key` helper for Escape/arrows. Extends serve-api.md to v0.1. Depends on Block A. |
+| Block B | Session REST + named-key helper | Done | `send_named_key`/`send_named_keys` helpers added to tmux.rs (no `-l`/`--`); six REST routes (list/pane/send/key/create/delete) mounted under bearer-protected `/api` scope via `web::resource()` for correct 405 behavior; `SessionDto`/`PaneDto`/request DTOs with serde round-trip tests; pure `tmux_error_to_status` helper (503/404/500); `docs/serve-api.md` bumped to v0.1 with full Session REST docs. 775 tests pass. PASS 2026-06-26. |
 | Block C | WebSocket hub + live pane streaming | Not started | Adapts `rag-engine-rs` ChatServer actors; topic subscriptions; background poll → watch channels; "needs input" detection. Forward-looking. |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->

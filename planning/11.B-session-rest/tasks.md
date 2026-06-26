@@ -2,14 +2,14 @@
 type: TaskSpec
 title: "Task Spec — Phase 11, Block B: Session REST + named-key helper"
 description: "Extend bastion serve with session REST endpoints (list/pane/send/key/create/delete) wrapping sessions::tmux via web::block, add a tmux named-key helper for Escape/arrows/bare-Enter, and bump the serve-api contract to v0.1."
-status: not-started
+status: active
 phase: 11
 block: B
 ---
 
 # Task Spec — Phase 11, Block B: Session REST + named-key helper
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-26
 
 ## Goal
 Project the existing tmux session-control surface onto `bastion serve` as a REST API — list sessions, read a pane, send keystrokes, send named keys (Escape/arrows/bare-Enter), create and delete sessions — wrapping the synchronous `sessions::tmux` functions via `web::block`, and bump `docs/serve-api.md` to v0.1.
