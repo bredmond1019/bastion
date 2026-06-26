@@ -2,10 +2,10 @@
   "spec_slug": "7-A-observability-and-control",
   "branch": "7-A-observability-and-control-flow-2",
   "started_at": "2026-06-26T14:14:02Z",
-  "updated_at": "2026-06-26T14:18:26Z",
+  "updated_at": "2026-06-26T14:23:12Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -40,6 +40,25 @@
         "Cargo.toml",
         "Cargo.lock",
         "src/observ/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added --verbose (-v) and --json-logs global clap flags to Cli and wired observ::init_tracing at the top of main() before dispatch; 8 unit tests cover all flag-parsing paths",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used bool (not ArgAction::Count) for --verbose since the spec allows either and bool is simpler; the doc comment notes repeated -v is accepted but has same effect",
+        "Marked both flags as global = true so they work before or after any subcommand in the clap argv",
+        "Recorded smoke test in tasks.md Notes: tracing subscriber installs without panic but emits no events yet (those come in Task 4)"
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/src/cli.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/src/main.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/planning/7-A-observability-and-control/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -124,13 +143,37 @@
         "filesReadKb": null,
         "inTokEst": 592,
         "outTok": 1825
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 265,
+        "filesReadKb": null,
+        "inTokEst": 265,
+        "outTok": 1047
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 920,
+        "filesReadKb": null,
+        "inTokEst": 920,
+        "outTok": 8037
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 592,
+        "filesReadKb": null,
+        "inTokEst": 592,
+        "outTok": 2168
       }
     ],
     "total": {
-      "promptTokEst": 4580,
+      "promptTokEst": 6357,
       "filesReadKb": 0,
-      "inTokEst": 4580,
-      "outTok": 29189
+      "inTokEst": 6357,
+      "outTok": 40441
     }
   }
 }
