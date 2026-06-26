@@ -95,6 +95,23 @@ output). The pure `CommandEvent` builders/serializers are exhaustively asserted 
 - All 614 unit tests pass; `cargo fmt --check`, `cargo clippy`, `cargo build --release`
   all clean.
 
+### Task 4 smoke test (2026-06-26)
+- `command_name` resolver: all 17 `Commands` variants mapped exhaustively and unit-tested
+  element-by-element.
+- `classify_error`: typed `ConsoleError` downcast (9 variants), `std::io::Error` downcast
+  (3 kinds), keyword heuristics (10 patterns), and unclassifiable fallback — all unit-tested
+  without I/O.
+- `dispatch` async fn extracted from `main`; all subcommand logic unchanged.
+- `main` now: resolves `cmd_name` (pure), emits `emit_start`, records `Instant::now()`,
+  awaits `dispatch`, computes `duration_ms`, emits `emit_outcome` (success or error with C0xx
+  code), returns result (anyhow terminates non-zero on Err).
+- Smoke (thin I/O shell — no subscriber installed in unit tests):
+  `./target/release/bastion validate /dev/null` — emits start + success events to stderr in
+  human-readable format; exits 0. Duration field is present (>= 0ms).
+  `./target/release/bastion --json-logs validate /dev/null` — emits JSON start + success events;
+  exits 0.
+- All 653 unit tests pass; `cargo fmt --check`, `cargo clippy`, `cargo build --release` all clean.
+
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
 _No amendments yet._
