@@ -22,3 +22,8 @@ Validated: gating checks (fast tripwire)
 ## Task 3 — PASSED (1 attempt)
 What: Session REST handlers with six routes (list/pane/send/key/create/delete) mounted under bearer-protected /api scope, with pure tmux_error_to_status helper mapping to 503/404/500 and full unit test coverage
 Validated: gating checks (fast tripwire)
+
+## Task 4 — PASSED (1 attempt)
+What: Wired all six session REST routes under bearer-protected /api scope using web::resource() for proper 405 behavior; added integration tests for 401 rejection, 200+JSON-array on GET /api/sessions, and 405 on unregistered method.
+Decisions: Switched from bare .route() calls to web::resource() groupings for session routes — bare .route() returns 404 for unregistered methods on registered paths, whereas web::resource() correctly returns 405 Method Not Allowed as the spec requires.
+Validated: gating checks (fast tripwire)

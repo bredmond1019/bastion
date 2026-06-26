@@ -2,10 +2,10 @@
   "spec_slug": "11.B-session-rest",
   "branch": "11.B-session-rest-flow",
   "started_at": "2026-06-26T20:59:47Z",
-  "updated_at": "2026-06-26T21:53:36Z",
+  "updated_at": "2026-06-26T21:59:17Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow",
   "status": "running",
-  "current_task": 3,
+  "current_task": 4,
   "tasks": {
     "1": {
       "status": "passed",
@@ -48,6 +48,21 @@
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/serve/handlers/mod.rs",
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/serve/handlers/sessions.rs",
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/serve/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Wired all six session REST routes under bearer-protected /api scope using web::resource() for proper 405 behavior; added integration tests for 401 rejection, 200+JSON-array on GET /api/sessions, and 405 on unregistered method.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Switched from bare .route() calls to web::resource() groupings for session routes — bare .route() returns 404 for unregistered methods on registered paths, whereas web::resource() correctly returns 405 Method Not Allowed as the spec requires."
+      ],
+      "files_changed": [
+        "src/serve/mod.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -156,13 +171,37 @@
         "filesReadKb": null,
         "inTokEst": 564,
         "outTok": 4262
+      },
+      {
+        "label": "update-task-4",
+        "model": "haiku",
+        "promptTokEst": 251,
+        "filesReadKb": null,
+        "inTokEst": 251,
+        "outTok": 1230
+      },
+      {
+        "label": "implement-4-1",
+        "model": "sonnet",
+        "promptTokEst": 874,
+        "filesReadKb": null,
+        "inTokEst": 874,
+        "outTok": 9564
+      },
+      {
+        "label": "test-4-1",
+        "model": "haiku",
+        "promptTokEst": 564,
+        "filesReadKb": null,
+        "inTokEst": 564,
+        "outTok": 4082
       }
     ],
     "total": {
-      "promptTokEst": 6056,
+      "promptTokEst": 7745,
       "filesReadKb": 0,
-      "inTokEst": 6056,
-      "outTok": 14940
+      "inTokEst": 7745,
+      "outTok": 29816
     }
   }
 }
