@@ -24,3 +24,6 @@ Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow/d
 
 ## Wrap-up — PASS
 Next: phase7-blockA — Tracing + C0xx structured-error spine
+
+## PR
+https://github.com/bredmond1019/bastion/pull/3
