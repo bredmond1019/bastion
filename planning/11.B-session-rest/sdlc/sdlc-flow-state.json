@@ -1,0 +1,320 @@
+{
+  "spec_slug": "11.B-session-rest",
+  "branch": "11.B-session-rest-flow",
+  "started_at": "2026-06-26T20:59:47Z",
+  "updated_at": "2026-06-26T22:17:43Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow",
+  "status": "done",
+  "current_task": 6,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added send_named_key_args/send_named_keys_args pure builders and send_named_key/send_named_keys execution shells to tmux.rs, enabling named-key dispatch (Escape/arrows/C-c) without -l/-- flags, with full element-wise unit tests.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "send_named_keys with empty slice is a no-op (no tmux call) — consistent with the spec's 'appending each key name as a separate argv element' and avoids sending a bare send-keys with no key args",
+        "Fixed pre-existing clippy::derivable_impls warning in echo.rs (manual Default impl → #[derive(Default)]) since clippy -D warnings is a gate check and it was blocking the build"
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/sessions/tmux.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/serve/ws/echo.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Task 2 was already implemented: added SessionDto, PaneDto, SendBody, KeyBody, NewSessionBody DTOs to src/serve/dto.rs with full serde round-trip and missing-field tests (774 tests passing)",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/serve/dto.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Session REST handlers with six routes (list/pane/send/key/create/delete) mounted under bearer-protected /api scope, with pure tmux_error_to_status helper mapping to 503/404/500 and full unit test coverage",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/serve/handlers/mod.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/serve/handlers/sessions.rs",
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/src/serve/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Wired all six session REST routes under bearer-protected /api scope using web::resource() for proper 405 behavior; added integration tests for 401 rejection, 200+JSON-array on GET /api/sessions, and 405 on unregistered method.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Switched from bare .route() calls to web::resource() groupings for session routes — bare .route() returns 404 for unregistered methods on registered paths, whereas web::resource() correctly returns 405 Method Not Allowed as the spec requires."
+      ],
+      "files_changed": [
+        "src/serve/mod.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "5": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Bumped docs/serve-api.md to v0.1 with full Session REST API documentation (six routes, DTOs, named-key endpoint, degradation mapping, Amendment Log entry)",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Inserted Session REST API as Section 6 and renumbered Configuration → 7, Versioning → 8 to keep thematic grouping (infra at the end after routes)",
+        "Listed named-key accepted values as a non-exhaustive table noting any tmux-recognised key or modifier combination is accepted",
+        "Described dir field omission behavior (skip_serializing_if) explicitly to clarify client expectations for NewSessionBody"
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/docs/serve-api.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "6": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Ran validation suite (cargo fmt/clippy/test/build all pass, 775 tests) and smoke-tested all six session REST endpoints plus 401 enforcement against a live bastion serve instance; recorded results in tasks.md Notes.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "planning/11.B-session-rest/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": "PASS",
+    "findings": [],
+    "attempts": 1
+  },
+  "docs": {
+    "changed": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/docs/index.md",
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/11.B-session-rest-flow/docs/sessions.md"
+    ],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": "https://github.com/bredmond1019/bastion/pull/6",
+    "number": 6
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 766,
+        "filesReadKb": null,
+        "inTokEst": 766,
+        "outTok": null
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 223,
+        "filesReadKb": null,
+        "inTokEst": 223,
+        "outTok": null
+      },
+      {
+        "label": "update-task-1",
+        "model": "haiku",
+        "promptTokEst": 251,
+        "filesReadKb": null,
+        "inTokEst": 251,
+        "outTok": null
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 874,
+        "filesReadKb": null,
+        "inTokEst": 874,
+        "outTok": null
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 564,
+        "filesReadKb": null,
+        "inTokEst": 564,
+        "outTok": null
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 251,
+        "filesReadKb": null,
+        "inTokEst": 251,
+        "outTok": 915
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 874,
+        "filesReadKb": null,
+        "inTokEst": 874,
+        "outTok": 2516
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 564,
+        "filesReadKb": null,
+        "inTokEst": 564,
+        "outTok": 3555
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 251,
+        "filesReadKb": null,
+        "inTokEst": 251,
+        "outTok": 1307
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 874,
+        "filesReadKb": null,
+        "inTokEst": 874,
+        "outTok": 2385
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 564,
+        "filesReadKb": null,
+        "inTokEst": 564,
+        "outTok": 4262
+      },
+      {
+        "label": "update-task-4",
+        "model": "haiku",
+        "promptTokEst": 251,
+        "filesReadKb": null,
+        "inTokEst": 251,
+        "outTok": 1230
+      },
+      {
+        "label": "implement-4-1",
+        "model": "sonnet",
+        "promptTokEst": 874,
+        "filesReadKb": null,
+        "inTokEst": 874,
+        "outTok": 9564
+      },
+      {
+        "label": "test-4-1",
+        "model": "haiku",
+        "promptTokEst": 564,
+        "filesReadKb": null,
+        "inTokEst": 564,
+        "outTok": 4082
+      },
+      {
+        "label": "update-task-5",
+        "model": "haiku",
+        "promptTokEst": 251,
+        "filesReadKb": null,
+        "inTokEst": 251,
+        "outTok": 753
+      },
+      {
+        "label": "implement-5-1",
+        "model": "sonnet",
+        "promptTokEst": 874,
+        "filesReadKb": null,
+        "inTokEst": 874,
+        "outTok": 7404
+      },
+      {
+        "label": "test-5-1",
+        "model": "haiku",
+        "promptTokEst": 564,
+        "filesReadKb": null,
+        "inTokEst": 564,
+        "outTok": 2426
+      },
+      {
+        "label": "update-task-6",
+        "model": "haiku",
+        "promptTokEst": 251,
+        "filesReadKb": null,
+        "inTokEst": 251,
+        "outTok": 1431
+      },
+      {
+        "label": "implement-6-1",
+        "model": "sonnet",
+        "promptTokEst": 874,
+        "filesReadKb": null,
+        "inTokEst": 874,
+        "outTok": 4579
+      },
+      {
+        "label": "test-6-1",
+        "model": "haiku",
+        "promptTokEst": 564,
+        "filesReadKb": null,
+        "inTokEst": 564,
+        "outTok": 4051
+      },
+      {
+        "label": "review-1",
+        "model": "sonnet",
+        "promptTokEst": 969,
+        "filesReadKb": null,
+        "inTokEst": 969,
+        "outTok": 3512
+      },
+      {
+        "label": "docs",
+        "model": "sonnet",
+        "promptTokEst": 546,
+        "filesReadKb": null,
+        "inTokEst": 546,
+        "outTok": 4026
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 801,
+        "filesReadKb": null,
+        "inTokEst": 801,
+        "outTok": 5204
+      },
+      {
+        "label": "pr-create",
+        "model": "sonnet",
+        "promptTokEst": 728,
+        "filesReadKb": null,
+        "inTokEst": 728,
+        "outTok": 1803
+      }
+    ],
+    "total": {
+      "promptTokEst": 14167,
+      "filesReadKb": 0,
+      "inTokEst": 14167,
+      "outTok": 65005
+    }
+  }
+}

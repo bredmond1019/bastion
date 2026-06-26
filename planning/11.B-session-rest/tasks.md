@@ -5,7 +5,7 @@ description: "Extend bastion serve with session REST endpoints (list/pane/send/k
 doc_id: 11-b-session-rest
 layer: [console, surface]
 project: bastion
-status: draft
+status: active
 keywords: [session REST, bastion serve, tmux, named-key, API contract, v0.1, actix-web]
 related: [serve-api, master-plan, sessions]
 phase: 11
@@ -14,7 +14,7 @@ block: B
 
 # Task Spec — Phase 11, Block B: Session REST + named-key helper
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-26
 
 ## Goal
 Project the existing tmux session-control surface onto `bastion serve` as a REST API — list sessions, read a pane, send keystrokes, send named keys (Escape/arrows/bare-Enter), create and delete sessions — wrapping the synchronous `sessions::tmux` functions via `web::block`, and bump `docs/serve-api.md` to v0.1.
@@ -92,7 +92,26 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+### Task 6 — Validation smoke test (2026-06-26)
+
+**Validation commands:** all four pass on the 11.B-session-rest-flow branch.
+- `cargo fmt --check` — clean
+- `cargo clippy -- -D warnings` — no warnings
+- `cargo test` — 775 tests passed, 0 failed, 3 ignored
+- `cargo build --release` — clean build
+
+**Live smoke test against `bastion serve` on `127.0.0.1:18080` with `BASTION_SERVE_TOKEN=smoke-test-token`:**
+
+1. `GET /api/sessions` — returned `[{"name":"test-bastion","state":"idle","last_line":""}]` (HTTP 200)
+2. `GET /api/sessions/test-bastion/pane?lines=5` — returned `{"session_name":"test-bastion","lines":["~/Dev/agentic-portfolio/bastion main > ..."]}` (HTTP 200)
+3. `POST /api/sessions/test-bastion/send` with `{"keys":"echo hello from bastion"}` — HTTP 204
+4. `POST /api/sessions/test-bastion/key` with `{"key":"Escape"}` — HTTP 204
+5. `POST /api/sessions` with `{"name":"smoke-test-new"}` — HTTP 201; session visible in subsequent list
+6. `DELETE /api/sessions/smoke-test-new` — HTTP 204; session gone
+7. `GET /api/sessions` with no `Authorization` header — HTTP 401 `{"code":"unauthorized","error":"unauthorized"}`
+
+All six routes respond correctly; bearer auth enforced on every session route; 401 on missing token confirmed.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->

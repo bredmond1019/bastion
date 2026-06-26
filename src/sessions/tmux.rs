@@ -131,6 +131,24 @@ pub fn send_enter_args(session_name: &str) -> Vec<String> {
     ]
 }
 
+/// Returns the argument list for a **named-key** send-keys invocation:
+///   tmux send-keys -t <session_name> <key>
+///
+/// Unlike `send_keys_args`, this does **not** use `-l` or `--` so that tmux
+/// resolves the key name (`Escape`, `Enter`, `Up`, `Down`, `Left`, `Right`,
+/// `C-c`, etc.) rather than sending it as literal text.
+///
+/// Use this for control keys and special keys that cannot be sent with `-l`.
+pub fn send_named_key_args(session_name: &str, key: &str) -> Vec<String> {
+    vec![
+        "tmux".to_string(),
+        "send-keys".to_string(),
+        "-t".to_string(),
+        session_name.to_string(),
+        key.to_string(),
+    ]
+}
+
 // ── Execution ─────────────────────────────────────────────────────────────────
 
 /// Errors produced by this module.
@@ -223,6 +241,17 @@ pub fn send_keys(session_name: &str, keys: &str) -> Result<()> {
     let enter_args = send_enter_args(session_name);
     run_tmux(&enter_args).context("send-keys (Enter) failed")?;
 
+    Ok(())
+}
+
+/// Send a single named key (e.g. `Escape`, `Enter`, `Up`, `C-c`) to
+/// `session_name`.
+///
+/// Unlike `send_keys`, this does **not** use `-l` so tmux resolves the key
+/// name.  An unknown session surfaces as `TmuxError::ExitError`.
+pub fn send_named_key(session_name: &str, key: &str) -> Result<()> {
+    let args = send_named_key_args(session_name, key);
+    run_tmux(&args).context("send-keys (named key) failed")?;
     Ok(())
 }
 
@@ -402,6 +431,58 @@ mod tests {
             !args.contains(&"-l".to_string()),
             "-l must not appear in enter args"
         );
+    }
+
+    // ── send_named_key_args ────────────────────────────────────────────────────
+
+    #[test]
+    fn send_named_key_args_single_key() {
+        let args = send_named_key_args("work", "Escape");
+        assert_eq!(args[0], "tmux");
+        assert_eq!(args[1], "send-keys");
+        assert_eq!(args[2], "-t");
+        assert_eq!(args[3], "work");
+        assert_eq!(args[4], "Escape");
+        assert_eq!(args.len(), 5);
+    }
+
+    #[test]
+    fn send_named_key_args_no_literal_flag() {
+        // -l must NOT be present — named-key lookup must remain active.
+        let args = send_named_key_args("work", "Enter");
+        assert!(
+            !args.contains(&"-l".to_string()),
+            "-l must not appear in named-key args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn send_named_key_args_no_double_dash() {
+        // -- must NOT be present — it would prevent tmux from resolving the key name.
+        let args = send_named_key_args("work", "Up");
+        assert!(
+            !args.contains(&"--".to_string()),
+            "-- must not appear in named-key args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn send_named_key_args_arrow_keys() {
+        for key in ["Up", "Down", "Left", "Right"] {
+            let args = send_named_key_args("sess", key);
+            assert_eq!(args[4], key, "key element mismatch for {key}");
+            assert_eq!(args.len(), 5);
+        }
+    }
+
+    #[test]
+    fn send_named_key_args_modifier_key() {
+        // Hyphen-style modifiers like C-c must be passed through as-is.
+        let args = send_named_key_args("sess", "C-c");
+        assert_eq!(args[4], "C-c");
+        assert_eq!(args.len(), 5);
+        assert!(!args.contains(&"-l".to_string()));
+        assert!(!args.contains(&"--".to_string()));
     }
 
     // ── stderr classification (#2) ──────────────────────────────────────────────
