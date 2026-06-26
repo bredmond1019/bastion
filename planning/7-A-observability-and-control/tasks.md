@@ -10,7 +10,7 @@ keywords: [tracing, error-taxonomy, observability, C0xx, structured-logging]
 
 # Task Spec — Phase 7, Block A
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-26 (PASS — all 5 tasks, 653 tests)
 
 ## Goal
 Introduce `tracing` (spans + structured fields) across bastion and vendor the `claude-sdk-rs` `C001–C014` error taxonomy as the Console's error model, so every command emits a structured start/outcome/duration event and errors carry a `C0xx` code + context.

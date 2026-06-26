@@ -10,6 +10,23 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-26 — phase7-blockA complete: tracing + C0xx structured-error spine shipped
+
+Phase 7 Block A delivered the observability and structured-error spine across five tasks with a PASS verdict on the first review attempt. Task 1 vendored the C001–C014 error taxonomy from `claude-sdk-rs` as a fully self-contained `src/observ/errors.rs` module (`ErrorCode`, `ConsoleError`, `ErrorContext` with `[Cxxx]`-prefixed Display), declared the `observ` module, and wired it into `main.rs` — 9 exhaustive unit tests covering every error code and context formatting path. Task 2 added `tracing` + `tracing-subscriber` to `Cargo.toml`, implemented a pure `CommandEvent` record builder with `start`/`success`/`error`/`to_json` constructors, `emit_start`/`emit_outcome` thin tracing macro shells, and an `init_tracing` subscriber installer — all pure logic exhaustively tested (606 tests pass). Task 3 added `--verbose (-v)` and `--json-logs` global clap flags to `Cli` and wired `observ::init_tracing` at the top of `main()` before dispatch; 8 unit tests cover all flag-parsing paths, with smoke-test recorded in `tasks.md §Notes`. Task 4 instrumented every dispatch arm: `dispatch()` was extracted as an async fn, every subcommand now emits start/outcome/duration events, and top-level errors are mapped to C0xx codes via `classify_error()` (typed `ConsoleError` downcast → `std::io::Error` downcast → keyword heuristics → `C006` default). Task 5 was a validation pass confirming all four gating checks (fmt/clippy/653 tests/release build) pass with acceptance criteria confirmed. Key design decisions: `ConsoleError` uses `String` fields to stay self-contained and I/O-free; `init_tracing` is the sole thin I/O shell (global subscriber install); `--verbose` uses `bool` (not `ArgAction::Count`) since the spec permits either and it is simpler; `dispatch()` extraction makes the wrapper a single clean location. Next: phase7-blockB (vendor tiktoken counter for exact `bastion costs`).
+
+```
+4dce3a4 chore: flow state — docs
+2716051 docs: update docs for 7-A-observability-and-control
+dcced38 chore: flow state — task 5 passed
+b09ac4f feat: implement 7-A-observability-and-control-task5
+5a1f728 chore: flow state — task 4 passed
+fd25186 feat: implement 7-A-observability-and-control-task4
+3e2a40b chore: flow state — task 3 passed
+8b275bf feat: add --verbose/--json-logs global flags + wire init_tracing (7-A task 3)
+```
+
+---
+
 ## 2026-06-25 — phase6-blockC complete: structural code-as-graph navigation shipped
 
 Phase 6 Block C delivered `bastion code` — a deterministic, LLM-free, tree-sitter-backed code-as-graph surface — across four tasks with a PASS verdict on the first review attempt. Task 1 added `tree-sitter` + `tree-sitter-rust` to `Cargo.toml` (resolving an ABI version mismatch: 0.25/0.24 is the compatible pair), created a multi-file `.rs.fixture` corpus under `src/brain/fixtures/code/` (renamed to avoid `cargo fmt` interference), and implemented `src/brain/code.rs` with pure `extract_symbols`/`extract_refs` functions backed by per-kind tree-sitter queries — 24 exhaustive unit tests against three fixture files, including a partial-parse boundary case. Task 2 added `src/brain/code_graph.rs` with a pure `build_code_node_edge_lists` function (mapping symbols → `BrainNode`, resolved refs → `BrainEdge`, deduplicating edges via HashSet, dropping unresolved/extern refs silently), `find_definition`/`find_references` query helpers, and a thin `run_code` I/O shell reusing `config::resolve_workspace_root` and a local `find_rust_files` walker (skips hidden dirs and `target/`, sorted). Task 3's CLI wiring (`Commands::Code` ArgGroup in `src/cli.rs`, dispatch arm in `src/main.rs`) was implemented in the same commit as Task 2 by the implementing agent. Task 4 was a pure validation pass confirming all four gating checks pass (cargo fmt, clippy, 577 tests, release build) with a manual smoke test of `--def`/`--refs`/`--dependents` against the live `src/` tree recorded in `## Notes`. Key design decisions: `BrainNode.id` = symbol name (not file stem) so BrainGraph edges between symbols resolve correctly; from-id uses a binary-search partition to find the enclosing symbol (refs before any symbol in a file are silently dropped); tree-sitter `StreamingIterator` re-exported from the `tree-sitter` crate (no additional dep). Next: phase7-blockA (Tracing + `C0xx` structured-error spine).

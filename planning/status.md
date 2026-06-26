@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-26 — phase6-blockC fully merged: all 4 code-review deferred fixes applied (qualified IDs D10, grouped use imports, OnceLock hoisting, single parse). 588 tests pass.
-**Current focus:** Bastion-program track — **phase7-blockA** (Tracing + `C0xx` structured-error spine). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
+**Last updated:** 2026-06-26 — phase7-blockA complete: tracing + C0xx structured-error spine shipped. 653 tests pass.
+**Current focus:** Bastion-program track — **phase7-blockB** (Vendor tiktoken counter → exact `bastion costs`). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
 
 ---
 
@@ -80,7 +80,7 @@ description: Current state and progress tracker for bastion.
 #### Phase 7 — Observability & control (Wave 2)
 | Block | What | Prog. | Status | Notes |
 |---|---|---|---|---|
-| Block A | Tracing + `C0xx` structured-error spine | H | Not started | Foundational for the track. Vendors the `claude-sdk-rs` error taxonomy once (`src/observ/errors.rs`). |
+| Block A | Tracing + `C0xx` structured-error spine | H | Done | C0xx error taxonomy vendored in `src/observ/errors.rs`; `CommandEvent` builder + `emit_start`/`emit_outcome` tracing shells; `--verbose`/`--json-logs` global clap flags; dispatch wrapped in start/outcome/duration event emission with `classify_error()`. 653 tests pass. PASS 2026-06-26. |
 | Block B | Vendor tiktoken counter → exact `bastion costs` | D | Not started | Swaps the Phase 2 Block B estimation core for exact counts. No deps. |
 | Block C | Cost as a budgeted resource: `--watch`, alerts, `bastion kill`, gate | I½ | Not started | Builds on 7A (7B strengthens). D25 — kill *triggers* an orchestrator abort endpoint; D20 contract bump. |
 
