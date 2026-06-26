@@ -48,6 +48,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Man { .. } => "man",
         Commands::Brain { .. } => "brain",
         Commands::Code { .. } => "code",
+        Commands::Serve { .. } => "serve",
     }
 }
 
@@ -204,6 +205,15 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     std::env::var("HOME").ok(),
                 )?;
                 brain::run(query, root, workspace, &registry)
+            }
+            // Serve is DB-free — does NOT call Config::load() or require DATABASE_URL.
+            // The actix System runs on a dedicated OS thread (runtime-spike outcome, Task 1).
+            Commands::Serve { addr, token } => {
+                let serve_cfg =
+                    config::load_serve_config(addr, token).map_err(|e| anyhow::anyhow!("{e}"))?;
+                tokio::task::spawn_blocking(move || serve::run(serve_cfg.addr, serve_cfg.token))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("serve thread panicked: {e}"))?
             }
             // Code is DB-free and synchronous — lives on the knowledge-graph surface.
             // Resolves the scan root from the workspace registry (no DATABASE_URL required).
@@ -427,6 +437,17 @@ mod tests {
                 workspace: None,
             }),
             "brain"
+        );
+    }
+
+    #[test]
+    fn command_name_serve() {
+        assert_eq!(
+            command_name(&Commands::Serve {
+                addr: None,
+                token: None,
+            }),
+            "serve"
         );
     }
 
