@@ -10,6 +10,20 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-25 — phase6-blockB code-review: 6 findings fixed
+
+Phase 6 Block B underwent code review after completion, yielding six findings that were addressed and recorded in the worktree. Fixes applied: MalformedFile error propagation (correctly threaded through config deserialization), double-print elimination (removed redundant error output in workspace resolution), NoWorkspaceRegistry error variant (new typed error for missing config registry table), empty-corpus hint (added advisory message when querying over zero nodes), Config::load deduplication (consolidated builder path to avoid redundant construction), and Rule 6 smoke test completeness (recorded DB-free invocation proofs + portable-fixture usage in tasks.md § Notes). All findings incorporated without architectural rework. Code-review fixes are uncommitted in worktree trees/phase6-blockB-flow/, ready to merge. 519 tests pass (against a 522-test baseline from Block A; Block B reduces test count due to fixture consolidation). All four gating checks pass: cargo fmt, clippy, test, build --release.
+
+```diff
+ planning/phase6-blockB/tasks.md | 21 ++++++++++++++++++++
+ src/brain/mod.rs                |  7 ++-----
+ src/config.rs                   | 44 ++++++++++++++++++++++++++++++-----------
+ src/main.rs                     |  7 +++----
+ 4 files changed, 58 insertions(+), 21 deletions(-)
+```
+
+---
+
 ## 2026-06-25 — phase6-blockA code-review fixes merged to main
 
 Phase 6 Block A went through code review post-implementation, yielding 7 findings that were addressed and merged to main. Fixes applied: doc_id-based node id resolution (edge targets keyed by correct identifier), duplicate edge deduplication (removing redundant `[[link]]` references), double-parse eliminated (consolidated YAML frontmatter parsing), HashSet<&str> borrow handling (proper lifetime management in graph construction), double error reporting fixed (removed redundant error wrapping layers), query.rs deleted (consolidated query logic into brain/mod.rs for simpler exports), and parse_frontmatter reuse (deduplicated across okf.rs and validate.rs). All findings incorporated without architectural rework; 522 tests pass; commit 0eff723 merged to main. Next: phase6-blockB (Multi-workspace Brain — graph reader over per-repo/per-client roots).

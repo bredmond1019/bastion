@@ -6,7 +6,7 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-25 — phase6-blockA complete: `bastion brain` subcommand shipped with petgraph-backed BrainGraph, structural OKF query layer (dependents/blast-radius/lineage), and full CLI wiring. 522 tests pass. PASS verdict.
+**Last updated:** 2026-06-25 — phase6-blockB code-review: 6 findings fixed (MalformedFile propagation, double-print, NoWorkspaceRegistry error variant, empty-corpus hint, Config::load dedup, Rule 6 smoke test). Fixes uncommitted in worktree trees/phase6-blockB-flow/, ready to merge. 519 tests pass.
 **Current focus:** Bastion-program track — **phase6-blockB** (Multi-workspace Brain — graph reader over per-repo/per-client roots). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
 
 ---
@@ -74,7 +74,7 @@ description: Current state and progress tracker for bastion.
 | Block | What | Prog. | Status | Notes |
 |---|---|---|---|---|
 | Block A | Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph | A | Done | petgraph-backed BrainGraph + structural query layer (dependents/blast-radius/lineage) + `bastion brain` CLI wired. 522 tests pass. PASS 2026-06-25. |
-| Block B | Multi-workspace Brain — graph reader over per-repo/per-client roots | C½ | Not started | Builds on 6A. Cross-repo peer: program Block B/C (orchestrator semantic + multi-workspace). |
+| Block B | Multi-workspace Brain — graph reader over per-repo/per-client roots | C½ | In progress | Code-review complete: 6 findings fixed; fixes uncommitted in worktree, ready to merge. Builds on 6A. Cross-repo peer: program Block B/C (orchestrator semantic + multi-workspace). |
 | Block C | Structural code navigation (code-as-graph) | Q | Not started | Builds on 6A. Structural twin of semantic code search (program Block P, Engine). |
 
 #### Phase 7 — Observability & control (Wave 2)
