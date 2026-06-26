@@ -145,16 +145,13 @@ pub async fn get_pane(name: web::Path<String>, query: web::Query<PaneQuery>) -> 
 
     let result = web::block({
         let sname = session_name.clone();
-        move || {
-            let raw = capture_pane_raw(&sname)?;
-            Ok::<(String, String), anyhow::Error>((sname, raw))
-        }
+        move || capture_pane_raw(&sname)
     })
     .await;
 
     match result {
-        Ok(Ok((sname, raw))) => {
-            let pane = Pane::new(sname, raw);
+        Ok(Ok(raw)) => {
+            let pane = Pane::new(session_name, raw);
             HttpResponse::Ok().json(PaneDto::from_pane(&pane, n))
         }
         Ok(Err(err)) => {

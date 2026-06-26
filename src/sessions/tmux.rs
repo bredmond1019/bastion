@@ -149,26 +149,6 @@ pub fn send_named_key_args(session_name: &str, key: &str) -> Vec<String> {
     ]
 }
 
-/// Returns the argument list for sending a **sequence** of named keys in one
-/// `send-keys` call:
-///   tmux send-keys -t <session_name> <key1> <key2> ...
-///
-/// Each key name is appended as a separate argv element so tmux treats every
-/// element as an independent key stroke to dispatch in order.  No `-l`/`--` is
-/// used so that key-name lookup is active for every element.
-pub fn send_named_keys_args(session_name: &str, keys: &[String]) -> Vec<String> {
-    let mut args = vec![
-        "tmux".to_string(),
-        "send-keys".to_string(),
-        "-t".to_string(),
-        session_name.to_string(),
-    ];
-    for k in keys {
-        args.push(k.clone());
-    }
-    args
-}
-
 // ── Execution ─────────────────────────────────────────────────────────────────
 
 /// Errors produced by this module.
@@ -272,20 +252,6 @@ pub fn send_keys(session_name: &str, keys: &str) -> Result<()> {
 pub fn send_named_key(session_name: &str, key: &str) -> Result<()> {
     let args = send_named_key_args(session_name, key);
     run_tmux(&args).context("send-keys (named key) failed")?;
-    Ok(())
-}
-
-/// Send a sequence of named keys to `session_name` in a single tmux call.
-///
-/// Each element of `keys` is treated as an independent tmux key name.  An
-/// empty slice is a no-op (no tmux call is made).  An unknown session surfaces
-/// as `TmuxError::ExitError`.
-pub fn send_named_keys(session_name: &str, keys: &[String]) -> Result<()> {
-    if keys.is_empty() {
-        return Ok(());
-    }
-    let args = send_named_keys_args(session_name, keys);
-    run_tmux(&args).context("send-keys (named keys sequence) failed")?;
     Ok(())
 }
 
@@ -467,7 +433,7 @@ mod tests {
         );
     }
 
-    // ── send_named_key_args / send_named_keys_args ─────────────────────────────
+    // ── send_named_key_args ────────────────────────────────────────────────────
 
     #[test]
     fn send_named_key_args_single_key() {
@@ -517,53 +483,6 @@ mod tests {
         assert_eq!(args.len(), 5);
         assert!(!args.contains(&"-l".to_string()));
         assert!(!args.contains(&"--".to_string()));
-    }
-
-    #[test]
-    fn send_named_keys_args_multi_key_sequence() {
-        let keys: Vec<String> = vec!["Escape".to_string(), "Up".to_string(), "Enter".to_string()];
-        let args = send_named_keys_args("sess", &keys);
-        assert_eq!(args[0], "tmux");
-        assert_eq!(args[1], "send-keys");
-        assert_eq!(args[2], "-t");
-        assert_eq!(args[3], "sess");
-        assert_eq!(args[4], "Escape");
-        assert_eq!(args[5], "Up");
-        assert_eq!(args[6], "Enter");
-        assert_eq!(args.len(), 7);
-    }
-
-    #[test]
-    fn send_named_keys_args_no_literal_flag() {
-        let keys: Vec<String> = vec!["C-c".to_string(), "Enter".to_string()];
-        let args = send_named_keys_args("sess", &keys);
-        assert!(
-            !args.contains(&"-l".to_string()),
-            "-l must not appear in named-keys args: {args:?}"
-        );
-        assert!(
-            !args.contains(&"--".to_string()),
-            "-- must not appear in named-keys args: {args:?}"
-        );
-    }
-
-    #[test]
-    fn send_named_keys_args_single_element() {
-        let keys: Vec<String> = vec!["Escape".to_string()];
-        let args = send_named_keys_args("work", &keys);
-        assert_eq!(args[4], "Escape");
-        assert_eq!(args.len(), 5);
-    }
-
-    #[test]
-    fn send_named_keys_args_empty_yields_base_only() {
-        // Empty keys slice → only tmux send-keys -t <name>, no key elements appended.
-        let args = send_named_keys_args("work", &[]);
-        assert_eq!(args.len(), 4);
-        assert_eq!(args[0], "tmux");
-        assert_eq!(args[1], "send-keys");
-        assert_eq!(args[2], "-t");
-        assert_eq!(args[3], "work");
     }
 
     // ── stderr classification (#2) ──────────────────────────────────────────────
