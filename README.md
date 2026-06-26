@@ -2,6 +2,12 @@
 type: Index
 title: bastion
 description: Personal Rust CLI — unified control panel for monitoring, validating, and operating the agentic engineering stack.
+doc_id: bastion
+layer: [console]
+project: bastion
+status: active
+keywords: [bastion, CLI, monitor, sessions, tmux, TUI, workflow observability]
+related: [docs-index, context, status, master-plan]
 ---
 
 # bastion

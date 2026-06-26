@@ -1,7 +1,13 @@
 ---
 type: Reference
 title: brain — OKF Knowledge Graph Queries
-description: Reference for `bastion brain`: OKF corpus discovery, graph construction, structural query modes (--dependents / --blast-radius / --lineage), output format, and degradation paths.
+description: "Reference for `bastion brain`: OKF corpus discovery, graph construction, structural query modes (--dependents / --blast-radius / --lineage), output format, and degradation paths."
+doc_id: brain
+layer: [console, brain]
+project: bastion
+status: active
+keywords: [OKF graph, structural queries, dependents, blast-radius, lineage, knowledge graph]
+related: [validate, code, config]
 ---
 
 # brain — OKF Knowledge Graph Queries

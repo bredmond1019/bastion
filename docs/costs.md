@@ -2,6 +2,12 @@
 type: Reference
 title: LLM Spend Summary Surface
 description: Operator reference for `bastion costs --last <window>` — formatted table of per-workflow LLM token usage and estimated USD cost.
+doc_id: costs
+layer: [console]
+project: bastion
+status: active
+keywords: [LLM costs, token usage, spend summary, pricing, cost estimation]
+related: [monitor, inspect, data-contract]
 ---
 
 # LLM Spend Summary

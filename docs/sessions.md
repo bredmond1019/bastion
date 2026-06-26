@@ -2,6 +2,12 @@
 type: Reference
 title: Session Control Surface
 description: Verb reference and operator workflow for bastion's tmux session-control commands (sessions / attach / new / kill / send / capture).
+doc_id: sessions
+layer: [console]
+project: bastion
+status: active
+keywords: [tmux, session control, attach, send, capture, ask, TUI dashboard]
+related: [claude-code-workflow, monitor, serve-api]
 ---
 
 # Session Control

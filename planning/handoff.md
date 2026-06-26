@@ -1,5 +1,13 @@
 ---
 type: Handoff
+title: Handoff — Phase 11 Block A complete, PR #5 ready
+description: Session handoff note after Phase 11 Block A (bastion serve scaffold + serve-api v0) ships on PR #5; queues Block B and Phase 7 Block B.
+doc_id: handoff
+layer: [console]
+project: bastion
+status: active
+keywords: [handoff, phase 11, serve scaffold, bastion-ui, PR, next agent]
+related: [serve-api, status, master-plan]
 created: 2026-06-26
 ---
 

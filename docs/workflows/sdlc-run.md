@@ -2,6 +2,12 @@
 type: Reference
 title: /sdlc-run — sequential SDLC pipeline
 description: The sequential engine that drives one task or a full spec from the current stage to completion on the current branch.
+doc_id: sdlc-run
+layer: [console, factory]
+project: bastion
+status: active
+keywords: [sdlc-run, sequential pipeline, implement, test, review, document, wrap-up]
+related: [workflows-index, sdlc-flow, sdlc-task, commands]
 ---
 
 # `/sdlc-run` — sequential SDLC pipeline

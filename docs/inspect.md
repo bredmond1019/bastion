@@ -2,6 +2,12 @@
 type: Reference
 title: Static Inspect Surface
 description: Operator reference for `bastion inspect <run-id>` — the static post-mortem TUI graph view of a completed (or in-progress snapshot) workflow run.
+doc_id: inspect
+layer: [console]
+project: bastion
+status: active
+keywords: [inspect, post-mortem, TUI graph, workflow run, static view, ratatui]
+related: [monitor, data-contract, sessions]
 ---
 
 # Static Inspect

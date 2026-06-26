@@ -2,6 +2,12 @@
 type: LocalContext
 title: bastion Project Context
 description: Core context, governing principles, and documentation router for bastion.
+doc_id: context
+layer: [console]
+project: bastion
+status: active
+keywords: [project context, governing principles, orientation, Rust CLI, agentic stack]
+related: [status, master-plan, planning-index]
 ---
 
 # CONTEXT — bastion

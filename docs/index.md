@@ -2,6 +2,12 @@
 type: Index
 title: docs Router
 description: Navigation index for bastion's user-facing documentation.
+doc_id: docs-index
+layer: [console]
+project: bastion
+status: active
+keywords: [documentation, router, index, bastion docs, SDLC workflows]
+related: [sessions, monitor, data-contract, config, brain, serve-api, validate]
 ---
 
 # docs — Navigation

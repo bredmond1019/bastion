@@ -2,6 +2,12 @@
 type: Reference
 title: Workflow Trigger Surface
 description: Operator reference for `bastion run <workflow> [--args '{}'] [--monitor]` — trigger a workflow via the FastAPI generic dispatcher and optionally drop into the live monitor.
+doc_id: run
+layer: [console]
+project: bastion
+status: active
+keywords: [workflow trigger, bastion run, FastAPI, task_id, orchestrator, POST]
+related: [monitor, data-contract]
 ---
 
 # Workflow Trigger

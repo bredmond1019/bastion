@@ -2,6 +2,13 @@
 type: ProjectStatus
 title: bastion Status
 description: Current state and progress tracker for bastion.
+doc_id: status
+layer: [console]
+project: bastion
+status: active
+timestamp: "2026-06-26"
+keywords: [project status, progress, phase blocks, bastion program, current focus]
+related: [context, master-plan, planning-index]
 ---
 
 # STATUS — Current State & Progress

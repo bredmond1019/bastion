@@ -2,6 +2,12 @@
 type: Reference
 title: bastion ⇄ Orchestrator Data Contract (Consumer)
 description: bastion's pinned view of the orchestrator's versioned data contract — how each contract field maps to bastion's Rust types. The canonical contract lives in the Python repo.
+doc_id: data-contract
+layer: [console, engine]
+project: bastion
+status: active
+keywords: [data contract, orchestrator, PostgreSQL, node_runs, field mappings, v1.0.0]
+related: [monitor, costs, inspect, run]
 ---
 
 # Data Contract (Consumer View)

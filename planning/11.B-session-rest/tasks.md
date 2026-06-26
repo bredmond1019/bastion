@@ -2,7 +2,12 @@
 type: TaskSpec
 title: "Task Spec — Phase 11, Block B: Session REST + named-key helper"
 description: "Extend bastion serve with session REST endpoints (list/pane/send/key/create/delete) wrapping sessions::tmux via web::block, add a tmux named-key helper for Escape/arrows/bare-Enter, and bump the serve-api contract to v0.1."
-status: not-started
+doc_id: 11-b-session-rest
+layer: [console, surface]
+project: bastion
+status: draft
+keywords: [session REST, bastion serve, tmux, named-key, API contract, v0.1, actix-web]
+related: [serve-api, master-plan, sessions]
 phase: 11
 block: B
 ---

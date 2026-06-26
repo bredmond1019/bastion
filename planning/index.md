@@ -2,6 +2,12 @@
 type: Index
 title: bastion — Planning Docs
 description: Navigation index for the bastion planning folder.
+doc_id: planning-index
+layer: [console]
+project: bastion
+status: active
+keywords: [planning index, concept folders, SDLC pipeline, decisions, master plan]
+related: [context, status, master-plan]
 ---
 
 # bastion — Planning Docs

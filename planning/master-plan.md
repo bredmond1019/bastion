@@ -2,6 +2,12 @@
 type: Plan
 title: bastion Master Plan
 description: Strategic roadmap and phase specifications for bastion.
+doc_id: master-plan
+layer: [console]
+project: bastion
+status: active
+keywords: [master plan, phases, blocks, strategy, roadmap, bastion program, TUI]
+related: [context, status, planning-index]
 ---
 
 # bastion — Master Plan
@@ -711,6 +717,12 @@ Forward-looking — refine Files when each becomes next.
 - **Interfaces / shared surface:** **Produces** the WebSocket frame schema in `serve-api.md` v0.2.
 - **Out of scope:** status/workflow topics (Block D); Flutter rendering.
 - **Depends on:** Block A (WS scaffold), Block B (session ops reused by send/send_key frames).
+- **Reference — study before designing the WS layer:** `~/Dev/agentic-portfolio/Healthie/media_streams/` is a production-proven Ruby WebSocket service (Zoom RTMS transcript capture) with clean architecture directly analogous to what this block needs. Study it before writing the hub. Key patterns to port to Rust/Tokio:
+  - **Dual-connection split** (`SignalingConnection` + `TranscriptConnection`) — one socket for control/keep-alive, one for data; the data URL is negotiated through the control channel. Maps to our control/pane-stream topic split.
+  - **Thread-safe future coordination** (`Concurrent::IVar`) — WebSocket callback thread sets a future; main thread blocks with a timeout waiting for the negotiated URL. Rust equivalent: `tokio::sync::oneshot`. Same shape for "wait until the hub confirms subscription before streaming."
+  - **Keep-alive checker with pluggable failure handler** (`KeepAliveChecker` + `FailKeepAliveChecker`) — a timer monitors last-seen timestamp; on timeout delegates to a failure handler. Direct analogue for detecting dead Flutter connections and cleaning up poll tasks.
+  - **Message type dispatch** (`ZoomRtmsMessageTypes` + `react_to_message` per connection class) — clean enum-keyed dispatch that maps directly to our frame union in `dto.rs`.
+  - **Runner lifecycle** (`runner.rb`) — `Success`/`Failure` result types, ensure-block cleanup, retry-on-exception vs. no-retry-on-known-failure distinction. Mirrors what `ws/server.rs` needs for per-connection lifecycle.
 - **Acceptance criteria:** `websocat` subscribes to a pane and receives live `pane` pushes; sending keys
   + `Escape` over the socket lands in the session; a session on a permission prompt produces
   `event{needs_input}`; per Rule 6 the diff/seq + detect logic is unit-tested (the actor/poll I/O shell
