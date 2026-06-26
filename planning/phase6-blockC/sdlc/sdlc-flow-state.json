@@ -2,10 +2,10 @@
   "spec_slug": "phase6-blockC",
   "branch": "phase6-blockC-flow",
   "started_at": "2026-06-26T00:33:53Z",
-  "updated_at": "2026-06-26T00:40:42Z",
+  "updated_at": "2026-06-26T00:43:08Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockC-flow",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -45,6 +45,22 @@
       "files_changed": [
         "src/brain/code_graph.rs",
         "src/brain/mod.rs",
+        "src/cli.rs",
+        "src/main.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Wire Code subcommand CLI surface: ArgGroup requiring exactly one of --def/--refs/--dependents, --root/--workspace flags, parse tests, and DB-free dispatch to brain::code_graph::run_code",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Task 3 (CLI wiring) was implemented in the same commit as Task 2 (6ad32ea) by the previous agent — both the Code variant in cli.rs and the dispatch arm in main.rs were added together with code_graph.rs"
+      ],
+      "files_changed": [
         "src/cli.rs",
         "src/main.rs"
       ],
