@@ -62,7 +62,7 @@ Stand up `bastion serve` — an actix-web HTTP+WebSocket network face that boots
 - Update `docs/index.md` to add the `serve-api.md` row (Rule 7).
 - *Primary files:* `docs/serve-api.md`, `docs/index.md`.
 
-### 7. Validate
+### 7. [x] Validate
 - Run the Validation Commands listed below and confirm all pass.
 
 ## Acceptance Criteria
