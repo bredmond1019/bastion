@@ -383,4 +383,204 @@ mod tests {
         assert_eq!(edges[0].from, "d3");
         assert_eq!(edges[0].to, "d20");
     }
+
+    // ── Portability tests — second, non-repo corpus ───────────────────────────
+    //
+    // These tests exercise `build_node_edge_lists` over the portable fixture
+    // corpus at `src/brain/fixtures/portable/` (a client/project knowledge
+    // domain, distinct from the bastion decision graph above).  They prove
+    // the pure reader is not hardcoded to this repo's ids.
+    //
+    // Fixture corpus shape:
+    //   proj-overview → req-doc      (cross-ref)
+    //   proj-overview → team-roster  (cross-ref)
+    //   team-roster   → proj-overview (back-ref)
+    //   req-doc       → tech-spec    (forward — lineage chain)
+    //   req-doc       → team-roster  (cross-ref)
+    //   tech-spec     → req-doc      (back-ref)
+    //   stale-note    → missing-page (UNRESOLVED — dropped)
+    mod portable {
+        use super::*;
+
+        // Embed fixture files at compile time so the tests are self-contained.
+        const PROJ_OVERVIEW: &str = include_str!("fixtures/portable/proj-overview.md");
+        const TEAM_ROSTER: &str = include_str!("fixtures/portable/team-roster.md");
+        const REQ_DOC: &str = include_str!("fixtures/portable/req-doc.md");
+        const TECH_SPEC: &str = include_str!("fixtures/portable/tech-spec.md");
+        const STALE_NOTE: &str = include_str!("fixtures/portable/stale-note.md");
+
+        fn portable_corpus() -> Vec<(PathBuf, String)> {
+            vec![
+                (
+                    PathBuf::from("src/brain/fixtures/portable/proj-overview.md"),
+                    PROJ_OVERVIEW.to_string(),
+                ),
+                (
+                    PathBuf::from("src/brain/fixtures/portable/team-roster.md"),
+                    TEAM_ROSTER.to_string(),
+                ),
+                (
+                    PathBuf::from("src/brain/fixtures/portable/req-doc.md"),
+                    REQ_DOC.to_string(),
+                ),
+                (
+                    PathBuf::from("src/brain/fixtures/portable/tech-spec.md"),
+                    TECH_SPEC.to_string(),
+                ),
+                (
+                    PathBuf::from("src/brain/fixtures/portable/stale-note.md"),
+                    STALE_NOTE.to_string(),
+                ),
+            ]
+        }
+
+        /// All five portable fixture files produce five nodes with doc_id values
+        /// that are entirely distinct from the Block A fixture ids (d3, d20, d21, d4).
+        #[test]
+        fn portable_nodes_have_distinct_ids_from_block_a() {
+            let docs = portable_corpus();
+            let (nodes, _) = build_node_edge_lists(&docs);
+
+            assert_eq!(nodes.len(), 5, "expected exactly five portable nodes");
+
+            let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+
+            // All portable ids must be present.
+            assert!(ids.contains(&"proj-overview"), "missing proj-overview");
+            assert!(ids.contains(&"team-roster"), "missing team-roster");
+            assert!(ids.contains(&"req-doc"), "missing req-doc");
+            assert!(ids.contains(&"tech-spec"), "missing tech-spec");
+            assert!(ids.contains(&"stale-note"), "missing stale-note");
+
+            // None of the Block A ids must appear.
+            let block_a_ids = ["d3", "d20", "d21", "d4"];
+            for ba_id in block_a_ids {
+                assert!(
+                    !ids.contains(&ba_id),
+                    "portable corpus must not contain Block A id: {ba_id}"
+                );
+            }
+        }
+
+        /// doc_id frontmatter overrides the filename stem for all portable nodes.
+        #[test]
+        fn portable_nodes_use_doc_id_not_stem() {
+            let docs = portable_corpus();
+            let (nodes, _) = build_node_edge_lists(&docs);
+
+            // For each node, the id must equal the expected doc_id (not the
+            // file stem, which differs for no file in this corpus — but the
+            // presence of doc_id is what we are asserting).
+            let find = |id: &str| nodes.iter().find(|n| n.id == id);
+
+            let proj = find("proj-overview").expect("proj-overview node");
+            assert_eq!(proj.title, "Project Overview");
+
+            let team = find("team-roster").expect("team-roster node");
+            assert_eq!(team.title, "Team Roster");
+
+            let req = find("req-doc").expect("req-doc node");
+            assert_eq!(req.title, "Requirements Document");
+
+            let spec = find("tech-spec").expect("tech-spec node");
+            assert_eq!(spec.title, "Technical Specification");
+
+            let stale = find("stale-note").expect("stale-note node");
+            assert_eq!(stale.title, "Stale Note");
+        }
+
+        /// The lineage chain proj-overview → req-doc → tech-spec is fully resolved.
+        #[test]
+        fn portable_lineage_chain_resolved() {
+            let docs = portable_corpus();
+            let (_, edges) = build_node_edge_lists(&docs);
+
+            let has_edge =
+                |from: &str, to: &str| edges.iter().any(|e| e.from == from && e.to == to);
+
+            assert!(
+                has_edge("proj-overview", "req-doc"),
+                "expected proj-overview → req-doc"
+            );
+            assert!(
+                has_edge("req-doc", "tech-spec"),
+                "expected req-doc → tech-spec"
+            );
+        }
+
+        /// All resolved cross-references are present in the edge list.
+        #[test]
+        fn portable_cross_references_resolved() {
+            let docs = portable_corpus();
+            let (_, edges) = build_node_edge_lists(&docs);
+
+            let has_edge =
+                |from: &str, to: &str| edges.iter().any(|e| e.from == from && e.to == to);
+
+            // proj-overview → team-roster
+            assert!(
+                has_edge("proj-overview", "team-roster"),
+                "expected proj-overview → team-roster"
+            );
+            // team-roster → proj-overview (back-ref)
+            assert!(
+                has_edge("team-roster", "proj-overview"),
+                "expected team-roster → proj-overview"
+            );
+            // req-doc → team-roster
+            assert!(
+                has_edge("req-doc", "team-roster"),
+                "expected req-doc → team-roster"
+            );
+            // tech-spec → req-doc (back-ref)
+            assert!(
+                has_edge("tech-spec", "req-doc"),
+                "expected tech-spec → req-doc"
+            );
+        }
+
+        /// The unresolved [[missing-page]] link in stale-note.md must be silently
+        /// dropped — no edge is produced with `to == "missing-page"`.
+        #[test]
+        fn portable_unresolved_link_is_dropped() {
+            let docs = portable_corpus();
+            let (_, edges) = build_node_edge_lists(&docs);
+
+            for edge in &edges {
+                assert_ne!(
+                    edge.to, "missing-page",
+                    "unresolved link to missing-page must not appear as an edge"
+                );
+                if edge.from == "stale-note" {
+                    panic!(
+                        "stale-note should produce no outgoing resolved edges, \
+                         but found: stale-note → {}",
+                        edge.to
+                    );
+                }
+            }
+        }
+
+        /// Total resolved edge count matches the corpus link graph.
+        ///
+        /// Resolved edges (6):
+        ///   proj-overview → req-doc
+        ///   proj-overview → team-roster
+        ///   team-roster   → proj-overview
+        ///   req-doc       → tech-spec
+        ///   req-doc       → team-roster
+        ///   tech-spec     → req-doc
+        ///
+        /// Dropped (1): stale-note → missing-page
+        #[test]
+        fn portable_total_edge_count() {
+            let docs = portable_corpus();
+            let (_, edges) = build_node_edge_lists(&docs);
+            assert_eq!(
+                edges.len(),
+                6,
+                "expected exactly 6 resolved edges in the portable corpus"
+            );
+        }
+    }
 }

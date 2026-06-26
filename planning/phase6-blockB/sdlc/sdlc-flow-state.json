@@ -1,0 +1,101 @@
+{
+  "spec_slug": "phase6-blockB",
+  "branch": "phase6-blockB-flow",
+  "started_at": "2026-06-25T22:59:57Z",
+  "updated_at": "2026-06-25T23:24:32Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow",
+  "status": "done",
+  "current_task": 4,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added workspace registry + pure resolver to config.rs: FileConfig extended with workspaces/default_workspace fields, ConfigError::UnknownWorkspace variant, pure resolve_workspace_root() with explicit-root > named-workspace > default-workspace > built-in-dot precedence, and DB-free load_workspace_registry() loader; 13 new tests covering all resolver paths and TOML round-trip.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used ConfigError::UnknownWorkspace(String) variant (not a separate WorkspaceError type) to keep the single error enum pattern consistent with the existing codebase",
+        "resolve_workspace_root returns PathBuf::from('.') as built-in default to preserve Block A behavior exactly",
+        "load_workspace_registry silently degrades to FileConfig::default() on absent/unreadable config file (same contract as Config::load) but propagates MalformedFile on parse errors"
+      ],
+      "files_changed": [
+        "src/config.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added portable OKF fixture corpus (client/project domain) and 6 portability tests in okf.rs proving build_node_edge_lists works over any conforming corpus, not just the bastion decision graph.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Used include_str! macros in the test module to embed fixture files at compile time, keeping tests self-contained without filesystem I/O",
+        "Chose a client/project knowledge domain (proj-overview, team-roster, req-doc, tech-spec, stale-note) to maximally differentiate from the Block A decision-graph domain (d3, d20, d21, d4)",
+        "No production code changes required — build_node_edge_lists was already pure and corpus-agnostic as stated in the task spec"
+      ],
+      "files_changed": [
+        "src/brain/okf.rs",
+        "src/brain/fixtures/portable/index.md",
+        "src/brain/fixtures/portable/proj-overview.md",
+        "src/brain/fixtures/portable/team-roster.md",
+        "src/brain/fixtures/portable/req-doc.md",
+        "src/brain/fixtures/portable/tech-spec.md",
+        "src/brain/fixtures/portable/stale-note.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Wire --workspace/--knowledge-dir flag through CLI and brain::run for named workspace selection; --root changed to Option<PathBuf>; workspace registry loaded DB-free in main.rs",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Changed --root from PathBuf with default_value='.' to Option<PathBuf> so the resolver can distinguish 'unset' from an explicit path — required for correct precedence (explicit > workspace > default > builtin)",
+        "Used visible_alias for --knowledge-dir so it appears in --help output as documented in the spec",
+        "load_workspace_registry errors (malformed file) propagate as anyhow errors rather than silently degrading, matching the existing config.rs contract where malformed TOML is always an error"
+      ],
+      "files_changed": [
+        "src/cli.rs",
+        "src/brain/mod.rs",
+        "src/main.rs",
+        "planning/phase6-blockB/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "All validation commands pass (fmt, clippy, test: 517 passed, release build); bastion brain confirmed DB-free with no DATABASE_URL set",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "planning/phase6-blockB/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": "PASS",
+    "findings": [],
+    "attempts": 1
+  },
+  "docs": {
+    "changed": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow/docs/brain.md",
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/phase6-blockB-flow/docs/config.md"
+    ],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": "https://github.com/bredmond1019/bastion/pull/2",
+    "number": 2
+  }
+}

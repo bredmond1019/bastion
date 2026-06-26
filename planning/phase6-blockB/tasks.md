@@ -1,6 +1,6 @@
 # Task Spec — Phase 6, Block B
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-25
 
 ## Goal
 Generalize the bastion brain graph reader to address an **arbitrary, named knowledge workspace** (per-repo / per-client root) selectable by `--workspace` or config, with the default still resolving to the brain repo — the Console half of the cross-repo multi-workspace block.
@@ -23,12 +23,12 @@ Generalize the bastion brain graph reader to address an **arbitrary, named knowl
 - **Tests (Rule 6):** exhaustively unit-test `resolve_workspace_root` — explicit root wins over name; named lookup hits; unknown name → typed error; `default_workspace` fallback; no-config built-in default; and `parse_file` round-trips a `[workspaces]` table.
 - **Files:** *Modified* `src/config.rs`.
 
-### 2. Portable (non-repo) OKF workspace fixture + okf portability coverage
+### 2. [~] Portable (non-repo) OKF workspace fixture + okf portability coverage
 - Create `src/brain/fixtures/portable/` — a **second, non-repo** OKF corpus in a different domain than Block A's decision graph (e.g. a small client/project knowledge dir: a handful of interlinked `.md` nodes with OKF frontmatter, at least one lineage chain and one unresolved `[[link]]`), proving the reader is not hardcoded to this repo's ids.
 - In `src/brain/okf.rs`, add a portability test module asserting `build_node_edge_lists` over the portable-fixture docs produces the expected nodes/edges (distinct ids from Block A's fixture) — demonstrating the pure reader works over *any* conforming corpus. No production code change is expected here; if one proves necessary, keep `okf` pure (root in / lists out) and justify in `## Notes`.
 - **Files:** *New* `src/brain/fixtures/portable/*.md`; *Modified* `src/brain/okf.rs` (tests).
 
-### 3. Wire `--workspace` selection through CLI + `run()`
+### 3. [~] Wire `--workspace` selection through CLI + `run()`
 - `src/cli.rs`: add `--workspace <NAME>` (with `--knowledge-dir` as a documented alias) to the `Brain` subcommand; keep `--root <path>` as the explicit override. Change `--root` from `default_value = "."` to an `Option<PathBuf>` so "unset" is distinguishable and the resolver can choose the workspace/default.
 - `src/brain/mod.rs`: in `run` (or a thin pre-step), call `config::resolve_workspace_root(explicit_root, workspace_name, &registry)` to compute the effective root, then proceed exactly as today (`find_markdown_files` → read → `build_node_edge_lists` → graph → query). Stay DB-free — load only the workspace registry, never `Config::load`. An unknown workspace name degrades gracefully (clear message, non-zero exit).
 - `src/main.rs`: load the workspace registry (DB-free), pass the resolved root / resolution inputs into `brain::run`.
@@ -36,7 +36,7 @@ Generalize the bastion brain graph reader to address an **arbitrary, named knowl
 - **Files:** *Modified* `src/cli.rs`, `src/brain/mod.rs`, `src/main.rs`.
 - **Depends on:** Tasks 1 & 2.
 
-### 4. Validate
+### 4. [~] Validate
 - Run the Validation Commands listed below and confirm all pass.
 - Confirm `bastion brain` still runs with **no `DATABASE_URL`** set (DB-free, D4) — workspace resolution must not introduce a DB requirement.
 
@@ -57,7 +57,56 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+### Task 3 smoke tests (2026-06-25)
+
+**Unknown workspace name — clear error, non-zero exit (DB-free):**
+```
+$ bastion brain --workspace unknown-name --dependents some-id
+brain: unknown workspace 'unknown-name' — not found in [workspaces] registry
+Exit: 1
+```
+
+**--root against portable fixture (explicit override):**
+```
+$ bastion brain --root src/brain/fixtures/portable --dependents proj-overview
+dependent: team-roster    src/brain/fixtures/portable/team-roster.md
+dependent: portable-index src/brain/fixtures/portable/index.md
+Exit: 0
+```
+
+**--knowledge-dir alias resolves to the same typed error:**
+```
+$ bastion brain --knowledge-dir unknown --dependents proj-overview
+brain: unknown workspace 'unknown' — not found in [workspaces] registry
+Exit: 1
+```
+
+**DB-free confirmed:** all invocations above ran with no DATABASE_URL set.
+
+**Default (no --workspace/--root) resolves to ".":** covered by
+`resolve_no_config_returns_dot` unit test in config.rs.
+
+### Code-review fixes smoke tests (2026-06-25)
+
+**Success path — --workspace resolves from config registry:**
+```
+$ XDG_CONFIG_HOME=/tmp/cfg cargo run -- brain --workspace portable --dependents proj-overview
+# config: [workspaces] portable = "src/brain/fixtures/portable"
+dependent: team-roster    src/brain/fixtures/portable/team-roster.md
+dependent: portable-index src/brain/fixtures/portable/index.md
+Exit: 0
+```
+Full I/O path exercised: config file read → `[workspaces]` deserialized → `resolve_workspace_root`
+name-lookup branch → `find_markdown_files` → query results.
+
+**NoWorkspaceRegistry error — no config file + --workspace:**
+```
+$ XDG_CONFIG_HOME=/nonexistent cargo run -- brain --workspace portable --dependents proj-overview
+Error: no [workspaces] table in config — add [workspaces] to ~/.config/bastion/config.toml
+Exit: 1
+```
+Distinct from "unknown workspace name" — correctly distinguishes absent registry from missing key.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->

@@ -79,11 +79,13 @@ async fn main() -> Result<()> {
             }
             Commands::Man { out } => man::run(out),
             // Brain is DB-free (D4) and synchronous — lives on the knowledge-graph surface.
+            // Load only the workspace registry (no DATABASE_URL required).
             Commands::Brain {
                 dependents,
                 blast_radius,
                 lineage,
                 root,
+                workspace,
             } => {
                 let query = if let Some(id) = dependents {
                     brain::BrainQuery::Dependents(id)
@@ -95,7 +97,13 @@ async fn main() -> Result<()> {
                     // Unreachable: clap ArgGroup enforces exactly one of the three flags.
                     unreachable!("clap ArgGroup guarantees exactly one query flag is set")
                 };
-                brain::run(query, root)
+                // Load workspace registry DB-free: absent/unreadable → empty registry;
+                // malformed TOML → propagated error (non-zero exit with diagnostic).
+                let registry = config::load_workspace_registry(
+                    std::env::var("XDG_CONFIG_HOME").ok(),
+                    std::env::var("HOME").ok(),
+                )?;
+                brain::run(query, root, workspace, &registry)
             }
         },
     }
