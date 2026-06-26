@@ -1,0 +1,93 @@
+{
+  "spec_slug": "7-A-observability-and-control",
+  "branch": "7-A-observability-and-control-flow-2",
+  "started_at": "2026-06-26T14:14:02Z",
+  "updated_at": "2026-06-26T14:14:02Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2",
+  "status": "running",
+  "current_task": 1,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Vendor the C001-C014 error taxonomy as the Console error model in src/observ/errors.rs (ErrorCode, ConsoleError, ErrorContext), declare the observ module, and wire it into main.rs — 9 exhaustive unit tests, all validation commands green.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "ConsoleError uses String fields for Io/SerializationError/Utf8Error instead of From impls — avoids coupling to std::io::Error / serde_json::Error / FromUtf8Error while staying self-contained and testable without I/O",
+        "ErrorContext Display includes [Cxxx] prefix, operation name, and error message so a single to_string() gives a fully structured diagnostic line"
+      ],
+      "files_changed": [
+        "src/observ/errors.rs",
+        "src/observ/mod.rs",
+        "src/main.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": null,
+    "findings": [],
+    "attempts": 0
+  },
+  "docs": {
+    "changed": [],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 790,
+        "filesReadKb": null,
+        "inTokEst": 790,
+        "outTok": 5267
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 236,
+        "filesReadKb": null,
+        "inTokEst": 236,
+        "outTok": 641
+      },
+      {
+        "label": "update-task-1",
+        "model": "haiku",
+        "promptTokEst": 265,
+        "filesReadKb": null,
+        "inTokEst": 265,
+        "outTok": 1433
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 920,
+        "filesReadKb": null,
+        "inTokEst": 920,
+        "outTok": 8008
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 592,
+        "filesReadKb": null,
+        "inTokEst": 592,
+        "outTok": 2283
+      }
+    ],
+    "total": {
+      "promptTokEst": 2803,
+      "filesReadKb": 0,
+      "inTokEst": 2803,
+      "outTok": 17632
+    }
+  }
+}
