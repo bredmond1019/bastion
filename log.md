@@ -10,6 +10,23 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-26 — phase7-blockA post-merge: code-review fixes, docs patch, worktree clean
+
+A medium-effort code review with `--fix` applied five confirmed findings: removed triple-stderr bug from the `ask` dispatch arm (spurious `eprintln!` printing both to stderr and through tracing), reordered keyword heuristics in `classify_error()` to test configuration errors before tmux/process errors (was incorrectly checking in the wrong order), replaced silent `EventPhase::Start` no-op match arm with `unreachable!()` to flag dead code, removed a misplaced double-negation tautology assertion from the wrong test function, and added four missing unit tests for keyword-based error classification paths (BinaryNotFound, BinaryNotFound variant 2, McpError, ConfigError per CLAUDE.md Rule 6). `/update-docs --patch` fixed a spurious field in `docs/observ.md`'s ErrorContext struct documentation, added `observ.md` to the `docs/index.md` navigation table, and added `src/observ/` to the CLAUDE.md directory map. `/clean-worktree` fast-forward merged the phase7-blockA branch into main and removed the worktree. All 657 tests pass on HEAD. Observability spine is now productionized with confirmed testing, finalized docs, and clean integration.
+
+```diff
+CLAUDE.md                                          |  1 +
+docs/index.md                                      |  1 +
+docs/observ.md                                     |  1 -
+log.md                                             | 17 +++++++++++
+src/main.rs                                        | 35 +++++++++++++++++-----
+src/observ/errors.rs                               |  2 --
+src/observ/mod.rs                                  |  4 +--
+7 files changed, 57 insertions(+), 24 deletions(-)
+```
+
+---
+
 ## 2026-06-26 — phase7-blockA complete: tracing + C0xx structured-error spine shipped
 
 Phase 7 Block A delivered the observability and structured-error spine across five tasks with a PASS verdict on the first review attempt. Task 1 vendored the C001–C014 error taxonomy from `claude-sdk-rs` as a fully self-contained `src/observ/errors.rs` module (`ErrorCode`, `ConsoleError`, `ErrorContext` with `[Cxxx]`-prefixed Display), declared the `observ` module, and wired it into `main.rs` — 9 exhaustive unit tests covering every error code and context formatting path. Task 2 added `tracing` + `tracing-subscriber` to `Cargo.toml`, implemented a pure `CommandEvent` record builder with `start`/`success`/`error`/`to_json` constructors, `emit_start`/`emit_outcome` thin tracing macro shells, and an `init_tracing` subscriber installer — all pure logic exhaustively tested (606 tests pass). Task 3 added `--verbose (-v)` and `--json-logs` global clap flags to `Cli` and wired `observ::init_tracing` at the top of `main()` before dispatch; 8 unit tests cover all flag-parsing paths, with smoke-test recorded in `tasks.md §Notes`. Task 4 instrumented every dispatch arm: `dispatch()` was extracted as an async fn, every subcommand now emits start/outcome/duration events, and top-level errors are mapped to C0xx codes via `classify_error()` (typed `ConsoleError` downcast → `std::io::Error` downcast → keyword heuristics → `C006` default). Task 5 was a validation pass confirming all four gating checks (fmt/clippy/653 tests/release build) pass with acceptance criteria confirmed. Key design decisions: `ConsoleError` uses `String` fields to stay self-contained and I/O-free; `init_tracing` is the sole thin I/O shell (global subscriber install); `--verbose` uses `bool` (not `ArgAction::Count`) since the spec permits either and it is simpler; `dispatch()` extraction makes the wrapper a single clean location. Next: phase7-blockB (vendor tiktoken counter for exact `bastion costs`).
