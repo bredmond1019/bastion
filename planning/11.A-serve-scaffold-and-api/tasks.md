@@ -2,14 +2,14 @@
 type: TaskSpec
 title: "Task Spec — Phase 11, Block A: serve scaffold + serve-api contract v0"
 description: "bastion serve scaffold — actix HTTP+WS network face, runtime spike, bearer auth, /health + /ws echo, and the v0 serve-api contract that bastion-ui pins."
-status: Not started
+status: done
 phase: 11
 block: A
 ---
 
 # Task Spec — Phase 11, Block A: `serve` scaffold + serve-api contract v0
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-26 (PASS — all 7 tasks, 719 tests)
 
 ## Goal
 Stand up `bastion serve` — an actix-web HTTP+WebSocket network face that boots on a tailnet bind behind mandatory bearer-token auth, serving `GET /health` and a minimal `/ws` accept+echo — and publish `docs/serve-api.md` v0, the contract the Flutter `bastion-ui` Surface pins against.

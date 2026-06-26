@@ -6,8 +6,8 @@ description: Current state and progress tracker for bastion.
 
 # STATUS — Current State & Progress
 
-**Last updated:** 2026-06-26 — phase7-blockA complete: tracing + C0xx structured-error spine shipped. 653 tests pass.
-**Current focus:** Bastion-program track — **phase7-blockB** (Vendor tiktoken counter → exact `bastion costs`). Phase 4 Blocks B–C remain blocked on orchestrator D28 Phases 4–5 (SSE streaming, TUI node re-run).
+**Last updated:** 2026-06-26 — phase11-blockA complete: `bastion serve` scaffold + serve-api contract v0 shipped. 719 tests pass.
+**Current focus:** Phase 11 — BastionUI Console API — **Block B** (next block in Phase 11 sequence). Bastion-program track phase7-blockB (tiktoken counter) also queued.
 
 ---
 
@@ -100,6 +100,11 @@ description: Current state and progress tracker for bastion.
 |---|---|---|---|---|
 | Block A | Proactive scanner → issue backlog | M | Not started | Builds on 7A + 8A. Writes an OKF issue backlog (dedup/priority/dismiss). Forward-looking. |
 | Block B | Findings → spec → draft PR via `sdlc-flow` (no auto-merge) | N½ | Not started | Builds on 10A. D25 — bastion *triggers* `sdlc-flow`; never authors/merges the PR. Cross-repo peer: base-template findings→spec entry point. Forward-looking. |
+
+### Phase 11 — BastionUI Console API
+| Block | What | Status | Notes |
+|---|---|---|---|
+| Block A | `serve` scaffold + serve-api contract v0 | Done | actix-web 4.9 + actix-web-actors 4.3 HTTP+WS server; `bastion serve` CLI arm; DB-free `ServeConfig`; BearerAuthMiddleware (pure `token_matches` exhaustively tested); serde DTOs (`HealthResponse`, `WsFrame`, `WsFrameKind`, `ErrorPayload`); EchoActor at `/ws`; `GET /health` public, all other routes token-protected; `docs/serve-api.md` v0 contract published. 719 tests pass. PASS 2026-06-26. Runtime-spike: dedicated thread + actix System (not plain tokio await) — future-proof for WS actors. `/ws` smoke-tested with websocat (echo round-trip confirmed). |
 
 <!-- Add one sub-table per phase as the plan is fleshed out. -->
 
