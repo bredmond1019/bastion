@@ -52,8 +52,8 @@ Authorization: Bearer <token>
 ```
 
 `<token>` is the value of `BASTION_SERVE_TOKEN` (set on the server).  The
-token is compared with constant-time equality inside the pure `token_matches`
-helper (`src/serve/auth.rs`).
+token is checked inside the pure `token_matches` helper (`src/serve/auth.rs`).
+The scheme prefix `Bearer ` is matched case-sensitively.
 
 ### 2.2 Failure response
 
@@ -61,10 +61,15 @@ A missing, malformed, or incorrect token returns:
 
 ```
 HTTP/1.1 401 Unauthorized
+Content-Type: application/json
 ```
 
-No body is returned.  The client MUST treat any `401` as a fatal auth failure
-and prompt the operator to verify the configured token.
+```json
+{"error": "unauthorized", "code": "unauthorized"}
+```
+
+The client MUST treat any `401` as a fatal auth failure and prompt the operator
+to verify the configured token.
 
 ### 2.3 Auth policy summary
 
@@ -147,7 +152,8 @@ Sec-WebSocket-Accept: <accept-key>
 ### Echo behaviour (v0)
 
 After a successful upgrade, the server reflects every text frame back to the
-sender unchanged.  Binary frames are accepted and echoed as binary.
+sender unchanged.  Fragmented text messages (continuation frames) are buffered
+and echoed when the final frame arrives.  Binary frames are silently dropped at v0.
 
 Client sends:
 
@@ -162,7 +168,7 @@ TEXT: hello
 ```
 
 This echo surface exists so `bastion-ui` can verify connectivity before the
-real session-hub (Block C) is ready.  No state is maintained between frames.
+real session-hub (Block C) is ready.
 
 ---
 
