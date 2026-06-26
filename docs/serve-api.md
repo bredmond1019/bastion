@@ -1,25 +1,25 @@
 ---
 type: Guideline
-title: "serve-api contract v0"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws echo, and the v0 frame envelope that bastion-ui pins against."
+title: "serve-api contract v0.1"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws echo, the v0 frame envelope, and the v0.1 session REST surface (list/pane/send/key/create/delete) that bastion-ui pins against."
 doc_id: serve-api
 layer: [console, surface]
 project: bastion
 status: active
-keywords: [serve, api, websocket, bearer-auth, health, bastion-ui, contract]
+keywords: [serve, api, websocket, bearer-auth, health, sessions, bastion-ui, contract]
 related: [config, observ]
 ---
 
-# serve-api — v0 Contract
+# serve-api — v0.1 Contract
 
-**Version:** v0  
+**Version:** v0.1  
 **Produced by:** `bastion` (this repo, `src/serve/`)  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28)
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
 documented here.  When a later block extends the API it bumps this version
-(v0.1, v0.2, …) and records the delta in the Amendment Log at the bottom.
+(v0.2, v0.3, …) and records the delta in the Amendment Log at the bottom.
 
 ---
 
@@ -77,7 +77,12 @@ to verify the configured token.
 |---|---|
 | `GET /health` | No (public) |
 | `GET /ws` (WS upgrade) | Yes — `Authorization: Bearer <token>` |
-| All future `/api/*` routes | Yes — `Authorization: Bearer <token>` |
+| `GET /api/sessions` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/sessions/{name}/pane` | Yes — `Authorization: Bearer <token>` |
+| `POST /api/sessions/{name}/send` | Yes — `Authorization: Bearer <token>` |
+| `POST /api/sessions/{name}/key` | Yes — `Authorization: Bearer <token>` |
+| `POST /api/sessions` | Yes — `Authorization: Bearer <token>` |
+| `DELETE /api/sessions/{name}` | Yes — `Authorization: Bearer <token>` |
 
 ---
 
@@ -222,7 +227,300 @@ Identical to the payload the client sent.  No defined schema constraint at v0.
 
 ---
 
-## 6. Configuration reference
+## 6. Sessions REST API (v0.1)
+
+Six routes projecting the synchronous tmux session-control surface onto HTTP.
+All routes live under the bearer-protected `/api` scope and return
+`Content-Type: application/json`.
+
+### 6.1 Response DTOs
+
+#### `SessionDto`
+
+Returned by `GET /api/sessions` (one element per session in the array).
+
+```json
+{
+  "name": "main",
+  "state": "running",
+  "last_line": "$ cargo test"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | tmux session name |
+| `state` | string | `"running"` when the foreground process is not a shell; `"idle"` otherwise |
+| `last_line` | string | Last non-blank line from the session's pane, or `""` when unavailable |
+
+#### `PaneDto`
+
+Returned by `GET /api/sessions/{name}/pane`.
+
+```json
+{
+  "session_name": "main",
+  "lines": ["$ cargo build", "   Compiling bastion v0.1.0", "    Finished"]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `session_name` | string | tmux session name this pane belongs to |
+| `lines` | array of string | Captured pane output lines (trailing blank padding stripped) |
+
+### 6.2 Request-body DTOs
+
+#### `SendBody` — `POST /api/sessions/{name}/send`
+
+```json
+{ "keys": "cargo test" }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `keys` | string | Yes | Literal text to send to the session (forwarded with `-l`), followed by `Enter` |
+
+#### `KeyBody` — `POST /api/sessions/{name}/key`
+
+```json
+{ "key": "Escape" }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | string | Yes | Symbolic tmux key name (see accepted key names below) |
+
+**Accepted key names** (non-exhaustive — tmux resolves these without the `-l` flag):
+
+| Key name | Description |
+|---|---|
+| `Escape` | Escape key |
+| `Enter` | Return / Enter key |
+| `Up` | Arrow up |
+| `Down` | Arrow down |
+| `Left` | Arrow left |
+| `Right` | Arrow right |
+| `C-c` | Ctrl+C (SIGINT) |
+| `C-d` | Ctrl+D (EOF) |
+| `C-z` | Ctrl+Z (SIGTSTP) |
+
+Any tmux-recognised key name or modifier combination (e.g. `M-f`, `C-Left`) is
+accepted; the server forwards it verbatim to `tmux send-keys -t <name> <key>`
+without `-l`/`--`.
+
+#### `NewSessionBody` — `POST /api/sessions`
+
+```json
+{ "name": "mysession", "dir": "/optional/start/dir" }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Yes | Name of the new tmux session to create |
+| `dir` | string | No | Starting directory for the session; omit for tmux default |
+
+`dir` is omitted from the JSON object when `None` (`skip_serializing_if = "Option::is_none"`).
+
+### 6.3 Routes
+
+#### `GET /api/sessions` — list sessions
+
+Returns all current tmux sessions.
+
+**Request:**
+
+```
+GET /api/sessions HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+
+```json
+[
+  { "name": "main", "state": "running", "last_line": "$ cargo test" },
+  { "name": "scratch", "state": "idle", "last_line": "" }
+]
+```
+
+An empty tmux server returns `[]`.  Tmux degradation returns an error object
+(see Section 6.4).
+
+---
+
+#### `GET /api/sessions/{name}/pane` — read pane output
+
+Captures the visible pane content for the named session.
+
+**Path parameters:**
+
+| Parameter | Description |
+|---|---|
+| `name` | tmux session name |
+
+**Query parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `lines` | integer | No | Maximum number of trailing lines to return.  Omit to return all non-blank lines. |
+
+**Request:**
+
+```
+GET /api/sessions/main/pane?lines=20 HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "session_name": "main",
+  "lines": ["line1", "line2", "line3"]
+}
+```
+
+Returns `404` when the session does not exist (see Section 6.4).
+
+---
+
+#### `POST /api/sessions/{name}/send` — send literal keystrokes
+
+Sends a literal string to the session followed by `Enter`.  Uses tmux
+`send-keys -l --` (literal flag) so the text is never interpreted as tmux key
+names.
+
+**Path parameters:**
+
+| Parameter | Description |
+|---|---|
+| `name` | tmux session name |
+
+**Request:**
+
+```
+POST /api/sessions/main/send HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "keys": "cargo test" }
+```
+
+**Response:** `204 No Content` on success (no body).
+
+Returns `404` when the session does not exist (see Section 6.4).
+
+---
+
+#### `POST /api/sessions/{name}/key` — send a named key
+
+Sends a single symbolic tmux key name (e.g. `Escape`, `Up`, `C-c`) to the
+session.  Does **not** use `-l`/`--` so tmux resolves the key name and
+dispatches the corresponding key event.
+
+**Path parameters:**
+
+| Parameter | Description |
+|---|---|
+| `name` | tmux session name |
+
+**Request:**
+
+```
+POST /api/sessions/main/key HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "key": "Escape" }
+```
+
+**Response:** `204 No Content` on success (no body).
+
+Returns `404` when the session does not exist (see Section 6.4).
+
+---
+
+#### `POST /api/sessions` — create a session
+
+Creates a new detached tmux session.
+
+**Request:**
+
+```
+POST /api/sessions HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "name": "mysession", "dir": "/home/user/project" }
+```
+
+**Response:** `201 Created` on success (no body).
+
+Returns `500` when the session name is already in use (tmux exits non-zero).
+
+---
+
+#### `DELETE /api/sessions/{name}` — kill a session
+
+Removes the named tmux session.
+
+**Path parameters:**
+
+| Parameter | Description |
+|---|---|
+| `name` | tmux session name |
+
+**Request:**
+
+```
+DELETE /api/sessions/mysession HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response:** `204 No Content` on success (no body).
+
+Returns `404` when the session does not exist (see Section 6.4).
+
+---
+
+### 6.4 Tmux degradation → HTTP status mapping
+
+When a tmux call fails the server classifies the error and returns a JSON
+error body using the `ErrorPayload` shape:
+
+```json
+{
+  "code": "<C-code>",
+  "message": "<human-readable description>"
+}
+```
+
+| Condition | HTTP status | `code` |
+|---|---|---|
+| tmux binary not installed | `503 Service Unavailable` | `C001` |
+| No tmux server running | `503 Service Unavailable` | `C001` |
+| Unknown / missing session target | `404 Not Found` | `C002` |
+| Other tmux exit error | `500 Internal Server Error` | `C010` |
+| Unexpected server error | `500 Internal Server Error` | `C010` |
+
+Error codes are from the C0xx taxonomy defined in `src/observ/errors.rs`.
+
+**Example 503 body:**
+
+```json
+{ "code": "C001", "message": "no tmux server running" }
+```
+
+**Example 404 body:**
+
+```json
+{ "code": "C002", "message": "session not found: can't find session: nosuch" }
+```
+
+---
+
+## 7. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
@@ -234,7 +532,7 @@ is DB-free and does **not** require `DATABASE_URL`.
 
 ---
 
-## 7. Versioning policy
+## 8. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -243,10 +541,18 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.1**.
 
 ---
 
 ## Amendment Log
 
-_No amendments yet._
+- **2026-06-26 — v0 → v0.1 (Block 11.B):** Added Section 6 (Sessions REST API): six routes
+  (`GET /api/sessions`, `GET /api/sessions/{name}/pane?lines=N`,
+  `POST /api/sessions/{name}/send`, `POST /api/sessions/{name}/key`,
+  `POST /api/sessions`, `DELETE /api/sessions/{name}`), response DTOs (`SessionDto`,
+  `PaneDto`), request-body DTOs (`SendBody`, `KeyBody`, `NewSessionBody`), named-key
+  endpoint with accepted key names, and tmux degradation → HTTP status mapping
+  (503/404/500) with `ErrorPayload` shape.  Updated auth policy table (Section 2.3) to
+  list all six session routes explicitly.  Renumbered Configuration → Section 7 and
+  Versioning → Section 8.

@@ -29,7 +29,7 @@ User-facing documentation for bastion. For internal strategy and progress, see `
 | [observ.md](observ.md) | Observability module — C001–C014 error taxonomy, `CommandEvent` structured events, `emit_start`/`emit_outcome` tracing helpers, `classify_error()`, and `init_tracing` |
 | [brain.md](brain.md) | OKF knowledge-graph queries — `bastion brain`: corpus discovery, `--dependents` / `--blast-radius` / `--lineage` modes, output format, degradation paths |
 | [code.md](code.md) | Symbol-level code graph queries — `bastion code`: tree-sitter extraction, `--def` / `--refs` / `--dependents` modes, output format, degradation paths |
-| [serve-api.md](serve-api.md) | HTTP + WebSocket API contract v0 — `bastion serve`: base URL, bearer-auth scheme, `GET /health`, `/ws` echo, and the frame envelope that `bastion-ui` pins against |
+| [serve-api.md](serve-api.md) | HTTP + WebSocket API contract v0.1 — `bastion serve`: base URL, bearer-auth scheme, `GET /health`, `/ws` echo, frame envelope, and the Session REST surface (`GET/POST /api/sessions`, pane capture, send, named-key, delete) that `bastion-ui` pins against |
 
 ## SDLC workflows (docs/workflows/)
 
