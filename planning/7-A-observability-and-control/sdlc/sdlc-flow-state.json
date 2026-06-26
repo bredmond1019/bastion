@@ -2,10 +2,10 @@
   "spec_slug": "7-A-observability-and-control",
   "branch": "7-A-observability-and-control-flow-2",
   "started_at": "2026-06-26T14:14:02Z",
-  "updated_at": "2026-06-26T14:23:12Z",
+  "updated_at": "2026-06-26T14:31:41Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2",
   "status": "running",
-  "current_task": 3,
+  "current_task": 4,
   "tasks": {
     "1": {
       "status": "passed",
@@ -59,6 +59,25 @@
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/src/cli.rs",
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/src/main.rs",
         "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/planning/7-A-observability-and-control/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Dispatch event instrumentation: every subcommand now emits start/outcome/duration events and top-level errors are mapped to C0xx codes via classify_error()",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Extracted dispatch() async fn from main() so the instrumentation wrapper in main() is a clean single location rather than touching each command arm",
+        "classify_error() tries typed ConsoleError downcast first, then std::io::Error downcast, then keyword heuristics, defaulting to ErrorCode::InvalidInput (C006) for unclassifiable errors",
+        "cmd_name is resolved as &'static str before cli is moved into dispatch(), using map_or('tui', command_name) to handle the None/Tui case cleanly",
+        "anyhow's built-in termination handler prints the error and exits non-zero — emit_outcome is called before returning Err so no duplicate eprintln! is needed"
+      ],
+      "files_changed": [
+        "src/main.rs",
+        "planning/7-A-observability-and-control/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -167,13 +186,37 @@
         "filesReadKb": null,
         "inTokEst": 592,
         "outTok": 2168
+      },
+      {
+        "label": "update-task-4",
+        "model": "haiku",
+        "promptTokEst": 265,
+        "filesReadKb": null,
+        "inTokEst": 265,
+        "outTok": 1117
+      },
+      {
+        "label": "implement-4-1",
+        "model": "sonnet",
+        "promptTokEst": 920,
+        "filesReadKb": null,
+        "inTokEst": 920,
+        "outTok": 28423
+      },
+      {
+        "label": "test-4-1",
+        "model": "haiku",
+        "promptTokEst": 592,
+        "filesReadKb": null,
+        "inTokEst": 592,
+        "outTok": 2318
       }
     ],
     "total": {
-      "promptTokEst": 6357,
+      "promptTokEst": 8134,
       "filesReadKb": 0,
-      "inTokEst": 6357,
-      "outTok": 40441
+      "inTokEst": 8134,
+      "outTok": 72299
     }
   }
 }

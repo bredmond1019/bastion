@@ -14,3 +14,8 @@ Validated: gating checks (fast tripwire)
 What: Added --verbose (-v) and --json-logs global clap flags to Cli and wired observ::init_tracing at the top of main() before dispatch; 8 unit tests cover all flag-parsing paths
 Decisions: Used bool (not ArgAction::Count) for --verbose since the spec allows either and bool is simpler; the doc comment notes repeated -v is accepted but has same effect; Marked both flags as global = true so they work before or after any subcommand in the clap argv; Recorded smoke test in tasks.md Notes: tracing subscriber installs without panic but emits no events yet (those come in Task 4)
 Validated: gating checks (fast tripwire)
+
+## Task 4 — PASSED (1 attempt)
+What: Dispatch event instrumentation: every subcommand now emits start/outcome/duration events and top-level errors are mapped to C0xx codes via classify_error()
+Decisions: Extracted dispatch() async fn from main() so the instrumentation wrapper in main() is a clean single location rather than touching each command arm; classify_error() tries typed ConsoleError downcast first, then std::io::Error downcast, then keyword heuristics, defaulting to ErrorCode::InvalidInput (C006) for unclassifiable errors; cmd_name is resolved as &'static str before cli is moved into dispatch(), using map_or('tui', command_name) to handle the None/Tui case cleanly; anyhow's built-in termination handler prints the error and exits non-zero — emit_outcome is called before returning Err so no duplicate eprintln! is needed
+Validated: gating checks (fast tripwire)
