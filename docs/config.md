@@ -12,6 +12,19 @@ bastion resolves configuration from three layers, in descending precedence:
 2. **`~/.config/bastion/config.toml`** (or `$XDG_CONFIG_HOME/bastion/config.toml`)
 3. **Built-in defaults** (lowest precedence)
 
+## Global CLI flags
+
+These flags appear before the subcommand and apply to every invocation:
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--verbose` | `-v` | `false` | Raise log verbosity to DEBUG (default: INFO). Repeated use is accepted but has no additional effect. |
+| `--json-logs` | — | `false` | Emit structured JSON log lines to stderr instead of human-readable text. Useful for log aggregators or piping into `jq`. |
+
+Both flags are declared `global = true` in clap, so they work before or after any subcommand.
+
+The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called once at the top of `main()` before dispatch. The `RUST_LOG` environment variable overrides the level set by `--verbose` when both are present.
+
 ## Environment variables
 
 | Variable | Required | Default | Description |
