@@ -23,3 +23,6 @@ Validated: gating checks (fast tripwire)
 ## Task 5 — PASSED (1 attempt)
 What: Task 5 validation complete: all 4 gate checks pass (fmt/clippy/653 tests/release build); acceptance criteria confirmed and recorded in tasks.md notes.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: /Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/docs/config.md | Created: /Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/docs/observ.md

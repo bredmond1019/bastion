@@ -2,9 +2,9 @@
   "spec_slug": "7-A-observability-and-control",
   "branch": "7-A-observability-and-control-flow-2",
   "started_at": "2026-06-26T14:14:02Z",
-  "updated_at": "2026-06-26T14:34:55Z",
+  "updated_at": "2026-06-26T14:39:12Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2",
-  "status": "running",
+  "status": "docs",
   "current_task": 5,
   "tasks": {
     "1": {
@@ -97,13 +97,17 @@
     }
   },
   "review": {
-    "verdict": null,
+    "verdict": "PASS",
     "findings": [],
-    "attempts": 0
+    "attempts": 1
   },
   "docs": {
-    "changed": [],
-    "created": []
+    "changed": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/docs/config.md"
+    ],
+    "created": [
+      "/Users/brandon/Dev/agentic-portfolio/bastion/trees/7-A-observability-and-control-flow-2/docs/observ.md"
+    ]
   },
   "bail_reason": null,
   "pr": {
@@ -247,13 +251,29 @@
         "filesReadKb": null,
         "inTokEst": 592,
         "outTok": 3663
+      },
+      {
+        "label": "review-1",
+        "model": "sonnet",
+        "promptTokEst": 1016,
+        "filesReadKb": null,
+        "inTokEst": 1016,
+        "outTok": 3129
+      },
+      {
+        "label": "docs",
+        "model": "sonnet",
+        "promptTokEst": 580,
+        "filesReadKb": null,
+        "inTokEst": 580,
+        "outTok": 4598
       }
     ],
     "total": {
-      "promptTokEst": 9911,
+      "promptTokEst": 11507,
       "filesReadKb": 0,
-      "inTokEst": 9911,
-      "outTok": 79159
+      "inTokEst": 11507,
+      "outTok": 86886
     }
   }
 }
