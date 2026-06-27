@@ -7,6 +7,9 @@ layer: [console]
 project: bastion
 status: active
 timestamp: "2026-06-26"
+now: "phase11-blockC — WebSocket hub + live pane streaming (BastionUI priority)"
+next: "phase7-blockB exact costs → phase7-blockC budget+kill"
+blocked: [phase4-blockB-orch-D28-Ph4, phase4-blockC-orch-D28-Ph5]
 keywords: [project status, progress, phase blocks, bastion program, current focus]
 related: [context, master-plan, planning-index]
 ---
@@ -15,6 +18,40 @@ related: [context, master-plan, planning-index]
 
 **Last updated:** 2026-06-26 — phase11-blockB complete (PR #6 merged). Manual live testing + three bug fixes: status graceful degrade on missing DATABASE_URL, code graph skips trees/ worktrees, validate link checker suppresses backtick code spans. 771 tests pass.
 **Current focus:** Bastion-program track — **phase11-blockC** (WebSocket hub + live pane streaming; blockB shipped, blockC next for BastionUI priority). Phase 7 Block B (Vendor tiktoken counter → exact `bastion costs`) remains deferred.
+
+---
+
+## Momentum
+
+> Live queues (D30 / brain `docs/planning-conventions.md`). The `now`/`next`/`blocked` frontmatter
+> scalars above mirror the first three for glanceable cross-repo querying (Console Block V surfaces them).
+
+- **now** — phase11-blockC: WebSocket hub + live pane streaming + needs-input detection (the killer
+  phone-alert feature; the highest-risk component — keep the detect heuristic pure + fixture-tested).
+- **next** — phase7-blockB (vendor tiktoken counter → exact `bastion costs`, no deps) → phase7-blockC
+  (cost as a budgeted resource: `--watch`, alerts, `bastion kill`, pre-dispatch gate; D20 contract bump).
+- **blocked** — phase4-blockB (SSE streaming — orchestrator D28 Phase 4) · phase4-blockC (TUI node
+  re-run — orchestrator D28 Phase 5). Both wait on orchestrator-side capability, not bastion work.
+- **improve** — the 4 deferred phase6-blockC code-review findings (qualified symbol IDs → bastion D10,
+  grouped `use` imports not captured, `OnceLock` query hoisting, single-parse-tree sharing) · share one
+  pure `status.md` parser between the new CLI Block 7D and the serve Block 11D rather than duplicating ·
+  live render-path smoke test for `monitor` pending a Dockerized orchestrator stack.
+- **recurring** — per-block gated checks (`cargo fmt --check` / `clippy -- -D warnings` / `test` /
+  `build --release`) + manual smoke test recorded per Rule 6. *(Automated recurring loops — the
+  proactive scanner `bastion doctor`, Phase 10 Block A — are planned, not yet wired.)*
+
+## Metrics
+
+> Pragmatic D30 subset, hand-maintained. Period = since the last milestone refresh (2026-06-26).
+
+- **Blocks shipped this period:** phase11-blockA + phase11-blockB (serve scaffold + session REST).
+- **Tests:** 771 pass (net +118 over the 653 baseline at phase7-blockA).
+- **Intervention / retry rate:** most blocks PASS in 1–2 review attempts; no block has needed >2.
+- **Reusable assets created:** the `C0xx` error spine (7A, reused by 9B), the `BrainGraph` (6A, reused by
+  code-nav 6C), the serve scaffold + `serve-api.md` contract (11A, pinned by bastion-ui).
+- **Blocked count:** 2 (both orchestrator-gated, not bastion-actionable).
+- **Days since last new capability block:** phase11-blockB merged 2026-06-26.
+- **% of recent blocks ending with an explicit next action:** 100% (each `/log-work` sets the next block).
 
 ---
 
@@ -90,6 +127,7 @@ related: [context, master-plan, planning-index]
 | Block A | Tracing + `C0xx` structured-error spine | H | Done | C0xx error taxonomy vendored in `src/observ/errors.rs`; `CommandEvent` builder + `emit_start`/`emit_outcome` tracing shells; `--verbose`/`--json-logs` global clap flags; dispatch wrapped in start/outcome/duration event emission with `classify_error()`. 653 tests pass. PASS 2026-06-26. |
 | Block B | Vendor tiktoken counter → exact `bastion costs` | D | Not started | Swaps the Phase 2 Block B estimation core for exact counts. No deps. |
 | Block C | Cost as a budgeted resource: `--watch`, alerts, `bastion kill`, gate | I½ | Not started | Builds on 7A (7B strengthens). D25 — kill *triggers* an orchestrator abort endpoint; D20 contract bump. |
+| Block D | Console reads momentum & metrics (hybrid dashboard) | V | Not started | **New (north-star reorg 2026-06-27).** Reads D30 `status.md` scalars + Momentum/Metrics across the registry, read-only (D25). Needs the D30 sections stamped (brain HQ-Restructure) + 6B registry; share the pure parser with 11D. |
 
 #### Phase 8 — Client-grade Brain integrity (Wave 3)
 | Block | What | Prog. | Status | Notes |
@@ -107,6 +145,8 @@ related: [context, master-plan, planning-index]
 |---|---|---|---|---|
 | Block A | Proactive scanner → issue backlog | M | Not started | Builds on 7A + 8A. Writes an OKF issue backlog (dedup/priority/dismiss). Forward-looking. |
 | Block B | Findings → spec → draft PR via `sdlc-flow` (no auto-merge) | N½ | Not started | Builds on 10A. D25 — bastion *triggers* `sdlc-flow`; never authors/merges the PR. Cross-repo peer: base-template findings→spec entry point. Forward-looking. |
+| Block C | Incident & recovery harness — postmortem gen + records | Y½ | Not started | **New (north-star reorg 2026-06-27).** Realizes Harness HL5 — the one harness with no substrate. Incident records + postmortems over 7A events + 10A findings → preventative backlog. Builds on 7A + 10A. |
+| Block D | Autonomy/trust ladder — trust registry + earned promotion | X½ | Not started | **New (north-star reorg 2026-06-27).** Per-skill trust earned from eval outcomes (program Block U, orchestrator) gates how much of 7C/10A/10B may proceed (D25). Builds on program-U + 7C. |
 
 ### Phase 11 — BastionUI Console API (`bastion serve`) — independent parallel track (brain D28)
 | Block | What | Status | Notes |
@@ -124,6 +164,17 @@ related: [context, master-plan, planning-index]
 *Record deviations from the plan and notable in-flight choices here. Promote durable ones to
 `decisions/` via `/log-work`.*
 
+- **2026-06-27 — Aligned to the north-star umbrella reorg (master-plan + status).** The cross-repo
+  program master-plan (brain `planning/bastion-product/master-plan.md`) was reorganized around the north
+  star into capability tracks. Mirrored here **additively, nothing removed/renumbered** (the `phaseN-blockX`
+  convention is preserved): added a "North-Star Alignment (umbrella view)" section mapping bastion phases
+  → program tracks; added the **three new program blocks bastion now owns** — Phase 7 Block D (Console
+  reads momentum/metrics = program **V**), Phase 10 Block C (incident & recovery harness = program **Y½**),
+  Phase 10 Block D (autonomy/trust ladder = program **X½**) — with sequence-table rows + status rows
+  (all Not started). Added the D30 **Momentum + Metrics** sections to this file and the `now`/`next`/`blocked`
+  frontmatter scalars. The eval engine (program **U**) and external-intelligence loop (program **W**) stay
+  in the orchestrator, not bastion. This file is the worked reference the orchestrator + bastion-ui plan
+  reorgs copy.
 - **2026-06-26 — Three bugs found and fixed during manual live testing.** (1) `bastion status` now gracefully degrades when `DATABASE_URL` is missing or Postgres is unreachable — previously returned a hard error; added degradation path to `src/run/mod.rs`. (2) `bastion code --graph` was including trees/ and .git/worktrees/ in the workspace scan — added exclusion filter in `src/brain/code_graph.rs`. (3) `bastion validate --links` was flagging function/method names and keywords inside backticks as broken links (e.g. `` `Result::Ok` ``) — added backtick-span suppression in `src/validate/links.rs`. No architectural impact; local fixes only. All tests pass (771).
 - **2026-06-25 — Bastion-program track added to the master-plan (Phases 6–10).** Extracted bastion's execution slice of the reorganized cross-repo Bastion program (brain `planning/bastion-product/`, now 20 blocks A–S across 7 phases, governed by brain **D24** Python/Rust seam, **D25** read-only-state/triggered-mutations, **D26** Bastion-the-system naming + demand-first ordering + code-aware Brain + MCP client/server split). Pulled in all 11 bastion-touching blocks (program A, C½, Q, H, D, I½, K, E½, F, M, N½), organized into bastion Phases 6–10 mapped one-to-one onto program **Waves 1–5** (demand-first, *not* moat-first). Excluded as non-bastion: program B, J, L, O, P, R, S (orchestrator/brain) and G (loop-proof — coordinated from bastion, artifact in the brain's `docs/content/`). Notable cross-repo seams to honor: D25 (kill + self-healing PR *trigger* the Engine/Factory, bastion never mutates), D20 contract bump for the abort/budget-gate endpoints (Phase 7 Block C), and single-vendor of the `C001–C014` error taxonomy in Phase 7 Block A (reused by Phase 9 Block B). An earlier moat-first Phase 6/7 draft was discarded and regenerated against the new source. First runnable block: **phase6-blockA**.
 - **2026-06-21 — Orchestrator D28 confirmed landed → phase1-blockB unblocked.** Verified in `../python-orchestration-system` that the monitor's read contract is now fully satisfied on the orchestrator side: (1) incremental node-level persistence — `Workflow.run()` takes an `on_progress` callback (`app/core/workflow.py:126,158,168`) the worker wires to `persist_progress` (`app/worker/tasks.py:52`), so `task_context.node_runs` is now written at every node boundary, not only at terminal completion (the original D2/D28 gate); (2) per-node status/timing/input/output/token stamping in `core/task.py` + `nodes/agent.py` + `nodes/tool_use.py`; (3) DAG edges via `GET /workflows` + `GET /workflows/{type}/graph` (`app/api/graph.py`). Orchestrator status log records D28 "Done (2026-06-20)" — all 8 tasks merged via /sdlc-block, 244 tests. D28 Phases 4 (status column) and 5 (SSE push) remain deferred *by original scope* and do not block Block B (the 2s poll over incremental Postgres state is exactly what D2/D3 designed for). bastion **D2** gate lifted. Consumed + deleted `planning/handoff.md`.

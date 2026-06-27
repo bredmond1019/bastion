@@ -29,7 +29,7 @@ bastion has **two surfaces** under one roof (brain D21 / bastion D4):
 1. **Workflow observability** (`monitor`, `inspect`, `costs`, `run`) — reads the orchestrator's PostgreSQL state. The phases below (0–4) build this. Phase 1 is gated by D2.
 2. **Process / session control** (`status`, `sessions` family) — shells out to tmux to manage the long-running Claude Code sessions on the Mac Mini. Phase 5 builds this. It depends on neither Postgres nor the orchestrator and is therefore an **independent, ungated track** — workable at any time, accessible from desktop or phone via SSH over Tailscale.
 
-A third track (**Phases 6–10**) is bastion's slice of the **Bastion program** — the five-layer
+A third track (**Phases 6–11**) is bastion's slice of the **Bastion program** — the five-layer
 practice OS planned in the brain at `planning/bastion-product/` and governed by brain decisions
 **D24** (the Python/Rust seam — Rust harvested as a tested parts-bin, never a second engine), **D25**
 (bastion stays **read-only** for state; every mutation — abort, PR — is *triggered* through the Engine
@@ -51,6 +51,44 @@ bastion's server-side slice of the separate **BastionUI** cross-repo program (br
 `planning/bastion-ui/master-plan.md`, governed by brain **D28**, upholding **D21**/**D25**). It is
 fully independent of Phases 0–10 — additive, touching only a new `src/serve/` module — and runs in
 parallel with current work.
+
+## North-Star Alignment (umbrella view)
+
+> **Added 2026-06-27.** The cross-repo program master-plan was reorganized around the
+> [north star](file:///Users/brandon/Dev/agentic-portfolio/planning/hq-restructure/north-star.md) into
+> **capability tracks** (see `planning/bastion-product/master-plan.md`). This section maps **bastion's
+> phases onto those tracks** so the two plans read as one — **nothing here is removed or renumbered**;
+> the phase/block structure below is load-bearing (the `phaseN-blockX` convention `/generate-tasks`
+> parses) and stays exactly as is. This is just the *capability lens* over it, plus the new program
+> blocks bastion now owns. **This file is the worked reference the orchestrator + bastion-ui reorgs copy.**
+
+**bastion phase → program capability track:**
+
+| bastion phase | Program capability track | What bastion owns in it |
+|---|---|---|
+| Phase 6 (Brain & code retrieval) | **Track 1 — Brain: Context & Memory** | structural graph queries (docs + code), multi-workspace reader |
+| Phase 7 (Observability & control) | **Track 2 — Console: Observe, Cost & Control** | the tracing/`C0xx` spine, exact cost, budget+kill, **+ the momentum/metrics surface (new Block V)** |
+| Phase 8 (Brain integrity) | **Track 3 — Verification & Brain Integrity** | deterministic integrity validation (the hard anti-hallucination layer) |
+| Phase 9 (Protocol & local) | **Track 2 — Console** (protocol/local) | the MCP **client** half, the Rust local-model node |
+| Phase 10 (Self-healing loop) | **Track 4 — Self-Improvement & Self-Healing** + **Track 5/6** | proactive scanner + self-healing-PR trigger, **+ the incident harness (new Block C) and the autonomy/trust-ladder half (new Block D)** |
+| Phase 11 (`bastion serve`) | **BastionUI sub-program** (umbrella §Surface) | the Console network face the Flutter Surface pins |
+
+**In-flight vs queued (bastion's program-track slice — authoritative status in `status.md`):**
+- **🟢 Done:** Phase 6 A/B/C (graph, multi-workspace, code-nav) · Phase 7 A (tracing/`C0xx` spine) ·
+  Phase 11 A/B (serve scaffold + session REST).
+- **🟡 In flight:** Phase 11 C (WS hub — current focus) · Phase 7 B (exact `costs`) deferred-but-next.
+- **⚪ Queued:** Phase 7 C (budget+kill) · Phase 7 **D (momentum/metrics surface — new)** · Phase 8 A
+  (integrity) · Phase 9 A/B (MCP client, local model) · Phase 10 A/B (scanner, self-healing PR) ·
+  Phase 10 **C (incident harness — new)** · Phase 10 **D (trust ladder — new)** · Phase 11 D–I.
+
+**The north-star tracks bastion owns** (its deterministic, model-free substrate, D25 read-only/trigger):
+observability + exact cost + the kill switch (Phase 7), the structural graph + code navigation
+(Phase 6), Brain-integrity validation (Phase 8), the MCP client + local-model node (Phase 9), the
+proactive scanner that *triggers* self-healing PRs (Phase 10), and — **new from the umbrella reorg** —
+the **incident & recovery harness** (program Block Y), the **momentum/metrics Console surface** (program
+Block V), and **bastion's half of the autonomy/trust ladder** (program Block X). The three new blocks are
+specified in their phases below and added to the sequence table; the eval engine (program Block U) and
+external-intelligence loop (program Block W) stay in the **orchestrator**, not here.
 
 ## Architecture / Design Overview
 
@@ -288,9 +326,9 @@ Build order is strict and incremental — each verb ships only when reached for.
 
 ---
 
-## Bastion-program track (Phases 6–10) — orientation
+## Bastion-program track (Phases 6–11) — orientation
 
-Phases 6–10 are **bastion's execution slice of the cross-repo Bastion program** (brain
+Phases 6–11 are **bastion's execution slice of the cross-repo Bastion program** (brain
 `planning/bastion-product/master-plan.md`). That program is wave-ordered **demand-first** (D26) across
 five repos and uses global block letters **A–S**; the blocks whose execution home is the Console land
 here. Each bastion phase below corresponds to one program **wave**, and each block notes its **program
@@ -310,6 +348,15 @@ Cross-cutting rules for this whole track:
 - Several blocks are the **bastion half of a cross-repo block**; their orchestrator/base-template peer
   is called out under *Out of scope* as a prerequisite for the combined claim. The bastion half is
   authored to be independently shippable.
+- **North-star block-contract trio (added 2026-06-27).** Every program-track capability block (Phases
+  6–11) carries three north-star fields before its *Acceptance criteria* — **Ratchet** (the reusable
+  asset it leaves behind), **Eval slice** (the eval domain it feeds in the orchestrator's eval engine,
+  program Block U — or "n/a — deterministic acceptance only"), and **Ladder rung** (its position on
+  solve→repeatable→skill→workflow→harness→eval→automation→monitor→trust→package). These mirror the
+  fields the brain `/generate-master-plan` command was extended with (see
+  `planning/bastion-product/master-plan.md`); a block is "done" only when it graduates a rung and leaves
+  a ratchet behind. The pre-program Phases 0–5 (the original bastion CLI) predate this convention and
+  are left as-is.
 
 > Distant blocks (Phases 8–10) carry the full skeleton but are **forward-looking** — expect their
 > Files / interface lines to need refinement when each becomes next.
@@ -348,6 +395,12 @@ later, from source.
   / program Block B — stays Python). No semantic+structural merge into one ranked answer (the query
   router — a later per-consumer decision). No code graph yet (Block C). No integrity checks yet (Phase
   8). Source repo `workflow-engine-rs` is read-only.
+- **Ratchet:** the vendored Dgraph-free `knowledge_graph` query layer + the OKF→graph builder
+  (`src/brain/`) — the structural-retrieval engine Blocks B/C and Phase 8 reuse.
+- **Eval slice:** structural-retrieval correctness (dependents / blast-radius / lineage) over the OKF
+  fixture — feeds the structural domain of program Block U.
+- **Ladder rung:** solve→repeatable→skill→workflow — a reusable Console structural-query capability
+  (rung 4).
 - **Acceptance criteria:** `bastion brain` returns correct dependents/lineage for a known OKF node (e.g.
   D20's dependents match its stated relations); the graph is built from the live brain repo corpus; the
   vendored crate compiles with **no** Dgraph dependency; per CLAUDE.md Rule 6 the pure OKF→graph builder
@@ -376,6 +429,13 @@ later, from source.
   both, but this half is independently shippable). De-opinionating the OKF format. Multi-brain switching
   UX beyond name selection. Packaging/install. **Cross-repo prerequisite:** program Block B (semantic
   store) for the semantic half; this block is structural-only.
+- **Ratchet:** the workspace-root resolver + the shared "knowledge workspace" convention (the bastion
+  half) — reused by code corpora (Block C), the momentum surface (Phase 7 Block D), and per-client
+  sub-brains.
+- **Eval slice:** portability — graph correctness over a second, non-repo OKF workspace — a program
+  Block U domain.
+- **Ladder rung:** skill→workflow — generalizes the graph reader from one hardcoded root into a
+  parameterized capability (rung 4).
 - **Acceptance criteria:** the bastion graph reader indexes and answers over a **second**, non-repo OKF
   workspace selected by `--workspace` / config; the default still resolves to the brain repo; a
   portability fixture is covered; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
@@ -399,6 +459,11 @@ later, from source.
 - **Out of scope:** Semantic "how does X work" code search (program Block P — Engine/Python). Cross-repo
   refactoring or edits. Whole-repo call-graph completeness for every language (scope to the project's
   primary languages; note coverage). Source repo `workflow-engine-rs` read-only.
+- **Ratchet:** the code-graph builder (`src/brain/code*.rs`) over Block A's algorithms — exact
+  symbol/def/refs as a reusable, model-free Console capability (the deterministic twin of program
+  Block P).
+- **Eval slice:** structural code-nav correctness (def / refs / dependents) — a program Block U domain.
+- **Ladder rung:** skill→workflow — the deterministic code-navigation capability (rung 4).
 - **Acceptance criteria:** `bastion` returns the correct definition + references for a known symbol in a
   target repo and answers a code-dependents query over the fixture; extraction respects
   function/class/symbol boundaries; per Rule 6 the pure extraction/graph logic is unit-tested and the
@@ -434,6 +499,12 @@ circuit breakers + metrics). Per D25, control actions *trigger* the Engine; they
 - **Out of scope:** Distributed tracing / OpenTelemetry export (later, only if a backend is stood up).
   Orchestrator-side tracing (the Engine owns its own). A metrics backend/dashboard. Source repo
   read-only.
+- **Ratchet:** the `tracing` spine + the vendored `C0xx` taxonomy (`src/observ/`) — the structured
+  event stream every later block (cost, kill, scanner, incidents) emits into; vendored **once** here,
+  reused thereafter.
+- **Eval slice:** n/a — deterministic acceptance only (event-emission + error-code-mapping tests).
+- **Ladder rung:** solve→repeatable→skill — the foundational observability skill the whole track builds
+  on (rung 3).
 - **Acceptance criteria:** every subcommand emits a structured start/outcome/duration event; errors
   carry a `C0xx` code + context; `--json-logs` produces machine-parseable output; the vendored taxonomy
   compiles in bastion; per Rule 6 event-emission and error-code mapping are unit-tested; gated checks
@@ -454,6 +525,11 @@ circuit breakers + metrics). Per D25, control actions *trigger* the Engine; they
   change (read path).
 - **Out of scope:** Re-pricing logic / new pricing tables beyond what `bastion costs` has. Budget
   enforcement, `--watch`, kill (Block C). Source repo read-only.
+- **Ratchet:** the vendored exact token counter (`src/costs/tokens.rs`) — a reusable exact-cost
+  primitive for `costs`, the budget gate (Block C), and the cost-to-success metric (program Block U).
+- **Eval slice:** n/a — deterministic acceptance only (exact-count parity test); feeds cost-to-success
+  in program Block U.
+- **Ladder rung:** solve→repeatable — swaps estimation for an exact, reusable counter (rung 2).
 - **Acceptance criteria:** `bastion costs` reports counts that **match** the tiktoken encoders for a
   known input (exact, not estimated); a unit test asserts exact-count parity on a fixed sample
   (element-level); the vendored counter compiles in bastion; gated checks pass (`cargo fmt --check`,
@@ -477,11 +553,54 @@ circuit breakers + metrics). Per D25, control actions *trigger* the Engine; they
   I orchestrator half — the enforcement point; this block is the Console surface + trigger). Per-client
   billing. Direct Celery/Redis manipulation by bastion (D2/D25 — the Engine owns the abort). Silent
   auto-kill.
+- **Ratchet:** the budget-gate + kill-switch surface + the two D20 contract additions (abort endpoint +
+  budget field) — the first real *gated action* the trust ladder (Phase 10 Block D) attaches to.
+- **Eval slice:** control-action correctness (gate honored, kill reaches terminal state) — a
+  policy/safety slice for program Block U.
+- **Ladder rung:** workflow→automation→monitor — closes observe→cap→stop spend (rung toward automation +
+  monitor; earned auto-proceed comes via Phase 10 Block D).
 - **Acceptance criteria:** `bastion costs --watch` shows live spend; crossing a threshold emits an alert
   event; `bastion kill <run>` aborts via the orchestrator endpoint and the run reaches terminal state in
   `node_runs`; `bastion run` honors the budget gate; the pure budget/gate logic is unit-tested per Rule
   6 and the contract additions are recorded in `data-contract.md`; gated checks pass (`cargo fmt
   --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+### Block D — Console reads momentum & metrics (the hybrid dashboard surface) *(program Block V)* *(new — north-star)*
+- **What:** Surface the **D30 momentum queues** (now/next/blocked/improve/recurring) + the **Metrics**
+  block across every workspace's `status.md` — reading the **frontmatter scalars** (`now`/`next`/`blocked`)
+  for a glanceable cross-repo view and the body sections for detail. Extend `bastion status` (or a
+  `bastion status --momentum` / `bastion momentum`) to answer "what's in flight, what's blocked, where is
+  momentum" across the whole registry in one place.
+- **Why:** Program Wave 2 (✲, pull forward once ≥3 repos carry the D30 sections). north-star §"The
+  interface should answer these questions immediately." The D30 scalars were designed
+  **queryable-but-not-embedded** precisely so a Console surface can sort across repos from the YAML head
+  cheaply. Read-only (D25) — `/log-work` writes the queues; bastion only reads them.
+- **Files:**
+  - *New* `src/momentum/mod.rs` (subcommand/flag entry), `src/momentum/parse.rs` (pure `status.md`
+    frontmatter-scalar + Momentum/Metrics section parser → typed rollup), `src/momentum/render.rs`
+    (pure cross-repo table render)
+  - *Modified* `src/cli.rs` (`status --momentum` / `momentum` surface), `src/main.rs` (dispatch),
+    `src/config.rs` (reuse `load_workspace_registry` for the repo list)
+  - *(Reuse opportunity: Phase 11 Block D builds a `status.md` parser in `src/serve/status/repo.rs` —
+    share the pure parser between the CLI surface and the serve surface rather than duplicating it.)*
+- **Interfaces / shared surface:** Consumes the **D30 `status.md` frontmatter scalars + body sections**
+  (read-only) + the workspace registry (multi-workspace Brain, Phase 6 Block B). Produces no mutation.
+- **Out of scope:** Writing/mutating the queues (D25 — that's `/log-work`, brain HQ-Restructure Block J).
+  Metrics *computation* beyond reading the section. The serve/HTTP projection of momentum (a later Phase
+  11 surface if wanted).
+- **Depends on:** the D30 convention stamped across repos (brain HQ-Restructure Thread 1 / Block Q);
+  Phase 6 Block B (the workspace registry) — light.
+- **Ratchet:** the cross-repo momentum/metrics rollup surface (`src/momentum/`) — the glanceable
+  operational dashboard over the D30 scalars; its pure parser is shared with Phase 11 Block D's serve
+  surface.
+- **Eval slice:** n/a — deterministic acceptance only (output matches source `status.md` fixtures).
+- **Ladder rung:** skill→workflow→monitor — turns the D30 scalars into a monitored cross-repo view
+  (rung toward monitor).
+- **Acceptance criteria:** `bastion status --momentum` (or `bastion momentum`) lists each registry repo's
+  now/next/blocked from frontmatter and rolls up the Metrics sections; output matches the source
+  `status.md` files on a fixture; per Rule 6 the pure parse/render logic is exhaustively unit-tested and
+  the file-walk shell smoke-tested + recorded; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D
+  warnings`, `cargo test`, `cargo build --release`).
 
 ---
 
@@ -509,6 +628,12 @@ and the Rust graph code already supports it. Forward-looking — refine Files wh
 - **Out of scope:** LLM-judged *semantic* contradiction (this block is deterministic/structural only;
   fuzzy contradiction detection is a later LLM-assisted refinement — program Block L, Engine-side).
   Auto-fixing (Phase 10). Answer-time grounding (program Block L). **Depends on** Phase 6 Block A.
+- **Ratchet:** `bastion validate --integrity` + the structured integrity-findings record — the hard,
+  deterministic anti-hallucination corpus check that feeds the Phase 10 self-healing loop.
+- **Eval slice:** integrity-check precision (zero false positives on a curated fixture) — a program
+  Block U domain.
+- **Ladder rung:** skill→workflow→eval — the deterministic verification skill that licenses
+  self-healing (rung 6).
 - **Acceptance criteria:** `bastion validate --integrity` reports broken links, orphans, stale refs, and
   structurally-contradictory decisions over the live brain with **zero false positives** on a curated
   fixture; PageRank / community outputs are exposed; the findings record is documented as the Phase 10
@@ -539,6 +664,10 @@ path). Forward-looking — refine Files when each becomes next.
   prerequisite for the end-to-end Brain-query claim; this block targets the crate's example servers for
   acceptance). Wiring specific brain tools. Auth beyond what the vendored client provides. Source repo
   read-only.
+- **Ratchet:** the vendored multi-transport MCP client (`src/mcp/`) — the reusable protocol/tool client
+  for the Console, ready when the Brain-as-MCP-server (program Block R) lands.
+- **Eval slice:** MCP transport round-trip success — a protocol slice for program Block U.
+- **Ladder rung:** solve→repeatable→skill — a reusable protocol-client skill (rung 3).
 - **Acceptance criteria:** bastion connects to an MCP example server over at least one transport and
   lists/invokes a tool; the vendored client compiles in bastion; a transport round-trip test passes
   (mock or example server); gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
@@ -565,6 +694,11 @@ path). Forward-looking — refine Files when each becomes next.
   service. Option D's compile-to-Rust runtime. **Replacing** the existing Claude-Code-session path in
   `bastion ask` (the local path is additive, flag-selected). Re-vendoring the error taxonomy (reuse
   Phase 7 Block A). Source repo read-only.
+- **Ratchet:** the Rust local-model runner + local SQLite conversation store
+  (`src/sessions/local_model.rs` + `memory.rs`) — a Python-free offline brain for the Console.
+- **Eval slice:** local-model answer quality vs. the cloud path (a small parity slice) — a program
+  Block U domain.
+- **Ladder rung:** solve→repeatable→skill — a reusable local-inference skill (rung 3).
 - **Acceptance criteria:** `bastion ask` answers a one-turn prompt against a local model with **no**
   Python process involved; conversation history persists in local SQLite across turns; per Rule 6 the
   pure logic (command/arg construction, typed parse, SQLite query/serialization) is exhaustively
@@ -599,6 +733,11 @@ Forward-looking — refine Files when each becomes next.
 - **Out of scope:** Fixing anything (Block B). Scanning external/non-brain repos beyond health status.
   Auto-triage of fuzzy findings (human-triaged in the backlog). **Depends on** Phase 7 Block A
   (events) + Phase 8 Block A (integrity findings).
+- **Ratchet:** the proactive scanner + the persistent OKF issue backlog (`src/doctor/`) with
+  dedup/priority/dismiss — the standing *detector* half of self-healing (a D30 `improve`-queue feeder).
+- **Eval slice:** scanner precision + dedup correctness — a program Block U domain.
+- **Ladder rung:** workflow→automation→monitor — a scheduled monitor over corpus + repo health
+  (rung 8).
 - **Acceptance criteria:** a scheduled run produces a deduped, prioritized backlog; re-running does not
   duplicate open findings; dismissed/deferred findings stay suppressed; per Rule 6 dedup + dismissal
   logic is unit-tested; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
@@ -622,11 +761,88 @@ Forward-looking — refine Files when each becomes next.
   (program Block N base-template half — the Factory-side prerequisite). Auto-merge (human reviews every
   self-healing PR — D25). Fixes outside what `sdlc-flow`'s review gate can verify. Fuzzy/ambiguous
   findings (only clear-cut items are auto-specced). **Depends on** Phase 10 Block A.
+- **Ratchet:** the findings→spec→`sdlc-flow` dispatch (`src/doctor/dispatch.rs`) + the backlog↔PR link —
+  the closing *fixer* half of the self-heal loop, reusing the audited PR engine (not reimplementing it).
+- **Eval slice:** self-healing-PR success rate (review-gate-passing draft PRs from clear-cut findings) —
+  a program Block U domain, gated by the loop.
+- **Ladder rung:** automation→trust — automated fix *proposal* under mandatory human review (rung 7;
+  earned auto-proceed for low-risk classes comes via Phase 10 Block D, never here).
 - **Acceptance criteria:** a seeded clear-cut finding produces a draft PR through `sdlc-flow` with the
   review gate passing in the target repo; the PR is labeled self-healing and linked to its backlog item;
   a landed fix closes the item so it is not re-proposed; bastion performs no direct merge (D25 upheld);
   per Rule 6 the pure findings→spec + link logic is unit-tested; gated checks pass (`cargo fmt --check`,
   `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+### Block C — Incident & recovery harness: postmortem generation + incident records *(program Block Y, bastion half)* *(new — north-star)*
+- **What:** Build the genuinely-new piece of the **Incident & Recovery harness** (program Harness HL5):
+  structured **incident records** (severity · timeline · impacted goals/tasks · root cause · remediation ·
+  preventative improvement) + **automated postmortem generation**, built on the Phase 7 Block A error
+  spine and the Phase 10 Block A scanner. Closes the loop: detection → incident → postmortem →
+  preventative backlog item → fix (Block B).
+- **Why:** Program Wave 5. north-star Layer K + §"Incident and recovery harness" — the one harness with
+  **no current substrate**. Severity/timeline/postmortem discipline turns failures into guardrails (the
+  north-star *failure loop*: a failure that recurs should be much harder to repeat undetected).
+- **Files:**
+  - *New* `src/doctor/incident.rs` (pure incident-record construction over `observ` events + Block A
+    findings; postmortem-markdown generation), `src/doctor/fixtures/` (seeded failure fixtures)
+  - *Modified* `src/doctor/mod.rs` (wire incident detection into the scan), `src/doctor/backlog.rs`
+    (emit a preventative backlog item per incident), `src/cli.rs` (a `doctor --incidents` / report surface)
+- **Interfaces / shared surface:** Consumes Phase 7 Block A structured events (`C0xx`) + Phase 10 Block A
+  findings. Produces incident OKF records + postmortems feeding the D30 `improve` queue and Block B. The
+  incident record is HL5's structured artifact.
+- **Out of scope:** External paging/alerting integrations (PagerDuty etc.). Auto-remediation (human
+  reviews every fix — D25). The base-template preventative-fix path (that's Block B / program Block N).
+  **Depends on** Phase 7 Block A + Phase 10 Block A.
+- **Ratchet:** the Incident & Recovery harness (program HL5) — structured incident records + automated
+  postmortem generation (`src/doctor/incident.rs`); turns failures into guardrails (the failure loop).
+- **Eval slice:** incident-harness domain (record completeness, postmortem quality, repeat-failure
+  detection) — a program Block U domain.
+- **Ladder rung:** harness→monitor — builds the one harness with no current substrate, wired into the
+  incident loop (rung 5→8).
+- **Acceptance criteria:** a seeded failure produces an incident record with severity/timeline/root-cause
+  + a generated postmortem + a preventative backlog item linked into Block A; per Rule 6 the pure
+  incident-construction + postmortem-render logic is unit-tested against fixtures; gated checks pass
+  (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
+
+### Block D — Autonomy / trust ladder: trust registry + earned promotion *(program Block X, bastion half)* *(new — north-star)*
+- **What:** The Console half of the **autonomy/trust ladder**: a **per-skill / per-domain trust
+  registry** (supervised → guided → autonomous → trusted) with promotion *and demotion* rules **earned
+  from measured outcomes** (eval pass-rate, intervention rate, regression history — from the orchestrator
+  eval engine, program Block U), never hand-declared. The registry is the gate the cost/kill action
+  (Phase 7 Block C), the scanner (Block A), and the self-healing trigger (Block B) consult before acting.
+  Destructive / security / deploy / trust-threshold changes stay **deny-first** and always require human
+  approval (D25).
+- **Why:** Program Wave 5. north-star Layer H + the trust loop — "per-skill trust is better than one
+  global autonomy switch." Today D25 is binary at the seam (trigger vs perform); this adds the graduated,
+  outcome-driven ladder so a proven-safe low-risk action class can proceed on its own, *safely*.
+- **Files:**
+  - *New* `src/trust/mod.rs` (registry entry/lookup), `src/trust/registry.rs` (pure trust-level model +
+    promotion/demotion rules over recorded outcomes), `src/trust/gate.rs` (pure "may this action proceed
+    at this level?" decision)
+  - *Modified* `src/cli.rs` (`bastion trust` inspect surface), `src/run/kill.rs` + `src/doctor/dispatch.rs`
+    (consult the gate before acting), `src/config.rs` (registry persistence path)
+- **Interfaces / shared surface:** Consumes the orchestrator eval-engine outcome signals (program Block U
+  — the only legitimate promotion source) and Phase 7 Block A events. Produces a **trust-level field** the
+  gated actions read. May add a trust-level field to the D20 contract (bump per protocol) if the Engine
+  enforces it server-side.
+- **Out of scope:** The orchestrator's dispatch-side enforcement + the eval engine itself (program Block X
+  orchestrator half + Block U — separate repo; this is the Console registry + gate, independently
+  shippable as a read/inspect surface). Auto-trusting destructive/security/deploy actions (always
+  human-approved). A human-RBAC/identity system (Phase 11 serve auth handles operator identity).
+- **Depends on:** program Block U (eval outcomes, orchestrator) for live promotion; Phase 7 Block C (the
+  first real gated action to attach a level to); D25.
+- **Ratchet:** the per-skill / per-domain trust registry + earned promotion/demotion policy
+  (`src/trust/`) — the governance gate the cost/kill (Phase 7 Block C), scanner (Block A), and self-heal
+  (Block B) actions consult before acting.
+- **Eval slice:** promotion correctness (outcomes promote; regressions demote; high-risk stays
+  deny-first) — a policy/safety slice for program Block U.
+- **Ladder rung:** trust — converts measured program-Block-U outcomes into earned, leveled autonomy
+  (rung 9), never hand-declared.
+- **Acceptance criteria:** a skill/domain accrues a trust level from recorded outcomes; crossing a
+  threshold changes gate behavior (e.g. guided→autonomous lets a specific low-risk action proceed without
+  prompt) in a test; a regression *demotes* the level in a test; high-risk tiers still require approval
+  regardless of level; per Rule 6 the pure registry/gate logic is exhaustively unit-tested; gated checks
+  pass (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
 
 ---
 
@@ -674,6 +890,12 @@ Forward-looking — refine Files when each becomes next.
   block and every `bastion-ui` block reads/extends. Reuses `observ` for error mapping.
 - **Out of scope:** any session/status/action endpoints (later blocks); the real WS hub (Block C); all
   Flutter work (lives in `bastion-ui`).
+- **Ratchet:** the `bastion serve` scaffold + the versioned `docs/serve-api.md` contract — the
+  load-bearing producer every later serve block and every `bastion-ui` block pins against.
+- **Eval slice:** n/a — deterministic acceptance only (boot + health + `/ws` echo + auth; runtime-spike
+  outcome documented).
+- **Ladder rung:** solve→repeatable→skill — stands up the reusable network-face skill for the Console
+  (rung 3).
 - **Acceptance criteria:** `bastion serve` boots, serves `GET /health` + a `/ws` echo over a tailnet
   bind with mandatory bearer middleware; the runtime-spike outcome is documented; `docs/serve-api.md`
   v0 committed; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`,
@@ -696,6 +918,12 @@ Forward-looking — refine Files when each becomes next.
   `pub` tmux fns (D21).
 - **Out of scope:** live streaming + needs-input detection (Block C); any Flutter UI.
 - **Depends on:** Block A.
+- **Ratchet:** the session REST surface (`src/serve/handlers/sessions.rs`) + the reusable
+  `send_named_key`/`send_named_keys` helper (closes the verified Esc/arrows/bare-Enter gap) —
+  serve-api.md v0.1.
+- **Eval slice:** n/a — deterministic acceptance only (`*_args` + DTO-serde unit tests; live `curl`
+  smoke).
+- **Ladder rung:** skill→workflow — the remote session-control capability (rung 4).
 - **Acceptance criteria:** `curl` against a live server lists sessions, reads a pane, sends keys, sends
   `Escape`, creates and kills a session; per Rule 6 the `*_args` + DTO-serde logic is unit-tested;
   gated checks pass.
@@ -723,6 +951,12 @@ Forward-looking — refine Files when each becomes next.
   - **Keep-alive checker with pluggable failure handler** (`KeepAliveChecker` + `FailKeepAliveChecker`) — a timer monitors last-seen timestamp; on timeout delegates to a failure handler. Direct analogue for detecting dead Flutter connections and cleaning up poll tasks.
   - **Message type dispatch** (`ZoomRtmsMessageTypes` + `react_to_message` per connection class) — clean enum-keyed dispatch that maps directly to our frame union in `dto.rs`.
   - **Runner lifecycle** (`runner.rb`) — `Success`/`Failure` result types, ensure-block cleanup, retry-on-exception vs. no-retry-on-known-failure distinction. Mirrors what `ws/server.rs` needs for per-connection lifecycle.
+- **Ratchet:** the WebSocket hub + the **pure** needs-input `detect.rs` heuristic (fixture-tested so a
+  Claude-TUI layout drift is a one-fixture fix) — serve-api.md v0.2.
+- **Eval slice:** needs-input detection precision/recall over captured-pane fixtures — a self-contained
+  detector eval (a program Block U candidate domain).
+- **Ladder rung:** skill→workflow→monitor — live pane streaming + the killer needs-input alert (rung
+  toward monitor).
 - **Acceptance criteria:** `websocat` subscribes to a pane and receives live `pane` pushes; sending keys
   + `Escape` over the socket lands in the session; a session on a permission prompt produces
   `event{needs_input}`; per Rule 6 the diff/seq + detect logic is unit-tested (the actor/poll I/O shell
@@ -745,6 +979,12 @@ Forward-looking — refine Files when each becomes next.
   conventions. **Produces** status routes + events in `serve-api.md` v0.3.
 - **Out of scope:** Engine/orchestrator run state from Postgres (Block G); Flutter rendering.
 - **Depends on:** Block A; the topic/poll plumbing from Block C.
+- **Ratchet:** the pure `status.md` / `handoff.md` / `sdlc-flow-state.json` parsers + the status routes
+  — serve-api.md v0.3; the `status.md` parser is shared with Phase 7 Block D's CLI surface.
+- **Eval slice:** n/a — deterministic acceptance only (parser fixtures + a simulated flow-state
+  transition).
+- **Ladder rung:** skill→workflow→monitor — "where does everything stand" surfaced + the
+  `workflow_done` event (rung toward monitor).
 - **Acceptance criteria:** `curl /repos` returns every registry repo with its focus line; a simulated
   `sdlc-flow-state.json` transition produces a `workflow_done` event over the socket; per Rule 6 the
   parser logic is fixture-tested; gated checks pass.
@@ -765,6 +1005,11 @@ Forward-looking — refine Files when each becomes next.
 - **Out of scope:** the command list itself (app-side config in `bastion-ui`); Engine workflow triggers
   (Block G).
 - **Depends on:** Block B, Block C.
+- **Ratchet:** the quick-action inject/spawn endpoint (`src/serve/handlers/actions.rs`) — serve-api.md
+  v0.4; turns frequent slash-commands into one-tap remote triggers in both modes.
+- **Eval slice:** n/a — deterministic acceptance only (request-parse/dispatch unit tests; spawn I/O
+  smoke).
+- **Ladder rung:** skill→workflow — remote one-tap action triggers (rung 4).
 - **Acceptance criteria:** an inject call lands a command in a named session; a spawn call creates a
   session with the chosen model and returns its id; per Rule 6 the request-parse/dispatch logic is
   unit-tested (spawn I/O smoke-tested + recorded); gated checks pass.
@@ -784,6 +1029,12 @@ Forward-looking — refine Files when each becomes next.
   decision.
 - **Out of scope:** any new endpoints; Flutter polish.
 - **Depends on:** Blocks B, C, D, E.
+- **Ratchet:** the frozen `serve-api.md` v1.0.0 contract + the mutating-action audit log + the
+  bastion-local serve-api decision — the stable Surface contract and the security posture for daily use.
+- **Eval slice:** n/a — deterministic acceptance only (refuse-without-token, reject-unauthenticated,
+  audit-log tests).
+- **Ladder rung:** workflow→package — freezes + packages the v1 Console network API (rung toward
+  package).
 - **Acceptance criteria:** the server refuses to start (or rejects all requests) without a token set;
   unauthenticated requests are rejected; mutating actions are audit-logged; man page + README updated;
   `serve-api.md` v1.0.0 committed; gated checks pass.
@@ -802,6 +1053,10 @@ Forward-looking — refine Files when each becomes next.
   Postgres; **produces** Engine-workflow routes in a later `serve-api.md` version.
 - **Out of scope:** push-based mid-run DAG streaming; Flutter UI (`bastion-ui` Phase 5).
 - **Depends on:** the orchestrator's **Block I** (abort endpoint — its Wave 2); the v1 server (Blocks A–F).
+- **Ratchet:** the generic Engine "workload" DTO + Engine-workflow routes over `serve` — brings the
+  Engine into the same mobile gateway (consuming the orchestrator's Block I abort).
+- **Eval slice:** n/a — deterministic acceptance only (trigger / inspect / kill of a run over serve).
+- **Ladder rung:** skill→workflow — extends the gateway to Engine control (rung 4).
 - **Acceptance criteria:** trigger + inspect + kill of an orchestrator run work over `serve`; per-node
   state renders; gated checks pass.
 
@@ -816,6 +1071,11 @@ Forward-looking — refine Files when each becomes next.
   `serve-api.md` version.
 - **Out of scope:** Ollama/Anthropic-API-direct backends (rejected); the Flutter chat UI.
 - **Depends on:** the v1 WebSocket foundation (Block C).
+- **Ratchet:** a `serve` chat topic backed by the Claude Code SDK, reusing the WS actor-streaming
+  pattern — think-out-loud with an assistant while workflows run.
+- **Eval slice:** chat-response quality — a program Block U candidate domain (overlaps HL1
+  general-dynamic).
+- **Ladder rung:** skill→workflow — adds a conversational surface to the gateway (rung 4).
 - **Acceptance criteria:** a chat turn streams tokens back over the socket from the Claude Code SDK;
   gated checks pass.
 
@@ -829,6 +1089,11 @@ Forward-looking — refine Files when each becomes next.
   device-registration path (the `bastion-ui` FCM client is the peer half).
 - **Out of scope:** changing in-app event semantics; pushing payloads beyond minimal metadata.
 - **Depends on:** Block C (events), and the shipped v0.1 app.
+- **Ratchet:** the FCM background push relay + device-registration path (`src/serve/push.rs`) — true
+  background alerts; the `bastion-ui` FCM client is the peer half.
+- **Eval slice:** n/a — deterministic acceptance only (closed-app notification delivery).
+- **Ladder rung:** workflow→automation→monitor — background event delivery completes the monitor loop
+  off-device (rung 8).
 - **Acceptance criteria:** a `needs_input` event delivers a phone notification with the app closed;
   gated checks pass.
 
@@ -859,11 +1124,14 @@ Forward-looking — refine Files when each becomes next.
 | 7 | A | Tracing + `C0xx` structured-error spine *(prog. H, Wave 2)* | You can't cap/alert/self-heal what you can't see | The observability foundation for the whole track |
 | 7 | B | Vendor tiktoken counter → exact `bastion costs` *(prog. D, Wave 2)* | Exact > estimated, as a library for free | Console reports exact, not estimated, spend |
 | 7 | C | Cost as a budgeted resource: `--watch`, alerts, `bastion kill`, gate *(prog. I½, Wave 2)* | Observe spend → cap spend → stop spend (D25 trigger) | Operator control over runaway cost |
+| 7 | D | Console reads momentum & metrics *(prog. V, Wave 2 ✲; new)* | "What's in flight / blocked / where's momentum" across the registry (D30 scalars, read-only) | The portfolio dashboard surface |
 | 8 | A | Deterministic Brain-integrity validation *(prog. K, Wave 3)* | A hard correctness guarantee vs. soft prompt grounding | The real anti-hallucination layer; feeds self-healing |
 | 9 | A | Vendor `workflow-engine-mcp` → Console MCP / tool client *(prog. E½, Wave 4)* | Protocol seam (Layer 3 client) for the Brain-MCP server | Console speaks MCP across HTTP/WS/stdio |
 | 9 | B | Rust local-model node from the `claude-sdk-rs` spine *(prog. F, Wave 4)* | Python-free local inference for `bastion ask` (D23) | The Console gets its own offline brain |
 | 10 | A | Proactive scanner → issue backlog *(prog. M, Wave 5)* | The missing proactive front-half of self-healing | The Brain finds its own problems |
 | 10 | B | Findings → spec → draft PR via `sdlc-flow` (no auto-merge) *(prog. N½, Wave 5)* | Triggers fixes for human review; reuses the audited engine (D25) | The Brain proposes its own fixes |
+| 10 | C | Incident & recovery harness — postmortem gen + records *(prog. Y½, Wave 5; new)* | Turns failures into guardrails (the failure loop); the one harness with no substrate | The Brain learns from its own incidents |
+| 10 | D | Autonomy/trust ladder — trust registry + earned promotion *(prog. X½, Wave 5; new)* | Per-skill trust earned from eval outcomes gates how much self-healing can proceed (D25) | Safely-increasing autonomy |
 | 11 | A | `serve` scaffold + serve-api v0 (runtime spike) *(BastionUI; prog. A)* | The gateway + the contract everything pins | `bastion serve` boots; Surface has a socket |
 | 11 | B | Session REST + named-key helper *(BastionUI; prog. D)* | Session control server-side; Esc/arrows now sendable | Pillar 1 server half |
 | 11 | C | WebSocket hub + live pane + needs-input *(BastionUI; prog. E)* | Live streaming + the killer phone alert | Pillar 1 realtime |
@@ -878,18 +1146,22 @@ Forward-looking — refine Files when each becomes next.
 > Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any
 > time, including before the monitor track completes.
 >
-> Phases 6–10 are **bastion's slice of the cross-repo Bastion program** (brain
+> Phases 6–11 are **bastion's slice of the cross-repo Bastion program** (brain
 > `planning/bastion-product/`, governed by brain **D24 / D25 / D26**), sequenced to follow the
 > program's **demand-first wave order** (the `Wave N` tag on each row), not bastion-internal
 > dependency. Each row notes its **program block letter** (`prog. X`); `½` marks the bastion half of a
 > cross-repo block whose orchestrator/base-template peer is a prerequisite for the *combined* claim (the
 > bastion half is independently shippable). This whole track is **opportunistic and ungated** — pull
 > blocks as the need appears. Within it the only hard local prerequisites are: 6B/6C build on 6A;
-> 7C builds on 7A (and is strengthened by 7B); 8A builds on 6A; 9B reuses 7A's error model;
-> 10A builds on 7A + 8A; 10B builds on 10A. Program blocks **B, J, L, O, P, R, S, G** (of the
-> *bastion-product* program) are **not** here — they execute in python-orchestration / base-template /
-> the brain (G, the loop-proof, is coordinated from bastion but builds no bastion code; its artifact
-> lands in the brain's `docs/content/`).
+> 7C builds on 7A (and is strengthened by 7B); **7D** needs the D30 sections stamped across repos
+> (brain HQ-Restructure) + 6B (registry); 8A builds on 6A; 9B reuses 7A's error model;
+> 10A builds on 7A + 8A; 10B builds on 10A; **10C** builds on 7A + 10A; **10D** needs program Block U
+> (orchestrator eval outcomes) + 7C (the first gated action). The three **new** program blocks bastion
+> now owns from the north-star umbrella reorg are **V** (7D), **Y½** (10C), and **X½** (10D). Program
+> blocks **B, J, L, O, P, R, S, U, W, G** (of the *bastion-product* program) are **not** here — they
+> execute in python-orchestration / base-template / the brain (**U** = eval engine and **W** =
+> external-intelligence loop are orchestrator+brain; **G**, the loop-proof, is coordinated from bastion
+> but builds no bastion code; its artifact lands in the brain's `docs/content/`).
 >
 > **Phase 11 (BastionUI Console API) is a fourth, fully independent track** — bastion's server-side
 > slice of the separate **BastionUI** cross-repo program (brain `planning/bastion-ui/master-plan.md`,
