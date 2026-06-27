@@ -4,7 +4,7 @@
 use anyhow::{Context, Result, anyhow};
 
 use crate::api::client::{ApiClient, ApiStatus};
-use crate::config::Config;
+use crate::config::{Config, ConfigError};
 use crate::db::health::{self, DbStatus};
 use crate::monitor;
 
@@ -70,10 +70,20 @@ pub async fn trigger(workflow: String, args: Option<String>, monitor: bool) -> R
 }
 
 pub async fn status() -> Result<()> {
-    let config = Config::load()?;
+    let cfg = Config::load();
 
-    let db = health::probe(&config.database_url).await;
-    let api = ApiClient::new(&config.api_base_url).health().await;
+    // DATABASE_URL is optional for `status` — missing just shows DB as unreachable.
+    let db = match &cfg {
+        Ok(c) => health::probe(&c.database_url).await,
+        Err(ConfigError::MissingVar(_)) => {
+            DbStatus::Unreachable("DATABASE_URL not set".to_string())
+        }
+        Err(e) => return Err(anyhow!("{e}")),
+    };
+
+    let fallback = "http://localhost:8080".to_string();
+    let api_url = cfg.as_ref().map(|c| &c.api_base_url).unwrap_or(&fallback);
+    let api = ApiClient::new(api_url).health().await;
 
     print!("{}", render_status(&db, &api));
     Ok(())

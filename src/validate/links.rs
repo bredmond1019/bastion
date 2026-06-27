@@ -12,9 +12,39 @@ use std::path::{Path, PathBuf};
 pub fn extract_links(content: &str) -> Vec<(usize, String)> {
     let mut links = Vec::new();
     for (line_idx, line) in content.lines().enumerate() {
-        extract_links_from_line(line, line_idx + 1, &mut links);
+        let sanitized = blank_code_spans(line);
+        extract_links_from_line(&sanitized, line_idx + 1, &mut links);
     }
     links
+}
+
+/// Replace the contents of inline backtick code spans with spaces so the link
+/// scanner never sees `[text](target)` sequences that are inside code spans.
+///
+/// An unclosed backtick spans to end-of-line (conservative: prefer missed links
+/// over false-positive broken-link errors).
+fn blank_code_spans(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            out.push(' '); // replace opening backtick
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'`' {
+                out.push(' '); // blank span content
+                i += 1;
+            }
+            if i < bytes.len() {
+                out.push(' '); // replace closing backtick
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn extract_links_from_line(line: &str, line_num: usize, out: &mut Vec<(usize, String)>) {
@@ -527,6 +557,38 @@ mod tests {
             .unwrap();
         assert_eq!(err1.line, 2);
         assert_eq!(err2.line, 4);
+    }
+
+    // ── blank_code_spans / backtick suppression ───────────────────────────────
+
+    #[test]
+    fn link_inside_backtick_span_not_extracted() {
+        // `[text](target)` is inside a code span — should produce no links.
+        let result = extract_links("Use `[text](target)` syntax to write links.");
+        assert_eq!(
+            result,
+            vec![],
+            "link inside backtick span must be suppressed"
+        );
+    }
+
+    #[test]
+    fn link_outside_backtick_span_still_extracted() {
+        let result = extract_links("See `code` and [real](real.md) for details.");
+        assert_eq!(result, vec![(1, "real.md".to_string())]);
+    }
+
+    #[test]
+    fn multiple_code_spans_on_same_line() {
+        let result = extract_links("`[skip](a.md)` and [keep](b.md) and `[skip2](c.md)`");
+        assert_eq!(result, vec![(1, "b.md".to_string())]);
+    }
+
+    #[test]
+    fn unclosed_backtick_blanks_rest_of_line() {
+        // Unclosed backtick — conservative: blank to end-of-line to avoid false positives.
+        let result = extract_links("before ` unclosed [fake](fake.md)");
+        assert_eq!(result, vec![]);
     }
 
     #[test]
