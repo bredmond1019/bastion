@@ -10,6 +10,20 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-26 — manual live testing + three bug fixes
+
+Manual live testing of phase11-blockB against a running `bastion serve` instance uncovered three bugs in existing code that were fixed this session. Bug 1: `bastion status` returned a hard error when `DATABASE_URL` was missing or Postgres was unreachable, instead of degrading gracefully; added a degradation path in `src/run/mod.rs` so the command completes with a "service unreachable" diagnostic rather than crashing. Bug 2: `bastion code --graph` was traversing into `trees/` and `.git/worktrees/` when scanning the workspace for multi-project Rust crates, polluting the code graph; added an exclusion filter in `src/brain/code_graph.rs` to skip those directories. Bug 3: `bastion validate --links` was incorrectly flagging Rust identifiers and keywords inside backticks as broken links (e.g. `` `Result::Ok` ``, `` `async fn` ``), treating the backtick wrapper as a URL and looking for a heading with that name; added backtick-span suppression in `src/validate/links.rs` so links are only extracted from non-code contexts. All three fixes are targeted, localized, and pass the full test suite (771 tests).
+
+```diff
+planning/handoff.md     | 106 +++++++++++++++++++++++-------------------------
+src/brain/code_graph.rs |   2 +-
+src/run/mod.rs          |  18 ++++++--
+src/validate/links.rs   |  64 ++++++++++++++++++++++++++++-
+4 files changed, 128 insertions(+), 62 deletions(-)
+```
+
+---
+
 ## 2026-06-26 — phase11-blockB complete: Session REST + named-key helper shipped
 
 Phase 11 Block B delivered the session REST API surface across six tasks with a PASS verdict from code review (fixes applied). Task 1 added `send_named_key_args`/`send_named_keys_args` builders and execution shells (`send_named_key`/`send_named_keys`) to `src/sessions/tmux.rs`, emitting `tmux send-keys -t <name> <KeyName>` without `-l`/`--` flags to allow tmux named-key resolution (Escape, Enter, arrows, C-c, etc.) — 8 pure element-wise unit tests covering single keys, multi-key sequences, and modifier syntax. Task 2 added serde DTOs in `src/serve/dto.rs`: `SessionDto` (name, state-as-string, last-line) with `From<&Session>`, `PaneDto` (session name, lines), and request-body DTOs (`SendBody`, `KeyBody`, `NewSessionBody`); round-trip + missing-field unit tests matching existing DTO style. Task 3 created `src/serve/handlers/sessions.rs` module with six async handlers wrapping tmux fns via `web::block`: `GET /sessions`, `GET /sessions/{name}/pane?lines=N`, `POST /sessions/{name}/send`, `POST /sessions/{name}/key`, `POST /sessions`, `DELETE /sessions/{name}`; pure `tmux_error_to_status` helper mapping tmux degradation (not-installed/no-server → 503, unknown session → 404, other → 500) with unit-tested branches for each path. Task 4 wired routes under the protected `/api` scope in `src/serve/mod.rs`, inheriting bearer auth; integration tests verify 401 on missing/wrong token, JSON response shapes, and correct method/path mappings. Task 5 bumped `docs/serve-api.md` to v0.1 with a Sessions section documenting all six routes, `lines` query param, request/response DTO shapes, named-key endpoint with accepted key names, degradation → HTTP status mapping, and an Amendment Log entry. Task 6 was validation: all four gating checks pass (cargo fmt, clippy, 771 tests, release build); live smoke test wraps against a running server with curl (list sessions, read pane, send keys, send Escape, create/kill session) recorded in tasks.md §Notes per Rule 6. Code review (2026-06-26) found 2 findings: `send_named_keys` plural variant was dead code (removed, spec Task 1 included it preemptively but the handlers use singular), and `get_pane` handler had unnecessary block scoping in the closure threading (simplified). All fixes applied to PR #6 branch. 771 tests pass. Acceptance criteria verified: named-key builders emit correct tmux syntax; all six routes mounted + auth-protected; SessionDto/PaneDto round-trip; tmux degradation maps to documented statuses; `docs/serve-api.md` v0.1 committed with Sessions docs; gated checks green.
