@@ -330,7 +330,7 @@ Build order is strict and incremental — each verb ships only when reached for.
 
 Phases 6–11 are **bastion's execution slice of the cross-repo Bastion program** (brain
 `planning/bastion-product/master-plan.md`). That program is wave-ordered **demand-first** (D26) across
-five repos and uses global block letters **A–S**; the blocks whose execution home is the Console land
+five repos and uses global block letters **A–Z** (plus the **HL1–HL5** Harness Library); the blocks whose execution home is the Console land
 here. Each bastion phase below corresponds to one program **wave**, and each block notes its **program
 letter** (e.g. *program Block Q*) so the two plans stay cross-referenceable. bastion block letters are
 **local to each phase** (Block A, B, C…) per the `phaseN-blockX` convention `/generate-tasks` parses —
