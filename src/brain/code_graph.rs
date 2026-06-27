@@ -265,7 +265,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for path in children {
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('.') || name == "target" {
+            if name.starts_with('.') || name == "target" || name == "trees" {
                 continue;
             }
             collect_rs_files(&path, out);
