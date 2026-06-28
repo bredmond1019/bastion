@@ -13,7 +13,7 @@ Personal Rust CLI — unified control panel for monitoring, validating, and oper
 
 ## Standing rules
 
-1. **Every block/task ships with tests** covering its core functionality. No exceptions.
+1. **Every new function, module, or behaviour change ships with tests.** No exceptions — this applies to ad-hoc fixes and one-off changes just as much as formal blocks/tasks. If you add or change code, add or update the tests that cover it.
 2. **OKF frontmatter is required on every new `.md` file under `docs/` and `planning/`.** Three fields are **required**: `type`, `title`, `description`. Six are **optional but strongly encouraged**: `doc_id` (kebab-case filename stem), `layer` (list from closed vocab: `brain` · `engine` · `factory` · `console` · `surface` · `infra` · `business` · `content` · `meta`), `project` (closed vocab slug — use `bastion` for this repo; omit for cross-cutting docs), `status` (`active` · `draft` · `deprecated` · `superseded` · `archived`), `keywords` (3–7 free-form topic terms), `related` (list of `doc_id` values referencing other docs). Canonical guide: company-brain `docs/okf-frontmatter.md`; governing decision: brain **D27**. **Adding a new file to a directory requires updating that directory's `index.md`** (propagate up to the parent `index.md` if the scope changes).
 3. **Sequence, not calendar** — work the order in `master-plan.md`; pick up where you left off.
 4. **Decisions are append-only** — never edit a settled decision; supersede it with a new
