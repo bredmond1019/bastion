@@ -21,9 +21,12 @@ folder is the map.
 |---|---|---|
 | `context.md` | Orientation + governing principles (read first) | You need to understand the project |
 | `status.md` | Current progress tracker | You need to know what's done / next |
+| `knowledge.md` | Distilled durable knowledge — how it works, conventions, gotchas | You need semantic memory for the project |
+| `memory.md` | Repo-scoped durable memory — episodic notes + preferences | You need facts that survive a handoff |
 | `master-plan.md` | Strategy + phase specifications | You need the sequence of work |
 | `harness.json` | Validation/UI-test config the SDLC engines read | You're adapting the pipeline to this stack |
 | `decisions/` | Atomic, append-only architectural decisions | You want to check a prior choice |
+| `artifacts/` | Generated artifacts / scratch outputs from pipeline runs | You need run outputs that aren't task specs |
 | `<concept>/` | Per-spec planning folders (task specs + pipeline state) | You're running the SDLC pipeline |
 
 ## The concept-folder model
