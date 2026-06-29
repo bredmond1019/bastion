@@ -1,23 +1,36 @@
 {
   "repo": "bastion",
+  "kind": "project",
   "updated": "2026-06-29",
-  "now": "Phase 11: three live-test bug fixes patched (status degrade, code skips trees/, validate backtick spans), uncommitted",
-  "next": "Commit the bug fixes; start BA.11.C (WebSocket hub + live pane streaming); BA.7.B (tiktoken counter) as interleave",
-  "blocked": [],
+  "focus": {
+    "now": [
+      {
+        "block": "BA.11.C0",
+        "title": "Agent-state detection manifest engine",
+        "status": "in_progress",
+        "note": "Three live-test bug fixes patched (status degrade, code skips trees/, validate backtick spans) — not yet committed."
+      }
+    ],
+    "next": [
+      { "block": "BA.11.C", "title": "WebSocket hub + live pane streaming" },
+      { "block": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)" }
+    ],
+    "blocked": []
+  },
   "tracks": [
     {
       "title": "Phase 11 — BastionUI serve API",
       "blocks": [
-        { "id": "BA.11.C0", "title": "agent-state detection manifest engine", "status": "in_progress" },
-        { "id": "BA.11.C",  "title": "WebSocket hub + live pane streaming",   "status": "open" },
-        { "id": "BA.11.D",  "title": "repo + workflow status reads over serve","status": "open" }
+        { "id": "BA.11.C0", "title": "Agent-state detection manifest engine", "status": "in_progress" },
+        { "id": "BA.11.C", "title": "WebSocket hub + live pane streaming", "status": "open" },
+        { "id": "BA.11.D", "title": "Repo + workflow status reads over serve", "status": "open" }
       ]
     },
     {
       "title": "Phase 7 — Costs",
       "blocks": [
-        { "id": "BA.7.B", "title": "exact bastion costs (tiktoken counter)", "status": "open" },
-        { "id": "BA.7.C", "title": "budget alerts + bastion kill",            "status": "open" }
+        { "id": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)", "status": "open" },
+        { "id": "BA.7.C", "title": "Budget alerts + bastion kill", "status": "open" }
       ]
     }
   ]
