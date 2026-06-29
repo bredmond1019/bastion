@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "bastion",
-  "project_id": "f6b03a46-e644-4c63-8084-b7723002c888"
-}
