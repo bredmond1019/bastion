@@ -76,7 +76,8 @@ parallel with current work.
 **In-flight vs queued (bastion's program-track slice — authoritative status in `status.md`):**
 - **🟢 Done:** Phase 6 A/B/C (graph, multi-workspace, code-nav) · Phase 7 A (tracing/`C0xx` spine) ·
   Phase 11 A/B (serve scaffold + session REST).
-- **🟡 In flight:** Phase 11 C (WS hub — current focus) · Phase 7 B (exact `costs`) deferred-but-next.
+- **🟡 In flight:** Phase 11 **C₀ (agent-state detection manifest engine — new prework, gates C)** ·
+  Phase 11 C (WS hub — current focus) · Phase 7 B (exact `costs`) deferred-but-next.
 - **⚪ Queued:** Phase 7 C (budget+kill) · Phase 7 **D (momentum/metrics surface — new)** · Phase 8 A
   (integrity) · Phase 9 A/B (MCP client, local model) · Phase 10 A/B (scanner, self-healing PR) ·
   Phase 10 **C (incident harness — new)** · Phase 10 **D (trust ladder — new)** · Phase 11 D–I.
@@ -146,7 +147,7 @@ src/
 
 ## Phase 0 — Foundation
 
-### Block A — Foundation setup
+### BA.0.A — Foundation setup
 - **What:** Verify the Rust toolchain compiles the scaffolded project. Implement `bastion status` end-to-end: connect to PostgreSQL and the FastAPI health endpoint, print a summary of what's reachable. Add a `.env.example`.
 - **Why:** Proves the DB connection and HTTP client work before any TUI work starts. Useful as a pre-flight check from day one.
 - **Build notes:** `config.rs` reads `DATABASE_URL` and `BASTION_API_URL` from env. `run::status()` calls `api::client::ApiClient::health()` and a test PostgreSQL query. Print a formatted table: `DB ✓`, `API ✓` (or `unreachable` per service). Worker count / queue depth live in Redis, which is out of bastion's configured scope — **scoped out** of `status` (see D2).
@@ -156,7 +157,7 @@ src/
 
 ## Phase 1 — `bastion monitor`
 
-### Block A — DB queries + graph layout
+### BA.1.A — DB queries + graph layout
 - **What:** Implement `db::workflows` against the **`events` table** (not relational tables):
   list active runs (rows whose `node_runs` aren't all terminal), and parse one row's
   `task_context` into per-node state (`node_runs[name]` → status/timing/error/input/usage;
@@ -170,7 +171,7 @@ src/
   fixture), the graph-endpoint → edges parse, the class-name join, topological ordering, and
   position assignment. Status strings deserialize from `pending|running|success|failed`.
 
-### Block B — TUI render loop
+### BA.1.B — TUI render loop
 - **What:** Implement `monitor::ui` (two-pane ratatui layout) and `monitor::events` (tokio loop with keyboard + DB poll). Wire through `monitor::app` state. `bastion monitor` (no arg → auto-pick the active run) enters the TUI and displays live workflow state. Detail pane reads, per the [data contract](../docs/data-contract.md) §6: status/timing/error/input/tokens from `node_runs[name]`, output from `nodes[name]`, run input from `events.data`.
 - **Why:** The core deliverable.
 - **Acceptance criteria:** `bastion monitor` renders a running workflow as a live graph. Arrow-key navigation moves the selected node. State updates within the poll interval (the orchestrator persists at every node boundary, so each transition is observable). `q` exits cleanly.
@@ -179,11 +180,11 @@ src/
 
 ## Phase 2 — Inspect + Costs
 
-### Block A — `bastion inspect`
+### BA.2.A — `bastion inspect`
 - **What:** Reuse monitor graph/UI code with polling disabled. Load a completed run by ID from PostgreSQL and render it as a static navigable graph.
 - **Acceptance criteria:** `bastion inspect <run-id>` renders any completed run. Navigation works. Exiting returns to the shell cleanly.
 
-### Block B — `bastion costs`
+### BA.2.B — `bastion costs`
 - **What:** Implement `db::costs` aggregation queries. `bastion costs --last 7d` prints a formatted table of workflow names, run counts, token totals, and estimated USD cost.
 - **Acceptance criteria:** Output matches manual SQL queries against the same data. Handles `7d`, `30d`, `all` windows.
 
@@ -191,11 +192,11 @@ src/
 
 ## Phase 3 — Run + Validate
 
-### Block A — `bastion run`
+### BA.3.A — `bastion run`
 - **What:** Implement `api::client::trigger_workflow`. `bastion run <workflow> [--args '{}'] [--monitor]` issues `POST /` with `{workflow_type, data}` (the orchestrator's generic dispatcher — see [data contract](../docs/data-contract.md) §7), prints the returned `task_id`, optionally drops into `bastion monitor` for that run.
 - **Acceptance criteria:** Successfully triggers a workflow. `--monitor` flag works.
 
-### Block B — `bastion validate`
+### BA.3.B — `bastion validate`
 - **What:** Port or shell-out to `markdown-engine-validator` logic. Scan a content directory, validate frontmatter, check links, report errors with file + line.
 - **Acceptance criteria:** Detects known-bad frontmatter and broken links in test fixtures.
 
@@ -221,7 +222,7 @@ not run Claude Code itself.
 
 Build order is strict and incremental — each verb ships only when reached for.
 
-### Block A — `bastion sessions` (+ tmux wrapper + lazy DB pool)
+### BA.5.A — `bastion sessions` (+ tmux wrapper + lazy DB pool)
 - **What:** Stand up the `sessions/` module: `tmux.rs` (thin `std::process::Command` wrapper),
   `model.rs` (`Session`/`Pane` parsed from `tmux list-sessions` / `list-panes` output).
   Implement `bastion sessions` — list sessions, each with its last pane output line (via
@@ -234,7 +235,7 @@ Build order is strict and incremental — each verb ships only when reached for.
   fixtures into `Session`/`Pane` (no live tmux required in CI). Gracefully reports when tmux isn't
   installed or no server is running.
 
-### Block B — `bastion attach` / `new` / `kill` (session lifecycle)
+### BA.5.B — `bastion attach` / `new` / `kill` (session lifecycle)
 - **What:** `bastion attach <session>` (exec into `tmux attach -t`), `bastion new <session>
   [--dir PATH]` (`tmux new-session -d -s … -c …`), `bastion kill <session>` (`tmux kill-session`).
 - **Why:** Core lifecycle — create, enter, dispose.
@@ -243,20 +244,20 @@ Build order is strict and incremental — each verb ships only when reached for.
   `--dir`. Bad/unknown session names produce clear errors. Command-construction logic is unit
   tested without spawning tmux.
 
-### Block C — `bastion send` (send keystrokes without attaching)
+### BA.5.C — `bastion send` (send keystrokes without attaching)
 - **What:** `bastion send <session> <cmd>` → `tmux send-keys -t <session> <cmd> Enter`.
 - **Why:** Trigger actions in a session from the phone without a full attach.
 - **Acceptance criteria:** Keystrokes arrive in the target session. Quoting/escaping of
   multi-word commands is correct and unit tested. Clear error on unknown session.
 
-### Block D — `bastion capture` (read pane output non-interactively)
+### BA.5.D — `bastion capture` (read pane output non-interactively)
 - **What:** `bastion capture <session> [--lines N]` → `tmux capture-pane -p -t <session>`,
   print the last N lines.
 - **Why:** Check what a session is doing without attaching — the read counterpart to `send`.
 - **Acceptance criteria:** Prints recent pane output for a session. `--lines` bounds the output.
   Output parsing/trimming is unit tested against fixtures.
 
-### Block E — session view in the TUI
+### BA.5.E — session view in the TUI
 - **What:** A `ratatui` session dashboard (reachable as `bastion` no-arg or `bastion tui`,
   alongside the monitor view): list of sessions with status + last line; `[a]` attach (drop into
   full tmux attach), `[n]` new, `[s]` inline send, `[k]` kill, `[q]` quit.
@@ -266,7 +267,7 @@ Build order is strict and incremental — each verb ships only when reached for.
   documented key actions work; `a` drops into a real tmux attach and returns cleanly; `q` exits.
   Built entirely on the Block A–D primitives.
 
-### Block F — session activity indicator + Claude trust observer
+### BA.5.F — session activity indicator + Claude trust observer
 - **What:** Make the session list tell the truth about what is *running*, and pre-flight the
   Claude Code trust prompt.
   - **Activity indicator:** add `#{pane_current_command}` to the `list-sessions` format and use the
@@ -290,7 +291,7 @@ Build order is strict and incremental — each verb ships only when reached for.
   activity, JSON → trust flag) is exhaustively unit-tested against fixtures; the thin I/O shell is
   smoke-tested. DB-free (D4) and synchronous (D5) invariants preserved.
 
-### Block G — `bastion ask` (one Claude Code turn for an external caller)
+### BA.5.G — `bastion ask` (one Claude Code turn for an external caller)
 - **What:** A new non-interactive subcommand that performs a **single Claude Code "turn"** against an
   interactive session and exits when the answer file is ready — the contract the Python orchestrator's
   `CLAUDE_CODE_SESSION` provider shells out to (so a workflow LLM node runs on the subscription, billed
@@ -371,7 +372,7 @@ corpus that is both semantic (Engine) and structural (Console). This phase vendo
 `knowledge_graph` crate and runs its algorithms over graphs derived from the OKF `[[link]]` corpus and,
 later, from source.
 
-### Block A — Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph *(program Block A)*
+### BA.6.A — Vendor `knowledge_graph` → structural query over the OKF `[[link]]` graph *(program Block A)*
 - **What:** Vendor the `knowledge_graph` crate (A\*, Dijkstra, topological sort, traversal; PageRank +
   community detection available for Phase 8) from `workflow-engine-rs` into bastion, **decoupled from
   its Dgraph backing**, and run its algorithms over a graph derived from the OKF corpus — markdown
@@ -408,7 +409,7 @@ later, from source.
   is smoke-tested + recorded in `tasks.md §Notes`; gated checks pass (`cargo fmt --check`,
   `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
 
-### Block B — Multi-workspace Brain (bastion graph reader over per-repo / per-client roots) *(program Block C, bastion half)*
+### BA.6.B — Multi-workspace Brain (bastion graph reader over per-repo / per-client roots) *(program Block C, bastion half)*
 - **What:** Generalize the bastion graph reader to point at an **arbitrary knowledge workspace** (a
   config/CLI-provided root) and to address **multiple** workspaces (per-repo, per-client), not only this
   repo's hardcoded path. Same OKF + graph behavior over any conforming directory, selectable by name.
@@ -441,7 +442,7 @@ later, from source.
   portability fixture is covered; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
   `cargo test`, `cargo build --release`).
 
-### Block C — Structural code navigation (code-as-graph) *(program Block Q)*
+### BA.6.C — Structural code navigation (code-as-graph) *(program Block Q)*
 - **What:** Console-side exact symbol / definition / reference lookup and a **code-as-graph** (imports,
   calls) alongside the docs-as-graph — answering "where is this defined, what calls it, what breaks if I
   change it." Deterministic and model-free (tree-sitter / ripgrep over source), reusing Block A's
@@ -480,7 +481,7 @@ and there is **no** kill switch or budget enforcement. Much of the machinery is 
 code** (`claude-sdk-rs` ships the `C001–C014` taxonomy + telemetry hooks; `workflow-engine-mcp` ships
 circuit breakers + metrics). Per D25, control actions *trigger* the Engine; they never mutate it.
 
-### Block A — Tracing + structured-error spine *(program Block H)*
+### BA.7.A — Tracing + structured-error spine *(program Block H)*
 - **What:** Introduce `tracing` (spans + structured fields) across bastion and vendor the
   `claude-sdk-rs` **`C001–C014` error taxonomy + `ErrorContext`** as the Console's error model,
   replacing the ad-hoc `eprintln!` / bare-`anyhow` surface. Every command emits structured events
@@ -510,7 +511,7 @@ circuit breakers + metrics). Per D25, control actions *trigger* the Engine; they
   compiles in bastion; per Rule 6 event-emission and error-code mapping are unit-tested; gated checks
   pass (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
 
-### Block B — Vendor `workflow-engine-core` token counter → exact `bastion costs` *(program Block D)*
+### BA.7.B — Vendor `workflow-engine-core` token counter → exact `bastion costs` *(program Block D)*
 - **What:** Vendor the `workflow-engine-core` token counter (real `tiktoken-rs`, `cl100k_base` /
   `o200k_base` encoders) into bastion and replace the current hardcoded-pricing **estimation** in
   `bastion costs` with **exact** token counts feeding the USD spend summary. Minimal surface change —
@@ -535,7 +536,7 @@ circuit breakers + metrics). Per D25, control actions *trigger* the Engine; they
   (element-level); the vendored counter compiles in bastion; gated checks pass (`cargo fmt --check`,
   `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
 
-### Block C — Cost as a budgeted resource: `--watch`, alerts, `bastion kill`, pre-dispatch gate *(program Block I, bastion half)*
+### BA.7.C — Cost as a budgeted resource: `--watch`, alerts, `bastion kill`, pre-dispatch gate *(program Block I, bastion half)*
 - **What:** Make cost *actionable*: a live `bastion costs --watch`, configurable **budget thresholds
   with alerts**, a **kill switch** (`bastion kill <run>`) that aborts a run by **calling a new
   orchestrator abort endpoint** (the Engine performs the cancel + terminal stamp — D25), and a
@@ -565,7 +566,7 @@ circuit breakers + metrics). Per D25, control actions *trigger* the Engine; they
   6 and the contract additions are recorded in `data-contract.md`; gated checks pass (`cargo fmt
   --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
 
-### Block D — Console reads momentum & metrics (the hybrid dashboard surface) *(program Block V)* *(new — north-star)*
+### BA.7.D — Console reads momentum & metrics (the hybrid dashboard surface) *(program Block V)* *(new — north-star)*
 - **What:** Surface the **D30 momentum queues** (now/next/blocked/improve/recurring) + the **Metrics**
   block across every workspace's `status.md` — reading the **frontmatter scalars** (`now`/`next`/`blocked`)
   for a glanceable cross-repo view and the body sections for detail. Extend `bastion status` (or a
@@ -610,7 +611,7 @@ Make the Brain *trustworthy*, not just searchable: catch correctness defects det
 they ever reach an LLM. This is the **hard** anti-hallucination layer (prompt-based grounding is soft),
 and the Rust graph code already supports it. Forward-looking — refine Files when it becomes next.
 
-### Block A — Deterministic Brain-integrity validation *(program Block K)*
+### BA.8.A — Deterministic Brain-integrity validation *(program Block K)*
 - **What:** Extend `bastion validate` + the Phase 6 Block A graph to catch defects deterministically:
   broken `[[links]]`, orphan nodes, stale cross-references (a doc points at a section/decision that
   moved or changed), and **structurally-contradictory decisions** (two decisions making opposite claims
@@ -647,7 +648,7 @@ and the Rust graph code already supports it. Forward-looking — refine Files wh
 Give the Console a protocol seam (MCP client) and its own offline brain (a Python-free local-model
 path). Forward-looking — refine Files when each becomes next.
 
-### Block A — Vendor `workflow-engine-mcp` → Console MCP / tool client *(program Block E, bastion half)*
+### BA.9.A — Vendor `workflow-engine-mcp` → Console MCP / tool client *(program Block E, bastion half)*
 - **What:** Vendor the multi-transport (`HTTP` / `WS` / `stdio`) MCP client with connection pooling from
   `workflow-engine-mcp` into bastion as the Console's protocol/tool client. Demonstrate it against an
   existing MCP server (the crate ships example servers); built together with the Engine's
@@ -673,7 +674,7 @@ path). Forward-looking — refine Files when each becomes next.
   (mock or example server); gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
   `cargo test`, `cargo build --release`).
 
-### Block B — Seed the Rust local-model node from the `claude-sdk-rs` spine *(program Block F)*
+### BA.9.B — Seed the Rust local-model node from the `claude-sdk-rs` spine *(program Block F)*
 - **What:** Vendor two patterns from `claude-sdk-rs` into a small Rust **local-model runner** in
   bastion: the subprocess→typed→streaming spine (→ a local/open-weight node driving Ollama /
   `llama-cli`) and the embedded SQLite session store (→ local-first `bastion ask` conversation memory,
@@ -716,7 +717,7 @@ The synthesis: the Brain finds its own problems and *triggers* fixes for human r
 triggers**; the Factory **authors the PR**; a human **reviews the draft**; nothing auto-merges.
 Forward-looking — refine Files when each becomes next.
 
-### Block A — Proactive scanner → issue backlog *(program Block M)*
+### BA.10.A — Proactive scanner → issue backlog *(program Block M)*
 - **What:** A scheduled `bastion doctor` (or equivalent) that runs the available scans — Phase 8 Block A
   Brain integrity, plus cross-repo health (test/lint/build status, doc staleness) — and writes findings
   to a **persistent OKF issue backlog** with dedup, priority, and dismiss/defer semantics (so the same
@@ -743,7 +744,7 @@ Forward-looking — refine Files when each becomes next.
   logic is unit-tested; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`,
   `cargo test`, `cargo build --release`).
 
-### Block B — Findings → spec → draft PR via `sdlc-flow` *(program Block N, bastion half)*
+### BA.10.B — Findings → spec → draft PR via `sdlc-flow` *(program Block N, bastion half)*
 - **What:** For clear-cut backlog items, generate a machine-authored spec and **trigger `sdlc-flow`**
   (base-template) to take it spec → fix → review → **draft PR for human review**. bastion triggers and
   links the resulting PR back to the backlog item; on landing, the item closes (preventing
@@ -773,7 +774,7 @@ Forward-looking — refine Files when each becomes next.
   per Rule 6 the pure findings→spec + link logic is unit-tested; gated checks pass (`cargo fmt --check`,
   `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
 
-### Block C — Incident & recovery harness: postmortem generation + incident records *(program Block Y, bastion half)* *(new — north-star)*
+### BA.10.C — Incident & recovery harness: postmortem generation + incident records *(program Block Y, bastion half)* *(new — north-star)*
 - **What:** Build the genuinely-new piece of the **Incident & Recovery harness** (program Harness HL5):
   structured **incident records** (severity · timeline · impacted goals/tasks · root cause · remediation ·
   preventative improvement) + **automated postmortem generation**, built on the Phase 7 Block A error
@@ -804,7 +805,7 @@ Forward-looking — refine Files when each becomes next.
   incident-construction + postmortem-render logic is unit-tested against fixtures; gated checks pass
   (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
 
-### Block D — Autonomy / trust ladder: trust registry + earned promotion *(program Block X, bastion half)* *(new — north-star)*
+### BA.10.D — Autonomy / trust ladder: trust registry + earned promotion *(program Block X, bastion half)* *(new — north-star)*
 - **What:** The Console half of the **autonomy/trust ladder**: a **per-skill / per-domain trust
   registry** (supervised → guided → autonomous → trusted) with promotion *and demotion* rules **earned
   from measured outcomes** (eval pass-rate, intervention rate, regression history — from the orchestrator
@@ -869,7 +870,7 @@ Forward-looking — refine Files when each becomes next.
 > `Cargo.toml`. The WS actor skeleton is harvested from `rag-engine-rs/src/services/chat/` (actix 0.13
 > / actix-web 4.9 / actix-web-actors 4.3).
 
-### Block A — `serve` scaffold + serve-api contract v0 *(verification gate)* *(prog. A)*
+### BA.11.A — `serve` scaffold + serve-api contract v0 *(verification gate)* *(prog. A)*
 - **What:** New `src/serve/` module + a `Commands::Serve { addr, token }` arm; add actix deps
   (pinned to rag-engine-rs versions for copy-compatibility); `GET /health`; a **minimal `/ws` upgrade
   that accepts + echoes** (so the Flutter foundation has a live socket before the real hub exists);
@@ -901,7 +902,7 @@ Forward-looking — refine Files when each becomes next.
   v0 committed; gated checks pass (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`,
   `cargo build --release`).
 
-### Block B — Session REST + named-key helper *(prog. D)*
+### BA.11.B — Session REST + named-key helper *(prog. D)*
 - **What:** `GET /sessions`, `GET /sessions/{n}/pane?lines=N`, `POST /sessions/{n}/send`,
   `POST /sessions/{n}/key` (named keys), `POST /sessions`, `DELETE /sessions/{n}` — wrapping
   `sessions::tmux`/`model` via `web::block` (the tmux fns are synchronous blocking). Add
@@ -928,31 +929,69 @@ Forward-looking — refine Files when each becomes next.
   `Escape`, creates and kills a session; per Rule 6 the `*_args` + DTO-serde logic is unit-tested;
   gated checks pass.
 
-### Block C — WebSocket hub + live pane + "needs input" detection *(prog. E)*
+### BA.11.C0 — Agent-state detection manifest engine *(prework for Block C; agent-agnostic seam)*
+- **What:** A pure, config-driven agent-state detection engine, **reimplemented clean-room** (not
+  copied) from Herdr's `src/detect/` pattern. Per-agent TOML manifests (`region` selector +
+  `contains`/`regex`/`line_regex` matchers + `any`/`all`/`not` gate combinators + `priority` +
+  `visible_idle`/`visible_blocker`/`visible_working`/`skip_state_update` flags) compile into rules; a
+  pure `detect(screen, manifest) -> AgentDetection { state: Idle|Working|Blocked|Unknown, visible_*,
+  skip_state_update }` matcher evaluates rules in priority order over an extracted screen region.
+  **Seed with `manifests/claude.toml` + `manifests/pi.toml` only.** New deps: none (`regex`, `toml`,
+  `serde` already in tree).
+- **Why:** Block C's needs-input detector is otherwise a Claude-coupled heuristic that drifts with
+  Claude's TUI (the block's own "highest-risk component" note). A manifest engine makes detection
+  **data-driven and agent-agnostic by construction** — a Claude layout change is a one-manifest edit,
+  and adding Pi (or any agent) is a new TOML, not new Rust. This is the **"minimal seam now"** step
+  toward the agent-agnostic direction (decision D-y) without the full launch registry/`--agent` port,
+  and it fills a real gap: Bastion has *no* agent-state detection today (`sessions/claude_state.rs` is
+  a workspace-*trust* observer only). **Reimplement clean — Herdr is AGPL-3.0, reference only (D-x).**
+- **Files:**
+  - *New* `src/detect/mod.rs` (public API + `AgentState` / `AgentDetection`), `src/detect/manifest.rs`
+    (TOML schema + compile + recursive gate matcher + `region()` resolver), `src/detect/manifests/claude.toml`,
+    `src/detect/manifests/pi.toml`, fixtures under `src/detect/fixtures/`
+- **Interfaces / shared surface:** **Produces** `detect::detect(screen, agent) -> AgentDetection`,
+  consumed by **Block C's** needs-input detect, the future **unified-console sidebar** state chips
+  (working/blocked/idle/done), and the later **`Agent` trait / `--agent` seam**.
+- **Out of scope:** Per-agent launch + registry + `--agent` flag (the later Agent-trait seam — see
+  the brain research note's prioritized Block 5); the broad 18-agent manifest set (Claude + Pi only);
+  remote/over-the-air manifest updates.
+- **Depends on:** nothing new (Block A scaffolding exists).
+- **Ratchet:** the pure manifest engine + Claude/Pi manifests; gate matcher + every `region` resolver
+  fixture-tested; adding a manifest requires zero engine-code change.
+- **Eval slice:** agent-state detection precision/recall over captured-pane fixtures (Claude + Pi) —
+  the self-contained detector eval that Block C's needs-input detection reuses (program Block U domain).
+- **Ladder rung:** skill→workflow — a reusable, agent-neutral detection primitive.
+- **Acceptance criteria:** a captured Claude prompt-box fixture → `detect()` returns `Blocked` +
+  `visible_blocker`; a Pi `Working...` fixture → `Working`; the `any`/`all`/`not` combinators and each
+  `region` selector are unit-tested; a new agent manifest is added with no engine change; per Rule 6
+  the pure engine is exhaustively tested; gated checks pass.
+
+### BA.11.C — WebSocket hub + live pane + "needs input" detection *(prog. E)*
 - **What:** Adapt the `rag-engine-rs` `ChatServer`/`ChatSession` actors into `src/serve/ws/`;
   topic-based subscriptions (`sessions`, `pane:<name>`); background poll tasks → `watch` channels →
   fan-out (one session-list poll ~2s; ref-counted per-session pane polls only while subscribed →
-  diff-and-push). A pure `detect.rs` heuristic flags a session blocked on a permission prompt
-  (`❯ 1. Yes`/`(y/n)`/"Do you want to proceed?") → emits `event{needs_input}`. Extend `serve-api.md` to
-  v0.2 (subscribe/unsubscribe/send/send_key + sessions/pane/event/error frames).
+  diff-and-push). The pure `detect.rs` needs-input flag is **driven by Block C₀'s manifest engine**
+  (`detect::detect(pane, manifest).state == Blocked && visible_blocker`) rather than inline literals →
+  emits `event{needs_input}`. Extend `serve-api.md` to v0.2 (subscribe/unsubscribe/send/send_key +
+  sessions/pane/event/error frames).
 - **Why:** Live pane + the needs-input event are what make the phone genuinely useful (watch + alert +
-  unblock), not just a polling viewer. **Highest-risk component:** the detect heuristic + approve-key
-  mappings are coupled to Claude Code's current TUI and will drift — keep them pure + fixture-tested so
-  a layout change is a one-fixture fix.
+  unblock), not just a polling viewer. The detect heuristic + approve-key mappings are still coupled to
+  agent TUI layout, but **Block C₀ moves that coupling into TOML manifests** — a layout drift is a
+  one-manifest edit, and the same engine powers Pi and every future agent, not just Claude.
 - **Files:**
-  - *New* `src/serve/ws/server.rs` (hub actor, adapted from `ChatServer`), `src/serve/ws/session.rs` (per-conn actor, adapted from `ChatSession`), `src/serve/poll.rs` (poll tasks → watch → fan-out), `src/serve/status/detect.rs` (pure needs-input heuristic + fixtures)
+  - *New* `src/serve/ws/server.rs` (hub actor, adapted from `ChatServer`), `src/serve/ws/session.rs` (per-conn actor, adapted from `ChatSession`), `src/serve/poll.rs` (poll tasks → watch → fan-out), `src/serve/status/detect.rs` (thin needs-input adapter that calls `detect::detect()` from Block C₀ + maps `Blocked`→`needs_input`; fixtures)
   - *Modified* `src/serve/dto.rs` (frame union), `src/serve/mod.rs` (`/ws` upgrade → real hub), `docs/serve-api.md` (→ v0.2)
-- **Interfaces / shared surface:** **Produces** the WebSocket frame schema in `serve-api.md` v0.2.
-- **Out of scope:** status/workflow topics (Block D); Flutter rendering.
-- **Depends on:** Block A (WS scaffold), Block B (session ops reused by send/send_key frames).
+- **Interfaces / shared surface:** **Consumes** Block C₀'s `detect::detect()`. **Produces** the WebSocket frame schema in `serve-api.md` v0.2.
+- **Out of scope:** status/workflow topics (Block D); Flutter rendering; the detection engine itself (Block C₀).
+- **Depends on:** Block C₀ (agent-state detection engine), Block A (WS scaffold), Block B (session ops reused by send/send_key frames).
 - **Reference — study before designing the WS layer:** `~/Dev/agentic-portfolio/Healthie/media_streams/` is a production-proven Ruby WebSocket service (Zoom RTMS transcript capture) with clean architecture directly analogous to what this block needs. Study it before writing the hub. Key patterns to port to Rust/Tokio:
   - **Dual-connection split** (`SignalingConnection` + `TranscriptConnection`) — one socket for control/keep-alive, one for data; the data URL is negotiated through the control channel. Maps to our control/pane-stream topic split.
   - **Thread-safe future coordination** (`Concurrent::IVar`) — WebSocket callback thread sets a future; main thread blocks with a timeout waiting for the negotiated URL. Rust equivalent: `tokio::sync::oneshot`. Same shape for "wait until the hub confirms subscription before streaming."
   - **Keep-alive checker with pluggable failure handler** (`KeepAliveChecker` + `FailKeepAliveChecker`) — a timer monitors last-seen timestamp; on timeout delegates to a failure handler. Direct analogue for detecting dead Flutter connections and cleaning up poll tasks.
   - **Message type dispatch** (`ZoomRtmsMessageTypes` + `react_to_message` per connection class) — clean enum-keyed dispatch that maps directly to our frame union in `dto.rs`.
   - **Runner lifecycle** (`runner.rb`) — `Success`/`Failure` result types, ensure-block cleanup, retry-on-exception vs. no-retry-on-known-failure distinction. Mirrors what `ws/server.rs` needs for per-connection lifecycle.
-- **Ratchet:** the WebSocket hub + the **pure** needs-input `detect.rs` heuristic (fixture-tested so a
-  Claude-TUI layout drift is a one-fixture fix) — serve-api.md v0.2.
+- **Ratchet:** the WebSocket hub + the needs-input event driven by Block C₀'s manifest engine (a
+  Claude-TUI layout drift is a one-*manifest* edit; Pi and future agents come free) — serve-api.md v0.2.
 - **Eval slice:** needs-input detection precision/recall over captured-pane fixtures — a self-contained
   detector eval (a program Block U candidate domain).
 - **Ladder rung:** skill→workflow→monitor — live pane streaming + the killer needs-input alert (rung
@@ -962,7 +1001,7 @@ Forward-looking — refine Files when each becomes next.
   `event{needs_input}`; per Rule 6 the diff/seq + detect logic is unit-tested (the actor/poll I/O shell
   smoke-tested + recorded); gated checks pass.
 
-### Block D — Repo + workflow status reads *(prog. G)*
+### BA.11.D — Repo + workflow status reads *(prog. G)*
 - **What:** `GET /repos` (enumerate `config::load_workspace_registry` roots → name, current-focus line,
   status-table snapshot, has-handoff flag), `GET /repos/{name}/status`, `GET /repos/{name}/handoff`
   (raw markdown), `GET /repos/{name}/workflows` (glob `planning/*/sdlc/sdlc-flow-state.json`, parse).
@@ -989,7 +1028,7 @@ Forward-looking — refine Files when each becomes next.
   `sdlc-flow-state.json` transition produces a `workflow_done` event over the socket; per Rule 6 the
   parser logic is fixture-tested; gated checks pass.
 
-### Block E — Quick-action command endpoint (inject / spawn) *(prog. I)*
+### BA.11.E — Quick-action command endpoint (inject / spawn) *(prog. I)*
 - **What:** `POST /actions/command {mode, session?, name?, dir?, model?, command}` — `mode:"inject"`
   sends the command into a chosen session; `mode:"spawn"` creates a session, launches
   `claude --model <opus|sonnet> --permission-mode bypassPermissions`, waits for readiness (reuse the
@@ -1014,7 +1053,7 @@ Forward-looking — refine Files when each becomes next.
   session with the chosen model and returns its id; per Rule 6 the request-parse/dispatch logic is
   unit-tested (spawn I/O smoke-tested + recorded); gated checks pass.
 
-### Block F — Auth hardening, contract freeze, docs *(prog. K)*
+### BA.11.F — Auth hardening, contract freeze, docs *(prog. K)*
 - **What:** Finalize the **mandatory** bearer middleware across HTTP + `/ws` upgrade; confirm
   tailnet-only bind; add a lightweight audit log of mutating actions (send/spawn/kill) via `observ`;
   `bastion serve` man-page entry + README/help; route all errors through `observ`; **freeze
@@ -1039,7 +1078,7 @@ Forward-looking — refine Files when each becomes next.
   unauthenticated requests are rejected; mutating actions are audit-logged; man page + README updated;
   `serve-api.md` v1.0.0 committed; gated checks pass.
 
-### Block G — Engine workflow surfaces in `serve` *(prog. N; forward-looking, post-v1)*
+### BA.11.G — Engine workflow surfaces in `serve` *(prog. N; forward-looking, post-v1)*
 - **What:** Expose orchestrator workflow trigger (existing `api::client`), run state (`db/` Postgres
   reads), and kill (proxying the orchestrator's **Block I** abort endpoint) over `serve`, using a
   generic "workload" DTO shared with tmux sessions. Because orchestrator D28 incremental persistence
@@ -1060,7 +1099,7 @@ Forward-looking — refine Files when each becomes next.
 - **Acceptance criteria:** trigger + inspect + kill of an orchestrator run work over `serve`; per-node
   state renders; gated checks pass.
 
-### Block H — Chat backend via Claude Code SDK *(prog. P; forward-looking, post-v1)*
+### BA.11.H — Chat backend via Claude Code SDK *(prog. P; forward-looking, post-v1)*
 - **What:** A `serve` chat endpoint/WS topic backed by the **Claude Code SDK** (already a dependency in
   the orchestrator: `claude-agent-sdk`, `app/services/claude_code/`), reusing the harvested
   actor-streaming pattern. Backend location (bastion vs orchestrator) firmed up when built.
@@ -1079,7 +1118,7 @@ Forward-looking — refine Files when each becomes next.
 - **Acceptance criteria:** a chat turn streams tokens back over the socket from the Claude Code SDK;
   gated checks pass.
 
-### Block I — FCM background push relay *(prog. R server-half; forward-looking, post-v1)*
+### BA.11.I — FCM background push relay *(prog. R server-half; forward-looking, post-v1)*
 - **What:** A Firebase Cloud Messaging relay from the Mac Mini so `needs_input` / `workflow_done`
   events reach the phone when the app is closed; the v1 event model was designed so this bolts on
   without rework. *Provisional files.*

@@ -1,6 +1,6 @@
 ---
 type: Handoff
-title: Handoff — three live-test bugs fixed, Phase 11 Block C next
+title: Handoff — three live-test bugs fixed, BA.11.C next
 description: Session handoff after manual testing + bug-fix session; three bugs patched and uncommitted; Block C (WebSocket hub) is next.
 doc_id: handoff
 layer: [console]
@@ -11,7 +11,7 @@ related: [status, master-plan, serve-api]
 created: 2026-06-26
 ---
 
-# Handoff — Three live-test bugs fixed; Phase 11 Block C next
+# Handoff — Three live-test bugs fixed; BA.11.C next
 
 > **For the next agent:** Read this immediately after `/prime`. Delete this file once consumed.
 
@@ -19,7 +19,7 @@ created: 2026-06-26
 
 This session did manual live testing of `bastion` commands to verify real behavior, then
 fixed all three bugs found. The fixes are uncommitted — commit them first. After that the
-natural next block is **Phase 11 Block C** (WebSocket hub + live pane streaming), which is
+natural next block is **BA.11.C** (WebSocket hub + live pane streaming), which is
 the highest-priority remaining BastionUI item (brain D28).
 
 ## Completed this session
@@ -44,16 +44,16 @@ the highest-priority remaining BastionUI item (brain D28).
    git add src/run/mod.rs src/brain/code_graph.rs src/validate/links.rs
    git commit -m "fix: status graceful degrade, code skips trees/, validate backtick spans"
    ```
-2. **Start Phase 11 Block C** — WebSocket hub + live pane streaming. Spec is in
+2. **Start BA.11.C** — WebSocket hub + live pane streaming. Spec is in
    `planning/master-plan.md` Phase 11 section. Adapts rag-engine-rs ChatServer actor
    pattern; topic subscriptions; background poll → watch channels; "needs input" detection.
    Use `/sdlc-flow` as with prior Phase 11 blocks.
-3. **Phase 7 Block B** (vendor tiktoken counter → exact `bastion costs`) remains available
+3. **BA.7.B** (vendor tiktoken counter → exact `bastion costs`) remains available
    as a lower-priority interleave if Block C hits a blocker.
 
 ## Open questions / choices
 
-None — the approach for Phase 11 Block C is settled (actix WS actor pattern from Block A,
+None — the approach for BA.11.C is settled (actix WS actor pattern from Block A,
 extend with topic subscriptions; full spec in `planning/master-plan.md`).
 
 ## Context the next agent needs

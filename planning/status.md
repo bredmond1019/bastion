@@ -6,7 +6,7 @@ doc_id: bastion-status
 layer: [meta]
 status: active
 now: Phase 11 — three live-test bug fixes patched (status degrade, code skips trees/, validate backtick spans), uncommitted
-next: Commit the bug fixes, then start Phase 11 Block C (WebSocket hub + live pane streaming)
+next: Commit the bug fixes, then start BA.11.C (WebSocket hub + live pane streaming)
 blocked: []
 ---
 
@@ -18,7 +18,7 @@ blocked: []
 > empty.** The headlines of **now / next / blocked** mirror the frontmatter scalars above.
 
 - **now** — Phase 11: three live-test bug fixes patched (status graceful degrade, code skips `trees/`, validate backtick spans); uncommitted, 775 tests pass
-- **next** — Commit the bug fixes; start Phase 11 Block C (WebSocket hub + live pane streaming, BastionUI/D28 priority); Phase 7 Block B (exact `bastion costs` tiktoken counter) as a lower-priority interleave
+- **next** — Commit the bug fixes; start BA.11.C (WebSocket hub + live pane streaming, BastionUI/D28 priority); BA.7.B (exact `bastion costs` tiktoken counter) as a lower-priority interleave
 - **blocked** — nothing blocked
 - **improve** — `blank_code_spans` handles single-backtick inline spans only (fenced triple-backtick blocks out of scope); confirm `bastion validate` skips `trees/` if worktrees accumulate `.md` files; `status` config-file API URL not loaded when `DATABASE_URL` absent
 - **recurring** — none yet
