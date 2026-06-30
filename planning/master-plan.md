@@ -55,7 +55,7 @@ parallel with current work.
 ## North-Star Alignment (umbrella view)
 
 > **Added 2026-06-27.** The cross-repo program master-plan was reorganized around the
-> [north star](file:///Users/brandon/Dev/agentic-portfolio/planning/hq-restructure/north-star.md) into
+> north star into
 > **capability tracks** (see `planning/bastion-product/master-plan.md`). This section maps **bastion's
 > phases onto those tracks** so the two plans read as one — **nothing here is removed or renumbered**;
 > the phase/block structure below is load-bearing (the `phaseN-blockX` convention `/generate-tasks`
