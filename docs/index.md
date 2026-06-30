@@ -42,5 +42,5 @@ and [`Bastion/docs/ownership.md`](file://~/agentic-portfolio).
 | [config.md](config.md) | Configuration: env vars, config file, built-in defaults |
 | [costs.md](costs.md) | `bastion costs` — LLM spend summary surface |
 | [observ.md](observ.md) | Structured error taxonomy (C001-C014), event tracing, logging init |
-| [serve-api.md](serve-api.md) | HTTP + WebSocket API contract for `bastion serve` (v0.1) |
+| [serve-api.md](serve-api.md) | HTTP + WebSocket API contract for `bastion serve` (v0.2) |
 | [data-contract.md](data-contract.md) | bastion's pinned view of the orchestrator data contract |
