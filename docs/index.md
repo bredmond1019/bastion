@@ -13,8 +13,8 @@ related: [bastion-product-ownership, bastion-product-architecture]
 # bastion CLI — Docs
 
 Operator reference for the `bastion` CLI tool. For system architecture and naming conventions,
-see [`Bastion/docs/architecture.md`](file://~/agentic-portfolio)
-and [`Bastion/docs/ownership.md`](file://~/agentic-portfolio).
+see `Bastion/docs/architecture.md`
+and `Bastion/docs/ownership.md`.
 
 ## Surfaces
 
