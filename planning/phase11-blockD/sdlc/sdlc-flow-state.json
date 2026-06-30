@@ -2,10 +2,10 @@
   "spec_slug": "phase11-blockD",
   "branch": "phase11-blockD-flow-2",
   "started_at": "2026-06-30T20:37:53Z",
-  "updated_at": "2026-06-30T20:56:48Z",
+  "updated_at": "2026-06-30T21:00:30Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2",
   "status": "running",
-  "current_task": 4,
+  "current_task": 5,
   "tasks": {
     "1": {
       "status": "passed",
@@ -87,6 +87,22 @@
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2/src/serve/mod.rs",
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2/docs/serve-api.md",
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2/planning/phase11-blockD/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "5": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Confirmed all gated checks (fmt, clippy, test, release build) pass for phase11-blockD; test count is 973 (>908 baseline), docs/serve-api.md confirmed at v0.3 with all four new endpoints and the workflow_done event documented.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "No code changes needed for Task 5 — it is a pure validation/confirmation step over Tasks 1-4 already committed on this branch.",
+        "Recorded validation results in the spec's Notes section rather than creating a separate report file."
+      ],
+      "files_changed": [
+        "planning/phase11-blockD/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -219,13 +235,37 @@
         "filesReadKb": null,
         "inTokEst": 572,
         "outTok": 2549
+      },
+      {
+        "label": "update-task-5",
+        "model": "haiku",
+        "promptTokEst": 254,
+        "filesReadKb": null,
+        "inTokEst": 254,
+        "outTok": 1021
+      },
+      {
+        "label": "implement-5-1",
+        "model": "sonnet",
+        "promptTokEst": 878,
+        "filesReadKb": null,
+        "inTokEst": 878,
+        "outTok": 3099
+      },
+      {
+        "label": "test-5-1",
+        "model": "haiku",
+        "promptTokEst": 572,
+        "filesReadKb": null,
+        "inTokEst": 572,
+        "outTok": 3480
       }
     ],
     "total": {
-      "promptTokEst": 7801,
+      "promptTokEst": 9505,
       "filesReadKb": 0,
-      "inTokEst": 7801,
-      "outTok": 96906
+      "inTokEst": 9505,
+      "outTok": 104506
     }
   }
 }
