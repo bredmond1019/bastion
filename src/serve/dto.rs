@@ -305,6 +305,111 @@ pub struct NewSessionBody {
     pub dir: Option<String>,
 }
 
+// ── Repo / workflow status DTOs (BA.11.D) ──────────────────────────────────────
+
+/// JSON response element for `GET /repos` (one per workspace registry entry).
+///
+/// Wire format: `{ "name": "bastion", "now": "BA.11.D in progress", "has_handoff": false }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoSummaryDto {
+    /// Workspace registry name.
+    pub name: String,
+    /// Frontmatter `now:` scalar from the repo's `planning/status.md`.
+    pub now: String,
+    /// Whether `planning/handoff.md` exists for this workspace.
+    pub has_handoff: bool,
+}
+
+/// JSON response for `GET /repos/{name}/status`.
+///
+/// Mirrors [`crate::serve::status::repo::RepoStatus`] field-for-field — kept
+/// as an independent DTO (per this module's doc comment) rather than reusing
+/// the domain type directly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoStatusDto {
+    /// Workspace registry name.
+    pub name: String,
+    /// Frontmatter `now:` scalar.
+    pub now: String,
+    /// Frontmatter `next:` scalar.
+    pub next: String,
+    /// Frontmatter `blocked:` scalar.
+    pub blocked: String,
+    /// Whether `planning/handoff.md` exists.
+    pub has_handoff: bool,
+    /// Body `## Momentum` → `now` queue line text.
+    pub momentum_now: String,
+    /// Body `## Momentum` → `next` queue line text.
+    pub momentum_next: String,
+    /// Body `## Momentum` → `blocked` queue line text.
+    pub momentum_blocked: String,
+    /// Body `## Momentum` → `improve` queue line text.
+    pub momentum_improve: String,
+    /// Body `## Momentum` → `recurring` queue line text.
+    pub momentum_recurring: String,
+}
+
+impl From<crate::serve::status::repo::RepoStatus> for RepoStatusDto {
+    fn from(s: crate::serve::status::repo::RepoStatus) -> Self {
+        Self {
+            name: s.name,
+            now: s.now,
+            next: s.next,
+            blocked: s.blocked,
+            has_handoff: s.has_handoff,
+            momentum_now: s.momentum_now,
+            momentum_next: s.momentum_next,
+            momentum_blocked: s.momentum_blocked,
+            momentum_improve: s.momentum_improve,
+            momentum_recurring: s.momentum_recurring,
+        }
+    }
+}
+
+/// JSON response element for `GET /repos/{name}/workflows`.
+///
+/// Serializable projection of [`crate::serve::status::flow::FlowState`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowStateDto {
+    pub spec_slug: String,
+    pub branch: String,
+    /// Raw status string, e.g. `"running"`, `"done"`, `"blocked"`.
+    pub status: String,
+    pub current_task: u32,
+    pub started_at: String,
+    pub updated_at: String,
+}
+
+impl From<crate::serve::status::flow::FlowState> for WorkflowStateDto {
+    fn from(f: crate::serve::status::flow::FlowState) -> Self {
+        Self {
+            spec_slug: f.spec_slug,
+            branch: f.branch,
+            status: f.status,
+            current_task: f.current_task,
+            started_at: f.started_at,
+            updated_at: f.updated_at,
+        }
+    }
+}
+
+/// Payload for the server→client `event{workflow_done}` WS push.
+///
+/// Sent inside an [`EventPayload`]-shaped frame: the `event` field is fixed
+/// to `"workflow_done"` and the extra repo/spec_slug/status fields are
+/// flattened into the same JSON object by the caller (Task 4 WS wiring).
+///
+/// Wire format: `{ "repo": "bastion", "spec_slug": "phase11-blockD", "status": "done" }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowDonePayload {
+    /// Workspace registry name the workflow belongs to.
+    pub repo: String,
+    /// `sdlc-flow-state.json` spec slug.
+    pub spec_slug: String,
+    /// The terminal status that triggered the event (`"done"` or `"blocked"`).
+    pub status: String,
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1139,5 +1244,126 @@ mod tests {
             parse_topic("pane:my_session"),
             Some(Topic::Pane("my_session".to_owned()))
         );
+    }
+
+    // ── RepoSummaryDto ────────────────────────────────────────────────────
+
+    #[test]
+    fn repo_summary_dto_round_trips() {
+        let dto = RepoSummaryDto {
+            name: "bastion".to_owned(),
+            now: "BA.11.D in progress".to_owned(),
+            has_handoff: true,
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: RepoSummaryDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn repo_summary_dto_rejects_missing_fields() {
+        let raw = r#"{"name":"bastion","now":"x"}"#;
+        let result: Result<RepoSummaryDto, _> = serde_json::from_str(raw);
+        assert!(result.is_err(), "missing has_handoff must fail to parse");
+    }
+
+    // ── RepoStatusDto ─────────────────────────────────────────────────────
+
+    fn sample_repo_status() -> crate::serve::status::repo::RepoStatus {
+        crate::serve::status::repo::parse_status(
+            "---\nnow: \"focus\"\nnext: \"next thing\"\nblocked: \"[]\"\n---\n\n## Momentum\n- **now** — focus\n- **next** — next thing\n- **blocked** — nothing\n- **improve** — tighten\n- **recurring** — none\n",
+        )
+        .expect("fixture status content must parse")
+    }
+
+    #[test]
+    fn repo_status_dto_from_repo_status() {
+        let status = sample_repo_status();
+        let dto: RepoStatusDto = status.clone().into();
+        assert_eq!(dto.now, status.now);
+        assert_eq!(dto.next, status.next);
+        assert_eq!(dto.blocked, status.blocked);
+        assert_eq!(dto.momentum_now, status.momentum_now);
+    }
+
+    #[test]
+    fn repo_status_dto_round_trips() {
+        let status = sample_repo_status();
+        let dto: RepoStatusDto = status.into();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: RepoStatusDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    // ── WorkflowStateDto ──────────────────────────────────────────────────
+
+    fn sample_flow_state() -> crate::serve::status::flow::FlowState {
+        crate::serve::status::flow::parse_flow_state(
+            r#"{"spec_slug":"phase11-blockD","branch":"phase11-blockD-flow","status":"running","current_task":3,"started_at":"2026-06-30T00:00:00Z","updated_at":"2026-06-30T01:00:00Z"}"#,
+        )
+        .expect("fixture flow state must parse")
+    }
+
+    #[test]
+    fn workflow_state_dto_from_flow_state() {
+        let flow = sample_flow_state();
+        let dto: WorkflowStateDto = flow.clone().into();
+        assert_eq!(dto.spec_slug, flow.spec_slug);
+        assert_eq!(dto.branch, flow.branch);
+        assert_eq!(dto.status, flow.status);
+        assert_eq!(dto.current_task, flow.current_task);
+    }
+
+    #[test]
+    fn workflow_state_dto_round_trips() {
+        let flow = sample_flow_state();
+        let dto: WorkflowStateDto = flow.into();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: WorkflowStateDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn workflow_state_dto_rejects_missing_fields() {
+        let raw = r#"{"spec_slug":"x","branch":"y","status":"running"}"#;
+        let result: Result<WorkflowStateDto, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "missing current_task/started_at/updated_at must fail to parse"
+        );
+    }
+
+    // ── WorkflowDonePayload ───────────────────────────────────────────────
+
+    #[test]
+    fn workflow_done_payload_round_trips() {
+        let payload = WorkflowDonePayload {
+            repo: "bastion".to_owned(),
+            spec_slug: "phase11-blockD".to_owned(),
+            status: "done".to_owned(),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let back: WorkflowDonePayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(payload, back);
+    }
+
+    #[test]
+    fn workflow_done_payload_serializes_expected_shape() {
+        let payload = WorkflowDonePayload {
+            repo: "bastion".to_owned(),
+            spec_slug: "phase11-blockD".to_owned(),
+            status: "blocked".to_owned(),
+        };
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert_eq!(v["repo"], "bastion");
+        assert_eq!(v["spec_slug"], "phase11-blockD");
+        assert_eq!(v["status"], "blocked");
+    }
+
+    #[test]
+    fn workflow_done_payload_rejects_missing_fields() {
+        let raw = r#"{"repo":"bastion","spec_slug":"phase11-blockD"}"#;
+        let result: Result<WorkflowDonePayload, _> = serde_json::from_str(raw);
+        assert!(result.is_err(), "missing status must fail to parse");
     }
 }
