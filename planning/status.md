@@ -6,8 +6,8 @@ doc_id: bastion-status
 layer: [meta]
 status: active
 updated: 2026-06-30T00:00:00Z
-now: BA.11.C WebSocket hub complete — topic subscriptions, live pane diff-push, needs-input detection, 908 tests pass, PASS verdict
-next: Open PR for 11.C-websocket-hub; start BA.7.B (exact bastion costs tiktoken counter) or next Phase 11 block
+now: "BA.11.C complete — WebSocket hub on main, 908 tests pass, PR #8 open"
+next: "Check master-plan for next Phase 11 block (BA.11.D or later); BA.7.B as lower-priority interleave; push local main to origin"
 blocked: []
 ---
 
@@ -18,8 +18,8 @@ blocked: []
 > Working board — keep all five queues live. **Never end a meaningful session with every queue
 > empty.** The headlines of **now / next / blocked** mirror the frontmatter scalars above.
 
-- **now** — Phase 11: BA.11.C done — WebSocket hub with topic subscriptions (`sessions`, `pane:<name>`), live pane diff-push, needs-input rising-edge detection via Block C₀ engine, actix actors (Hub + WsConn), 908 tests pass, PASS verdict
-- **next** — Open PR for BA.11.C (11.C-websocket-hub-flow branch); BA.7.B (exact `bastion costs` tiktoken counter) as lower-priority interleave; check master-plan for next Phase 11 block
+- **now** — BA.11.C complete — WebSocket hub on main, 908 tests pass, PR #8 open
+- **next** — Check master-plan for next Phase 11 block (BA.11.D or later); BA.7.B as lower-priority interleave; push local main to origin
 - **blocked** — nothing blocked
 - **improve** — `blank_code_spans` handles single-backtick inline spans only (fenced triple-backtick blocks out of scope); confirm `bastion validate` skips `trees/` if worktrees accumulate `.md` files; `status` config-file API URL not loaded when `DATABASE_URL` absent
 - **recurring** — none yet

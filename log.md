@@ -10,6 +10,16 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-30
+
+### BA.11.C WebSocket hub shipped
+
+- **What:** BA.11.C WebSocket hub complete — topic subscriptions, live pane diff-push, needs-input detection, 908 tests pass, PASS verdict, PR #8 merged to main
+- **Why:** Phase 11 streaming core needed to broadcast live agent state (Idle/Working/Blocked) to BastionUI (D28); BA.11.C is the final piece wiring the BA.11.C0 detection engine to WebSocket clients
+- **Refs:** planning/11.C-websocket-hub/tasks.md, docs/serve-api.md
+
+---
+
 ## 2026-06-30 — BA.11.C WebSocket hub + live pane streaming + needs-input detection
 
 Implemented the full WebSocket hub (BA.11.C) across six tasks in a single SDLC run, receiving a PASS verdict with no review findings. Task 1 extended `src/serve/dto.rs` with seven new `WsFrameKind` variants (Subscribe, Unsubscribe, Send, SendKey, Sessions, Pane, Event), six payload structs, a `Topic` enum, and a pure `parse_topic()` parser with exhaustive unit tests. Task 2 created `src/serve/status/` with a `OnceLock`-compiled Claude manifest adapter exposing `needs_input(pane: &str) -> bool` and `detect_state()` (added proactively for Task 4's debounce seam), backed by two captured-pane fixtures and six unit tests. Task 3 added `src/serve/poll.rs` with pure pane-diff logic — `diff_pane`, `PaneCursor::observe` (seq-bumping diff cursor), and `sessions_snapshot` — all exhaustively unit-tested without I/O. Task 4 built the Hub and WsConn actix actors: ref-counted per-pane poll tasks, topic subscription tracking, `PaneCursor` diff fan-out over `watch` channels, rising-edge needs-input debounce, and a pure `classify_inbound` dispatch seam; 38 new unit tests, ConnId uses `AtomicU64` (no uuid dependency). Task 5 swapped the `/ws` route to the hub-backed handler, booted the Hub actor inside `run_server`, updated the `build_app()` test helper, added a WS upgrade success test, and bumped `docs/serve-api.md` to v0.2 with full topic/frame/event/disconnect documentation. Task 6 was the validation pass: all four gated checks clean (908 tests) plus a live smoke test confirming sessions subscription, pane diff-push, send-frame key delivery, send_key Escape, and the `event{needs_input}` rising-edge push — all results recorded in `## Notes`. Next: open PR for this branch, then start BA.7.B or the next Phase 11 block.
