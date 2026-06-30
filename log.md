@@ -2,11 +2,22 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
+timestamp: 2026-06-30T21:16:10Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-06-30]
+
+### phase11-blockD close-out — review, merge, handoff to BA.11.E
+
+- **What:** Ran a light (`low`) `/code-review` pass over the full `phase11-blockD-flow-2` branch diff — clean, no findings. Merged the worktree branch into `main` via fast-forward (PR #9, https://github.com/bredmond1019/bastion/pull/9), then removed the worktree and deleted the branch. Updated `planning/state.json` marking BA.11.C0 / BA.11.C / BA.11.D `done` and adding BA.11.E (quick-action command endpoint) as the next open block in the Phase 11 track (wave 4). Rewrote `planning/handoff.md` to point the next agent at BA.11.E (`planning/master-plan.md` lines 1031–1056) as the next block, with BA.7.B noted as a lower-priority interleave.
+- **Why:** BA.11.D's implementation was already logged by `/sdlc-flow`'s own wrap-up stage — this session is the separate close-out pass (review + merge + cleanup + handoff) that follows it, so the previous status.md "next" line ("Open PR for phase11-blockD…") needed to be retired now that the PR is opened and merged, and a clean handoff written for whoever picks up BA.11.E next.
+- **Refs:** PR #9 (https://github.com/bredmond1019/bastion/pull/9), planning/state.json, planning/handoff.md, planning/master-plan.md lines 1031–1056
 
 ---
 
