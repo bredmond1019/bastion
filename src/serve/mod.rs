@@ -38,9 +38,12 @@ pub mod poll;
 pub mod status;
 pub mod ws;
 
-use actix_web::{App, HttpResponse, HttpServer, web};
+use actix::{Actor, Addr};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
+use actix_web_actors::ws as actix_ws;
 use anyhow::Result;
 use auth::BearerAuthMiddleware;
+use ws::server::Hub;
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +55,23 @@ async fn health() -> HttpResponse {
     HttpResponse::Ok().json(dto::HealthResponse::ok())
 }
 
+/// `GET /ws` — WebSocket upgrade handler (v0.2, hub-backed).
+///
+/// Upgrades the HTTP connection to a WebSocket and starts a [`ws::session::WsConn`]
+/// actor linked to the shared [`Hub`].  The bearer middleware wrapping the `/ws`
+/// scope enforces auth before this handler is reached.
+async fn hub_ws_handler(
+    req: HttpRequest,
+    stream: web::Payload,
+    hub: web::Data<Addr<Hub>>,
+) -> Result<HttpResponse, actix_web::Error> {
+    actix_ws::start(
+        ws::session::WsConn::new(hub.get_ref().clone()),
+        &req,
+        stream,
+    )
+}
+
 // ── Server boot ───────────────────────────────────────────────────────────────
 
 /// Boot the actix-web HTTP server and block until it shuts down.
@@ -59,12 +79,21 @@ async fn health() -> HttpResponse {
 /// `token` is the bearer secret enforced by [`BearerAuthMiddleware`] on all
 /// protected routes.  `/health` remains public.
 ///
+/// `poll_secs` sets the hub's poll cadence for sessions-list and pane pushes
+/// (sourced from `BASTION_POLL_INTERVAL`, defaulting to 2).
+///
 /// **Blocking** — run on a dedicated OS thread or via
 /// `tokio::task::spawn_blocking` to avoid stalling the tokio executor.
 pub fn run(addr: String, token: String) -> Result<()> {
+    // Read poll cadence from env (BASTION_POLL_INTERVAL), defaulting to 2s.
+    let poll_secs: u64 = std::env::var("BASTION_POLL_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+
     // Spin up the actix System on the current thread; block_on drives the
     // async server future inside the System's Arbiter-aware runtime.
-    actix_web::rt::System::new().block_on(run_server(addr, token))
+    actix_web::rt::System::new().block_on(run_server(addr, token, poll_secs))
 }
 
 /// Inner async server setup — separated from `run` so it is independently
@@ -72,13 +101,21 @@ pub fn run(addr: String, token: String) -> Result<()> {
 ///
 /// # Routing
 /// - `/health` — public (no auth).
-/// - `/api/*` — protected by [`BearerAuthMiddleware`]; placeholder scope that
-///   Task 5 (`/ws`) and later blocks extend.
+/// - `/api/*` — protected by [`BearerAuthMiddleware`]; session REST surface.
+/// - `/ws` — protected WebSocket upgrade; hub-backed since v0.2.
 ///
 /// Uses `web::resource` (not `web::route`) for `/health` so that unregistered
 /// HTTP methods return `405 Method Not Allowed` rather than `404 Not Found`.
-async fn run_server(addr: String, token: String) -> Result<()> {
+///
+/// `poll_secs` is passed to the [`Hub`] to set its poll cadence.
+async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
+    // Start the hub actor once (process-singleton within this actix System).
+    // All per-connection WsConn actors hold an Addr<Hub> clone.
+    let hub = Hub::new(poll_secs).start();
+
     HttpServer::new(move || {
+        let hub_data = web::Data::new(hub.clone());
+
         // Protected scope — bearer auth enforced on all children.
         //
         // Session routes use `web::resource()` (not bare `.route()`) so that
@@ -116,13 +153,15 @@ async fn run_server(addr: String, token: String) -> Result<()> {
             );
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
-        // The /ws route is a separate scope so its upgrade semantics are distinct
-        // from the REST /api scope.
+        // v0.2: route backed by hub + WsConn (replaces echo actor).
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(token.clone()))
-            .route("", web::get().to(ws::echo::ws_handler));
+            .app_data(hub_data.clone())
+            .route("", web::get().to(hub_ws_handler));
 
         App::new()
+            // Shared hub data — accessible to hub_ws_handler via web::Data<Addr<Hub>>.
+            .app_data(hub_data)
             // Public liveness endpoint.
             .service(web::resource("/health").route(web::get().to(health)))
             // Protected REST scope (extended by later blocks).
@@ -147,6 +186,9 @@ mod tests {
     const TEST_TOKEN: &str = "test-secret-token";
 
     /// Build the test app mirroring production routing exactly, using a fixed test token.
+    ///
+    /// Must be called from within an actix test context (`#[actix_web::test]`) so that
+    /// `Hub::start()` can register with the current actix System arbiter.
     fn build_app() -> actix_web::App<
         impl actix_web::dev::ServiceFactory<
             actix_web::dev::ServiceRequest,
@@ -156,6 +198,10 @@ mod tests {
             InitError = (),
         >,
     > {
+        // Start a hub for test routing — mirrors production (Hub::start inside the actix System).
+        let hub = Hub::new(2).start();
+        let hub_data = web::Data::new(hub);
+
         // Mirror production routing exactly (same web::resource groupings for
         // correct 405 behaviour on wrong methods).
         let protected = web::scope("/api")
@@ -183,9 +229,11 @@ mod tests {
             );
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
-            .route("", web::get().to(ws::echo::ws_handler));
+            .app_data(hub_data.clone())
+            .route("", web::get().to(hub_ws_handler));
 
         App::new()
+            .app_data(hub_data)
             .service(web::resource("/health").route(web::get().to(health)))
             .service(protected)
             .service(ws_scope)
@@ -542,6 +590,33 @@ mod tests {
             resp.status(),
             401,
             "GET /ws with wrong token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn ws_scope_upgrade_succeeds_with_valid_token() {
+        // With a valid bearer token and proper WebSocket upgrade headers the
+        // handler calls actix_ws::start(WsConn::new(hub), ...) which returns
+        // 101 Switching Protocols.  This asserts auth passes and the hub-backed
+        // handler is correctly wired (not the old echo actor).
+        let app = test::init_service(build_app()).await;
+
+        let req = test::TestRequest::get()
+            .uri("/ws")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .insert_header(("connection", "Upgrade"))
+            .insert_header(("upgrade", "websocket"))
+            .insert_header(("sec-websocket-version", "13"))
+            // A valid base64-encoded 16-byte nonce (per RFC 6455).
+            .insert_header(("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            101,
+            "GET /ws with valid token and WS upgrade headers must return 101; got {}",
             resp.status()
         );
     }
