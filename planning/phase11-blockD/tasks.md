@@ -67,7 +67,7 @@ Expose repo/workflow status reads over the `bastion serve` API — `GET /repos`,
 
 **Primary files:** `src/serve/handlers/status.rs` (new), `src/serve/handlers/mod.rs` (modified), `src/serve/mod.rs` (modified — routes + test helper), `docs/serve-api.md` (modified)
 
-### 5. Validate
+### 5. [x] Validate
 - Run the Validation Commands listed below and confirm all pass.
 - Confirm the test count has increased beyond the 908 baseline.
 - Verify `docs/serve-api.md` header says v0.3 and documents all four new endpoints.
@@ -93,7 +93,13 @@ cargo build --release
 ```
 
 ## Notes
-_Filled in as work happens._
+Task 5 validation run (2026-06-30): `cargo fmt --check` clean, `cargo clippy -- -D warnings` clean,
+`cargo test` — 973 passed, 0 failed, 3 ignored (baseline was 908), `cargo build --release` clean.
+`docs/serve-api.md` frontmatter title confirms "serve-api contract v0.3" and documents all four new
+endpoints (`GET /repos`, `GET /repos/{name}/status`, `GET /repos/{name}/handoff`,
+`GET /repos/{name}/workflows`) plus the `workflow_done` WS event. Handler error-path coverage
+(401 on missing auth, 404 on unknown repo, graceful degrade on missing `status.md`) verified present
+in `src/serve/mod.rs::tests` from Task 4.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
