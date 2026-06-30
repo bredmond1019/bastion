@@ -24,3 +24,7 @@ Validated: gating checks (fast tripwire)
 What: Swapped /ws route to hub-backed WsConn handler, started Hub actor in run_server, updated build_app() test helper, added WS upgrade success test, and bumped docs/serve-api.md to v0.2 with full topic/frame/event documentation.
 Decisions: Read BASTION_POLL_INTERVAL from env inside pub run() rather than adding it to ServeConfig, to keep the public API unchanged; Used Actor trait import (use actix::Actor) to bring .start() into scope rather than use actix::prelude::*; Started Hub inside build_app() synchronously — works because #[actix_web::test] already provides an actix System context; Placed hub_data as app_data at both the App level and ws_scope level so web::Data<Addr<Hub>> is extractable from the ws handler; Renumbered all old sections (6 Sessions, 7 Config, 8 Versioning) to 10/11/12 to make room for new sections 5-9
 Validated: gating checks (fast tripwire)
+
+## Task 6 — PASSED (1 attempt)
+What: Task 6 validation: all four gated checks pass (cargo fmt/clippy/test/build, 908 tests), live WebSocket smoke test confirmed sessions subscription, pane diff-push, send-frame key delivery, send_key Escape, and event{needs_input} rising-edge push — results recorded in tasks.md Notes.
+Validated: gating checks (fast tripwire)

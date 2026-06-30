@@ -2,10 +2,10 @@
   "spec_slug": "11.C-websocket-hub",
   "branch": "11.C-websocket-hub-flow",
   "started_at": "2026-06-30T13:45:01Z",
-  "updated_at": "2026-06-30T14:13:36Z",
+  "updated_at": "2026-06-30T14:20:09Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/11.C-websocket-hub-flow",
   "status": "running",
-  "current_task": 5,
+  "current_task": 6,
   "tasks": {
     "1": {
       "status": "passed",
@@ -98,6 +98,19 @@
       "files_changed": [
         "src/serve/mod.rs",
         "docs/serve-api.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "6": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Task 6 validation: all four gated checks pass (cargo fmt/clippy/test/build, 908 tests), live WebSocket smoke test confirmed sessions subscription, pane diff-push, send-frame key delivery, send_key Escape, and event{needs_input} rising-edge push — results recorded in tasks.md Notes.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "planning/11.C-websocket-hub/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -254,13 +267,37 @@
         "filesReadKb": null,
         "inTokEst": 576,
         "outTok": 2409
+      },
+      {
+        "label": "update-task-6",
+        "model": "haiku",
+        "promptTokEst": 256,
+        "filesReadKb": null,
+        "inTokEst": 256,
+        "outTok": 1116
+      },
+      {
+        "label": "implement-6-1",
+        "model": "sonnet",
+        "promptTokEst": 888,
+        "filesReadKb": null,
+        "inTokEst": 888,
+        "outTok": 7883
+      },
+      {
+        "label": "test-6-1",
+        "model": "haiku",
+        "promptTokEst": 576,
+        "filesReadKb": null,
+        "inTokEst": 576,
+        "outTok": 2150
       }
     ],
     "total": {
-      "promptTokEst": 9596,
+      "promptTokEst": 11316,
       "filesReadKb": 0,
-      "inTokEst": 9596,
-      "outTok": 91872
+      "inTokEst": 11316,
+      "outTok": 103021
     }
   }
 }
