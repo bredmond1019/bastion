@@ -40,7 +40,7 @@ Expose repo/workflow status reads over the `bastion serve` API — `GET /repos`,
 
 **Primary files:** `src/serve/status/handoff.rs` (new), `src/serve/status/flow.rs` (new), `src/serve/status/mod.rs` (modified — add `pub mod handoff; pub mod flow;`), `src/serve/status/fixtures/` (new fixtures)
 
-### 3. DTO layer + poll extension (`src/serve/dto.rs`, `src/serve/poll.rs`)
+### 3. [~] DTO layer + poll extension (`src/serve/dto.rs`, `src/serve/poll.rs`)
 - Add new DTOs to `src/serve/dto.rs`:
   - `RepoSummaryDto` — `{ name: String, now: String, has_handoff: bool }` (element of `GET /repos` array).
   - `RepoStatusDto` — full status shape returned by `GET /repos/{name}/status` (mirrors `RepoStatus` from Task 1, serializable).

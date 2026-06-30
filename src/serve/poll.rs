@@ -9,8 +9,13 @@
 //! - [`PaneCursor`] — stateful per-pane sequencer that emits payloads on diff.
 //! - [`sessions_snapshot`] — convert raw `tmux list-sessions` output to
 //!   [`SessionDto`]s for the `sessions` topic push.
+//! - [`FlowWatcher`] — stateful non-terminal→terminal `sdlc-flow-state.json`
+//!   transition tracker for the `workflow_done` WS push (BA.11.D).
 
-use crate::serve::dto::SessionDto;
+use std::collections::HashMap;
+
+use crate::serve::dto::{SessionDto, WorkflowDonePayload};
+use crate::serve::status::flow::{FlowState, detect_transition};
 use crate::sessions::model::parse_sessions;
 
 // ── Pane diff ─────────────────────────────────────────────────────────────────
@@ -110,6 +115,55 @@ fn extract_lines(capture: &str) -> Vec<String> {
 /// the poll task in Task 4.
 pub fn sessions_snapshot(raw: &str) -> Vec<SessionDto> {
     parse_sessions(raw).iter().map(SessionDto::from).collect()
+}
+
+// ── Flow watcher (BA.11.D) ──────────────────────────────────────────────────────
+
+/// Stateful tracker for `sdlc-flow-state.json` transitions across observation
+/// cycles, keyed by `(repo_name, spec_slug)`.
+///
+/// Wraps [`detect_transition`] (the pure per-flow comparison) with a map of
+/// last-known statuses so a poll loop (Task 4 I/O wiring) can call
+/// [`FlowWatcher::observe`] on every cycle and only get back payloads for
+/// flows that just transitioned from non-terminal to terminal.
+#[derive(Debug, Default)]
+pub struct FlowWatcher {
+    /// `(repo_name, spec_slug)` → last-observed `status` string.
+    last_status: HashMap<(String, String), String>,
+}
+
+impl FlowWatcher {
+    /// Construct an empty watcher (no flows observed yet).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Observe the current set of flow states for `repo`, returning a
+    /// [`WorkflowDonePayload`] for each flow that just transitioned from a
+    /// non-terminal status to a terminal one (`"done"` or `"blocked"`).
+    ///
+    /// Always updates the internal map to the latest status for every flow
+    /// passed in, regardless of whether an event was emitted.
+    pub fn observe(&mut self, repo: &str, flows: &[FlowState]) -> Vec<WorkflowDonePayload> {
+        let mut events = Vec::new();
+
+        for flow in flows {
+            let key = (repo.to_owned(), flow.spec_slug.clone());
+            let prev = self.last_status.get(&key).map(String::as_str);
+
+            if detect_transition(prev, flow).is_some() {
+                events.push(WorkflowDonePayload {
+                    repo: repo.to_owned(),
+                    spec_slug: flow.spec_slug.clone(),
+                    status: flow.status.clone(),
+                });
+            }
+
+            self.last_status.insert(key, flow.status.clone());
+        }
+
+        events
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -334,5 +388,103 @@ background\t0\t1\t1718000100\tzsh\n";
         // Only the valid line should survive.
         assert_eq!(dtos.len(), 1);
         assert_eq!(dtos[0].name, "work");
+    }
+
+    // ── FlowWatcher ───────────────────────────────────────────────────────
+
+    fn flow(spec_slug: &str, status: &str) -> FlowState {
+        FlowState {
+            spec_slug: spec_slug.to_owned(),
+            branch: format!("{spec_slug}-flow"),
+            status: status.to_owned(),
+            current_task: 1,
+            started_at: "2026-06-30T00:00:00Z".to_owned(),
+            updated_at: "2026-06-30T01:00:00Z".to_owned(),
+        }
+    }
+
+    #[test]
+    fn flow_watcher_first_observation_emits_no_events() {
+        let mut watcher = FlowWatcher::new();
+        let events = watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
+        assert!(events.is_empty(), "first observation must never emit");
+    }
+
+    #[test]
+    fn flow_watcher_unchanged_status_emits_no_events() {
+        let mut watcher = FlowWatcher::new();
+        watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
+        let events = watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
+        assert!(events.is_empty(), "unchanged status must not emit");
+    }
+
+    #[test]
+    fn flow_watcher_running_to_done_emits_event() {
+        let mut watcher = FlowWatcher::new();
+        watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
+        let events = watcher.observe("bastion", &[flow("phase11-blockD", "done")]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].repo, "bastion");
+        assert_eq!(events[0].spec_slug, "phase11-blockD");
+        assert_eq!(events[0].status, "done");
+    }
+
+    #[test]
+    fn flow_watcher_running_to_blocked_emits_event() {
+        let mut watcher = FlowWatcher::new();
+        watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
+        let events = watcher.observe("bastion", &[flow("phase11-blockD", "blocked")]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, "blocked");
+    }
+
+    #[test]
+    fn flow_watcher_done_to_done_emits_no_events() {
+        let mut watcher = FlowWatcher::new();
+        watcher.observe("bastion", &[flow("phase11-blockD", "done")]);
+        let events = watcher.observe("bastion", &[flow("phase11-blockD", "done")]);
+        assert!(
+            events.is_empty(),
+            "already-terminal status must not re-emit"
+        );
+    }
+
+    #[test]
+    fn flow_watcher_tracks_multiple_repos_and_specs_independently() {
+        let mut watcher = FlowWatcher::new();
+        watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
+        watcher.observe("bella", &[flow("phase11-blockD", "running")]);
+
+        // Same spec_slug, different repo — transitions must be tracked independently.
+        let events_a = watcher.observe("bastion", &[flow("phase11-blockD", "done")]);
+        assert_eq!(events_a.len(), 1);
+        assert_eq!(events_a[0].repo, "bastion");
+
+        let events_b = watcher.observe("bella", &[flow("phase11-blockD", "running")]);
+        assert!(
+            events_b.is_empty(),
+            "bella's flow is still running, unaffected by bastion's transition"
+        );
+    }
+
+    #[test]
+    fn flow_watcher_multiple_flows_in_one_observation() {
+        let mut watcher = FlowWatcher::new();
+        watcher.observe(
+            "bastion",
+            &[
+                flow("phase11-blockA", "running"),
+                flow("phase11-blockB", "running"),
+            ],
+        );
+        let events = watcher.observe(
+            "bastion",
+            &[
+                flow("phase11-blockA", "done"),
+                flow("phase11-blockB", "running"),
+            ],
+        );
+        assert_eq!(events.len(), 1, "only the transitioned flow should emit");
+        assert_eq!(events[0].spec_slug, "phase11-blockA");
     }
 }
