@@ -34,6 +34,7 @@
 pub mod auth;
 pub mod dto;
 pub mod handlers;
+pub mod status;
 pub mod ws;
 
 use actix_web::{App, HttpResponse, HttpServer, web};
