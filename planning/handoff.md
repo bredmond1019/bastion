@@ -1,82 +1,72 @@
 ---
 type: Handoff
-title: Handoff — three live-test bugs fixed, BA.11.C next
-description: Session handoff after manual testing + bug-fix session; three bugs patched and uncommitted; Block C (WebSocket hub) is next.
+title: Handoff — BA.11.C0 complete; BA.11.C (WebSocket hub) is next
+description: Session handoff after shipping the agent-state detection engine (BA.11.C0); detect() seam is live, Block C is the clear next step.
 doc_id: handoff
 layer: [console]
 project: bastion
 status: active
-keywords: [handoff, bug fix, validate, code graph, status, phase 11]
-related: [status, master-plan, serve-api]
-created: 2026-06-26
+keywords: [handoff, detect, agent state, websocket, phase 11, BA.11.C]
+related: [bastion-status, bastion-detect, master-plan]
+created: 2026-06-30
 ---
 
-# Handoff — Three live-test bugs fixed; BA.11.C next
+# Handoff — BA.11.C0 complete; BA.11.C (WebSocket hub) is next
 
 > **For the next agent:** Read this immediately after `/prime`. Delete this file once consumed.
 
 ## What we're doing and why
 
-This session did manual live testing of `bastion` commands to verify real behavior, then
-fixed all three bugs found. The fixes are uncommitted — commit them first. After that the
-natural next block is **BA.11.C** (WebSocket hub + live pane streaming), which is
-the highest-priority remaining BastionUI item (brain D28).
+We are building Bastion's Phase 11 — the live pane streaming + agent-state layer that
+BastionUI (D28) needs to show agents as Idle / Working / Blocked in real time.
+
+BA.11.C0 (the agent-state detection engine) shipped this session with a clean PASS and is
+now on `main`. It is the seam BA.11.C depends on: the WebSocket hub will call `detect()`
+on each captured pane to decide which state to broadcast. The natural next step is to start
+BA.11.C (WebSocket hub + live pane streaming), which is the highest-priority remaining
+BastionUI item.
 
 ## Completed this session
 
-- **Manual test sweep** — ran `--help`, `status`, `sessions`, `new`/`send`/`capture`/`kill`,
-  `validate`, `brain`, `code`, `man` live and recorded PASS/FAIL for each
-- **Bug 1 fixed** — `src/run/mod.rs:72–89`: `status` now gracefully degrades when
-  `DATABASE_URL` is not set instead of hard-crashing; catches `ConfigError::MissingVar`
-  specifically, shows `DB unreachable (DATABASE_URL not set)`, still probes the API
-- **Bug 2 fixed** — `src/brain/code_graph.rs:268`: `collect_rs_files` now skips `trees/`
-  alongside `.hidden` and `target/` — stale worktrees no longer pollute `code --def/--refs`
-  results
-- **Bug 3 fixed** — `src/validate/links.rs`: new `blank_code_spans()` pre-processor strips
-  inline backtick spans before the link scanner runs, eliminating false-positive
-  `broken-link` errors on `[text](target)` sequences inside code spans; 4 new tests added
-- **775 tests pass**; `cargo fmt` + `cargo clippy -- -D warnings` both clean
+- **BA.11.C0 fully implemented and merged** — pure config-driven agent-state detection engine:
+  - `src/detect/mod.rs` — `AgentState`, `AgentDetection`, `detect()` entry point
+  - `src/detect/manifest.rs` — TOML manifest schema (`RegionSpec` / `GateSpec` / `RuleSpec`), `Manifest::compile()`, `CompiledManifest`, `CompiledGate::eval()`
+  - `src/detect/manifests/claude.toml` + `pi.toml` — seeded Blocked/Working/Idle rules
+  - `src/detect/fixtures/` — five captured-pane golden fixtures
+  - `src/detect/golden_tests.rs` — six golden tests (zero I/O via `include_str!`)
+  - 37 tests in `detect::`, 812 total — all pass; PASS verdict, no review findings
+- **`docs/detect.md` created** — full reference doc (manifest schema, gate types, `detect()` API, compile flow, golden fixture table)
+- **`docs/index.md` updated** — detect.md row added
+- **Worktree merged and cleaned** — branch `11.C0-agent-state-detection-flow-2` merged FF into `main`, removed
+- **PR #7** opened (already merged into local main; remote may still show it as open)
+- **Light code review (low)** — clean, no findings
 
 ## Remaining work
 
-1. **Commit the bug fixes** (3 files modified, nothing staged):
-   ```bash
-   git add src/run/mod.rs src/brain/code_graph.rs src/validate/links.rs
-   git commit -m "fix: status graceful degrade, code skips trees/, validate backtick spans"
-   ```
-2. **Start BA.11.C** — WebSocket hub + live pane streaming. Spec is in
-   `planning/master-plan.md` Phase 11 section. Adapts rag-engine-rs ChatServer actor
-   pattern; topic subscriptions; background poll → watch channels; "needs input" detection.
-   Use `/sdlc-flow` as with prior Phase 11 blocks.
-3. **BA.7.B** (vendor tiktoken counter → exact `bastion costs`) remains available
-   as a lower-priority interleave if Block C hits a blocker.
+1. **Start BA.11.C** — WebSocket hub + live pane streaming. This consumes `detect()` from
+   `src/detect/` for the "needs input" detector seam. Spec is in `planning/master-plan.md`
+   Phase 11, Block C. Use `/sdlc-flow <spec-slug>` as with BA.11.C0 and prior blocks.
+2. **BA.7.B** (vendor tiktoken counter → exact `bastion costs`) remains available as a
+   lower-priority interleave if Block C hits a blocker.
+3. **Minor improvement backlog** (from status.md, non-blocking):
+   - Confirm `bastion validate` skips `trees/` if worktrees accumulate `.md` files
+   - `status` config-file API URL not loaded when `DATABASE_URL` absent (acceptable edge case)
 
 ## Open questions / choices
 
-None — the approach for BA.11.C is settled (actix WS actor pattern from Block A,
-extend with topic subscriptions; full spec in `planning/master-plan.md`).
+None — clear to proceed. BA.11.C approach is settled: actix WS actor pattern (from Block A),
+extend with topic subscriptions and a background poll → watch channel, with `detect()` as the
+needs-input seam. Full spec in `planning/master-plan.md`.
 
 ## Context the next agent needs
 
-- **775 tests** is the new baseline after bug fixes (was 771 after 11.B).
-- **`blank_code_spans` scope**: the fix handles single-backtick inline spans only. Multi-line
-  fenced code blocks (triple-backtick) would require cross-line state in the link checker;
-  that's out of scope for now and not currently causing false positives in this repo.
-- **`trees/` skip**: applies to `bastion code` (the code graph walker). `bastion validate`
-  already skipped `target/` via `find_markdown_files`; verify it also skips `trees/` if
-  worktrees accumulate `.md` files there.
-- **`status` API fallback**: when `DATABASE_URL` is absent and config file is also absent,
-  `status` uses hardcoded `http://localhost:8080` for the API URL. If the user has a
-  non-default API URL in `~/.config/bastion/config.toml` but no `DATABASE_URL`, that file
-  value is not loaded (Config::load fails before returning). Acceptable edge case for now.
-- **Block C runtime model**: `bastion serve` runs `actix_web::rt::System::new().block_on(...)`
-  on a dedicated OS thread via `tokio::task::spawn_blocking`. Block C WebSocket actors must
-  follow the same pattern — do not change the runtime model.
-- **serve-api contract** (`docs/serve-api.md`) is at v0.1. Any new Block C frame kinds or
-  routes must be documented before the block ships.
+- **812 tests** is the current baseline.
+- **`detect()` signature:** `pub fn detect(screen: &str, manifest: &CompiledManifest) -> AgentDetection` in `src/detect/mod.rs`. Manifests are compiled once at startup via `parse_manifest(src)?.compile()?`.
+- **Adding a new agent** requires only a new TOML under `src/detect/manifests/` — zero engine-code changes (extensibility property proven by the cross-agent isolation golden test).
+- **Block C runtime model constraint:** `bastion serve` runs `actix_web::rt::System::new().block_on(...)` on a dedicated OS thread via `tokio::task::spawn_blocking`. Block C WebSocket actors must follow the same pattern — do not change the runtime model.
+- **`serve-api.md` at v0.1.** Any new Block C frame kinds or routes must be documented before the block ships.
+- **PR #7** on GitHub may still show as open if the remote hasn't been updated. Local `main` has all 12 commits from the flow.
 
 ## First command after `/prime`
 
-```bash
-git add src/run/mod.rs src/brain/code_graph.rs src/validate/links.rs && git commit -m "fix: status graceful degrade, code skips trees/, validate backtick spans"
-```
+`/sdlc-flow <BA.11.C-spec-slug>`
