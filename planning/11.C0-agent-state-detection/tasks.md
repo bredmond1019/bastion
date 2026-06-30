@@ -14,7 +14,7 @@ block: C0
 
 # Task Spec — BA.11.C0: Agent-state detection manifest engine
 
-**Status:** Not started · **Last run:** never
+**Status:** PASSED (2/2 tasks) · **Last run:** 2026-06-30 13:07 UTC
 
 ## Goal
 Build a pure, config-driven agent-state detection engine — per-agent TOML manifests compile into priority-ordered rules and a `detect(screen, manifest) -> AgentDetection` matcher classifies a captured pane region as `Idle | Working | Blocked | Unknown` with `visible_*` / `skip_state_update` flags — seeded with Claude and Pi manifests only, so adding any future agent is a new TOML and not new Rust.
@@ -56,7 +56,7 @@ Build a pure, config-driven agent-state detection engine — per-agent TOML mani
   - `compile()` **error path** — a malformed regex / malformed TOML returns a typed error (degradation path, not just happy path).
 - **Owns:** `src/detect/mod.rs`, `src/detect/manifest.rs` (new), `src/main.rs` (append-only one-line `mod detect;`), `Cargo.toml` (append-only `regex` dep). **No dependencies.**
 
-### 2. Seed Claude + Pi manifests, captured-pane fixtures, golden tests
+### 2. PASSED Seed Claude + Pi manifests, captured-pane fixtures, golden tests
 - Author `src/detect/manifests/claude.toml`:
   - a **`Blocked` + `visible_blocker`** rule matching Claude's prompt/approval box (e.g. the bordered input box / "Do you want to proceed?" affordance) at high priority;
   - a `Working` rule for Claude's active/spinner state ("esc to interrupt" / working indicator);

@@ -2,10 +2,10 @@
   "spec_slug": "11.C0-agent-state-detection",
   "branch": "11.C0-agent-state-detection-flow-2",
   "started_at": "2026-06-30T13:02:29Z",
-  "updated_at": "2026-06-30T13:02:29Z",
+  "updated_at": "2026-06-30T13:07:40Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/11.C0-agent-state-detection-flow-2",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -25,6 +25,31 @@
         "src/detect/mod.rs",
         "src/detect/manifest.rs",
         "src/detect/golden_tests.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Seed Claude and Pi TOML manifests, five captured-pane fixtures, and six golden tests (loaded via include_str!, zero I/O) covering Blocked+visible_blocker, Working, Idle for each agent and a cross-agent isolation case; all 812 tests pass.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Claude idle rule uses line_regex = \"^> \" (line starting with '> ') to match the Claude Code resting prompt; the idle fixture has a '> ' line with trailing space to match.",
+        "Pi working fixture contains both 'Working...' and a 'Pi: ' prefixed response line — the working rule (priority 50) correctly wins over idle (priority 10) because rules are sorted descending by priority.",
+        "Added a cross-agent isolation golden test (claude_blocked through pi manifest → Unknown) to verify manifests don't bleed across agents — this was not explicitly required by the spec but directly validates the extensibility claim.",
+        "claude_idle.txt uses a bare '>' line on one line and '> ' (with space) on another so the line_regex matches at least one line."
+      ],
+      "files_changed": [
+        "src/detect/golden_tests.rs",
+        "src/detect/manifests/claude.toml",
+        "src/detect/manifests/pi.toml",
+        "src/detect/fixtures/claude_blocked.txt",
+        "src/detect/fixtures/claude_working.txt",
+        "src/detect/fixtures/claude_idle.txt",
+        "src/detect/fixtures/pi_working.txt",
+        "src/detect/fixtures/pi_idle.txt"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -85,13 +110,37 @@
         "filesReadKb": null,
         "inTokEst": 598,
         "outTok": 1862
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 267,
+        "filesReadKb": null,
+        "inTokEst": 267,
+        "outTok": 1099
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 923,
+        "filesReadKb": null,
+        "inTokEst": 923,
+        "outTok": 12857
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 598,
+        "filesReadKb": null,
+        "inTokEst": 598,
+        "outTok": 2290
       }
     ],
     "total": {
-      "promptTokEst": 2812,
+      "promptTokEst": 4600,
       "filesReadKb": 0,
-      "inTokEst": 2812,
-      "outTok": 21871
+      "inTokEst": 4600,
+      "outTok": 38117
     }
   }
 }
