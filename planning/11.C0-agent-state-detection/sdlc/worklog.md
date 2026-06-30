@@ -13,3 +13,6 @@ Validated: gating checks (fast tripwire)
 ## Task 3 — PASSED (1 attempt)
 What: Task 3 (Validate): all four gated checks pass — fmt, clippy, 812 tests (37 in detect::), release build; Notes updated with final test count; block marked PASSED (3/3).
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/index.md | Created: docs/detect.md
