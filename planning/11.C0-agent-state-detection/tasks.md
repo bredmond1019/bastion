@@ -105,4 +105,4 @@ This block is pure (no process/Postgres/HTTP I/O); the golden tests in Task 2 fu
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-06-30 [task 2] Added a cross-agent isolation golden test (claude_blocked through pi manifest → Unknown) not required by the spec; validates the extensibility/non-bleed claim asserted in the acceptance criteria and called out in a test comment.

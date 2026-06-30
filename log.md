@@ -10,6 +10,23 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-30 — BA.11.C0 agent-state detection manifest engine
+
+Implemented the complete agent-state detection engine (BA.11.C0) across three tasks in a single SDLC run, receiving a PASS verdict with no review findings. Task 1 built the pure detection core: `AgentState`/`AgentDetection` types, a TOML manifest schema (`RegionSpec`/`GateSpec`/`RuleSpec`) with `whole`/`last_lines` region selectors and `contains`/`regex`/`line_regex` matchers, recursive `any`/`all`/`not` gate combinators (compiled at manifest-load time), a `detect(screen, manifest) -> AgentDetection` function evaluating rules in descending-priority order, and 31 exhaustive pure unit tests covering all matcher types, combinators, priority ordering, the no-match → Unknown path, and the `compile()` error path (malformed regex). Task 2 seeded Claude and Pi TOML manifests with Blocked/Working/Idle rules and five captured-pane fixtures, then added six golden tests (loaded via `include_str!` — zero filesystem I/O) asserting Claude blocked → `Blocked + visible_blocker`, Claude working/idle, Pi working/idle, and a cross-agent isolation case confirming manifests don't bleed. Task 3 was the validation pass: all four gated checks clean (`cargo fmt`, `cargo clippy -- -D warnings`, `cargo test` — 812 tests including 37 in `detect::`, `cargo build --release`). Notable implementation decisions: `sort_by_key` with `std::cmp::Reverse` for descending-priority sort (clippy-required); Claude idle rule uses `line_regex = "^> "` to match the resting prompt; cross-agent isolation test added beyond spec to validate extensibility claim. Next: start BA.11.C (WebSocket hub + live pane streaming) which consumes `detect()` for its needs-input detector seam.
+
+```
+cc9bb89 chore: flow state — docs
+cbd1627 docs: update docs for 11.C0-agent-state-detection
+d0e718d chore: flow state — task 3 passed
+e8a503c feat: implement 11.C0-agent-state-detection-task3
+6222fd6 chore: flow state — task 2 passed
+e372035 feat: implement 11.C0-agent-state-detection-task2
+2d28a63 chore: flow state — task 1 passed
+311b4ba feat(detect): implement BA.11.C0 Task 1 — detection engine core types, manifest schema, gate matcher, region resolver, detect()
+```
+
+---
+
 ## 2026-06-26 — manual live testing + three bug fixes
 
 Manual live testing of phase11-blockB against a running `bastion serve` instance uncovered three bugs in existing code that were fixed this session. Bug 1: `bastion status` returned a hard error when `DATABASE_URL` was missing or Postgres was unreachable, instead of degrading gracefully; added a degradation path in `src/run/mod.rs` so the command completes with a "service unreachable" diagnostic rather than crashing. Bug 2: `bastion code --graph` was traversing into `trees/` and `.git/worktrees/` when scanning the workspace for multi-project Rust crates, polluting the code graph; added an exclusion filter in `src/brain/code_graph.rs` to skip those directories. Bug 3: `bastion validate --links` was incorrectly flagging Rust identifiers and keywords inside backticks as broken links (e.g. `` `Result::Ok` ``, `` `async fn` ``), treating the backtick wrapper as a URL and looking for a heading with that name; added backtick-span suppression in `src/validate/links.rs` so links are only extracted from non-code contexts. All three fixes are targeted, localized, and pass the full test suite (771 tests).
