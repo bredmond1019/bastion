@@ -2,10 +2,10 @@
   "spec_slug": "11.C-websocket-hub",
   "branch": "11.C-websocket-hub-flow",
   "started_at": "2026-06-30T13:45:01Z",
-  "updated_at": "2026-06-30T13:45:01Z",
+  "updated_at": "2026-06-30T13:49:38Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/11.C-websocket-hub-flow",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -19,6 +19,26 @@
       ],
       "files_changed": [
         "src/serve/dto.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Add src/serve/status/ needs-input detection adapter: OnceLock-compiled Claude manifest, needs_input() and detect_state() pure fns, fixtures, and 6 unit tests covering all required paths.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "detect_state() passthrough included proactively per the breakdown note (Task 4 will need it for debounce; shipping it now avoids a cross-task edit later)",
+        "no_input.txt fixture uses the 'esc to interrupt' working pattern from claude_working.txt to ensure AgentState::Working is returned, satisfying the working-pane test"
+      ],
+      "files_changed": [
+        "src/serve/mod.rs",
+        "src/serve/status/mod.rs",
+        "src/serve/status/detect.rs",
+        "src/serve/status/fixtures/needs_input.txt",
+        "src/serve/status/fixtures/no_input.txt"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -79,13 +99,37 @@
         "filesReadKb": null,
         "inTokEst": 576,
         "outTok": 1630
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 256,
+        "filesReadKb": null,
+        "inTokEst": 256,
+        "outTok": 1120
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 888,
+        "filesReadKb": null,
+        "inTokEst": 888,
+        "outTok": 7809
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 576,
+        "filesReadKb": null,
+        "inTokEst": 576,
+        "outTok": 1945
       }
     ],
     "total": {
-      "promptTokEst": 2716,
+      "promptTokEst": 4436,
       "filesReadKb": 0,
-      "inTokEst": 2716,
-      "outTok": 18592
+      "inTokEst": 4436,
+      "outTok": 29466
     }
   }
 }
