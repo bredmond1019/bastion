@@ -27,3 +27,6 @@ Validated: gating checks (fast tripwire)
 
 ## Docs
 Patched: docs/index.md
+
+## Wrap-up — PASS
+Next: Open PR for phase11-blockD; wire FlowWatcher into the live Hub actor for an actual workflow_done WS push (deferred from BA.11.D); then check master-plan for next Phase 11 block or BA.7.B
