@@ -62,14 +62,32 @@ pub struct WsFrame {
 
 /// Discriminant for [`WsFrame::kind`].
 ///
-/// Only `Echo` is defined at v0; later blocks extend this enum.
+/// v0 defined `Echo` and `Error`.  v0.2 adds client→server kinds (`Subscribe`,
+/// `Unsubscribe`, `Send`, `SendKey`) and server→client kinds (`Sessions`, `Pane`,
+/// `Event`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WsFrameKind {
-    /// Echo — the `/ws` actor reflects the received frame back unchanged (Task 5).
+    /// Echo — the `/ws` actor reflects the received frame back unchanged (v0).
     Echo,
     /// Error — server-side error notification pushed to the client.
     Error,
+    // ── client → server (v0.2) ────────────────────────────────────────────
+    /// Subscribe to a topic (`sessions` or `pane:<name>`).
+    Subscribe,
+    /// Unsubscribe from a topic.
+    Unsubscribe,
+    /// Send literal keystrokes to a tmux session (followed by Enter).
+    Send,
+    /// Send a single named tmux key to a session (e.g. `"Escape"`, `"C-c"`).
+    SendKey,
+    // ── server → client (v0.2) ────────────────────────────────────────────
+    /// Session list snapshot pushed to `sessions` subscribers.
+    Sessions,
+    /// Pane diff pushed to `pane:<name>` subscribers.
+    Pane,
+    /// Async event pushed to all subscribed connections (e.g. `needs_input`).
+    Event,
 }
 
 // ── Error payload ──────────────────────────────────────────────────────────────
@@ -83,6 +101,115 @@ pub struct ErrorPayload {
     pub code: String,
     /// Human-readable error message.
     pub message: String,
+}
+
+// ── v0.2 WebSocket payload structs ────────────────────────────────────────────
+
+/// Payload for client→server `subscribe` / `unsubscribe` frames.
+///
+/// Wire format: `{ "topic": "sessions" }` or `{ "topic": "pane:work" }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubscribePayload {
+    /// Topic string: `"sessions"` or `"pane:<name>"`.
+    pub topic: String,
+}
+
+/// Payload for client→server `send` frames (literal keystrokes + Enter).
+///
+/// Wire format: `{ "session": "main", "keys": "cargo test" }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SendPayload {
+    /// Target tmux session name.
+    pub session: String,
+    /// Literal text to send (forwarded with `-l`), followed by Enter.
+    pub keys: String,
+}
+
+/// Payload for client→server `send_key` frames (single named tmux key).
+///
+/// Wire format: `{ "session": "main", "key": "Escape" }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SendKeyPayload {
+    /// Target tmux session name.
+    pub session: String,
+    /// Symbolic tmux key name (e.g. `"Escape"`, `"Up"`, `"C-c"`).
+    pub key: String,
+}
+
+/// Payload for server→client `sessions` frames (session list snapshot).
+///
+/// Wire format: `{ "sessions": [ … ] }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionsPayload {
+    /// Current snapshot of all tmux sessions.
+    pub sessions: Vec<SessionDto>,
+}
+
+/// Payload for server→client `pane` frames (pane diff push).
+///
+/// Wire format: `{ "session": "main", "seq": 42, "lines": ["line1", "line2"] }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanePayload {
+    /// tmux session name whose pane was captured.
+    pub session: String,
+    /// Monotonically increasing sequence number; bumped on every diff push.
+    pub seq: u64,
+    /// Non-blank trailing lines from the captured pane output.
+    pub lines: Vec<String>,
+}
+
+/// Payload for server→client `event` frames (e.g. `needs_input`).
+///
+/// Wire format: `{ "session": "main", "event": "needs_input" }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventPayload {
+    /// Session that triggered the event.
+    pub session: String,
+    /// Event name; currently only `"needs_input"` is defined.
+    pub event: String,
+}
+
+// ── Topic enum + parser ────────────────────────────────────────────────────────
+
+/// Parsed representation of a WebSocket subscription topic string.
+///
+/// Valid topic strings:
+/// - `"sessions"` → [`Topic::Sessions`]
+/// - `"pane:<name>"` → [`Topic::Pane`] where `<name>` is non-empty
+///
+/// Any other string (including `"pane:"` with an empty name) is invalid and
+/// causes [`parse_topic`] to return `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Topic {
+    /// The global sessions list topic (`"sessions"`).
+    Sessions,
+    /// A named pane topic (`"pane:<name>"`).
+    Pane(String),
+}
+
+/// Parse a topic string into a [`Topic`] variant.
+///
+/// Returns `None` for any unrecognised or malformed string.
+///
+/// # Examples
+/// ```
+/// use crate::serve::dto::{parse_topic, Topic};
+/// assert_eq!(parse_topic("sessions"), Some(Topic::Sessions));
+/// assert_eq!(parse_topic("pane:work"), Some(Topic::Pane("work".into())));
+/// assert_eq!(parse_topic("pane:"),     None);  // empty name
+/// assert_eq!(parse_topic("unknown"),   None);
+/// ```
+pub fn parse_topic(s: &str) -> Option<Topic> {
+    if s == "sessions" {
+        return Some(Topic::Sessions);
+    }
+    if let Some(name) = s.strip_prefix("pane:") {
+        if name.is_empty() {
+            return None;
+        }
+        return Some(Topic::Pane(name.to_owned()));
+    }
+    None
 }
 
 // ── Session response DTOs ─────────────────────────────────────────────────────
@@ -648,5 +775,369 @@ mod tests {
         let b: NewSessionBody = serde_json::from_str(raw).expect("deserialize");
         assert_eq!(b.name, "test");
         assert!(b.dir.is_none());
+    }
+
+    // ── v0.2 WsFrameKind variants ──────────────────────────────────────────
+
+    #[test]
+    fn ws_frame_kind_subscribe_serializes_snake_case() {
+        let kind = WsFrameKind::Subscribe;
+        let v = serde_json::to_value(&kind).expect("serialize WsFrameKind::Subscribe");
+        assert_eq!(v, json!("subscribe"));
+    }
+
+    #[test]
+    fn ws_frame_kind_unsubscribe_serializes_snake_case() {
+        let kind = WsFrameKind::Unsubscribe;
+        let v = serde_json::to_value(&kind).expect("serialize WsFrameKind::Unsubscribe");
+        assert_eq!(v, json!("unsubscribe"));
+    }
+
+    #[test]
+    fn ws_frame_kind_send_serializes_snake_case() {
+        let kind = WsFrameKind::Send;
+        let v = serde_json::to_value(&kind).expect("serialize WsFrameKind::Send");
+        assert_eq!(v, json!("send"));
+    }
+
+    #[test]
+    fn ws_frame_kind_send_key_serializes_snake_case() {
+        let kind = WsFrameKind::SendKey;
+        let v = serde_json::to_value(&kind).expect("serialize WsFrameKind::SendKey");
+        assert_eq!(v, json!("send_key"));
+    }
+
+    #[test]
+    fn ws_frame_kind_sessions_serializes_snake_case() {
+        let kind = WsFrameKind::Sessions;
+        let v = serde_json::to_value(&kind).expect("serialize WsFrameKind::Sessions");
+        assert_eq!(v, json!("sessions"));
+    }
+
+    #[test]
+    fn ws_frame_kind_pane_serializes_snake_case() {
+        let kind = WsFrameKind::Pane;
+        let v = serde_json::to_value(&kind).expect("serialize WsFrameKind::Pane");
+        assert_eq!(v, json!("pane"));
+    }
+
+    #[test]
+    fn ws_frame_kind_event_serializes_snake_case() {
+        let kind = WsFrameKind::Event;
+        let v = serde_json::to_value(&kind).expect("serialize WsFrameKind::Event");
+        assert_eq!(v, json!("event"));
+    }
+
+    #[test]
+    fn ws_frame_kind_v02_round_trips() {
+        for kind in [
+            WsFrameKind::Subscribe,
+            WsFrameKind::Unsubscribe,
+            WsFrameKind::Send,
+            WsFrameKind::SendKey,
+            WsFrameKind::Sessions,
+            WsFrameKind::Pane,
+            WsFrameKind::Event,
+        ] {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            let decoded: WsFrameKind = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(kind, decoded, "round-trip failed for {json}");
+        }
+    }
+
+    // ── SubscribePayload ──────────────────────────────────────────────────
+
+    #[test]
+    fn subscribe_payload_round_trip() {
+        let p = SubscribePayload {
+            topic: "sessions".to_owned(),
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let decoded: SubscribePayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(p, decoded);
+    }
+
+    #[test]
+    fn subscribe_payload_serializes_topic_field() {
+        let p = SubscribePayload {
+            topic: "pane:work".to_owned(),
+        };
+        let v = serde_json::to_value(&p).expect("serialize");
+        assert_eq!(v["topic"], "pane:work");
+    }
+
+    #[test]
+    fn subscribe_payload_rejects_missing_topic() {
+        let raw = r#"{}"#;
+        let result: Result<SubscribePayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "SubscribePayload must fail when topic is missing"
+        );
+    }
+
+    // ── SendPayload ───────────────────────────────────────────────────────
+
+    #[test]
+    fn send_payload_round_trip() {
+        let p = SendPayload {
+            session: "main".to_owned(),
+            keys: "cargo test".to_owned(),
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let decoded: SendPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(p, decoded);
+    }
+
+    #[test]
+    fn send_payload_serializes_expected_fields() {
+        let p = SendPayload {
+            session: "work".to_owned(),
+            keys: "ls -la".to_owned(),
+        };
+        let v = serde_json::to_value(&p).expect("serialize");
+        assert_eq!(v["session"], "work");
+        assert_eq!(v["keys"], "ls -la");
+    }
+
+    #[test]
+    fn send_payload_rejects_missing_session() {
+        let raw = r#"{"keys":"hello"}"#;
+        let result: Result<SendPayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "SendPayload must fail when session is missing"
+        );
+    }
+
+    #[test]
+    fn send_payload_rejects_missing_keys() {
+        let raw = r#"{"session":"main"}"#;
+        let result: Result<SendPayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "SendPayload must fail when keys is missing"
+        );
+    }
+
+    // ── SendKeyPayload ────────────────────────────────────────────────────
+
+    #[test]
+    fn send_key_payload_round_trip() {
+        let p = SendKeyPayload {
+            session: "main".to_owned(),
+            key: "Escape".to_owned(),
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let decoded: SendKeyPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(p, decoded);
+    }
+
+    #[test]
+    fn send_key_payload_serializes_expected_fields() {
+        let p = SendKeyPayload {
+            session: "work".to_owned(),
+            key: "C-c".to_owned(),
+        };
+        let v = serde_json::to_value(&p).expect("serialize");
+        assert_eq!(v["session"], "work");
+        assert_eq!(v["key"], "C-c");
+    }
+
+    #[test]
+    fn send_key_payload_rejects_missing_session() {
+        let raw = r#"{"key":"Escape"}"#;
+        let result: Result<SendKeyPayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "SendKeyPayload must fail when session is missing"
+        );
+    }
+
+    #[test]
+    fn send_key_payload_rejects_missing_key() {
+        let raw = r#"{"session":"main"}"#;
+        let result: Result<SendKeyPayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "SendKeyPayload must fail when key is missing"
+        );
+    }
+
+    // ── SessionsPayload ───────────────────────────────────────────────────
+
+    #[test]
+    fn sessions_payload_round_trip() {
+        let p = SessionsPayload {
+            sessions: vec![SessionDto {
+                name: "main".to_owned(),
+                state: "running".to_owned(),
+                last_line: "$ cargo test".to_owned(),
+            }],
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let decoded: SessionsPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(p, decoded);
+    }
+
+    #[test]
+    fn sessions_payload_serializes_sessions_field() {
+        let p = SessionsPayload { sessions: vec![] };
+        let v = serde_json::to_value(&p).expect("serialize");
+        assert!(v["sessions"].is_array(), "sessions must be an array");
+        assert_eq!(v["sessions"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn sessions_payload_rejects_missing_sessions() {
+        let raw = r#"{}"#;
+        let result: Result<SessionsPayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "SessionsPayload must fail when sessions is missing"
+        );
+    }
+
+    // ── PanePayload ───────────────────────────────────────────────────────
+
+    #[test]
+    fn pane_payload_round_trip() {
+        let p = PanePayload {
+            session: "main".to_owned(),
+            seq: 7,
+            lines: vec!["line1".to_owned(), "line2".to_owned()],
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let decoded: PanePayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(p, decoded);
+    }
+
+    #[test]
+    fn pane_payload_serializes_expected_fields() {
+        let p = PanePayload {
+            session: "work".to_owned(),
+            seq: 42,
+            lines: vec!["hello".to_owned()],
+        };
+        let v = serde_json::to_value(&p).expect("serialize");
+        assert_eq!(v["session"], "work");
+        assert_eq!(v["seq"], 42);
+        assert_eq!(v["lines"][0], "hello");
+    }
+
+    #[test]
+    fn pane_payload_rejects_missing_session() {
+        let raw = r#"{"seq":1,"lines":[]}"#;
+        let result: Result<PanePayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "PanePayload must fail when session is missing"
+        );
+    }
+
+    #[test]
+    fn pane_payload_rejects_missing_seq() {
+        let raw = r#"{"session":"main","lines":[]}"#;
+        let result: Result<PanePayload, _> = serde_json::from_str(raw);
+        assert!(result.is_err(), "PanePayload must fail when seq is missing");
+    }
+
+    #[test]
+    fn pane_payload_rejects_missing_lines() {
+        let raw = r#"{"session":"main","seq":1}"#;
+        let result: Result<PanePayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "PanePayload must fail when lines is missing"
+        );
+    }
+
+    // ── EventPayload ──────────────────────────────────────────────────────
+
+    #[test]
+    fn event_payload_round_trip() {
+        let p = EventPayload {
+            session: "main".to_owned(),
+            event: "needs_input".to_owned(),
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let decoded: EventPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(p, decoded);
+    }
+
+    #[test]
+    fn event_payload_serializes_expected_fields() {
+        let p = EventPayload {
+            session: "work".to_owned(),
+            event: "needs_input".to_owned(),
+        };
+        let v = serde_json::to_value(&p).expect("serialize");
+        assert_eq!(v["session"], "work");
+        assert_eq!(v["event"], "needs_input");
+    }
+
+    #[test]
+    fn event_payload_rejects_missing_session() {
+        let raw = r#"{"event":"needs_input"}"#;
+        let result: Result<EventPayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "EventPayload must fail when session is missing"
+        );
+    }
+
+    #[test]
+    fn event_payload_rejects_missing_event() {
+        let raw = r#"{"session":"main"}"#;
+        let result: Result<EventPayload, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "EventPayload must fail when event is missing"
+        );
+    }
+
+    // ── parse_topic ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_topic_sessions() {
+        assert_eq!(parse_topic("sessions"), Some(Topic::Sessions));
+    }
+
+    #[test]
+    fn parse_topic_pane_with_name() {
+        assert_eq!(
+            parse_topic("pane:work"),
+            Some(Topic::Pane("work".to_owned()))
+        );
+    }
+
+    #[test]
+    fn parse_topic_pane_empty_name_is_none() {
+        assert_eq!(
+            parse_topic("pane:"),
+            None,
+            "empty pane name must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_topic_unknown_is_none() {
+        assert_eq!(parse_topic("unknown"), None);
+        assert_eq!(parse_topic(""), None);
+        assert_eq!(parse_topic("SESSIONS"), None);
+        assert_eq!(parse_topic("Pane:work"), None);
+    }
+
+    #[test]
+    fn parse_topic_pane_name_with_hyphens_and_underscores() {
+        // names like "claude-work" or "my_session" are valid
+        assert_eq!(
+            parse_topic("pane:claude-work"),
+            Some(Topic::Pane("claude-work".to_owned()))
+        );
+        assert_eq!(
+            parse_topic("pane:my_session"),
+            Some(Topic::Pane("my_session".to_owned()))
+        );
     }
 }
