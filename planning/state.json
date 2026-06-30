@@ -1,19 +1,19 @@
 {
   "repo": "bastion",
   "kind": "project",
-  "updated": "2026-06-29",
+  "updated": "2026-06-30",
   "focus": {
     "now": [
       {
-        "block": "BA.11.C0",
+        "id": "BA.11.C0",
         "title": "Agent-state detection manifest engine",
         "status": "in_progress",
         "note": "Three live-test bug fixes patched (status degrade, code skips trees/, validate backtick spans) — not yet committed."
       }
     ],
     "next": [
-      { "block": "BA.11.C", "title": "WebSocket hub + live pane streaming" },
-      { "block": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)" }
+      { "id": "BA.11.C", "title": "WebSocket hub + live pane streaming" },
+      { "id": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)" }
     ],
     "blocked": []
   },
@@ -21,16 +21,40 @@
     {
       "title": "Phase 11 — BastionUI serve API",
       "blocks": [
-        { "id": "BA.11.C0", "title": "Agent-state detection manifest engine", "status": "in_progress" },
-        { "id": "BA.11.C", "title": "WebSocket hub + live pane streaming", "status": "open" },
-        { "id": "BA.11.D", "title": "Repo + workflow status reads over serve", "status": "open" }
+        { "id": "BA.11.C0", "title": "Agent-state detection manifest engine", "status": "in_progress", "wave": 1, "depends_on": [] },
+        {
+          "id": "BA.11.C",
+          "title": "WebSocket hub + live pane streaming",
+          "status": "open",
+          "wave": 2,
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.11.C0" }
+          ]
+        },
+        {
+          "id": "BA.11.D",
+          "title": "Repo + workflow status reads over serve",
+          "status": "open",
+          "wave": 3,
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.11.C" }
+          ]
+        }
       ]
     },
     {
       "title": "Phase 7 — Costs",
       "blocks": [
-        { "id": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)", "status": "open" },
-        { "id": "BA.7.C", "title": "Budget alerts + bastion kill", "status": "open" }
+        { "id": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)", "status": "open", "wave": 2, "depends_on": [] },
+        {
+          "id": "BA.7.C",
+          "title": "Budget alerts + bastion kill",
+          "status": "open",
+          "wave": 3,
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.7.B" }
+          ]
+        }
       ]
     }
   ]
