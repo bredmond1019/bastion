@@ -7,3 +7,4 @@
 //! - [`detect::detect_state`] — raw [`AgentState`] for debounce logic.
 
 pub mod detect;
+pub mod repo;
