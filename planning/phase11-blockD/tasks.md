@@ -1,6 +1,6 @@
 # Task Spec — Phase 11, Block D
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-30 (PASS)
 
 ## Goal
 Expose repo/workflow status reads over the `bastion serve` API — `GET /repos`, `GET /repos/{name}/status`, `GET /repos/{name}/handoff`, `GET /repos/{name}/workflows` — backed by pure parsers for `status.md`, `handoff.md`, and `sdlc-flow-state.json`, with a `workflow_done` event pushed over the WebSocket hub when a flow-state file transitions from `running` to `done|blocked`.
@@ -103,4 +103,4 @@ in `src/serve/mod.rs::tests` from Task 4.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-06-30 [task 4] Goal states a `workflow_done` event is "pushed over the WebSocket hub" when a flow-state file transitions; Task 4 shipped only the pure `FlowWatcher::observe()` (Task 3) and the REST read endpoints — it does not wire `FlowWatcher` into the live `Hub` actor to actually emit `workflow_done` over `/ws`. The WS push wiring is deferred to a later block (documented as such in `docs/serve-api.md`).

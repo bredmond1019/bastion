@@ -6,8 +6,8 @@ doc_id: bastion-status
 layer: [meta]
 status: active
 updated: 2026-06-30T00:00:00Z
-now: "BA.11.C complete — WebSocket hub on main, 908 tests pass, PR #8 open"
-next: "Check master-plan for next Phase 11 block (BA.11.D or later); BA.7.B as lower-priority interleave; push local main to origin"
+now: "BA.11.D complete — repo/workflow status REST API (GET /repos, /status, /handoff, /workflows) + pure FlowWatcher, 973 tests pass, PASS verdict"
+next: "Open PR for phase11-blockD; wire FlowWatcher into the live Hub actor for an actual workflow_done WS push (deferred from BA.11.D); then check master-plan for next Phase 11 block or BA.7.B"
 blocked: []
 ---
 
@@ -18,8 +18,8 @@ blocked: []
 > Working board — keep all five queues live. **Never end a meaningful session with every queue
 > empty.** The headlines of **now / next / blocked** mirror the frontmatter scalars above.
 
-- **now** — BA.11.C complete — WebSocket hub on main, 908 tests pass, PR #8 open
-- **next** — Check master-plan for next Phase 11 block (BA.11.D or later); BA.7.B as lower-priority interleave; push local main to origin
+- **now** — BA.11.D complete — repo/workflow status REST API (GET /repos, /status, /handoff, /workflows) + pure FlowWatcher, 973 tests pass, PASS verdict
+- **next** — Open PR for phase11-blockD; wire FlowWatcher into the live Hub actor for an actual workflow_done WS push (deferred from BA.11.D); then check master-plan for next Phase 11 block or BA.7.B
 - **blocked** — nothing blocked
 - **improve** — `blank_code_spans` handles single-backtick inline spans only (fenced triple-backtick blocks out of scope); confirm `bastion validate` skips `trees/` if worktrees accumulate `.md` files; `status` config-file API URL not loaded when `DATABASE_URL` absent
 - **recurring** — none yet

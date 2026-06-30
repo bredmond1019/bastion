@@ -10,6 +10,23 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## [run: 2026-06-30]
+
+Implemented Phase 11 Block D (phase11-blockD) across five tasks in a single `/sdlc-flow` run, receiving a PASS verdict with no review findings. Task 1 added a pure `status.md` parser (`parse_status`/`RepoStatus`) extracting the D30 frontmatter scalars and the five Momentum queue lines, with fixtures and exhaustive unit tests. Task 2 added a pure `handoff.md` reader (`read_handoff`/`HandoffInfo`) and an `sdlc-flow-state.json` parser (`FlowState`/`parse_flow_state`/`is_terminal`/`detect_transition`), backed by fixtures and 23 new unit tests. Task 3 added `RepoSummaryDto`/`RepoStatusDto`/`WorkflowStateDto`/`WorkflowDonePayload` DTOs and a pure stateful `FlowWatcher` in `poll.rs` that detects non-terminal-to-terminal `sdlc-flow-state.json` transitions per `(repo, spec_slug)` and emits `workflow_done` payloads — reusing the existing `Event`/`EventPayload` WS pattern rather than adding a new frame kind. Task 4 shipped the four REST handlers (`GET /repos`, `/repos/{name}/status`, `/repos/{name}/handoff`, `/repos/{name}/workflows`) as thin I/O shells over the Task 1–2 parsers, wired into the bearer-protected `/api` scope via a shared `web::Data<FileConfig>` workspace registry, and bumped `docs/serve-api.md` to v0.3. Task 5 confirmed all gated checks green (973 tests, up from the 908 baseline) and the docs version bump. Notable decision: `FlowWatcher` was not wired into the live `Hub` actor for an actual `workflow_done` WebSocket push — that remains pure logic plus REST reads only, with live Hub wiring explicitly deferred (see Amendment Log in `planning/phase11-blockD/tasks.md`). Next: open the PR for `phase11-blockD`, then wire `FlowWatcher` into the Hub actor for a live `workflow_done` push, or pick up the next Phase 11 block / BA.7.B.
+
+```
+764cb4d chore: flow state — docs
+7119848 docs: update docs for phase11-blockD
+fd50223 chore: flow state — task 5 passed
+0415f9a chore: phase11-blockD task 5 — validate (all gates green)
+6e894ee chore: flow state — task 4 passed
+c16f6e9 feat(serve): repo/workflow status REST handlers + route wiring + v0.3 docs
+33cc404 chore: flow state — task 3 passed
+0cc1ca8 feat(serve): repo/workflow status DTOs + FlowWatcher poll extension
+```
+
+---
+
 ## 2026-06-30
 
 ### BA.11.C WebSocket hub shipped
