@@ -2,10 +2,10 @@
   "spec_slug": "11.C0-agent-state-detection",
   "branch": "11.C0-agent-state-detection-flow-2",
   "started_at": "2026-06-30T13:02:29Z",
-  "updated_at": "2026-06-30T13:07:40Z",
+  "updated_at": "2026-06-30T13:10:45Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/11.C0-agent-state-detection-flow-2",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -50,6 +50,19 @@
         "src/detect/fixtures/claude_idle.txt",
         "src/detect/fixtures/pi_working.txt",
         "src/detect/fixtures/pi_idle.txt"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Task 3 (Validate): all four gated checks pass — fmt, clippy, 812 tests (37 in detect::), release build; Notes updated with final test count; block marked PASSED (3/3).",
+      "issues": [],
+      "fixes": [],
+      "decisions": [],
+      "files_changed": [
+        "planning/11.C0-agent-state-detection/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -134,13 +147,37 @@
         "filesReadKb": null,
         "inTokEst": 598,
         "outTok": 2290
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 267,
+        "filesReadKb": null,
+        "inTokEst": 267,
+        "outTok": 1166
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 923,
+        "filesReadKb": null,
+        "inTokEst": 923,
+        "outTok": 2820
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 598,
+        "filesReadKb": null,
+        "inTokEst": 598,
+        "outTok": 1828
       }
     ],
     "total": {
-      "promptTokEst": 4600,
+      "promptTokEst": 6388,
       "filesReadKb": 0,
-      "inTokEst": 4600,
-      "outTok": 38117
+      "inTokEst": 6388,
+      "outTok": 43931
     }
   }
 }
