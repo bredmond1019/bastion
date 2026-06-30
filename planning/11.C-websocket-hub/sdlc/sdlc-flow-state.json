@@ -2,10 +2,10 @@
   "spec_slug": "11.C-websocket-hub",
   "branch": "11.C-websocket-hub-flow",
   "started_at": "2026-06-30T13:45:01Z",
-  "updated_at": "2026-06-30T13:49:38Z",
+  "updated_at": "2026-06-30T13:54:59Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/11.C-websocket-hub-flow",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -39,6 +39,23 @@
         "src/serve/status/detect.rs",
         "src/serve/status/fixtures/needs_input.txt",
         "src/serve/status/fixtures/no_input.txt"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Created src/serve/poll.rs with pure pane-diff logic (diff_pane, PaneCursor::observe, sessions_snapshot) and added pub mod poll to src/serve/mod.rs; 875 tests pass.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "extract_lines() is a private helper that mirrors Pane::last_lines(None) semantics rather than calling it directly, since poll.rs operates on raw &str captures not Pane structs",
+        "PaneCursor uses Default derive so seq starts at 0 and first push yields seq=1 naturally"
+      ],
+      "files_changed": [
+        "src/serve/poll.rs",
+        "src/serve/mod.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -123,13 +140,37 @@
         "filesReadKb": null,
         "inTokEst": 576,
         "outTok": 1945
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 256,
+        "filesReadKb": null,
+        "inTokEst": 256,
+        "outTok": 1191
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 888,
+        "filesReadKb": null,
+        "inTokEst": 888,
+        "outTok": 8628
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 576,
+        "filesReadKb": null,
+        "inTokEst": 576,
+        "outTok": 2355
       }
     ],
     "total": {
-      "promptTokEst": 4436,
+      "promptTokEst": 6156,
       "filesReadKb": 0,
-      "inTokEst": 4436,
-      "outTok": 29466
+      "inTokEst": 6156,
+      "outTok": 41640
     }
   }
 }
