@@ -2,7 +2,7 @@
   "spec_slug": "phase11-blockD",
   "branch": "phase11-blockD-flow-2",
   "started_at": "2026-06-30T20:37:53Z",
-  "updated_at": "2026-06-30T21:07:37Z",
+  "updated_at": "2026-06-30T21:09:43Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2",
   "status": "done",
   "current_task": 5,
@@ -121,8 +121,8 @@
   },
   "bail_reason": null,
   "pr": {
-    "url": null,
-    "number": null
+    "url": "https://github.com/bredmond1019/bastion/pull/9",
+    "number": 9
   },
   "tokens": {
     "stages": [
