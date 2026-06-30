@@ -54,7 +54,7 @@ Expose repo/workflow status reads over the `bastion serve` API — `GET /repos`,
 
 **Primary files:** `src/serve/dto.rs` (modified), `src/serve/poll.rs` (modified)
 
-### 4. REST handlers + route wiring + serve-api docs (`src/serve/handlers/status.rs`, `src/serve/handlers/mod.rs`, `src/serve/mod.rs`, `docs/serve-api.md`)
+### 4. [~] REST handlers + route wiring + serve-api docs (`src/serve/handlers/status.rs`, `src/serve/handlers/mod.rs`, `src/serve/mod.rs`, `docs/serve-api.md`)
 - Create `src/serve/handlers/status.rs` implementing:
   - `list_repos()` → `GET /repos` — calls `load_workspace_registry()`, iterates entries, for each: reads `{root}/planning/status.md` (parse via Task 1's parser), checks `{root}/planning/handoff.md` existence. Returns `Vec<RepoSummaryDto>`. Degrades gracefully: unreadable status.md → skip repo or return partial with empty `now`.
   - `get_repo_status(name)` → `GET /repos/{name}/status` — resolves workspace root from registry, reads + parses `planning/status.md`, returns `RepoStatusDto`. 404 on unknown name.

@@ -5,3 +5,4 @@
 //! `/api` scope so they inherit `BearerAuthMiddleware`.
 
 pub mod sessions;
+pub mod status;
