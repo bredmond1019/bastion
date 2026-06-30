@@ -2,10 +2,10 @@
   "spec_slug": "phase11-blockD",
   "branch": "phase11-blockD-flow-2",
   "started_at": "2026-06-30T20:37:53Z",
-  "updated_at": "2026-06-30T20:41:27Z",
+  "updated_at": "2026-06-30T20:45:46Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -47,6 +47,23 @@
         "src/serve/status/fixtures/handoff_heading_only.md",
         "src/serve/status/fixtures/flow_state_valid.json",
         "src/serve/status/fixtures/flow_state_malformed.json"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added RepoSummaryDto/RepoStatusDto/WorkflowStateDto/WorkflowDonePayload DTOs (with From impls bridging Task 1/2 parser structs) and a pure stateful FlowWatcher in poll.rs that detects non-terminal-to-terminal sdlc-flow-state.json transitions per (repo, spec_slug) and emits workflow_done payloads.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Did not add a new WsFrameKind::WorkflowDone variant — per the spec's stated preference, reused the existing Event/EventPayload pattern; WorkflowDonePayload carries the extra repo/spec_slug/status fields for the caller (Task 4) to flatten into the event frame.",
+        "FlowWatcher keys its last-known-status map by (repo, spec_slug) tuple rather than spec_slug alone, so identically-named specs across different repos are tracked independently."
+      ],
+      "files_changed": [
+        "src/serve/dto.rs",
+        "src/serve/poll.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -131,13 +148,37 @@
         "filesReadKb": null,
         "inTokEst": 572,
         "outTok": 2973
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 254,
+        "filesReadKb": null,
+        "inTokEst": 254,
+        "outTok": 932
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 878,
+        "filesReadKb": null,
+        "inTokEst": 878,
+        "outTok": 12345
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 572,
+        "filesReadKb": null,
+        "inTokEst": 572,
+        "outTok": 2154
       }
     ],
     "total": {
-      "promptTokEst": 4393,
+      "promptTokEst": 6097,
       "filesReadKb": 0,
-      "inTokEst": 4393,
-      "outTok": 32492
+      "inTokEst": 6097,
+      "outTok": 47923
     }
   }
 }
