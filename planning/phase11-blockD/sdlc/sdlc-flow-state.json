@@ -2,10 +2,10 @@
   "spec_slug": "phase11-blockD",
   "branch": "phase11-blockD-flow-2",
   "started_at": "2026-06-30T20:37:53Z",
-  "updated_at": "2026-06-30T20:45:46Z",
+  "updated_at": "2026-06-30T20:56:48Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2",
   "status": "running",
-  "current_task": 3,
+  "current_task": 4,
   "tasks": {
     "1": {
       "status": "passed",
@@ -64,6 +64,29 @@
       "files_changed": [
         "src/serve/dto.rs",
         "src/serve/poll.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added GET /api/repos, /repos/{name}/status, /repos/{name}/handoff, /repos/{name}/workflows REST handlers (thin I/O shells over the Task 1-2 pure parsers), wired them into the bearer-protected /api scope with a shared web::Data<FileConfig> workspace registry, and bumped docs/serve-api.md to v0.3 documenting all four endpoints plus the workflow_done WS event.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Loaded the workspace registry once at server startup and shared it via web::Data<FileConfig> (rather than re-reading env/config per request) — this also makes the handlers' 404/200 paths directly unit-testable by injecting a FileConfig in tests, avoiding fragile real-env-var test setup.",
+        "build_app() test helper now takes a FileConfig parameter (all 16 existing call sites updated to build_app(FileConfig::default())) so the new repo/workflow tests can inject a fixture registry without touching process env vars.",
+        "GET /repos/{name}/workflows returns 404 only for an unknown workspace name; a known workspace with no planning/ tree or no matching sdlc-flow-state.json files returns 200 with [] (malformed flow-state files are skipped individually, not treated as a route failure).",
+        "Reused the project's existing no-tempfile-dependency TempDir test helper pattern (from src/validate/mod.rs) in both src/serve/handlers/status.rs and src/serve/mod.rs test modules instead of adding the tempfile crate.",
+        "Did not wire FlowWatcher into the Hub actor for an actual live workflow_done push — Task 4's scope (per tasks.md) was REST handlers + routing + docs only; the WS event is documented in docs/serve-api.md as driven by FlowWatcher::observe() (Task 3), with live Hub wiring left to a later block if needed."
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2/src/serve/handlers/status.rs",
+        "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2/src/serve/handlers/mod.rs",
+        "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2/src/serve/mod.rs",
+        "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2/docs/serve-api.md",
+        "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2/planning/phase11-blockD/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -172,13 +195,37 @@
         "filesReadKb": null,
         "inTokEst": 572,
         "outTok": 2154
+      },
+      {
+        "label": "update-task-4",
+        "model": "haiku",
+        "promptTokEst": 254,
+        "filesReadKb": null,
+        "inTokEst": 254,
+        "outTok": 1246
+      },
+      {
+        "label": "implement-4-1",
+        "model": "sonnet",
+        "promptTokEst": 878,
+        "filesReadKb": null,
+        "inTokEst": 878,
+        "outTok": 45188
+      },
+      {
+        "label": "test-4-1",
+        "model": "haiku",
+        "promptTokEst": 572,
+        "filesReadKb": null,
+        "inTokEst": 572,
+        "outTok": 2549
       }
     ],
     "total": {
-      "promptTokEst": 6097,
+      "promptTokEst": 7801,
       "filesReadKb": 0,
-      "inTokEst": 6097,
-      "outTok": 47923
+      "inTokEst": 7801,
+      "outTok": 96906
     }
   }
 }
