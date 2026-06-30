@@ -14,7 +14,7 @@ block: C0
 
 # Task Spec — BA.11.C0: Agent-state detection manifest engine
 
-**Status:** PASSED (2/2 tasks) · **Last run:** 2026-06-30 13:07 UTC
+**Status:** PASSED (3/3 tasks) · **Last run:** 2026-06-30 UTC
 
 ## Goal
 Build a pure, config-driven agent-state detection engine — per-agent TOML manifests compile into priority-ordered rules and a `detect(screen, manifest) -> AgentDetection` matcher classifies a captured pane region as `Idle | Working | Blocked | Unknown` with `visible_*` / `skip_state_update` flags — seeded with Claude and Pi manifests only, so adding any future agent is a new TOML and not new Rust.
@@ -71,7 +71,7 @@ Build a pure, config-driven agent-state detection engine — per-agent TOML mani
   - one round-trip proving a **new agent manifest is added with zero engine-code change** (this task adds only TOML + fixtures + this test file — no edits to `mod.rs`/`manifest.rs` logic; call that out in a test comment).
 - **Owns:** `src/detect/manifests/claude.toml`, `src/detect/manifests/pi.toml`, `src/detect/fixtures/*`, `src/detect/golden_tests.rs` (all new). **Depends on:** Task 1.
 
-### 3. Validate
+### 3. PASSED Validate
 - Run the Validation Commands listed below and confirm all pass.
 - This block is pure (no process/Postgres/HTTP I/O), so there is no separate runtime shell to smoke-test — the golden tests in Task 2 exercise the full `detect()` path over real captured fixtures. Record the final test count in `## Notes`.
 
@@ -95,7 +95,13 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+Task 3 validation run — 2026-06-30. All four gated checks pass:
+- `cargo fmt --check` — clean
+- `cargo clippy -- -D warnings` — clean
+- `cargo test` — 812 total tests pass (37 in `detect::` module: 30 unit tests in manifest.rs/mod.rs, 7 golden tests in golden_tests.rs)
+- `cargo build --release` — clean
+
+This block is pure (no process/Postgres/HTTP I/O); the golden tests in Task 2 fully exercise the `detect()` path over real captured fixtures — no separate runtime smoke-test required.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
