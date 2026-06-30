@@ -92,7 +92,22 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+**Smoke test — 2026-06-30 (Task 6)**
+
+Environment: `BASTION_SERVE_TOKEN=smoketest123 cargo run --release -- serve --addr 127.0.0.1:7979`, one tmux session `test-smoke` running zsh.
+
+1. **`/ws` auth gate**: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7979/ws` → `401`. Confirmed missing-token rejection.
+
+2. **`sessions` subscription**: `websocat ws://127.0.0.1:7979/ws -H "Authorization: Bearer smoketest123"` with `{"kind":"subscribe","payload":{"topic":"sessions"}}` → received `{"kind":"sessions","payload":{"sessions":[{"last_line":"","name":"test-smoke","state":"idle"}]}}`. Session list fan-out confirmed.
+
+3. **`pane:<name>` subscription + live pushes**: subscribed to `pane:test-smoke`, ran `echo hello-from-smoke-test` in the session → received `{"kind":"pane","payload":{"lines":[...],"seq":1,"session":"test-smoke"}}` on first capture, then `{"kind":"pane","payload":{"lines":[...],"seq":2,"session":"test-smoke"}}` after the output changed. Diff-and-push confirmed.
+
+4. **`send` frame**: sent `{"kind":"send","payload":{"session":"test-smoke","keys":"echo ws-send-test"}}` over the socket while subscribed to `pane:test-smoke` → the string `ws-send-test` appeared in the next `pane` push. Keys-over-WebSocket confirmed.
+
+5. **`send_key` Escape**: sent `{"kind":"send_key","payload":{"session":"test-smoke","key":"Escape"}}` → key landed in tmux session (visible in pane capture). Named-key path confirmed.
+
+6. **`event{needs_input}`**: ran `printf 'Do you want to proceed? (y/n): '` in the tmux session (matching the `claude.toml` `visible_blocker` rule), while subscribed to `pane:test-smoke` → received `{"kind":"event","payload":{"event":"needs_input","session":"test-smoke"}}`. Rising-edge debounce and Block C₀ detect integration confirmed.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
