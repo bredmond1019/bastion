@@ -1,18 +1,18 @@
 ---
 type: Guideline
-title: "serve-api contract v0.2"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event), the v0.2 frame envelope, and the v0.1 session REST surface (list/pane/send/key/create/delete) that bastion-ui pins against."
+title: "serve-api contract v0.3"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), and the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows) that bastion-ui pins against."
 doc_id: serve-api
 layer: [console, surface]
 project: bastion
 status: active
-keywords: [serve, api, websocket, bearer-auth, health, sessions, topics, needs-input, bastion-ui, contract]
+keywords: [serve, api, websocket, bearer-auth, health, sessions, topics, needs-input, workflow-done, repos, status, handoff, bastion-ui, contract]
 related: [config, observ]
 ---
 
-# serve-api — v0.2 Contract
+# serve-api — v0.3 Contract
 
-**Version:** v0.2  
+**Version:** v0.3  
 **Produced by:** `bastion` (this repo, `src/serve/`)  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28)
 
@@ -83,6 +83,10 @@ to verify the configured token.
 | `POST /api/sessions/{name}/key` | Yes — `Authorization: Bearer <token>` |
 | `POST /api/sessions` | Yes — `Authorization: Bearer <token>` |
 | `DELETE /api/sessions/{name}` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/repos` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/repos/{name}/status` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/repos/{name}/handoff` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/repos/{name}/workflows` | Yes — `Authorization: Bearer <token>` |
 
 ---
 
@@ -299,14 +303,15 @@ Pushed when a significant event is detected.
 
 | Field | Type | Description |
 |---|---|---|
-| `session` | string | tmux session name where the event was detected |
+| `session` | string | tmux session name where the event was detected (empty string for repo-scoped events such as `workflow_done`, which carry their own `repo`/`spec_slug` fields instead) |
 | `event` | string | Event name (see table below) |
 
-#### Defined event names (v0.2)
+#### Defined event names
 
-| Event | Trigger condition |
-|---|---|
-| `"needs_input"` | Session pane is on a permission/approval prompt (`Blocked` state with `visible_blocker`, per `detect::detect()` over the Claude manifest).  Emitted once per rising edge (Blocked→not-Blocked→Blocked emits again; continuous Blocked does not repeat). |
+| Event | Since | Trigger condition |
+|---|---|---|
+| `"needs_input"` | v0.2 | Session pane is on a permission/approval prompt (`Blocked` state with `visible_blocker`, per `detect::detect()` over the Claude manifest).  Emitted once per rising edge (Blocked→not-Blocked→Blocked emits again; continuous Blocked does not repeat). |
+| `"workflow_done"` | v0.3 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` (e.g. `"running"`) to a terminal one (`"done"` or `"blocked"`), per `FlowWatcher::observe()` (`src/serve/poll.rs`).  Carries `repo`, `spec_slug`, and `status` fields alongside the `event` field (see Section 11.5). |
 
 ### 7.8 `"error"` payload (server → client)
 
@@ -321,7 +326,9 @@ Pushed when a significant event is detected.
 
 ---
 
-## 8. `event{needs_input}` semantics
+## 8. Event semantics
+
+### 8.1 `event{needs_input}` (v0.2)
 
 The hub polls each subscribed pane's output on every tick.  When a pane is
 subscribed (`pane:<name>` topic), the hub calls
@@ -339,6 +346,26 @@ without an intervening non-blocked state produce at most one event.
 
 The event drives the BastionUI alert flow: the mobile operator is notified once
 and can respond via a `send` or `send_key` frame to unblock the agent.
+
+### 8.2 `event{workflow_done}` (v0.3)
+
+[`FlowWatcher`](../src/serve/poll.rs) tracks the last-known `status` for every
+`(repo, spec_slug)` pair it has observed from parsed `sdlc-flow-state.json`
+files (Section 11.4).  `FlowWatcher::observe()` emits a `workflow_done` payload
+when:
+
+```
+prev_status.is_some() && !is_terminal(prev_status) && is_terminal(current.status)
+```
+
+where `is_terminal(status)` is `true` for `"done"` and `"blocked"`.  No event is
+emitted on the **first** observation of a given `(repo, spec_slug)` pair (no
+`prev_status` to compare against), nor when the status is unchanged or was
+already terminal on the previous observation.
+
+The payload carries `{ "repo", "spec_slug", "status" }` flattened alongside the
+`event` field (Section 7.7) — `status` is whichever terminal value (`"done"` or
+`"blocked"`) triggered the transition.
 
 ---
 
@@ -651,7 +678,198 @@ Error codes are from the C0xx taxonomy defined in `src/observ/errors.rs`.
 
 ---
 
-## 11. Configuration reference
+## 11. Repo / workflow status REST API (v0.3)
+
+Four read-only routes projecting per-workspace `planning/status.md`,
+`planning/handoff.md`, and `sdlc-flow-state.json` files onto HTTP.  All routes
+live under the bearer-protected `/api` scope and return
+`Content-Type: application/json`.  Workspace roots are resolved from the
+`[workspaces]` registry loaded at server startup (`load_workspace_registry()`,
+`src/config.rs`) — the same registry the CLI's `--workspace` flag uses.
+
+This surface is **read-only**: no route under `/api/repos` writes or mutates
+any file.
+
+### 11.1 `GET /api/repos` — list workspace registry entries
+
+Returns a summary of every registered workspace.
+
+**Request:**
+
+```
+GET /api/repos HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+
+```json
+[
+  { "name": "bastion", "now": "BA.11.D in progress — repo status API", "has_handoff": false },
+  { "name": "bella", "now": "", "has_handoff": true }
+]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Workspace registry name (`RepoSummaryDto`) |
+| `now` | string | Frontmatter `now:` scalar from that workspace's `planning/status.md`; empty string when `status.md` is missing/unreadable/malformed |
+| `has_handoff` | boolean | Whether `planning/handoff.md` exists for that workspace |
+
+An empty/absent `[workspaces]` registry returns `[]`. Entries are sorted by
+`name`.
+
+---
+
+### 11.2 `GET /api/repos/{name}/status` — full parsed `status.md`
+
+**Path parameters:**
+
+| Parameter | Description |
+|---|---|
+| `name` | Workspace registry name |
+
+**Request:**
+
+```
+GET /api/repos/bastion/status HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):** `RepoStatusDto`
+
+```json
+{
+  "name": "bastion",
+  "now": "BA.11.D in progress — repo status API",
+  "next": "Wire WS event push",
+  "blocked": "[]",
+  "has_handoff": false,
+  "momentum_now": "BA.11.D in progress — repo status API",
+  "momentum_next": "Wire WS event push",
+  "momentum_blocked": "nothing blocked",
+  "momentum_improve": "tighten parser edge cases",
+  "momentum_recurring": "none yet"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Workspace registry name |
+| `now` / `next` / `blocked` | string | Frontmatter scalars (D30) |
+| `has_handoff` | boolean | Whether `planning/handoff.md` exists |
+| `momentum_now` / `momentum_next` / `momentum_blocked` / `momentum_improve` / `momentum_recurring` | string | Body `## Momentum` queue line text; empty string when the section or bullet is absent |
+
+Returns `404` (`ErrorPayload`, code `C002`) when `name` is not a registered
+workspace, or when that workspace's `planning/status.md` is missing or fails
+to parse (no well-formed frontmatter).
+
+---
+
+### 11.3 `GET /api/repos/{name}/handoff` — parsed `handoff.md`
+
+**Path parameters:**
+
+| Parameter | Description |
+|---|---|
+| `name` | Workspace registry name |
+
+**Request:**
+
+```
+GET /api/repos/bastion/handoff HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):** `HandoffInfo`
+
+```json
+{
+  "title": "Handoff — BA.11.C wrap-up",
+  "body": "---\ntype: Handoff\n...\n# Handoff — BA.11.C wrap-up\n..."
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `title` | string | Frontmatter `title:` scalar if present, else the `# Handoff —`/`# Handoff -` heading text, else `""` |
+| `body` | string | The full raw markdown content of `handoff.md` (including frontmatter) |
+
+Returns `404` (`ErrorPayload`, code `C002`) when `name` is not a registered
+workspace, or when `planning/handoff.md` does not exist for that workspace.
+
+---
+
+### 11.4 `GET /api/repos/{name}/workflows` — parsed `sdlc-flow-state.json` entries
+
+Walks `{workspace_root}/planning/*/sdlc/sdlc-flow-state.json` and parses each
+match.
+
+**Path parameters:**
+
+| Parameter | Description |
+|---|---|
+| `name` | Workspace registry name |
+
+**Request:**
+
+```
+GET /api/repos/bastion/workflows HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):** array of `WorkflowStateDto`
+
+```json
+[
+  {
+    "spec_slug": "phase6-blockA",
+    "branch": "phase6-blockA-flow",
+    "status": "done",
+    "current_task": 5,
+    "started_at": "2026-06-25T18:30:59Z",
+    "updated_at": "2026-06-25T19:02:33Z"
+  }
+]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `spec_slug` | string | Spec directory name under `planning/` |
+| `branch` | string | Worktree branch name |
+| `status` | string | Raw flow status (e.g. `"running"`, `"done"`, `"blocked"`) |
+| `current_task` | integer | Current task index |
+| `started_at` / `updated_at` | string (RFC 3339) | Timestamps from `sdlc-flow-state.json` |
+
+Returns `404` (`ErrorPayload`, code `C002`) only when `name` is not a
+registered workspace. A workspace with no specs, or no matching
+`sdlc-flow-state.json` files, returns `200` with `[]`. Individual malformed
+`sdlc-flow-state.json` files are skipped (not failed) — the route returns
+whatever parses.
+
+---
+
+### 11.5 `event{workflow_done}` — pushed over `/ws`
+
+Not a REST response — pushed asynchronously over the `/ws` hub connection (an
+`"event"` frame per Section 7.7) when [`FlowWatcher::observe()`](../src/serve/poll.rs)
+detects a `running`→terminal transition while polling the same
+`sdlc-flow-state.json` files this section's routes read. See Section 8.2 for
+the full transition semantics.
+
+```json
+{ "session": "", "event": "workflow_done", "repo": "bastion", "spec_slug": "phase11-blockD", "status": "done" }
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | Workspace registry name the workflow belongs to |
+| `spec_slug` | string | `sdlc-flow-state.json` spec slug |
+| `status` | string | The terminal status that triggered the event (`"done"` or `"blocked"`) |
+
+---
+
+## 12. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
@@ -659,11 +877,13 @@ Error codes are from the C0xx taxonomy defined in `src/observ/errors.rs`.
 | `BASTION_SERVE_TOKEN` | **Yes** | — | Bearer token for protected routes; absent token is a typed error at startup |
 
 `bastion serve` loads config via `load_serve_config()` (`src/config.rs`), which
-is DB-free and does **not** require `DATABASE_URL`.
+is DB-free and does **not** require `DATABASE_URL`. The `[workspaces]`
+registry consumed by Section 11's routes is loaded separately via
+`load_workspace_registry()` — also DB-free — once at server startup.
 
 ---
 
-## 12. Versioning policy
+## 13. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -672,7 +892,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.2**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.3**.
 
 ---
 
@@ -690,3 +910,12 @@ This document follows a simple monotonic version scheme:
   (keep-alive / disconnect behaviour).  Renumbered former Sessions REST API → Section 10,
   Configuration → Section 11, Versioning → Section 12.  Updated auth policy table (Section
   2.3) to reflect `/ws` is now hub-backed.  Updated frontmatter title and description.
+- **2026-06-30 — v0.2 → v0.3 (Block 11.D):** Added Section 11 (Repo / workflow status REST
+  API — `GET /repos`, `GET /repos/{name}/status`, `GET /repos/{name}/handoff`,
+  `GET /repos/{name}/workflows`; response DTOs `RepoSummaryDto`, `RepoStatusDto`,
+  `HandoffInfo`, `WorkflowStateDto`; 404/`C002` mapping for unknown workspaces and
+  missing/malformed `status.md`/`handoff.md`).  Added the `workflow_done` event name to
+  Section 7.7's event table and Section 8.2 (`FlowWatcher`-driven non-terminal→terminal
+  transition semantics, `WorkflowDonePayload` shape).  Updated auth policy table (Section
+  2.3) to list the four new `/api/repos*` routes.  Renumbered Configuration → Section 12,
+  Versioning → Section 13.  Updated frontmatter title and description.
