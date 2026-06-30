@@ -424,6 +424,7 @@ dependencies = [
  "futures",
  "petgraph",
  "ratatui",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

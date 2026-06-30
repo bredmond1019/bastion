@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod costs;
 mod db;
+mod detect;
 mod inspect;
 mod man;
 mod monitor;
