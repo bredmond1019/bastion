@@ -5,7 +5,8 @@ description: Rollup status for Bastion sub-brain.
 doc_id: bastion-status
 layer: [meta]
 status: active
-now: BA.11.C0 agent-state detection manifest engine complete — 812 tests pass, PASS verdict
+updated: 2026-06-30T00:00:00Z
+now: BA.11.C0 agent-state detection manifest engine complete — 812 tests pass, PASS verdict, merged to main (PR #7)
 next: Start BA.11.C (WebSocket hub + live pane streaming); BA.11.C0 detect() is the seam BA.11.C needs
 blocked: []
 ---
