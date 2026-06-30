@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [bastion, CLI, monitor, sessions, tmux, TUI, workflow observability]
-related: [docs-index, context, status, master-plan]
+related: [context, master-plan]
 ---
 
 # bastion

@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [detect, agent state, manifest, tmux, pane capture, gate, rule]
-related: [bastion-cli-docs-index, bastion-sessions]
+related: [bastion-cli-docs-index]
 ---
 
 # bastion detect — Agent State Detection Engine
