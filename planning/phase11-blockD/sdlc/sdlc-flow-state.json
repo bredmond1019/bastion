@@ -1,0 +1,96 @@
+{
+  "spec_slug": "phase11-blockD",
+  "branch": "phase11-blockD-flow-2",
+  "started_at": "2026-06-30T20:37:53Z",
+  "updated_at": "2026-06-30T20:37:53Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2",
+  "status": "running",
+  "current_task": 1,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added a pure status.md parser (parse_status/RepoStatus) extracting D30 frontmatter scalars and the five Momentum queue lines, with fixtures and exhaustive unit tests, registered in src/serve/status/mod.rs.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "RepoStatus.name and has_handoff default to empty/false from parse_status since they aren't derivable from file content alone — Task 4 handlers fill them in from the workspace registry and a separate handoff.md existence check, matching the spec's 'passed in by caller' note.",
+        "Reused the existing pub(crate) crate::validate::frontmatter::parse_frontmatter for the YAML-ish frontmatter scan instead of adding a new yaml dependency, keeping it consistent with src/brain/okf.rs's approach.",
+        "parse_bullet accepts both em dash (—) and plain hyphen (-) as the key/text separator to tolerate loose authoring style across status.md files."
+      ],
+      "files_changed": [
+        "src/serve/status/mod.rs",
+        "src/serve/status/repo.rs",
+        "src/serve/status/fixtures/status_well_formed.md",
+        "src/serve/status/fixtures/status_malformed.md",
+        "src/serve/status/fixtures/status_empty_momentum.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": null,
+    "findings": [],
+    "attempts": 0
+  },
+  "docs": {
+    "changed": [],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 760,
+        "filesReadKb": null,
+        "inTokEst": 760,
+        "outTok": 5649
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 225,
+        "filesReadKb": null,
+        "inTokEst": 225,
+        "outTok": 1068
+      },
+      {
+        "label": "update-task-1",
+        "model": "haiku",
+        "promptTokEst": 254,
+        "filesReadKb": null,
+        "inTokEst": 254,
+        "outTok": 1052
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 878,
+        "filesReadKb": null,
+        "inTokEst": 878,
+        "outTok": 9411
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 572,
+        "filesReadKb": null,
+        "inTokEst": 572,
+        "outTok": 2279
+      }
+    ],
+    "total": {
+      "promptTokEst": 2689,
+      "filesReadKb": 0,
+      "inTokEst": 2689,
+      "outTok": 19459
+    }
+  }
+}
