@@ -16,3 +16,6 @@ Validated: gating checks (fast tripwire)
 
 ## Docs
 Patched: docs/index.md | Created: docs/detect.md
+
+## Wrap-up — PASS
+Next: Start BA.11.C (WebSocket hub + live pane streaming); BA.11.C0 detect() is the agent-state seam BA.11.C needs for its needs-input detector

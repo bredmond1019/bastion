@@ -2,9 +2,9 @@
   "spec_slug": "11.C0-agent-state-detection",
   "branch": "11.C0-agent-state-detection-flow-2",
   "started_at": "2026-06-30T13:02:29Z",
-  "updated_at": "2026-06-30T13:14:41Z",
+  "updated_at": "2026-06-30T13:17:31Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/11.C0-agent-state-detection-flow-2",
-  "status": "docs",
+  "status": "done",
   "current_task": 3,
   "tasks": {
     "1": {
@@ -191,13 +191,21 @@
         "filesReadKb": null,
         "inTokEst": 829,
         "outTok": 3736
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 858,
+        "filesReadKb": null,
+        "inTokEst": 858,
+        "outTok": 3954
       }
     ],
     "total": {
-      "promptTokEst": 8237,
+      "promptTokEst": 9095,
       "filesReadKb": 0,
-      "inTokEst": 8237,
-      "outTok": 51153
+      "inTokEst": 9095,
+      "outTok": 55107
     }
   }
 }
