@@ -1,0 +1,91 @@
+{
+  "spec_slug": "11.C-websocket-hub",
+  "branch": "11.C-websocket-hub-flow",
+  "started_at": "2026-06-30T13:45:01Z",
+  "updated_at": "2026-06-30T13:45:01Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/11.C-websocket-hub-flow",
+  "status": "running",
+  "current_task": 1,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Extended WsFrameKind with 7 v0.2 variants, added 6 payload structs, and added Topic enum + parse_topic() pure parser with exhaustive unit tests (848 tests pass, fmt/clippy/build clean).",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Topic enum is not serde-derived since it is an internal parsed form, not a wire type — the raw topic string in SubscribePayload carries the wire form",
+        "parse_topic rejects empty pane names (pane: with no suffix) returning None, matching the spec requirement"
+      ],
+      "files_changed": [
+        "src/serve/dto.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": null,
+    "findings": [],
+    "attempts": 0
+  },
+  "docs": {
+    "changed": [],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 768,
+        "filesReadKb": null,
+        "inTokEst": 768,
+        "outTok": 5944
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 228,
+        "filesReadKb": null,
+        "inTokEst": 228,
+        "outTok": 1045
+      },
+      {
+        "label": "update-task-1",
+        "model": "haiku",
+        "promptTokEst": 256,
+        "filesReadKb": null,
+        "inTokEst": 256,
+        "outTok": 910
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 888,
+        "filesReadKb": null,
+        "inTokEst": 888,
+        "outTok": 9063
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 576,
+        "filesReadKb": null,
+        "inTokEst": 576,
+        "outTok": 1630
+      }
+    ],
+    "total": {
+      "promptTokEst": 2716,
+      "filesReadKb": 0,
+      "inTokEst": 2716,
+      "outTok": 18592
+    }
+  }
+}
