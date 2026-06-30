@@ -5,9 +5,9 @@ description: Rollup status for Bastion sub-brain.
 doc_id: bastion-status
 layer: [meta]
 status: active
-updated: 2026-06-30T00:00:00Z
-now: "BA.11.D complete — repo/workflow status REST API (GET /repos, /status, /handoff, /workflows) + pure FlowWatcher, 973 tests pass, PASS verdict"
-next: "Open PR for phase11-blockD; wire FlowWatcher into the live Hub actor for an actual workflow_done WS push (deferred from BA.11.D); then check master-plan for next Phase 11 block or BA.7.B"
+updated: 2026-06-30T21:16:10Z
+now: "phase11-blockD closed out — code review clean, merged to main via PR #9, worktree/branch cleaned up; BA.11.C0/BA.11.C/BA.11.D all done"
+next: "BA.11.E — quick-action command endpoint (POST /actions/command, inject/spawn modes; master-plan.md lines 1031-1056); BA.7.B (tiktoken counter) as lower-priority interleave"
 blocked: []
 ---
 
@@ -18,8 +18,8 @@ blocked: []
 > Working board — keep all five queues live. **Never end a meaningful session with every queue
 > empty.** The headlines of **now / next / blocked** mirror the frontmatter scalars above.
 
-- **now** — BA.11.D complete — repo/workflow status REST API (GET /repos, /status, /handoff, /workflows) + pure FlowWatcher, 973 tests pass, PASS verdict
-- **next** — Open PR for phase11-blockD; wire FlowWatcher into the live Hub actor for an actual workflow_done WS push (deferred from BA.11.D); then check master-plan for next Phase 11 block or BA.7.B
+- **now** — phase11-blockD closed out — code review clean, merged to main via PR #9, worktree/branch cleaned up; BA.11.C0/BA.11.C/BA.11.D all done
+- **next** — BA.11.E — quick-action command endpoint (POST /actions/command, inject/spawn modes; master-plan.md lines 1031-1056); BA.7.B (tiktoken counter) as lower-priority interleave
 - **blocked** — nothing blocked
 - **improve** — `blank_code_spans` handles single-backtick inline spans only (fenced triple-backtick blocks out of scope); confirm `bastion validate` skips `trees/` if worktrees accumulate `.md` files; `status` config-file API URL not loaded when `DATABASE_URL` absent
 - **recurring** — none yet

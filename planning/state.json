@@ -5,14 +5,14 @@
   "focus": {
     "now": [
       {
-        "id": "BA.11.C0",
-        "title": "Agent-state detection manifest engine",
-        "status": "in_progress",
-        "note": "Three live-test bug fixes patched (status degrade, code skips trees/, validate backtick spans) — not yet committed."
+        "id": "BA.11.D",
+        "title": "Repo + workflow status reads over serve",
+        "status": "done",
+        "note": "Shipped this session — GET /repos, /status, /handoff, /workflows + pure FlowWatcher, 973 tests, PASS verdict, merged to main (PR #9)."
       }
     ],
     "next": [
-      { "id": "BA.11.C", "title": "WebSocket hub + live pane streaming" },
+      { "id": "BA.11.E", "title": "Quick-action command endpoint (inject / spawn)" },
       { "id": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)" }
     ],
     "blocked": []
@@ -21,11 +21,11 @@
     {
       "title": "Phase 11 — BastionUI serve API",
       "blocks": [
-        { "id": "BA.11.C0", "title": "Agent-state detection manifest engine", "status": "in_progress", "wave": 1, "depends_on": [] },
+        { "id": "BA.11.C0", "title": "Agent-state detection manifest engine", "status": "done", "wave": 1, "depends_on": [] },
         {
           "id": "BA.11.C",
           "title": "WebSocket hub + live pane streaming",
-          "status": "open",
+          "status": "done",
           "wave": 2,
           "depends_on": [
             { "type": "block", "repo": "bastion", "id": "BA.11.C0" }
@@ -34,9 +34,19 @@
         {
           "id": "BA.11.D",
           "title": "Repo + workflow status reads over serve",
-          "status": "open",
+          "status": "done",
           "wave": 3,
           "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.11.C" }
+          ]
+        },
+        {
+          "id": "BA.11.E",
+          "title": "Quick-action command endpoint (inject / spawn)",
+          "status": "open",
+          "wave": 4,
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.11.B" },
             { "type": "block", "repo": "bastion", "id": "BA.11.C" }
           ]
         }
