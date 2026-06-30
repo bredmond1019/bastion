@@ -10,6 +10,23 @@ description: Chronological log of work completed for bastion.
 
 ---
 
+## 2026-06-30 — BA.11.C WebSocket hub + live pane streaming + needs-input detection
+
+Implemented the full WebSocket hub (BA.11.C) across six tasks in a single SDLC run, receiving a PASS verdict with no review findings. Task 1 extended `src/serve/dto.rs` with seven new `WsFrameKind` variants (Subscribe, Unsubscribe, Send, SendKey, Sessions, Pane, Event), six payload structs, a `Topic` enum, and a pure `parse_topic()` parser with exhaustive unit tests. Task 2 created `src/serve/status/` with a `OnceLock`-compiled Claude manifest adapter exposing `needs_input(pane: &str) -> bool` and `detect_state()` (added proactively for Task 4's debounce seam), backed by two captured-pane fixtures and six unit tests. Task 3 added `src/serve/poll.rs` with pure pane-diff logic — `diff_pane`, `PaneCursor::observe` (seq-bumping diff cursor), and `sessions_snapshot` — all exhaustively unit-tested without I/O. Task 4 built the Hub and WsConn actix actors: ref-counted per-pane poll tasks, topic subscription tracking, `PaneCursor` diff fan-out over `watch` channels, rising-edge needs-input debounce, and a pure `classify_inbound` dispatch seam; 38 new unit tests, ConnId uses `AtomicU64` (no uuid dependency). Task 5 swapped the `/ws` route to the hub-backed handler, booted the Hub actor inside `run_server`, updated the `build_app()` test helper, added a WS upgrade success test, and bumped `docs/serve-api.md` to v0.2 with full topic/frame/event/disconnect documentation. Task 6 was the validation pass: all four gated checks clean (908 tests) plus a live smoke test confirming sessions subscription, pane diff-push, send-frame key delivery, send_key Escape, and the `event{needs_input}` rising-edge push — all results recorded in `## Notes`. Next: open PR for this branch, then start BA.7.B or the next Phase 11 block.
+
+```
+f307d95 chore: flow state — docs
+677f791 docs: update docs for 11.C-websocket-hub
+45630ea chore: flow state — task 6 passed
+295efc6 feat: implement 11.C-websocket-hub-task6
+5d37561 chore: flow state — task 5 passed
+2cb27a1 feat: implement 11.C-websocket-hub-task5
+1ddf9f9 chore: flow state — task 4 passed
+762d3f5 feat: implement 11.C-websocket-hub-task4
+```
+
+---
+
 ## 2026-06-30 — BA.11.C0 agent-state detection manifest engine
 
 Implemented the complete agent-state detection engine (BA.11.C0) across three tasks in a single SDLC run, receiving a PASS verdict with no review findings. Task 1 built the pure detection core: `AgentState`/`AgentDetection` types, a TOML manifest schema (`RegionSpec`/`GateSpec`/`RuleSpec`) with `whole`/`last_lines` region selectors and `contains`/`regex`/`line_regex` matchers, recursive `any`/`all`/`not` gate combinators (compiled at manifest-load time), a `detect(screen, manifest) -> AgentDetection` function evaluating rules in descending-priority order, and 31 exhaustive pure unit tests covering all matcher types, combinators, priority ordering, the no-match → Unknown path, and the `compile()` error path (malformed regex). Task 2 seeded Claude and Pi TOML manifests with Blocked/Working/Idle rules and five captured-pane fixtures, then added six golden tests (loaded via `include_str!` — zero filesystem I/O) asserting Claude blocked → `Blocked + visible_blocker`, Claude working/idle, Pi working/idle, and a cross-agent isolation case confirming manifests don't bleed. Task 3 was the validation pass: all four gated checks clean (`cargo fmt`, `cargo clippy -- -D warnings`, `cargo test` — 812 tests including 37 in `detect::`, `cargo build --release`). Notable implementation decisions: `sort_by_key` with `std::cmp::Reverse` for descending-priority sort (clippy-required); Claude idle rule uses `line_regex = "^> "` to match the resting prompt; cross-agent isolation test added beyond spec to validate extensibility claim. Next: start BA.11.C (WebSocket hub + live pane streaming) which consumes `detect()` for its needs-input detector seam.

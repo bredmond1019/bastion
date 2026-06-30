@@ -14,7 +14,7 @@ block: C
 
 # Task Spec — BA.11.C: WebSocket hub + live pane + needs-input detection
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-06-30 · **Verdict:** PASS
 
 ## Goal
 Replace the `/ws` echo actor with a real session hub — topic-based subscriptions (`sessions`, `pane:<name>`), background poll tasks fanning out diffed pane updates over `watch` channels, key/named-key send frames reusing the tmux substrate, and a `event{needs_input}` push driven by Block C₀'s `detect::detect()` manifest engine — and bump `docs/serve-api.md` to v0.2.
@@ -111,4 +111,4 @@ Environment: `BASTION_SERVE_TOKEN=smoketest123 cargo run --release -- serve --ad
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-06-30 [task 2] `detect_state()` passthrough added to `src/serve/status/detect.rs` beyond Task 2's stated scope — the breakdown explicitly noted Task 4's debounce seam would need it, so it was shipped in Task 2 to avoid a cross-task edit later; no functional spec deviation, purely a delivery-order optimization.
