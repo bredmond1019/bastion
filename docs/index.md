@@ -7,7 +7,6 @@ layer: [console]
 project: bastion
 status: active
 keywords: [bastion, cli, operator reference, index, docs]
-related: [bastion-product-ownership, bastion-product-architecture]
 ---
 
 # bastion CLI — Docs

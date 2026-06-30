@@ -7,7 +7,7 @@ layer: [factory]
 project: bastion
 status: active
 keywords: [memory, episodic, preferences, durable, portable]
-related: [knowledge, context, status, planning-index]
+related: [knowledge, context, planning-index]
 ---
 
 # Memory — Bastion

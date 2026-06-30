@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [master plan, phases, blocks, strategy, roadmap, bastion program, TUI]
-related: [context, status, planning-index]
+related: [context, planning-index]
 ---
 
 # bastion — Master Plan

@@ -5,7 +5,7 @@ description: Herdr (Rust "tmux for agents") is studied for patterns only; bastio
 doc_id: D11-herdr-reference-only
 status: active
 keywords: [herdr, reference-only, AGPL, console, serve, transport, reimplement]
-related: [D12-toml-manifest-detection, D13-unified-console-target, D2-observability-consumer-contract]
+related: [D12-toml-manifest-detection, D13-unified-console-target]
 ---
 
 # D11 — Herdr is reference-only — do not build on it

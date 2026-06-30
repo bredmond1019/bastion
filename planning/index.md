@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [planning index, concept folders, SDLC pipeline, decisions, master plan]
-related: [context, status, master-plan]
+related: [context, master-plan]
 ---
 
 # bastion — Planning Docs

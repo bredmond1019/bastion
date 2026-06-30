@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [validation, frontmatter, OKF, markdown, link checking, ValidationError]
-related: [brain, docs-index]
+related: [brain]
 ---
 
 # validate — Markdown/MDX Content Validation

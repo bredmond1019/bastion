@@ -7,7 +7,7 @@ layer: [console, factory]
 project: bastion
 status: active
 keywords: [harness.json, validation, Rust, Python, Next.js, SDLC pipeline profiles]
-related: [planning-index, workflows-index]
+related: [planning-index]
 ---
 
 # `harness.json` profiles

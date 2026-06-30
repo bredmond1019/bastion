@@ -5,7 +5,7 @@ description: monitor, sessions, and costs/momentum merge into a single ratatui s
 doc_id: D13-unified-console-target
 status: active
 keywords: [console, TUI, ratatui, unified, mouse, compute-then-render]
-related: [D11-herdr-reference-only, D12-toml-manifest-detection, D4-session-management-surface, D2-observability-consumer-contract]
+related: [D11-herdr-reference-only, D12-toml-manifest-detection]
 ---
 
 # D13 — The three keyboard-only TUIs converge into one unified operator console

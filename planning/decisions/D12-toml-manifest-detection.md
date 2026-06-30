@@ -5,7 +5,7 @@ description: BA.11.C0 builds a data-driven src/detect/ engine that classifies ag
 doc_id: D12-toml-manifest-detection
 status: active
 keywords: [detection, manifest, TOML, agent-state, needs-input, claude]
-related: [D11-herdr-reference-only, D13-unified-console-target, D9-claude-readiness-via-classify-state]
+related: [D11-herdr-reference-only, D13-unified-console-target]
 ---
 
 # D12 — Agent-state detection is a TOML-manifest engine, not inline heuristics

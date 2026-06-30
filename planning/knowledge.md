@@ -7,7 +7,7 @@ layer: [factory]
 project: bastion
 status: active
 keywords: [knowledge, conventions, architecture, semantic memory, durable]
-related: [context, status, memory, planning-index]
+related: [context, memory, planning-index]
 ---
 
 # Knowledge — Bastion

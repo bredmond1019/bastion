@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [project context, governing principles, orientation, Rust CLI, agentic stack]
-related: [status, master-plan, planning-index]
+related: [master-plan, planning-index]
 ---
 
 # CONTEXT — bastion

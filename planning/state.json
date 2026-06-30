@@ -3,69 +3,135 @@
   "kind": "project",
   "updated": "2026-06-30",
   "focus": {
-    "now": [
+    "now": [],
+    "next": [
       {
-        "id": "BA.11.D",
-        "title": "Repo + workflow status reads over serve",
-        "status": "done",
-        "note": "Shipped this session — GET /repos, /status, /handoff, /workflows + pure FlowWatcher, 973 tests, PASS verdict, merged to main (PR #9)."
+        "id": "BA.7.B",
+        "title": "Exact bastion costs (tiktoken counter)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.11.E",
+        "title": "Quick-action command endpoint (inject / spawn)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
       }
     ],
-    "next": [
-      { "id": "BA.11.E", "title": "Quick-action command endpoint (inject / spawn)" },
-      { "id": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)" }
-    ],
-    "blocked": []
+    "blocked": [
+      {
+        "id": "BA.7.C",
+        "title": "Budget alerts + bastion kill",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.7.B",
+            "what": null
+          }
+        ]
+      }
+    ]
   },
   "tracks": [
     {
       "title": "Phase 11 — BastionUI serve API",
       "blocks": [
-        { "id": "BA.11.C0", "title": "Agent-state detection manifest engine", "status": "done", "wave": 1, "depends_on": [] },
+        {
+          "id": "BA.11.C0",
+          "title": "Agent-state detection manifest engine",
+          "status": "closed",
+          "depends_on": [],
+          "wave": 1,
+          "origin": null
+        },
         {
           "id": "BA.11.C",
           "title": "WebSocket hub + live pane streaming",
-          "status": "done",
-          "wave": 2,
+          "status": "closed",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.11.C0" }
-          ]
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.11.C0",
+              "what": null
+            }
+          ],
+          "wave": 2,
+          "origin": null
         },
         {
           "id": "BA.11.D",
           "title": "Repo + workflow status reads over serve",
-          "status": "done",
-          "wave": 3,
+          "status": "closed",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.11.C" }
-          ]
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.11.C",
+              "what": null
+            }
+          ],
+          "wave": 3,
+          "origin": null
         },
         {
           "id": "BA.11.E",
           "title": "Quick-action command endpoint (inject / spawn)",
           "status": "open",
-          "wave": 4,
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.11.B" },
-            { "type": "block", "repo": "bastion", "id": "BA.11.C" }
-          ]
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.11.C",
+              "what": null
+            }
+          ],
+          "wave": 4,
+          "origin": null
         }
       ]
     },
     {
       "title": "Phase 7 — Costs",
       "blocks": [
-        { "id": "BA.7.B", "title": "Exact bastion costs (tiktoken counter)", "status": "open", "wave": 2, "depends_on": [] },
+        {
+          "id": "BA.7.B",
+          "title": "Exact bastion costs (tiktoken counter)",
+          "status": "open",
+          "depends_on": [],
+          "wave": 2,
+          "origin": null
+        },
         {
           "id": "BA.7.C",
           "title": "Budget alerts + bastion kill",
           "status": "open",
-          "wave": 3,
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.7.B" }
-          ]
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.7.B",
+              "what": null
+            }
+          ],
+          "wave": 3,
+          "origin": null
         }
       ]
     }
-  ]
+  ],
+  "repos": [],
+  "cross_repo": [],
+  "tiers": [],
+  "note": null,
+  "backlog": [],
+  "carryover": []
 }
