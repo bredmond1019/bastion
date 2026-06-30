@@ -28,3 +28,6 @@ Validated: gating checks (fast tripwire)
 ## Task 6 — PASSED (1 attempt)
 What: Task 6 validation: all four gated checks pass (cargo fmt/clippy/test/build, 908 tests), live WebSocket smoke test confirmed sessions subscription, pane diff-push, send-frame key delivery, send_key Escape, and event{needs_input} rising-edge push — results recorded in tasks.md Notes.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/index.md
