@@ -4,3 +4,5 @@
 //! with the full session-hub router.
 
 pub mod echo;
+pub mod server;
+pub mod session;
