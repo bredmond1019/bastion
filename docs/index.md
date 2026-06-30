@@ -24,6 +24,7 @@ and [`Bastion/docs/ownership.md`](file://~/agentic-portfolio).
 | [inspect.md](inspect.md) | Static post-mortem TUI graph view of a completed run |
 | [run.md](run.md) | Trigger a workflow via the FastAPI generic dispatcher |
 | [sessions.md](sessions.md) | tmux session-control verbs (list / attach / new / kill / send / capture) |
+| [detect.md](detect.md) | Pure agent-state detection engine — TOML manifest schema, gate types, `detect()` API |
 | [claude-code-workflow.md](claude-code-workflow.md) | Hands-on walkthrough: spin up a tmux session, launch Claude Code, drive it |
 
 ## Knowledge graph
