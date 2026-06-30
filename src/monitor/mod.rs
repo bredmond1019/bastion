@@ -47,7 +47,7 @@ pub async fn run(workflow_id: Option<String>) -> Result<()> {
         None => match workflows::list_active_runs(&config.database_url).await {
             Ok(runs) => runs,
             Err(e) => {
-                eprintln!("bastion monitor: failed to query active runs — {e}");
+                eprintln!("bastion monitor: failed to query active runs — {e:#}");
                 eprintln!("  Is the Python orchestrator stack running? (./scripts/dev.sh)");
                 return Ok(());
             }

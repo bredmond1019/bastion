@@ -22,7 +22,7 @@ pub async fn list_active_runs(db_url: &str) -> Result<Vec<WorkflowRun>> {
         .await
         .context("failed to connect to PostgreSQL")?;
 
-    let rows = sqlx::query_as::<_, EventRow>("SELECT id, workflow_type, task_context FROM events")
+    let rows = sqlx::query_as::<_, EventRow>("SELECT id::text, workflow_type, task_context FROM events")
         .fetch_all(&pool)
         .await
         .context("failed to query events table")?;
@@ -51,7 +51,7 @@ pub async fn get_run_state(db_url: &str, run_id: &str) -> Result<WorkflowRun> {
         .context("failed to connect to PostgreSQL")?;
 
     let row = sqlx::query_as::<_, EventRow>(
-        "SELECT id, workflow_type, task_context FROM events WHERE id = $1",
+        "SELECT id::text, workflow_type, task_context FROM events WHERE id = $1::uuid",
     )
     .bind(run_id)
     .fetch_one(&pool)
@@ -68,12 +68,13 @@ pub async fn get_run_state(db_url: &str, run_id: &str) -> Result<WorkflowRun> {
 pub(crate) struct EventRow {
     pub(crate) id: String,
     pub(crate) workflow_type: String,
-    pub(crate) task_context: serde_json::Value,
+    pub(crate) task_context: Option<serde_json::Value>,
 }
 
 /// Parse one `EventRow` into a `WorkflowRun` using the Task-2 parsing layer.
 pub(crate) fn parse_event_row(row: EventRow) -> Result<WorkflowRun> {
-    let nodes = parse_task_context(&row.task_context)
+    let tc = row.task_context.unwrap_or_else(|| serde_json::json!({ "node_runs": {}, "nodes": {} }));
+    let nodes = parse_task_context(&tc)
         .with_context(|| format!("failed to parse task_context for run '{}'", row.id))?;
 
     // Derive started_at as the minimum non-null started_at across all nodes.
