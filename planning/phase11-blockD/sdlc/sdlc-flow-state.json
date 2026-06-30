@@ -2,9 +2,9 @@
   "spec_slug": "phase11-blockD",
   "branch": "phase11-blockD-flow-2",
   "started_at": "2026-06-30T20:37:53Z",
-  "updated_at": "2026-06-30T21:00:30Z",
+  "updated_at": "2026-06-30T21:04:23Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2",
-  "status": "running",
+  "status": "docs",
   "current_task": 5,
   "tasks": {
     "1": {
@@ -109,12 +109,14 @@
     }
   },
   "review": {
-    "verdict": null,
+    "verdict": "PASS",
     "findings": [],
-    "attempts": 0
+    "attempts": 1
   },
   "docs": {
-    "changed": [],
+    "changed": [
+      "docs/index.md"
+    ],
     "created": []
   },
   "bail_reason": null,
@@ -259,13 +261,29 @@
         "filesReadKb": null,
         "inTokEst": 572,
         "outTok": 3480
+      },
+      {
+        "label": "review-1",
+        "model": "sonnet",
+        "promptTokEst": 976,
+        "filesReadKb": null,
+        "inTokEst": 976,
+        "outTok": 4787
+      },
+      {
+        "label": "docs",
+        "model": "sonnet",
+        "promptTokEst": 793,
+        "filesReadKb": null,
+        "inTokEst": 793,
+        "outTok": 2282
       }
     ],
     "total": {
-      "promptTokEst": 9505,
+      "promptTokEst": 11274,
       "filesReadKb": 0,
-      "inTokEst": 9505,
-      "outTok": 104506
+      "inTokEst": 11274,
+      "outTok": 111575
     }
   }
 }

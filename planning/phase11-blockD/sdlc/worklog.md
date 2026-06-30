@@ -24,3 +24,6 @@ Validated: gating checks (fast tripwire)
 What: Confirmed all gated checks (fmt, clippy, test, release build) pass for phase11-blockD; test count is 973 (>908 baseline), docs/serve-api.md confirmed at v0.3 with all four new endpoints and the workflow_done event documented.
 Decisions: No code changes needed for Task 5 — it is a pure validation/confirmation step over Tasks 1-4 already committed on this branch.; Recorded validation results in the spec's Notes section rather than creating a separate report file.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/index.md
