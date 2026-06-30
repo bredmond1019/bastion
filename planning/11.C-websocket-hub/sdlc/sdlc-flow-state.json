@@ -2,10 +2,10 @@
   "spec_slug": "11.C-websocket-hub",
   "branch": "11.C-websocket-hub-flow",
   "started_at": "2026-06-30T13:45:01Z",
-  "updated_at": "2026-06-30T14:03:26Z",
+  "updated_at": "2026-06-30T14:13:36Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/11.C-websocket-hub-flow",
   "status": "running",
-  "current_task": 4,
+  "current_task": 5,
   "tasks": {
     "1": {
       "status": "passed",
@@ -78,6 +78,26 @@
         "src/serve/ws/mod.rs",
         "src/serve/ws/server.rs",
         "src/serve/ws/session.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "5": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Swapped /ws route to hub-backed WsConn handler, started Hub actor in run_server, updated build_app() test helper, added WS upgrade success test, and bumped docs/serve-api.md to v0.2 with full topic/frame/event documentation.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Read BASTION_POLL_INTERVAL from env inside pub run() rather than adding it to ServeConfig, to keep the public API unchanged",
+        "Used Actor trait import (use actix::Actor) to bring .start() into scope rather than use actix::prelude::*",
+        "Started Hub inside build_app() synchronously — works because #[actix_web::test] already provides an actix System context",
+        "Placed hub_data as app_data at both the App level and ws_scope level so web::Data<Addr<Hub>> is extractable from the ws handler",
+        "Renumbered all old sections (6 Sessions, 7 Config, 8 Versioning) to 10/11/12 to make room for new sections 5-9"
+      ],
+      "files_changed": [
+        "src/serve/mod.rs",
+        "docs/serve-api.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -210,13 +230,37 @@
         "filesReadKb": null,
         "inTokEst": 576,
         "outTok": 2070
+      },
+      {
+        "label": "update-task-5",
+        "model": "haiku",
+        "promptTokEst": 256,
+        "filesReadKb": null,
+        "inTokEst": 256,
+        "outTok": 958
+      },
+      {
+        "label": "implement-5-1",
+        "model": "sonnet",
+        "promptTokEst": 888,
+        "filesReadKb": null,
+        "inTokEst": 888,
+        "outTok": 22312
+      },
+      {
+        "label": "test-5-1",
+        "model": "haiku",
+        "promptTokEst": 576,
+        "filesReadKb": null,
+        "inTokEst": 576,
+        "outTok": 2409
       }
     ],
     "total": {
-      "promptTokEst": 7876,
+      "promptTokEst": 9596,
       "filesReadKb": 0,
-      "inTokEst": 7876,
-      "outTok": 66193
+      "inTokEst": 9596,
+      "outTok": 91872
     }
   }
 }
