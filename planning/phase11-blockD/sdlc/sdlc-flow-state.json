@@ -2,10 +2,10 @@
   "spec_slug": "phase11-blockD",
   "branch": "phase11-blockD-flow-2",
   "started_at": "2026-06-30T20:37:53Z",
-  "updated_at": "2026-06-30T20:37:53Z",
+  "updated_at": "2026-06-30T20:41:27Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/phase11-blockD-flow-2",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -24,6 +24,29 @@
         "src/serve/status/fixtures/status_well_formed.md",
         "src/serve/status/fixtures/status_malformed.md",
         "src/serve/status/fixtures/status_empty_momentum.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added pure read_handoff() (handoff.md title+body parser) and FlowState/parse_flow_state/is_terminal/detect_transition (sdlc-flow-state.json parser + terminal-transition detection) with fixtures and 23 new unit tests; all gates (fmt, clippy, test, release build) pass with 931 tests total.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "read_handoff() body field returns the full raw file content (including frontmatter) rather than stripping frontmatter, since the spec only specifies title+body and Task 4's GET /repos/{name}/handoff handler can decide presentation",
+        "heading_title() falls back to the literal string \"Handoff\" for a bare \"# Handoff\" heading with no trailing dash text, rather than empty string, to avoid losing all title signal",
+        "FlowState intentionally models only the 6 fields the status surface needs (not the full tasks/review/docs/pr shape) — serde ignores unknown fields by default since deny_unknown_fields is not set"
+      ],
+      "files_changed": [
+        "src/serve/status/mod.rs",
+        "src/serve/status/handoff.rs",
+        "src/serve/status/flow.rs",
+        "src/serve/status/fixtures/handoff_minimal.md",
+        "src/serve/status/fixtures/handoff_heading_only.md",
+        "src/serve/status/fixtures/flow_state_valid.json",
+        "src/serve/status/fixtures/flow_state_malformed.json"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -84,13 +107,37 @@
         "filesReadKb": null,
         "inTokEst": 572,
         "outTok": 2279
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 254,
+        "filesReadKb": null,
+        "inTokEst": 254,
+        "outTok": 824
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 878,
+        "filesReadKb": null,
+        "inTokEst": 878,
+        "outTok": 9236
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 572,
+        "filesReadKb": null,
+        "inTokEst": 572,
+        "outTok": 2973
       }
     ],
     "total": {
-      "promptTokEst": 2689,
+      "promptTokEst": 4393,
       "filesReadKb": 0,
-      "inTokEst": 2689,
-      "outTok": 19459
+      "inTokEst": 4393,
+      "outTok": 32492
     }
   }
 }
