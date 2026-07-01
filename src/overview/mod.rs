@@ -82,14 +82,18 @@ fn run_inner(
 }
 
 fn draw(frame: &mut Frame, state: &StateJson) {
+    render(frame, state, frame.area());
+}
+
+pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(1)])
-        .split(frame.area());
+        .split(area);
 
     // Header
     let header = Paragraph::new(format!(
-        " Workspace Overview — {} (updated {}) | Press [q] to quit",
+        " Kanban Board — {} (updated {})",
         state.repo, state.updated
     ))
     .style(Style::default().add_modifier(Modifier::BOLD))

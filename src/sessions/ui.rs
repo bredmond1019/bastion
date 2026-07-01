@@ -110,6 +110,7 @@ fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
         .map(|(i, tab)| {
             let title = match tab {
                 TabState::SpaceOverview => "Space Overview",
+                TabState::Kanban => "Kanban Board",
                 TabState::MissionControl => "Mission Control",
                 TabState::MarkdownDocument(p) => p.to_str().unwrap_or("Doc"),
             };
@@ -147,6 +148,26 @@ fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
             let content_block = Block::default().borders(Borders::ALL);
             let paragraph = Paragraph::new(rendered.lines).block(content_block);
             frame.render_widget(paragraph, main_chunks[1]);
+        }
+        TabState::Kanban => {
+            let mut path = std::env::current_dir().unwrap_or_default();
+            if path.ends_with("bastion") {
+                path.pop();
+            }
+            path.push("planning");
+            path.push("state.json");
+            
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(state) = serde_json::from_str::<crate::overview::StateJson>(&content) {
+                    crate::overview::render(frame, &state, main_chunks[1]);
+                } else {
+                    let p = Paragraph::new("Failed to parse state.json").block(Block::default().borders(Borders::ALL));
+                    frame.render_widget(p, main_chunks[1]);
+                }
+            } else {
+                let p = Paragraph::new("No planning/state.json found.").block(Block::default().borders(Borders::ALL));
+                frame.render_widget(p, main_chunks[1]);
+            }
         }
         _ => {
             let content_block = Block::default().borders(Borders::ALL);
