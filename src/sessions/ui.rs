@@ -94,33 +94,57 @@ pub fn strip_frontmatter(md: &str) -> &str {
 
 // ── Frame builder (I/O — not unit-tested) ─────────────────────────────────────
 
-/// Build a colored sidebar list. Each session gets a state dot and name.
-fn build_sidebar_items(sessions: &[Session]) -> Vec<ListItem<'static>> {
-    sessions
-        .iter()
-        .map(|s| {
-            use crate::detect::AgentState;
-            use crate::sessions::model::SessionState;
+/// Build a colored sidebar list from the SpaceTree. Each repo gets a state dot and name.
+fn build_sidebar_items(app: &AppState) -> Vec<ListItem<'static>> {
+    let mut items = Vec::new();
+    let flat_tree = app.space_tree.flatten();
 
-            // Choose dot character and color based on state.
-            let (dot, dot_style) = match s.agent_state {
-                AgentState::Working => ("● ", crate::ui_theme::state_working_style()),
-                AgentState::Blocked => ("● ", crate::ui_theme::state_blocked_style()),
-                AgentState::Idle => ("○ ", crate::ui_theme::state_idle_style()),
-                AgentState::Unknown => match s.state {
-                    SessionState::Running => ("● ", crate::ui_theme::state_running_style()),
-                    SessionState::Idle => ("○ ", crate::ui_theme::state_idle_style()),
-                },
-            };
+    for (is_header, label, _repo_opt) in flat_tree {
+        if is_header {
+            let span = Span::styled(format!(" ▾ {}", label), crate::ui_theme::muted());
+            items.push(ListItem::new(Line::from(vec![span])));
+        } else {
+            let mut dot = "  ○ ";
+            let mut dot_style = crate::ui_theme::state_idle_style();
+
+            if let Some(s) = app.sessions.iter().find(|s| s.name == label) {
+                use crate::detect::AgentState;
+                use crate::sessions::model::SessionState;
+                match s.agent_state {
+                    AgentState::Working => {
+                        dot = "  ● ";
+                        dot_style = crate::ui_theme::state_working_style();
+                    }
+                    AgentState::Blocked => {
+                        dot = "  ● ";
+                        dot_style = crate::ui_theme::state_blocked_style();
+                    }
+                    AgentState::Idle => {
+                        dot = "  ○ ";
+                        dot_style = crate::ui_theme::state_idle_style();
+                    }
+                    AgentState::Unknown => match s.state {
+                        SessionState::Running => {
+                            dot = "  ● ";
+                            dot_style = crate::ui_theme::state_running_style();
+                        }
+                        SessionState::Idle => {
+                            dot = "  ○ ";
+                            dot_style = crate::ui_theme::state_idle_style();
+                        }
+                    },
+                }
+            }
 
             let name_style = Style::default().fg(crate::ui_theme::text());
             let spans = vec![
                 Span::styled(dot, dot_style),
-                Span::styled(s.name.clone(), name_style),
+                Span::styled(label, name_style),
             ];
-            ListItem::new(Line::from(spans))
-        })
-        .collect()
+            items.push(ListItem::new(Line::from(spans)));
+        }
+    }
+    items
 }
 
 /// Core frame-builder. Takes an explicit `planning_root` so tests can inject a
@@ -147,21 +171,21 @@ fn draw_with_root(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(*th));
 
-    if app.sessions.is_empty() {
+    if app.space_tree.tiers.is_empty() {
         let msg = Paragraph::new(Span::styled(
-            "  no sessions — [n] new",
+            "  no spaces",
             Style::default().fg(crate::ui_theme::muted()),
         ))
         .block(sidebar_block);
         frame.render_widget(msg, sidebar_area);
     } else {
-        let items = build_sidebar_items(&app.sessions);
+        let items = build_sidebar_items(app);
         let list = List::new(items)
             .block(sidebar_block)
             .highlight_style(crate::ui_theme::list_selected_style())
             .highlight_symbol("  ");
 
-        list_state.select(Some(app.selected));
+        list_state.select(Some(app.selected_space));
         frame.render_stateful_widget(list, sidebar_area, list_state);
     }
 
@@ -417,7 +441,9 @@ pub fn run() -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = AppState::new(poll_sessions());
+    let space_tree = crate::brain::spaces::load_space_tree(&crate::config::load_brain_toml_path())
+        .unwrap_or_default();
+    let mut app = AppState::new(poll_sessions(), space_tree);
     let result = run_inner(&mut terminal, &mut app);
 
     // Always tear down — even on the error path — so the terminal is never left
@@ -482,7 +508,20 @@ mod tests {
     }
 
     fn make_app(sessions: &[Session]) -> AppState {
-        AppState::new(sessions.to_vec())
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push((
+            "core".to_string(),
+            sessions
+                .iter()
+                .map(|s| crate::brain::spaces::SpaceEntry {
+                    slug: s.name.clone(),
+                    tier: "core".to_string(),
+                    repo_path: std::path::PathBuf::from(s.name.clone()),
+                    heading: None,
+                })
+                .collect(),
+        ));
+        AppState::new(sessions.to_vec(), tree)
     }
 
     #[test]

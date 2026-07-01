@@ -297,6 +297,24 @@ pub fn load_planning_root() -> PathBuf {
     planning_root(std::env::var("BASTION_PLANNING_ROOT").ok())
 }
 
+/// Resolve the `brain.toml` file path.
+///
+/// Precedence:
+/// 1. `env_val` — value of `BASTION_BRAIN_TOML` env var (if set and non-empty).
+/// 2. Built-in default: `PathBuf::from("brain.toml")` (relative to cwd).
+pub fn brain_toml_path(env_val: Option<String>) -> PathBuf {
+    env_val
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("brain.toml"))
+}
+
+/// Load the brain.toml path from `BASTION_BRAIN_TOML` env var + `.env` file.
+pub fn load_brain_toml_path() -> PathBuf {
+    dotenvy::dotenv().ok();
+    brain_toml_path(std::env::var("BASTION_BRAIN_TOML").ok())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -760,5 +778,19 @@ client-a = "/Users/alice/clients/a"
     fn planning_root_relative_env_val_is_preserved_as_given() {
         let root = planning_root(Some("../other/planning".into()));
         assert_eq!(root, PathBuf::from("../other/planning"));
+    }
+
+    // ─── brain_toml_path ──────────────────────────────────────────────────────
+
+    #[test]
+    fn brain_toml_path_defaults_to_brain_toml() {
+        let root = brain_toml_path(None);
+        assert_eq!(root, PathBuf::from("brain.toml"));
+    }
+
+    #[test]
+    fn brain_toml_path_env_val_overrides_default() {
+        let root = brain_toml_path(Some("/absolute/path/brain.toml".into()));
+        assert_eq!(root, PathBuf::from("/absolute/path/brain.toml"));
     }
 }
