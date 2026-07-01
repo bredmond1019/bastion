@@ -39,7 +39,14 @@ pub fn session_row(s: &Session) -> String {
     } else {
         s.last_line.as_str()
     };
-    format!("{:<20} {:<20} {}", s.name, format_state_col(s), last)
+
+    let state = if s.agent_state != crate::detect::AgentState::Unknown {
+        s.agent_state.as_str().to_string()
+    } else {
+        format_state_col(s)
+    };
+
+    format!("{:<20} {:<20} {}", s.name, state, last)
 }
 
 /// Render the footer key legend (Normal mode) or the active input prompt.
@@ -94,30 +101,52 @@ fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(main_area);
-    
+
     use crate::sessions::app::TabState;
-    let tabs_text = app.tabs.iter().enumerate().map(|(i, tab)| {
-        let title = match tab {
-            TabState::SpaceOverview => "Space Overview",
-            TabState::MissionControl => "Mission Control",
-            TabState::MarkdownDocument(p) => p.to_str().unwrap_or("Doc"),
-        };
-        let style = if i == app.active_tab_index {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
-        };
-        Span::styled(format!(" {:<18} ", title), style)
-    }).collect::<Vec<_>>();
-    
-    let tabs_paragraph = Paragraph::new(Line::from(tabs_text))
-        .block(Block::default().borders(Borders::ALL));
-    
+    let tabs_text = app
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, tab)| {
+            let title = match tab {
+                TabState::SpaceOverview => "Space Overview",
+                TabState::MissionControl => "Mission Control",
+                TabState::MarkdownDocument(p) => p.to_str().unwrap_or("Doc"),
+            };
+            let style = if i == app.active_tab_index {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            Span::styled(format!(" {:<18} ", title), style)
+        })
+        .collect::<Vec<_>>();
+
+    let tabs_paragraph =
+        Paragraph::new(Line::from(tabs_text)).block(Block::default().borders(Borders::ALL));
+
     frame.render_widget(tabs_paragraph, main_chunks[0]);
-    
+
     match &app.tabs[app.active_tab_index] {
         TabState::MissionControl => {
             crate::monitor::ui::render(frame, &app.monitor_app, main_chunks[1]);
+        }
+        TabState::SpaceOverview => {
+            let status_md = std::fs::read_to_string("planning/status.md")
+                .unwrap_or_else(|_| "No planning/status.md found.".to_string());
+            let theme = bella_engine::Theme::dark();
+            let tables = bella_engine::links::TableExpansions::new();
+            let rendered = bella_engine::render_with_edit(
+                &status_md,
+                None,
+                main_chunks[1].width.saturating_sub(2), // account for borders
+                &theme,
+                None,
+                &tables,
+            );
+            let content_block = Block::default().borders(Borders::ALL);
+            let paragraph = Paragraph::new(rendered.lines).block(content_block);
+            frame.render_widget(paragraph, main_chunks[1]);
         }
         _ => {
             let content_block = Block::default().borders(Borders::ALL);
@@ -139,7 +168,8 @@ fn poll_sessions() -> Vec<Session> {
     let mut sessions = parse_sessions(&raw);
     for s in sessions.iter_mut() {
         if let Ok(out) = tmux::capture_pane_raw(&s.name) {
-            s.last_line = Pane::new(&s.name, out).last_line().to_string();
+            s.last_line = Pane::new(&s.name, &out).last_line().to_string();
+            s.agent_state = crate::serve::status::detect::detect_state(&out);
         }
     }
     sessions
@@ -204,12 +234,20 @@ fn run_inner(
                         // Suspend the TUI, hand the terminal to tmux, then restore.
                         let name = name.clone();
                         disable_raw_mode()?;
-                        execute!(terminal.backend_mut(), LeaveAlternateScreen, event::DisableMouseCapture)?;
+                        execute!(
+                            terminal.backend_mut(),
+                            LeaveAlternateScreen,
+                            event::DisableMouseCapture
+                        )?;
 
                         let res = tmux::suspend_and_attach(&name);
 
                         enable_raw_mode()?;
-                        execute!(terminal.backend_mut(), EnterAlternateScreen, event::EnableMouseCapture)?;
+                        execute!(
+                            terminal.backend_mut(),
+                            EnterAlternateScreen,
+                            event::EnableMouseCapture
+                        )?;
                         terminal.clear()?;
 
                         if let Err(e) = res {
@@ -221,21 +259,21 @@ fn run_inner(
 
                     execute_action(action, app);
                 }
-                Event::Mouse(m) => {
-                    if m.kind == event::MouseEventKind::Down(event::MouseButton::Left) {
-                        let areas = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([Constraint::Min(1), Constraint::Length(1)])
-                            .split(terminal.size()?.into());
-                        let (_, main_area) = app.compute_view(areas[0]);
-                        let main_chunks = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([Constraint::Length(3), Constraint::Min(0)])
-                            .split(main_area);
-                        
-                        let action = app.on_mouse(m.column, m.row, main_chunks[0]);
-                        execute_action(action, app);
-                    }
+                Event::Mouse(m)
+                    if m.kind == event::MouseEventKind::Down(event::MouseButton::Left) =>
+                {
+                    let areas = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Min(1), Constraint::Length(1)])
+                        .split(terminal.size()?.into());
+                    let (_, main_area) = app.compute_view(areas[0]);
+                    let main_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(3), Constraint::Min(0)])
+                        .split(main_area);
+
+                    let action = app.on_mouse(m.column, m.row, main_chunks[0]);
+                    execute_action(action, app);
                 }
                 _ => {}
             }
@@ -265,7 +303,11 @@ pub fn run() -> Result<()> {
     // Always tear down — even on the error path — so the terminal is never left
     // in raw mode or on the alternate screen.
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, event::DisableMouseCapture);
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        event::DisableMouseCapture
+    );
 
     result
 }
@@ -284,6 +326,7 @@ mod tests {
             window_count: 1,
             foreground_cmd: String::new(),
             last_line: last_line.to_string(),
+            agent_state: crate::detect::AgentState::Unknown,
         }
     }
 
@@ -299,6 +342,7 @@ mod tests {
             window_count: 1,
             foreground_cmd: foreground_cmd.to_string(),
             last_line: last_line.to_string(),
+            agent_state: crate::detect::AgentState::Unknown,
         }
     }
 

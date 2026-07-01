@@ -57,6 +57,8 @@ pub struct Session {
     pub foreground_cmd: String,
     /// Last non-blank line from `capture-pane -p`, empty string if none.
     pub last_line: String,
+    /// Live agent state detected from pane content.
+    pub agent_state: crate::detect::AgentState,
 }
 
 /// Lightweight pane capture: the raw text from `capture-pane -p -t <session>`.
@@ -163,6 +165,7 @@ pub fn parse_session_line(line: &str) -> Result<Session> {
         window_count,
         foreground_cmd,
         last_line: String::new(), // filled in by commands.rs after capture-pane
+        agent_state: crate::detect::AgentState::Unknown,
     })
 }
 

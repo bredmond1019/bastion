@@ -159,15 +159,24 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
 
     for node in &run.nodes {
         for dep in &node.depends_on {
-            children.entry(dep.as_str()).or_default().push(node.name.as_str());
+            children
+                .entry(dep.as_str())
+                .or_default()
+                .push(node.name.as_str());
             has_parent.insert(node.name.as_str());
         }
     }
 
     // Roots are nodes with no dependencies (not in has_parent)
-    let mut roots: Vec<&str> = run.nodes.iter().map(|n| n.name.as_str()).filter(|n| !has_parent.contains(n)).collect();
+    let mut roots: Vec<&str> = run
+        .nodes
+        .iter()
+        .map(|n| n.name.as_str())
+        .filter(|n| !has_parent.contains(n))
+        .collect();
     roots.sort();
 
+    #[allow(clippy::too_many_arguments)]
     fn build_tree(
         name: &str,
         prefix: &str,
@@ -176,10 +185,12 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
         children_map: &std::collections::HashMap<&str, Vec<&str>>,
         run: &crate::db::workflows::WorkflowRun,
         selected_name: Option<&str>,
-        lines: &mut Vec<Line<'static>>
+        lines: &mut Vec<Line<'static>>,
     ) {
         let node = run.nodes.iter().find(|n| n.name == name);
-        let status = node.map(|n| &n.status).unwrap_or(&crate::db::workflows::RunStatus::Pending);
+        let status = node
+            .map(|n| &n.status)
+            .unwrap_or(&crate::db::workflows::RunStatus::Pending);
         let sym = status_symbol(status);
         let color = status_color(status);
 
@@ -202,13 +213,13 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
         } else {
             Style::default().fg(color)
         };
-        
+
         lines.push(Line::from(Span::styled(label, style)));
 
         if let Some(kids) = children_map.get(name) {
             let mut kids = kids.clone();
             kids.sort();
-            
+
             let next_prefix = if is_root {
                 format!("{}  ", prefix)
             } else if is_last {
@@ -218,7 +229,16 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
             };
 
             for (i, kid) in kids.iter().enumerate() {
-                build_tree(kid, &next_prefix, i == kids.len() - 1, false, children_map, run, selected_name, lines);
+                build_tree(
+                    kid,
+                    &next_prefix,
+                    i == kids.len() - 1,
+                    false,
+                    children_map,
+                    run,
+                    selected_name,
+                    lines,
+                );
             }
         }
     }
@@ -228,7 +248,16 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
         if i > 0 {
             lines.push(Line::from(""));
         }
-        build_tree(root, "", true, true, &children, run, selected_name.as_deref(), &mut lines);
+        build_tree(
+            root,
+            "",
+            true,
+            true,
+            &children,
+            run,
+            selected_name.as_deref(),
+            &mut lines,
+        );
     }
 
     lines

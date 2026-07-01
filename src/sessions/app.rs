@@ -60,10 +60,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(sessions: Vec<Session>) -> Self {
         Self {
-            tabs: vec![
-                TabState::SpaceOverview,
-                TabState::MissionControl,
-            ],
+            tabs: vec![TabState::SpaceOverview, TabState::MissionControl],
             active_tab_index: 0,
             sessions,
             selected: 0,
@@ -259,7 +256,10 @@ impl AppState {
     /// Map a mouse click to an `Action`.
     pub fn on_mouse(&mut self, col: u16, row: u16, tab_bar_area: Rect) -> Action {
         // Tab bar is rendered inside a block, so the actual text is at y + 1, x + 1
-        if row == tab_bar_area.y + 1 && col >= tab_bar_area.x + 1 && col < tab_bar_area.x + tab_bar_area.width - 1 {
+        if row == tab_bar_area.y + 1
+            && col > tab_bar_area.x
+            && col < tab_bar_area.x + tab_bar_area.width - 1
+        {
             let tab_width = 20;
             let clicked_index = ((col - tab_bar_area.x - 1) / tab_width) as usize;
             if clicked_index < self.tabs.len() {
@@ -286,6 +286,7 @@ mod tests {
                 window_count: 1,
                 foreground_cmd: String::new(),
                 last_line: String::new(),
+                agent_state: crate::detect::AgentState::Unknown,
             })
             .collect()
     }
@@ -536,7 +537,7 @@ mod tests {
     }
 
     // ── Tab Management ────────────────────────────────────────────────────────
-    
+
     #[test]
     fn push_tab_updates_index() {
         let mut app = AppState::new(vec![]);

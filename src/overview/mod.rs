@@ -2,14 +2,14 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame, Terminal,
 };
 use std::{fs, io};
 
@@ -69,6 +69,7 @@ fn run_inner(
     loop {
         terminal.draw(|f| draw(f, state))?;
 
+        #[allow(clippy::collapsible_if)]
         if event::poll(std::time::Duration::from_millis(250))? {
             if let Event::Key(k) = event::read()? {
                 if k.code == KeyCode::Char('q') {
@@ -113,17 +114,20 @@ fn draw(frame: &mut Frame, state: &StateJson) {
                 ListItem::new(format!("[{}] {}: {}", repo, b.id, b.title))
             })
             .collect();
-        List::new(list_items)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(color)),
-            )
+        List::new(list_items).block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(color)),
+        )
     };
 
     frame.render_widget(
-        render_col(" In Progress (Now) ".to_string(), &state.focus.now, Color::Green),
+        render_col(
+            " In Progress (Now) ".to_string(),
+            &state.focus.now,
+            Color::Green,
+        ),
         columns[0],
     );
     frame.render_widget(
