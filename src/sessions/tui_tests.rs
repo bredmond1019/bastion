@@ -18,7 +18,7 @@ mod tests {
 
     /// Create a fresh `AppState` with no sessions (DB-free, tmux-free).
     fn empty_app() -> AppState {
-        AppState::new(vec![])
+        AppState::new(vec![], crate::brain::spaces::SpaceTree::default())
     }
 
     /// Extract all cell text from the terminal buffer as a single flat string.

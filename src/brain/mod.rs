@@ -4,6 +4,7 @@ pub mod code;
 pub mod code_graph;
 pub mod graph;
 pub mod okf;
+pub mod spaces;
 
 use std::path::PathBuf;
 
