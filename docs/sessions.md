@@ -45,29 +45,53 @@ Because the surface needs no database, this works even when the orchestrator sta
 
 ## Unified Console (TUI Dashboard)
 
-Running `bastion` (bare) or `bastion tui` opens the unified live ratatui console. The console is structured with a collapsible sidebar and a dynamic tab area:
+Running `bastion` (bare) or `bastion tui` opens the unified live ratatui console. The console is structured with a collapsible sidebar (labeled **spaces**) and a dynamic tab area:
 
-- **Sidebar (Spaces):** Lists all tmux sessions with their live activity state. The state is driven by the pure-logic AgentState manifest engine (which parses live terminal output to classify the agent as `working`, `idle`, or `blocked`) and falls back to the foreground command for non-agent shells.
-- **Space Overview Tab:** Renders the project's `planning/status.md` natively in the terminal using the `bella-engine` markdown parser with an aesthetic dark theme AST.
-- **Mission Control Tab:** Embeds the live workflow DAG tree, allowing you to monitor orchestrator executions natively within the unified interface.
+- **Sidebar (Spaces):** Lists all tmux sessions with a live state dot (`●` = working/blocked/running,
+  `○` = idle) and the session name. The state is driven by the pure-logic AgentState manifest engine
+  (which parses live terminal output to classify the agent as `Working`, `Idle`, or `Blocked`) and
+  falls back to the foreground command (`SessionState::Running`/`Idle`) for non-agent shells. Each
+  session is added by pressing `n` — there is no separate "add space" flow; a space **is** a tmux
+  session.
+- **Space Overview Tab:** Renders the project's `planning/status.md` natively in the terminal using
+  the `bella-engine` markdown parser with an aesthetic dark blue/violet/cyan theme AST. YAML
+  frontmatter (the `---`-delimited block) is stripped before rendering.
+- **Kanban Board Tab:** Renders the project's Kanban tracker (open/blocked work items) as three
+  columns — In Progress, Up Next, Blocked — with each item stacked as `ID` (accent, bold) over
+  `title` (indented).
+- **Mission Control Tab:** Embeds the live workflow DAG tree, allowing you to monitor orchestrator
+  executions natively within the unified interface.
 
 ### Key bindings
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` | Navigate session list |
+| `↑` / `↓` or `j` | Navigate session list |
 | `a` | Attach to the selected session (TUI suspends; returns cleanly on detach) |
-| `n` | Create a new named session (prompts for name inline) |
+| `n` | Create a new named session (prompts for name inline) — this is how you add a new "space" |
 | `s` | Send a command to the selected session (prompts for command inline) |
 | `k` | Kill the selected session |
 | `q` / `Esc` | Quit the dashboard |
-| Mouse Click | Navigate between tabs (e.g. Space Overview, Mission Control) |
+| `Tab` / `Shift+Tab` | Cycle to the next / previous tab |
+| Mouse Click | Jump directly to a clicked tab |
 
 Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without
 making any change.
 
 tmux errors (missing tmux, no server, unknown session) surface as a status message inside the
 TUI rather than crashing the loop.
+
+### Configuration
+
+The console reads the project's `planning/` tree (for the Space Overview and Kanban tabs) from the
+current working directory by default. Set **`BASTION_PLANNING_ROOT`** to point it at a different
+project's planning directory, e.g. when running `bastion tui` from outside the project root:
+
+```bash
+BASTION_PLANNING_ROOT=/path/to/project/planning bastion tui
+```
+
+An unset or empty value falls back to `./planning` relative to the current directory.
 
 ## Verb reference
 

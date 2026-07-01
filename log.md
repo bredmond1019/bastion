@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-01T13:22:00Z
+timestamp: 2026-07-01T19:36:42Z
 ---
 
 # Log — bastion
@@ -12,6 +12,14 @@ timestamp: 2026-07-01T13:22:00Z
 ---
 
 ## [2026-07-01]
+
+### Unified TUI console visual overhaul
+
+- **What:** Completed the unified TUI console visual overhaul: fixed the `AgentState::Active` -> `AgentState::Working` compile error blocking the build, cleaned up 5 pre-existing clippy findings surfaced by a newer clippy version (`costs/mod.rs` identity_op, `monitor/graph.rs` unnecessary_get_then_check, `run/mod.rs` manual_contains x2, `validate/links.rs` useless_format), fixed a real regression in `status_line`'s test (footer now shows the key hint instead of empty string when idle, by design), added real Tab/Shift+Tab keyboard tab-cycling (`next_tab`/`prev_tab` in `sessions/app.rs`) since the footer hint claimed a "tab switch" binding that didn't exist yet, and updated `docs/sessions.md`'s Unified Console section with the Kanban tab, corrected key bindings table, and a new `BASTION_PLANNING_ROOT` config subsection. All gates green: `cargo fmt`, `cargo clippy -D warnings`, `cargo test` (994 passed), `cargo build --release`. Visually smoke-tested all 3 tabs via tmux capture-pane. Cleared all three carryover entries in `state.json` and deleted the consumed `planning/handoff.md`.
+- **Why:** The build was broken and clippy gates were failing on a newer toolchain, blocking the SDLC pipeline; this session cleared those blockers and closed out the Kanban/unified-console feature work by backing the UI's claimed keyboard bindings with real behavior and bringing docs in sync.
+- **Refs:** `src/sessions/app.rs`, `src/sessions/ui.rs`, `src/ui_theme.rs`, `src/overview/mod.rs`, `docs/sessions.md`, `planning/state.json`
+
+---
 
 ### BA.12.A Unified Operator Console Completed
 
