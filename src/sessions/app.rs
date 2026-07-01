@@ -7,7 +7,16 @@
 use crate::sessions::model::Session;
 use crossterm::event::KeyCode;
 
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TabState {
+    SpaceOverview,
+    MissionControl,
+    MarkdownDocument(std::path::PathBuf),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputKind {
@@ -32,7 +41,9 @@ pub enum Action {
 }
 
 /// State for the interactive session dashboard.
-pub struct SessionApp {
+pub struct AppState {
+    pub tabs: Vec<TabState>,
+    pub active_tab_index: usize,
     pub sessions: Vec<Session>,
     pub selected: usize,
     pub mode: Mode,
@@ -44,9 +55,11 @@ pub struct SessionApp {
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
 
-impl SessionApp {
+impl AppState {
     pub fn new(sessions: Vec<Session>) -> Self {
         Self {
+            tabs: vec![TabState::SpaceOverview],
+            active_tab_index: 0,
             sessions,
             selected: 0,
             mode: Mode::Normal,
@@ -54,6 +67,29 @@ impl SessionApp {
             status: Option::None,
             should_quit: false,
         }
+    }
+
+    pub fn push_tab(&mut self, tab: TabState) {
+        self.tabs.push(tab);
+        self.active_tab_index = self.tabs.len() - 1;
+    }
+
+    pub fn close_tab(&mut self) {
+        if self.tabs.len() <= 1 {
+            return;
+        }
+        self.tabs.remove(self.active_tab_index);
+        if self.active_tab_index >= self.tabs.len() {
+            self.active_tab_index = self.tabs.len() - 1;
+        }
+    }
+
+    pub fn compute_view(&self, area: Rect) -> (Rect, Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(30), Constraint::Min(0)])
+            .split(area);
+        (chunks[0], chunks[1])
     }
 
     /// Move selection to the next session (wraps around).
@@ -239,7 +275,7 @@ mod tests {
 
     #[test]
     fn new_starts_at_zero_normal_mode() {
-        let app = SessionApp::new(make_sessions(&["alpha", "beta"]));
+        let app = AppState::new(make_sessions(&["alpha", "beta"]));
         assert_eq!(app.selected, 0);
         assert_eq!(app.mode, Mode::Normal);
         assert!(!app.should_quit);
@@ -250,7 +286,7 @@ mod tests {
 
     #[test]
     fn select_next_wraps() {
-        let mut app = SessionApp::new(make_sessions(&["a", "b", "c"]));
+        let mut app = AppState::new(make_sessions(&["a", "b", "c"]));
         app.selected = 2;
         app.select_next();
         assert_eq!(app.selected, 0);
@@ -258,7 +294,7 @@ mod tests {
 
     #[test]
     fn select_prev_wraps() {
-        let mut app = SessionApp::new(make_sessions(&["a", "b", "c"]));
+        let mut app = AppState::new(make_sessions(&["a", "b", "c"]));
         app.selected = 0;
         app.select_prev();
         assert_eq!(app.selected, 2);
@@ -266,21 +302,21 @@ mod tests {
 
     #[test]
     fn select_next_empty_is_noop() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.select_next();
         assert_eq!(app.selected, 0);
     }
 
     #[test]
     fn select_prev_empty_is_noop() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.select_prev();
         assert_eq!(app.selected, 0);
     }
 
     #[test]
     fn single_session_next_prev_stay_at_zero() {
-        let mut app = SessionApp::new(make_sessions(&["only"]));
+        let mut app = AppState::new(make_sessions(&["only"]));
         app.select_next();
         assert_eq!(app.selected, 0);
         app.select_prev();
@@ -291,7 +327,7 @@ mod tests {
 
     #[test]
     fn set_sessions_clamps_selected_when_list_shrinks() {
-        let mut app = SessionApp::new(make_sessions(&["a", "b", "c"]));
+        let mut app = AppState::new(make_sessions(&["a", "b", "c"]));
         app.selected = 2;
         app.set_sessions(make_sessions(&["x"]));
         assert_eq!(app.selected, 0);
@@ -299,7 +335,7 @@ mod tests {
 
     #[test]
     fn set_sessions_empty_resets_to_zero() {
-        let mut app = SessionApp::new(make_sessions(&["a", "b"]));
+        let mut app = AppState::new(make_sessions(&["a", "b"]));
         app.selected = 1;
         app.set_sessions(vec![]);
         assert_eq!(app.selected, 0);
@@ -309,7 +345,7 @@ mod tests {
 
     #[test]
     fn selected_session_returns_none_when_empty() {
-        let app = SessionApp::new(vec![]);
+        let app = AppState::new(vec![]);
         assert!(app.selected_session().is_none());
     }
 
@@ -317,7 +353,7 @@ mod tests {
 
     #[test]
     fn push_backspace_take_input_roundtrip() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.push_input('h');
         app.push_input('i');
         app.backspace_input();
@@ -331,7 +367,7 @@ mod tests {
 
     #[test]
     fn on_key_j_and_down_advance() {
-        let mut app = SessionApp::new(make_sessions(&["a", "b", "c"]));
+        let mut app = AppState::new(make_sessions(&["a", "b", "c"]));
         let a1 = app.on_key(KeyCode::Char('j'));
         assert_eq!(a1, Action::None);
         assert_eq!(app.selected, 1);
@@ -342,7 +378,7 @@ mod tests {
 
     #[test]
     fn on_key_up_retreats() {
-        let mut app = SessionApp::new(make_sessions(&["a", "b", "c"]));
+        let mut app = AppState::new(make_sessions(&["a", "b", "c"]));
         app.selected = 2;
         let a = app.on_key(KeyCode::Up);
         assert_eq!(a, Action::None);
@@ -353,21 +389,21 @@ mod tests {
 
     #[test]
     fn on_key_a_returns_attach_with_selected_name() {
-        let mut app = SessionApp::new(make_sessions(&["my-session"]));
+        let mut app = AppState::new(make_sessions(&["my-session"]));
         let action = app.on_key(KeyCode::Char('a'));
         assert_eq!(action, Action::Attach("my-session".into()));
     }
 
     #[test]
     fn on_key_a_empty_list_is_none() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         let action = app.on_key(KeyCode::Char('a'));
         assert_eq!(action, Action::None);
     }
 
     #[test]
     fn on_key_n_enters_new_input_mode() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         let action = app.on_key(KeyCode::Char('n'));
         assert_eq!(action, Action::None);
         assert_eq!(app.mode, Mode::Input(InputKind::New));
@@ -375,7 +411,7 @@ mod tests {
 
     #[test]
     fn on_key_s_enters_send_input_mode_when_selected() {
-        let mut app = SessionApp::new(make_sessions(&["alpha"]));
+        let mut app = AppState::new(make_sessions(&["alpha"]));
         let action = app.on_key(KeyCode::Char('s'));
         assert_eq!(action, Action::None);
         assert_eq!(app.mode, Mode::Input(InputKind::Send));
@@ -383,7 +419,7 @@ mod tests {
 
     #[test]
     fn on_key_s_no_selection_sets_status() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         let action = app.on_key(KeyCode::Char('s'));
         assert_eq!(action, Action::None);
         assert!(app.status.is_some());
@@ -392,14 +428,14 @@ mod tests {
 
     #[test]
     fn on_key_k_returns_kill_with_selected_name() {
-        let mut app = SessionApp::new(make_sessions(&["victim"]));
+        let mut app = AppState::new(make_sessions(&["victim"]));
         let action = app.on_key(KeyCode::Char('k'));
         assert_eq!(action, Action::Kill("victim".into()));
     }
 
     #[test]
     fn on_key_q_sets_should_quit() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         let action = app.on_key(KeyCode::Char('q'));
         assert_eq!(action, Action::None);
         assert!(app.should_quit);
@@ -409,7 +445,7 @@ mod tests {
 
     #[test]
     fn input_mode_char_appends() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.mode = Mode::Input(InputKind::New);
         app.on_key(KeyCode::Char('a'));
         app.on_key(KeyCode::Char('b'));
@@ -418,7 +454,7 @@ mod tests {
 
     #[test]
     fn input_mode_backspace_pops() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.mode = Mode::Input(InputKind::New);
         app.input = "abc".into();
         app.on_key(KeyCode::Backspace);
@@ -427,7 +463,7 @@ mod tests {
 
     #[test]
     fn input_mode_esc_cancels_to_normal() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.mode = Mode::Input(InputKind::New);
         app.input = "partial".into();
         let action = app.on_key(KeyCode::Esc);
@@ -438,7 +474,7 @@ mod tests {
 
     #[test]
     fn input_mode_enter_new_returns_new_action() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.mode = Mode::Input(InputKind::New);
         app.input = "fresh".into();
         let action = app.on_key(KeyCode::Enter);
@@ -448,7 +484,7 @@ mod tests {
 
     #[test]
     fn input_mode_enter_new_empty_sets_status() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.mode = Mode::Input(InputKind::New);
         let action = app.on_key(KeyCode::Enter);
         assert_eq!(action, Action::None);
@@ -457,7 +493,7 @@ mod tests {
 
     #[test]
     fn input_mode_enter_send_returns_send_action() {
-        let mut app = SessionApp::new(make_sessions(&["target"]));
+        let mut app = AppState::new(make_sessions(&["target"]));
         app.mode = Mode::Input(InputKind::Send);
         app.input = "cargo test".into();
         let action = app.on_key(KeyCode::Enter);
@@ -473,10 +509,45 @@ mod tests {
 
     #[test]
     fn input_mode_enter_send_no_selection_is_none() {
-        let mut app = SessionApp::new(vec![]);
+        let mut app = AppState::new(vec![]);
         app.mode = Mode::Input(InputKind::Send);
         app.input = "whatever".into();
         let action = app.on_key(KeyCode::Enter);
         assert_eq!(action, Action::None);
+    }
+
+    // ── Tab Management ────────────────────────────────────────────────────────
+    
+    #[test]
+    fn push_tab_updates_index() {
+        let mut app = AppState::new(vec![]);
+        app.push_tab(TabState::MissionControl);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab_index, 1);
+        assert_eq!(app.tabs[1], TabState::MissionControl);
+    }
+
+    #[test]
+    fn close_tab_updates_index() {
+        let mut app = AppState::new(vec![]);
+        app.push_tab(TabState::MissionControl);
+        app.push_tab(TabState::MarkdownDocument(std::path::PathBuf::from("foo.md")));
+        assert_eq!(app.active_tab_index, 2);
+        
+        app.close_tab(); // closes foo.md
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab_index, 1);
+        assert_eq!(app.tabs[1], TabState::MissionControl);
+    }
+
+    #[test]
+    fn compute_view_math() {
+        let app = AppState::new(vec![]);
+        let area = Rect::new(0, 0, 100, 50);
+        let (sidebar, main) = app.compute_view(area);
+        assert_eq!(sidebar.width, 30);
+        assert_eq!(sidebar.height, 50);
+        assert_eq!(main.width, 70);
+        assert_eq!(main.height, 50);
     }
 }

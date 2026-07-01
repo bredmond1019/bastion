@@ -12,7 +12,7 @@ Evolve the Bastion TUI into a dynamic, markdown-native IDE workspace featuring a
 
 ## Step-by-Step Tasks
 
-### 1. State: Dynamic Tab Engine & Layout Math
+### [done] 1. State: Dynamic Tab Engine & Layout Math
 - **Target Files:** `src/sessions/app.rs`
 - Refactor `AppState` to drop the static tab enum and introduce a dynamic `Vec<TabState>` and `active_tab_index: usize`.
 - Define `TabState` enum with `SpaceOverview`, `MissionControl`, and `MarkdownDocument(PathBuf)`.
@@ -69,7 +69,7 @@ cargo run -- --help
 ```
 
 ## Notes
-_To be filled during execution._
+**2026-07-01**: Renamed SessionApp to AppState and introduced TabState and layout boundaries logic.
 
 ## Amendment Log
 _No amendments yet._
