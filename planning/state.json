@@ -6,6 +6,30 @@
     "now": [],
     "next": [
       {
+        "id": "BA.12.C",
+        "title": "Kanban board: rows instead of columns",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.12.D",
+        "title": "Mission Control: apply the console theme",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.12.E",
+        "title": "Merge sessions into Mission Control",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
         "id": "BA.7.B",
         "title": "Exact bastion costs (tiktoken counter)",
         "status": null,
@@ -23,6 +47,36 @@
       }
     ],
     "blocked": [
+      {
+        "id": "BA.12.F",
+        "title": "Spaces: brain.toml-driven hierarchy tree",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.12.E",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.12.G",
+        "title": "Space Overview: scrollable content + shared file browser",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.12.F",
+            "what": null
+          }
+        ]
+      },
       {
         "id": "BA.7.C",
         "title": "Budget alerts + bastion kill",
@@ -91,6 +145,176 @@
               "type": "block",
               "repo": "bastion",
               "id": "BA.11.C",
+              "what": null
+            }
+          ],
+          "wave": 4,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "title": "Phase 12 — Unified Console Cleanup",
+      "blocks": [
+        {
+          "id": "BA.12.C",
+          "title": "Kanban board: rows instead of columns",
+          "status": "open",
+          "depends_on": [],
+          "wave": 1,
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Swap Kanban layout direction to rows",
+              "description": "Change the Kanban board's columns Layout from Direction::Horizontal to Direction::Vertical in src/overview/mod.rs, keeping the existing 33/33/34 constraints as row heights.",
+              "acceptance_criteria": [
+                "The In Progress / Up Next / Blocked lanes render as three stacked horizontal rows, not side-by-side columns.",
+                "No other rendering logic in src/overview/mod.rs changed.",
+                "Manual tmux capture-pane smoke test result recorded in Notes."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Validate",
+              "description": "Run the project's gating checks and confirm all pass.",
+              "acceptance_criteria": [
+                "fmt, clippy, test, and release build all pass."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            }
+          ]
+        },
+        {
+          "id": "BA.12.D",
+          "title": "Mission Control: apply the console theme",
+          "status": "open",
+          "depends_on": [],
+          "wave": 1,
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Theme status_color() and error/banner spans",
+              "description": "Replace hardcoded Color::Yellow/Green/Red/DarkGray in src/monitor/ui.rs's status_color() and error/banner spans with ui_theme::cyan()/sage()/rose()/muted().",
+              "acceptance_criteria": [
+                "status_color() has a unit test asserting each RunStatus variant maps to the expected ui_theme color.",
+                "No Color::Yellow/Green/Red/DarkGray literals remain in src/monitor/ui.rs."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Theme Mission Control borders",
+              "description": "Update graph pane and detail pane borders to use ui_theme::border_dim_style()/border_active_style(), matching Kanban's border treatment.",
+              "acceptance_criteria": [
+                "Mission Control's borders use the same border_dim_style()/border_active_style() treatment as Kanban.",
+                "Manual tmux capture-pane smoke test result recorded in Notes."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Validate",
+              "description": "Run the project's gating checks and confirm all pass.",
+              "acceptance_criteria": [
+                "fmt, clippy, test, and release build all pass."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            }
+          ]
+        },
+        {
+          "id": "BA.12.E",
+          "title": "Merge sessions into Mission Control",
+          "status": "open",
+          "depends_on": [],
+          "wave": 2,
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "MissionItem enum + pure merge/ordering function",
+              "description": "Add a MissionItem enum (Session/Run) and a pure build_mission_items(sessions, runs) -> Vec<MissionItem> function to src/monitor/app.rs, replacing separate selected_run/selected_node indices with a single selected index.",
+              "acceptance_criteria": [
+                "build_mission_items() has unit tests covering empty, sessions-only, runs-only, and mixed-ordering cases."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Unified list + detail-pane rendering",
+              "description": "Update render_graph_pane and render_detail_pane in src/monitor/ui.rs to render the merged MissionItem list and branch detail rendering per variant.",
+              "acceptance_criteria": [
+                "Selecting a session shows session detail (name, agent state, foreground command, last output line) in the right pane.",
+                "Selecting a run shows the existing run/node detail.",
+                "Manual tmux capture-pane smoke test result recorded in Notes."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Wire sessions into Mission Control + keep keybindings working",
+              "description": "Feed AppState.sessions into monitor_app.items via build_mission_items() each poll tick, and route attach/new/send/kill keybindings through the selected MissionItem::Session.",
+              "acceptance_criteria": [
+                "a/n/s/k keybindings work correctly when a session item is selected in Mission Control."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 4,
+              "title": "Validate",
+              "description": "Run the project's gating checks and confirm all pass.",
+              "acceptance_criteria": [
+                "fmt, clippy, test, and release build all pass."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            }
+          ]
+        },
+        {
+          "id": "BA.12.F",
+          "title": "Spaces: brain.toml-driven hierarchy tree",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.12.E",
+              "what": null
+            }
+          ],
+          "wave": 3,
+          "origin": null
+        },
+        {
+          "id": "BA.12.G",
+          "title": "Space Overview: scrollable content + shared file browser",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.12.F",
               "what": null
             }
           ],
