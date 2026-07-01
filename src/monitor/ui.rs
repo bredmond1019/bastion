@@ -419,6 +419,7 @@ fn render_detail_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App)
 mod tests {
     use super::*;
     use crate::db::workflows::{NodeState, RunStatus};
+    use crate::monitor::app::MissionItem;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
