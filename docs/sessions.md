@@ -43,23 +43,25 @@ Because the surface needs no database, this works even when the orchestrator sta
 > For the specific flow of launching and driving **Claude Code** inside a session, see the
 > task-oriented guide: [claude-code-workflow.md](claude-code-workflow.md).
 
-## TUI Session Dashboard
+## Unified Console (TUI Dashboard)
 
-Running `bastion` (bare) or `bastion tui` opens a live ratatui dashboard that lists all tmux
-sessions with their activity state (derived from `pane_current_command`) and last pane output,
-refreshing automatically every 2 seconds. Sessions running a non-shell foreground command show
-`running (cmd)` in the STATE column; idle shells show `idle`.
+Running `bastion` (bare) or `bastion tui` opens the unified live ratatui console. The console is structured with a collapsible sidebar and a dynamic tab area:
+
+- **Sidebar (Spaces):** Lists all tmux sessions with their live activity state. The state is driven by the pure-logic AgentState manifest engine (which parses live terminal output to classify the agent as `working`, `idle`, or `blocked`) and falls back to the foreground command for non-agent shells.
+- **Space Overview Tab:** Renders the project's `planning/status.md` natively in the terminal using the `bella-engine` markdown parser with an aesthetic dark theme AST.
+- **Mission Control Tab:** Embeds the live workflow DAG tree, allowing you to monitor orchestrator executions natively within the unified interface.
 
 ### Key bindings
 
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Navigate session list |
-| `a` | Attach to the selected session (TUI suspends; returns on detach) |
+| `a` | Attach to the selected session (TUI suspends; returns cleanly on detach) |
 | `n` | Create a new named session (prompts for name inline) |
 | `s` | Send a command to the selected session (prompts for command inline) |
 | `k` | Kill the selected session |
 | `q` / `Esc` | Quit the dashboard |
+| Mouse Click | Navigate between tabs (e.g. Space Overview, Mission Control) |
 
 Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without
 making any change.

@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-01T09:56:43Z
+timestamp: 2026-07-01T13:22:00Z
 ---
 
 # Log — bastion
@@ -12,6 +12,14 @@ timestamp: 2026-07-01T09:56:43Z
 ---
 
 ## [2026-07-01]
+
+### BA.12.A Unified Operator Console Completed
+
+- **What:** Completed BA.12.A, building the unified TUI operator console. Integrated `bella-engine` markdown renderer into the Space Overview tab, built a dynamic tab layout with mouse click navigation, ported the orchestrator DAG into an indented tree under Mission Control, and wired the AgentState manifest engine to the sidebar. Ran full validation and `/close-out` checks to confirm everything is green and TUI docs (`sessions.md` and `monitor.md`) are patched. Handed off cleanly with e2e TUI tests deferred in `state.json`.
+- **Why:** The unified console merges session control, monitor tracking, and agent state detection into a single intuitive terminal interface, dramatically reducing context switching and simplifying the operator's mental model.
+- **Refs:** `planning/state.json`, `docs/sessions.md`, `docs/monitor.md`, `planning/handoff.md`, `src/sessions/`, `src/monitor/`, `src/overview/`
+
+---
 
 ### BA.12.B standalone Kanban shipped; BA.12.A prepped
 

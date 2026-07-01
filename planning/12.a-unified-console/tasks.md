@@ -32,7 +32,7 @@ Evolve the Bastion TUI into a dynamic, markdown-native IDE workspace featuring a
 - Apply color-coding based on node execution status (Green for success, Red for failure).
 - Ensure this view is correctly nested within the `TabState::MissionControl` render loop.
 
-### 4. Session Control: Drop-In Suspend UX
+### [done] 4. Session Control: Drop-In Suspend UX
 - **Target Files:** `src/sessions/tmux.rs`
 - Implement a `suspend_and_attach(session_name: &str)` execution shell.
 - Before issuing `tmux attach -t <name>`, clear the screen and print a styled instruction banner: `[ BASTION ] Attaching to Agent. Press Ctrl-b d to detach and return.`
@@ -72,6 +72,7 @@ cargo run -- --help
 **2026-07-01**: Renamed SessionApp to AppState and introduced TabState and layout boundaries logic.
 **2026-07-01**: Updated TUI scaffolding to use mouse events and click handlers to navigate tabs.
 **2026-07-01**: Refactored monitor DAG rendering into an indented tree layout, and wired the monitor App into sessions/ui.rs when TabState::MissionControl is active.
+**2026-07-01**: Verified TUI suspension during tmux attach; terminal state and mouse capture are properly toggled in Action::Attach handling.
 
 ## Amendment Log
 _No amendments yet._
