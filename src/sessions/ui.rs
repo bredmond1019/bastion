@@ -4,7 +4,7 @@
 // Synchronous event loop (Decision D5 — no tokio coupling).
 // DB-free (Decision D4 — no Config::load, no Postgres pool).
 
-use crate::sessions::app::{Action, InputKind, Mode, SessionApp};
+use crate::sessions::app::{Action, AppState, InputKind, Mode};
 use crate::sessions::commands::{Degraded, degrade_tmux_error};
 use crate::sessions::model::{Pane, Session, parse_sessions};
 use crate::sessions::tmux::{self, TmuxError};
@@ -54,7 +54,7 @@ pub fn footer_hint(mode: &Mode) -> String {
 /// Return the footer/status line content shown in the bottom bar.
 /// In Normal mode: the transient status (or empty when none).
 /// In Input mode: the prompt prepended to the live input buffer.
-pub fn status_line(app: &SessionApp) -> String {
+pub fn status_line(app: &AppState) -> String {
     match &app.mode {
         Mode::Normal => app.status.clone().unwrap_or_default(),
         Mode::Input(_) => format!("{}{}", footer_hint(&app.mode), app.input),
@@ -63,7 +63,7 @@ pub fn status_line(app: &SessionApp) -> String {
 
 // ── Frame builder (I/O — not unit-tested) ─────────────────────────────────────
 
-fn draw(frame: &mut Frame, app: &SessionApp, list_state: &mut ListState) {
+fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -110,7 +110,7 @@ fn poll_sessions() -> Vec<Session> {
 
 // ── Action execution helper ───────────────────────────────────────────────────
 
-fn set_tmux_status(app: &mut SessionApp, verb: &str, name: &str, e: anyhow::Error) {
+fn set_tmux_status(app: &mut AppState, verb: &str, name: &str, e: anyhow::Error) {
     if let Some(te) = e.downcast_ref::<TmuxError>() {
         let msg = match degrade_tmux_error(verb, name, te) {
             Degraded::Graceful(m) | Degraded::Fatal(m) => m,
@@ -121,7 +121,7 @@ fn set_tmux_status(app: &mut SessionApp, verb: &str, name: &str, e: anyhow::Erro
     }
 }
 
-fn execute_action(action: Action, app: &mut SessionApp) {
+fn execute_action(action: Action, app: &mut AppState) {
     match action {
         Action::None | Action::Attach(_) => {
             // Attach is handled in the event loop (needs terminal suspension).
@@ -148,7 +148,7 @@ fn execute_action(action: Action, app: &mut SessionApp) {
 
 fn run_inner(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut SessionApp,
+    app: &mut AppState,
 ) -> Result<()> {
     let mut list_state = ListState::default();
 
@@ -200,7 +200,7 @@ pub fn run() -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = SessionApp::new(poll_sessions());
+    let mut app = AppState::new(poll_sessions());
     let result = run_inner(&mut terminal, &mut app);
 
     // Always tear down — even on the error path — so the terminal is never left
@@ -243,8 +243,8 @@ mod tests {
         }
     }
 
-    fn make_app(sessions: &[Session]) -> SessionApp {
-        SessionApp::new(sessions.to_vec())
+    fn make_app(sessions: &[Session]) -> AppState {
+        AppState::new(sessions.to_vec())
     }
 
     #[test]
