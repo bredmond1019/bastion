@@ -22,10 +22,11 @@ pub async fn list_active_runs(db_url: &str) -> Result<Vec<WorkflowRun>> {
         .await
         .context("failed to connect to PostgreSQL")?;
 
-    let rows = sqlx::query_as::<_, EventRow>("SELECT id::text, workflow_type, task_context FROM events")
-        .fetch_all(&pool)
-        .await
-        .context("failed to query events table")?;
+    let rows =
+        sqlx::query_as::<_, EventRow>("SELECT id::text, workflow_type, task_context FROM events")
+            .fetch_all(&pool)
+            .await
+            .context("failed to query events table")?;
 
     let mut active = Vec::new();
     for row in rows {
@@ -73,7 +74,9 @@ pub(crate) struct EventRow {
 
 /// Parse one `EventRow` into a `WorkflowRun` using the Task-2 parsing layer.
 pub(crate) fn parse_event_row(row: EventRow) -> Result<WorkflowRun> {
-    let tc = row.task_context.unwrap_or_else(|| serde_json::json!({ "node_runs": {}, "nodes": {} }));
+    let tc = row
+        .task_context
+        .unwrap_or_else(|| serde_json::json!({ "node_runs": {}, "nodes": {} }));
     let nodes = parse_task_context(&tc)
         .with_context(|| format!("failed to parse task_context for run '{}'", row.id))?;
 

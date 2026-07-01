@@ -633,6 +633,7 @@ mod tests {
             window_count: 1,
             foreground_cmd: "zsh".to_owned(),
             last_line: last_line.to_owned(),
+            agent_state: crate::detect::AgentState::Unknown,
         }
     }
 
