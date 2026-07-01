@@ -50,7 +50,7 @@ pub fn run_static_loop(app: &mut App) -> Result<()> {
 
     let result = (|| {
         loop {
-            terminal.draw(|f| ui::render(f, app))?;
+            terminal.draw(|f| ui::render(f, app, f.area()))?;
 
             // Block until a key event arrives (no timeout needed — static view).
             if let Event::Key(key) = crossterm::event::read()? {

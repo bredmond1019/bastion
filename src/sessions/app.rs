@@ -52,6 +52,7 @@ pub struct AppState {
     /// Transient status/error line shown in the footer. Cleared on the next action.
     pub status: Option<String>,
     pub should_quit: bool,
+    pub monitor_app: crate::monitor::app::App,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -59,7 +60,10 @@ pub struct AppState {
 impl AppState {
     pub fn new(sessions: Vec<Session>) -> Self {
         Self {
-            tabs: vec![TabState::SpaceOverview],
+            tabs: vec![
+                TabState::SpaceOverview,
+                TabState::MissionControl,
+            ],
             active_tab_index: 0,
             sessions,
             selected: 0,
@@ -67,6 +71,7 @@ impl AppState {
             input: String::new(),
             status: Option::None,
             should_quit: false,
+            monitor_app: crate::monitor::app::App::new(),
         }
     }
 
@@ -536,8 +541,8 @@ mod tests {
     fn push_tab_updates_index() {
         let mut app = AppState::new(vec![]);
         app.push_tab(TabState::MissionControl);
-        assert_eq!(app.tabs.len(), 2);
-        assert_eq!(app.active_tab_index, 1);
+        assert_eq!(app.tabs.len(), 3);
+        assert_eq!(app.active_tab_index, 2);
         assert_eq!(app.tabs[1], TabState::MissionControl);
     }
 
@@ -545,13 +550,16 @@ mod tests {
     fn close_tab_updates_index() {
         let mut app = AppState::new(vec![]);
         app.push_tab(TabState::MissionControl);
-        app.push_tab(TabState::MarkdownDocument(std::path::PathBuf::from("foo.md")));
+        assert_eq!(app.tabs.len(), 3);
         assert_eq!(app.active_tab_index, 2);
-        
-        app.close_tab(); // closes foo.md
+
+        app.close_tab();
         assert_eq!(app.tabs.len(), 2);
-        assert_eq!(app.active_tab_index, 1);
-        assert_eq!(app.tabs[1], TabState::MissionControl);
+        assert_eq!(app.active_tab_index, 1); // shifted back
+
+        app.close_tab();
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab_index, 0); // shifted back
     }
 
     #[test]

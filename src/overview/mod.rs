@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame, Terminal,
 };
-use std::{fs, io, path::PathBuf};
+use std::{fs, io};
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct StateJson {
@@ -105,7 +105,7 @@ fn draw(frame: &mut Frame, state: &StateJson) {
         ])
         .split(main_layout[1]);
 
-    let mut render_col = |title: String, items: &[BlockTask], color: Color| -> List<'static> {
+    let render_col = |title: String, items: &[BlockTask], color: Color| -> List<'static> {
         let list_items: Vec<ListItem> = items
             .iter()
             .map(|b| {

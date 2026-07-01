@@ -115,8 +115,15 @@ fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
     
     frame.render_widget(tabs_paragraph, main_chunks[0]);
     
-    let content_block = Block::default().borders(Borders::ALL);
-    frame.render_widget(content_block, main_chunks[1]);
+    match &app.tabs[app.active_tab_index] {
+        TabState::MissionControl => {
+            crate::monitor::ui::render(frame, &app.monitor_app, main_chunks[1]);
+        }
+        _ => {
+            let content_block = Block::default().borders(Borders::ALL);
+            frame.render_widget(content_block, main_chunks[1]);
+        }
+    }
 
     let footer = Paragraph::new(status_line(app));
     frame.render_widget(footer, areas[1]);
@@ -199,7 +206,7 @@ fn run_inner(
                         disable_raw_mode()?;
                         execute!(terminal.backend_mut(), LeaveAlternateScreen, event::DisableMouseCapture)?;
 
-                        let res = tmux::attach_session(&name);
+                        let res = tmux::suspend_and_attach(&name);
 
                         enable_raw_mode()?;
                         execute!(terminal.backend_mut(), EnterAlternateScreen, event::EnableMouseCapture)?;

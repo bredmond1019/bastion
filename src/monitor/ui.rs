@@ -6,7 +6,7 @@
 
 use crate::db::workflows::{NodeState, RunStatus};
 use crate::monitor::app::App;
-use petgraph::graph::NodeIndex;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
@@ -141,86 +141,94 @@ pub fn format_node_detail(node: &NodeState) -> Vec<Line<'static>> {
     lines
 }
 
-/// Build text lines for the graph pane from the current `App` state.
-///
-/// Lays out nodes in a grid: column = depth level, row = position within
-/// the column (from `GraphLayout.positions`). The selected node is
-/// highlighted with an inverted background. Nodes not yet run appear in
-/// gray; live status colors are applied from `GraphLayout.node_states`.
-///
-/// Returns owned `Line<'static>` values for testability.
 pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(layout) = &app.layout else {
+    let Some(run) = app.selected_run() else {
         return vec![Line::from("Loading graph…")];
     };
 
-    if layout.positions.is_empty() {
+    if run.nodes.is_empty() {
         return vec![Line::from("Graph is empty")];
     }
 
     let selected_name = app.selected_node().map(|n| n.name.clone());
+    let mut lines = Vec::new();
 
-    // Build lookup: (col, row) → (name, status)
-    let mut grid: std::collections::HashMap<(u16, u16), (String, Option<RunStatus>)> =
-        std::collections::HashMap::new();
+    // Adjacency list: parent -> children
+    let mut children: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    let mut has_parent = std::collections::HashSet::new();
 
-    for &(node_idx, col, row) in &layout.positions {
-        let idx = NodeIndex::new(node_idx);
-        let name = layout.graph[idx].clone();
-        let status = layout.node_states.get(&name).cloned();
-        grid.insert((col, row), (name, status));
+    for node in &run.nodes {
+        for dep in &node.depends_on {
+            children.entry(dep.as_str()).or_default().push(node.name.as_str());
+            has_parent.insert(node.name.as_str());
+        }
     }
 
-    let max_col = layout
-        .positions
-        .iter()
-        .map(|&(_, col, _)| col)
-        .max()
-        .unwrap_or(0);
-    let max_row = layout
-        .positions
-        .iter()
-        .map(|&(_, _, row)| row)
-        .max()
-        .unwrap_or(0);
+    // Roots are nodes with no dependencies (not in has_parent)
+    let mut roots: Vec<&str> = run.nodes.iter().map(|n| n.name.as_str()).filter(|n| !has_parent.contains(n)).collect();
+    roots.sort();
 
-    const CELL_WIDTH: usize = 20;
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    fn build_tree(
+        name: &str,
+        prefix: &str,
+        is_last: bool,
+        is_root: bool,
+        children_map: &std::collections::HashMap<&str, Vec<&str>>,
+        run: &crate::db::workflows::WorkflowRun,
+        selected_name: Option<&str>,
+        lines: &mut Vec<Line<'static>>
+    ) {
+        let node = run.nodes.iter().find(|n| n.name == name);
+        let status = node.map(|n| &n.status).unwrap_or(&crate::db::workflows::RunStatus::Pending);
+        let sym = status_symbol(status);
+        let color = status_color(status);
 
-    for row in 0..=max_row {
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        for col in 0..=max_col {
-            if col > 0 {
-                spans.push(Span::raw("  "));
-            }
-            if let Some((name, status)) = grid.get(&(col, row)) {
-                let sym = status.as_ref().map(status_symbol).unwrap_or("?");
-                let color = status.as_ref().map(status_color).unwrap_or(Color::DarkGray);
-                let is_selected = selected_name.as_deref() == Some(name.as_str());
+        let branch = if is_root {
+            ""
+        } else if is_last {
+            "└─ "
+        } else {
+            "├─ "
+        };
 
-                // Pad / truncate to CELL_WIDTH
-                let label = format!("{sym} {name}");
-                let padded: String = if label.len() >= CELL_WIDTH {
-                    label[..CELL_WIDTH].to_string()
-                } else {
-                    format!("{label:<width$}", width = CELL_WIDTH)
-                };
+        let label = format!("{}{} {} {}", prefix, branch, sym, name);
+        let is_selected = selected_name == Some(name);
 
-                let style = if is_selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(color)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(color)
-                };
-                spans.push(Span::styled(padded, style));
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(color)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color)
+        };
+        
+        lines.push(Line::from(Span::styled(label, style)));
+
+        if let Some(kids) = children_map.get(name) {
+            let mut kids = kids.clone();
+            kids.sort();
+            
+            let next_prefix = if is_root {
+                format!("{}  ", prefix)
+            } else if is_last {
+                format!("{}   ", prefix)
             } else {
-                // Empty cell
-                spans.push(Span::raw(" ".repeat(CELL_WIDTH)));
+                format!("{}│  ", prefix)
+            };
+
+            for (i, kid) in kids.iter().enumerate() {
+                build_tree(kid, &next_prefix, i == kids.len() - 1, false, children_map, run, selected_name, lines);
             }
         }
-        lines.push(Line::from(spans));
+    }
+
+    for (i, root) in roots.iter().enumerate() {
+        // Space between roots if there are multiple roots
+        if i > 0 {
+            lines.push(Line::from(""));
+        }
+        build_tree(root, "", true, true, &children, run, selected_name.as_deref(), &mut lines);
     }
 
     lines
@@ -230,11 +238,11 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
 
 /// Top-level render function — splits the frame 50/50 into graph (left) and
 /// detail (right) panes, then delegates to the pane-specific helpers.
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(frame.area());
+        .split(area);
 
     render_graph_pane(frame, chunks[0], app);
     render_detail_pane(frame, chunks[1], app);
@@ -568,7 +576,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let app = crate::monitor::app::App::new();
 
-        terminal.draw(|f| render(f, &app)).unwrap();
+        terminal.draw(|f| render(f, &app, f.area())).unwrap();
 
         // The left and right pane borders occupy column 0 (left of left pane),
         // column ~40 (right of left pane / left of right pane), and column 79
