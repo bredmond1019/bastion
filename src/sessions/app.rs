@@ -146,6 +146,23 @@ impl AppState {
             self.selected = self.selected.min(sessions.len() - 1);
         }
         self.sessions = sessions;
+
+        let items = crate::monitor::app::build_mission_items(&self.sessions, &[]);
+        self.monitor_app.replace_items(items);
+    }
+
+    pub fn selected_session_for_actions(&self) -> Option<&Session> {
+        if self.tabs[self.active_tab_index] == TabState::MissionControl {
+            if let Some(crate::monitor::app::MissionItem::Session(s)) =
+                self.monitor_app.selected_item()
+            {
+                Some(s)
+            } else {
+                None
+            }
+        } else {
+            self.selected_session()
+        }
     }
 
     // ── Input-buffer editing ──────────────────────────────────────────────────
@@ -179,16 +196,22 @@ impl AppState {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.status = Option::None;
                         self.select_next();
+                        if self.tabs[self.active_tab_index] == TabState::MissionControl {
+                            self.monitor_app.next_item();
+                        }
                         Action::None
                     }
                     KeyCode::Up => {
                         self.status = Option::None;
                         self.select_prev();
+                        if self.tabs[self.active_tab_index] == TabState::MissionControl {
+                            self.monitor_app.prev_item();
+                        }
                         Action::None
                     }
                     KeyCode::Char('a') => {
                         self.status = Option::None;
-                        if let Some(s) = self.selected_session() {
+                        if let Some(s) = self.selected_session_for_actions() {
                             Action::Attach(s.name.clone())
                         } else {
                             Action::None
@@ -201,7 +224,7 @@ impl AppState {
                         Action::None
                     }
                     KeyCode::Char('s') => {
-                        if let Some(s) = self.selected_session() {
+                        if let Some(s) = self.selected_session_for_actions() {
                             let _name = s.name.clone(); // ensure borrow ends
                             self.status = Option::None;
                             self.input.clear();
@@ -213,7 +236,7 @@ impl AppState {
                     }
                     KeyCode::Char('k') => {
                         self.status = Option::None;
-                        if let Some(s) = self.selected_session() {
+                        if let Some(s) = self.selected_session_for_actions() {
                             Action::Kill(s.name.clone())
                         } else {
                             Action::None
@@ -263,7 +286,7 @@ impl AppState {
                                 }
                             }
                             InputKind::Send => {
-                                if let Some(s) = self.selected_session() {
+                                if let Some(s) = self.selected_session_for_actions() {
                                     Action::Send {
                                         session: s.name.clone(),
                                         keys: text,

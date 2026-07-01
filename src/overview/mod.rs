@@ -102,7 +102,7 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
 
     // ── Columns ───────────────────────────────────────────────────────────────
     let columns = Layout::default()
-        .direction(Direction::Horizontal)
+        .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(33),
             Constraint::Percentage(33),

@@ -210,7 +210,7 @@ pub(crate) fn derive_run_status(nodes: &[NodeState]) -> RunStatus {
 
 /// Assembled per run from one `events` row. `status` is derived by aggregating
 /// `node_runs` (there is no top-level status column in contract v1.0.0).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkflowRun {
     pub id: String,
     pub workflow_name: String,
@@ -234,7 +234,7 @@ pub enum RunStatus {
 /// Assembled per node by joining `node_runs[name]` (status/timing/error/input/
 /// usage) + `nodes[name]` (output) + graph-endpoint edges (`depends_on`).
 /// Not deserialized directly — the three sources are merged by class name.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NodeState {
     pub id: String,
     pub name: String,

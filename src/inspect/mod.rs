@@ -16,7 +16,7 @@ use crate::api::client::{ApiClient, WorkflowGraph};
 use crate::config::Config;
 use crate::db::workflows::{WorkflowRun, get_run_state};
 use crate::monitor::{
-    app::App,
+    app::{App, MissionItem},
     events::{handle_key, restore_terminal, setup_terminal},
     graph::build_layout,
     ui,
@@ -30,13 +30,13 @@ use crate::monitor::{
 ///   stores it in `app.layout`.
 /// - If `graph` is `None` (API unreachable), `app.layout` stays `None`; the TUI
 ///   renders nodes without edges.
-/// - `app.runs` is set to `vec![run]` via `replace_runs`.
+/// - `app.items` is set to `vec![run]` via `replace_runs`.
 ///
 /// Pure: no I/O, no tokio. Unit-tested exhaustively.
 pub fn build_inspect_app(run: WorkflowRun, graph: Option<&WorkflowGraph>) -> App {
     let mut app = App::new();
     app.layout = graph.map(|g| build_layout(g, &run.nodes));
-    app.replace_runs(vec![run]);
+    app.replace_items(vec![MissionItem::Run(run)]);
     app
 }
 
@@ -175,8 +175,8 @@ mod tests {
     fn single_run_is_installed() {
         let run = make_run("r1", &["A", "B"]);
         let app = build_inspect_app(run, None);
-        assert_eq!(app.runs.len(), 1);
-        assert_eq!(app.runs[0].id, "r1");
+        assert_eq!(app.items.len(), 1);
+        assert_eq!(app.selected_run().unwrap().id, "r1");
     }
 
     // ── build_inspect_app: node count preserved ───────────────────────────────
@@ -185,7 +185,7 @@ mod tests {
     fn node_count_preserved() {
         let run = make_run("r1", &["A", "B", "C"]);
         let app = build_inspect_app(run, None);
-        assert_eq!(app.runs[0].nodes.len(), 3);
+        assert_eq!(app.selected_run().unwrap().nodes.len(), 3);
     }
 
     // ── build_inspect_app: layout present when graph supplied ─────────────────
@@ -231,7 +231,7 @@ mod tests {
     fn cursors_start_at_zero() {
         let run = make_run("r1", &["A", "B"]);
         let app = build_inspect_app(run, None);
-        assert_eq!(app.selected_run, 0);
+        assert_eq!(app.selected, 0);
         assert_eq!(app.selected_node, 0);
     }
 
@@ -250,7 +250,7 @@ mod tests {
     fn empty_run_no_nodes() {
         let run = make_run("r1", &[]);
         let app = build_inspect_app(run, None);
-        assert_eq!(app.runs[0].nodes.len(), 0);
+        assert_eq!(app.selected_run().unwrap().nodes.len(), 0);
         assert!(app.layout.is_none());
     }
 
