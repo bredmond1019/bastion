@@ -1,6 +1,6 @@
 # Task Spec — Phase 12, Block E (Merge sessions into Mission Control)
 
-**Status:** Not started · **Last run:** never
+**Status:** Completed · **Last run:** never
 
 ## Goal
 Merge tmux sessions and orchestrator workflow runs into a single Mission Control list, so selecting either shows the right detail in the right-hand pane — implementing the "Session Drop-In" concept from `initial-plan.md` §3 that the shipped console never absorbed.
@@ -55,7 +55,7 @@ cargo build --release
 ```
 
 ## Notes
-_None yet._
+- Verified tests passing. Unified layout working and handles MissionItems polymorphically correctly. Smoke test via tests confirms session actions are mapped to currently-selected `MissionItem::Session`.
 
 ## Amendment Log
 _No amendments yet._
