@@ -15,6 +15,12 @@ Operator reference for the `bastion` CLI tool. For system architecture and namin
 see `Bastion/docs/architecture.md`
 and `Bastion/docs/ownership.md`.
 
+## Getting Started
+
+| File | What it covers |
+|---|---|
+| [setup.md](setup.md) | End-to-end setup guide: connecting Bastion to the Orchestrator's PostgreSQL database |
+
 ## Surfaces
 
 | File | What it covers |
