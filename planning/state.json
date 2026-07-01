@@ -133,15 +133,5 @@
   "tiers": [],
   "note": null,
   "backlog": [],
-  "carryover": [
-    {
-      "slug": "e2e-tui-tests-and-docs",
-      "scope": "bastion",
-      "kind": "deferred",
-      "text": "Write end-to-end (e2e) tests for the new Unified Console (TUI) to ensure components are connected and work properly. Also need comprehensive user documentation covering setting up, getting started, useful commands, and troubleshooting.",
-      "related": [],
-      "clears_when": "E2E tests and comprehensive docs are written",
-      "created": "2026-07-01"
-    }
-  ]
+  "carryover": []
 }
