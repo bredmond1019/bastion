@@ -29,4 +29,4 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"
 clap_mangen = "0.2"
-bella-engine = { path = "../../../bella/crates/bella-engine" }
+bella-engine = { path = "../bella/crates/bella-engine" }
