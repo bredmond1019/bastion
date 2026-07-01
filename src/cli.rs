@@ -61,6 +61,8 @@ pub enum Commands {
         /// Run ID to inspect
         run_id: String,
     },
+    /// Workspace overview board (Kanban) reading state.json
+    Overview,
     /// Validate markdown/MDX content files for front-matter, link integrity, and lint rules
     Validate {
         /// Path to content directory (defaults to current dir)

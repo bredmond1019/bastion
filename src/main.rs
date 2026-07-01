@@ -13,6 +13,7 @@ mod inspect;
 mod man;
 mod monitor;
 mod observ;
+mod overview;
 mod run;
 mod serve;
 mod sessions;
@@ -35,6 +36,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Tui => "tui",
         Commands::Monitor { .. } => "monitor",
         Commands::Inspect { .. } => "inspect",
+        Commands::Overview => "overview",
         Commands::Validate { .. } => "validate",
         Commands::Costs { .. } => "costs",
         Commands::Run { .. } => "run",
@@ -139,6 +141,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             Commands::Tui => unreachable!(),
             Commands::Monitor { workflow_id } => monitor::run(workflow_id).await,
             Commands::Inspect { run_id } => inspect::run(run_id).await,
+            Commands::Overview => overview::run(),
             Commands::Validate { path } => validate::run(path).await,
             Commands::Costs { last } => costs::run(last).await,
             Commands::Run {

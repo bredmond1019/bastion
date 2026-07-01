@@ -2,12 +2,22 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-06-30T21:16:10Z
+timestamp: 2026-07-01T09:56:43Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-07-01]
+
+### BA.12.B standalone Kanban shipped; BA.12.A prepped
+
+- **What:** Jumped ahead to BA.12.B to build a native Ratatui Kanban board reading `state.json` directly for immediate use in Herdr. Shipped as `bastion overview`. Evicted completed Phase 11 Wave 1 blocks (`BA.11.C`, `BA.11.D`, `MV.3B.Q`) from the root `state.json` queues and `master-plan.md` tables, unblocking `BU.1.A` and `OR.H`. Wrote `planning/handoff.md` directing the next agent to start `BA.12.A` (Unified Operator Console).
+- **Why:** The user wanted immediate value in Herdr by rendering the space overview Kanban board. Since `state.json` tracking was stale, we cleaned it up so the TUI reflects the true queues.
+- **Refs:** `planning/state.json`, `planning/master-plan.md`, `src/overview/mod.rs`
 
 ---
 
