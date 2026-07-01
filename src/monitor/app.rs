@@ -3,12 +3,50 @@
 
 use crate::db::workflows::{NodeState, WorkflowRun};
 use crate::monitor::graph::GraphLayout;
+use crate::sessions::model::Session;
+
+#[derive(Debug, Clone)]
+pub enum MissionItem {
+    Session(Session),
+    Run(WorkflowRun),
+}
+
+pub fn build_mission_items(sessions: &[Session], runs: &[WorkflowRun]) -> Vec<MissionItem> {
+    let mut items = Vec::new();
+    items.extend(sessions.iter().cloned().map(MissionItem::Session));
+    items.extend(runs.iter().cloned().map(MissionItem::Run));
+
+    items.sort_by_key(|item| match item {
+        MissionItem::Session(s) => {
+            if s.agent_state == crate::detect::AgentState::Blocked {
+                0
+            } else if s.agent_state == crate::detect::AgentState::Working
+                || s.state == crate::sessions::model::SessionState::Running
+            {
+                1
+            } else {
+                2
+            }
+        }
+        MissionItem::Run(r) => {
+            if r.status == crate::db::workflows::RunStatus::Running
+                || r.status == crate::db::workflows::RunStatus::Pending
+            {
+                1
+            } else {
+                2
+            }
+        }
+    });
+
+    items
+}
 
 pub struct App {
-    pub runs: Vec<WorkflowRun>,
+    pub items: Vec<MissionItem>,
     /// Graph layout for the currently selected run (rebuilt on each poll tick).
     pub layout: Option<GraphLayout>,
-    pub selected_run: usize,
+    pub selected: usize,
     pub selected_node: usize,
     pub should_quit: bool,
     /// Optional banner message shown at the bottom of the TUI (errors, status).
@@ -18,9 +56,9 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Self {
-            runs: vec![],
+            items: vec![],
             layout: None,
-            selected_run: 0,
+            selected: 0,
             selected_node: 0,
             should_quit: false,
             banner: None,
@@ -48,24 +86,38 @@ impl App {
     }
 
     /// Switch to the next run, clamping at the last run. Resets the node cursor.
-    pub fn next_run(&mut self) {
-        if !self.runs.is_empty() {
-            self.selected_run = (self.selected_run + 1).min(self.runs.len() - 1);
+    pub fn next_item(&mut self) {
+        if !self.items.is_empty() {
+            self.selected = (self.selected + 1).min(self.items.len() - 1);
             self.selected_node = 0;
         }
     }
 
     /// Switch to the previous run, clamping at zero. Resets the node cursor.
-    pub fn prev_run(&mut self) {
-        self.selected_run = self.selected_run.saturating_sub(1);
+    pub fn prev_item(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
         self.selected_node = 0;
     }
 
     // ── Accessors ──────────────────────────────────────────────────────────────
 
     /// The currently selected `WorkflowRun`, or `None` when `runs` is empty.
+    pub fn selected_item(&self) -> Option<&MissionItem> {
+        self.items.get(self.selected)
+    }
+
     pub fn selected_run(&self) -> Option<&WorkflowRun> {
-        self.runs.get(self.selected_run)
+        match self.selected_item() {
+            Some(MissionItem::Run(r)) => Some(r),
+            _ => None,
+        }
+    }
+
+    pub fn selected_session(&self) -> Option<&Session> {
+        match self.selected_item() {
+            Some(MissionItem::Session(s)) => Some(s),
+            _ => None,
+        }
     }
 
     /// The currently selected `NodeState`, or `None` when the run or its node
@@ -83,21 +135,24 @@ impl App {
     ///   last available run and `selected_node` is reset to 0.
     /// - If the new node count for the selected run is shorter,
     ///   `selected_node` is clamped to the last available node.
-    /// - If `new_runs` is empty both cursors are reset to 0.
-    pub fn replace_runs(&mut self, new_runs: Vec<WorkflowRun>) {
-        self.runs = new_runs;
-        if self.runs.is_empty() {
-            self.selected_run = 0;
+    /// - If `new_items` is empty both cursors are reset to 0.
+    pub fn replace_items(&mut self, new_items: Vec<MissionItem>) {
+        self.items = new_items;
+        if self.items.is_empty() {
+            self.selected = 0;
             self.selected_node = 0;
             return;
         }
         // Clamp run cursor.
-        if self.selected_run >= self.runs.len() {
-            self.selected_run = self.runs.len() - 1;
+        if self.selected >= self.items.len() {
+            self.selected = self.items.len() - 1;
             self.selected_node = 0;
         }
         // Clamp node cursor within the (possibly new) selected run.
-        let node_count = self.runs[self.selected_run].nodes.len();
+        let node_count = match &self.items[self.selected] {
+            MissionItem::Run(r) => r.nodes.len(),
+            MissionItem::Session(_) => 0,
+        };
         if node_count == 0 {
             self.selected_node = 0;
         } else if self.selected_node >= node_count {
@@ -112,6 +167,8 @@ impl App {
 mod tests {
     use super::*;
     use crate::db::workflows::{NodeState, RunStatus, WorkflowRun};
+    use crate::detect::AgentState;
+    use crate::sessions::model::{Session, SessionState};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -156,13 +213,13 @@ mod tests {
     // ── empty state ───────────────────────────────────────────────────────────
 
     #[test]
-    fn empty_runs_selected_run_returns_none() {
+    fn empty_items_selected_run_returns_none() {
         let app = App::new();
         assert!(app.selected_run().is_none());
     }
 
     #[test]
-    fn empty_runs_selected_node_returns_none() {
+    fn empty_items_selected_node_returns_none() {
         let app = App::new();
         assert!(app.selected_node().is_none());
     }
@@ -170,7 +227,7 @@ mod tests {
     #[test]
     fn run_with_no_nodes_selected_node_returns_none() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &[])];
+        app.items = vec![MissionItem::Run(make_run("r1", &[]))];
         assert!(app.selected_node().is_none());
     }
 
@@ -179,7 +236,7 @@ mod tests {
     #[test]
     fn next_node_advances_cursor() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B", "C"])];
+        app.items = vec![MissionItem::Run(make_run("r1", &["A", "B", "C"]))];
         assert_eq!(app.selected_node, 0);
         app.next_node();
         assert_eq!(app.selected_node, 1);
@@ -188,7 +245,7 @@ mod tests {
     #[test]
     fn next_node_clamps_at_last() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B"])];
+        app.items = vec![MissionItem::Run(make_run("r1", &["A", "B"]))];
         app.selected_node = 1; // already at last
         app.next_node();
         assert_eq!(app.selected_node, 1, "must not advance past the last node");
@@ -199,7 +256,7 @@ mod tests {
     #[test]
     fn prev_node_retreats_cursor() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B", "C"])];
+        app.items = vec![MissionItem::Run(make_run("r1", &["A", "B", "C"]))];
         app.selected_node = 2;
         app.prev_node();
         assert_eq!(app.selected_node, 1);
@@ -208,7 +265,7 @@ mod tests {
     #[test]
     fn prev_node_clamps_at_zero() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B"])];
+        app.items = vec![MissionItem::Run(make_run("r1", &["A", "B"]))];
         app.selected_node = 0;
         app.prev_node();
         assert_eq!(app.selected_node, 0, "must not go below zero");
@@ -217,14 +274,14 @@ mod tests {
     }
 
     #[test]
-    fn next_node_on_empty_runs_does_not_panic() {
+    fn next_node_on_empty_items_does_not_panic() {
         let mut app = App::new();
         app.next_node(); // empty runs → selected_run() is None
         assert_eq!(app.selected_node, 0);
     }
 
     #[test]
-    fn prev_node_on_empty_runs_does_not_panic() {
+    fn prev_node_on_empty_items_does_not_panic() {
         let mut app = App::new();
         app.prev_node();
         assert_eq!(app.selected_node, 0);
@@ -235,47 +292,62 @@ mod tests {
     #[test]
     fn next_run_advances_cursor() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A"]), make_run("r2", &["B"])];
-        app.next_run();
-        assert_eq!(app.selected_run, 1);
+        app.items = vec![
+            MissionItem::Run(make_run("r1", &["A"])),
+            MissionItem::Run(make_run("r2", &["B"])),
+        ];
+        app.next_item();
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
     fn next_run_clamps_at_last_run() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A"]), make_run("r2", &["B"])];
-        app.selected_run = 1;
-        app.next_run();
-        assert_eq!(app.selected_run, 1, "must not advance past the last run");
-        app.next_run();
-        assert_eq!(app.selected_run, 1);
+        app.items = vec![
+            MissionItem::Run(make_run("r1", &["A"])),
+            MissionItem::Run(make_run("r2", &["B"])),
+        ];
+        app.selected = 1;
+        app.next_item();
+        assert_eq!(app.selected, 1, "must not advance past the last run");
+        app.next_item();
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
     fn prev_run_retreats_cursor() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A"]), make_run("r2", &["B"])];
-        app.selected_run = 1;
-        app.prev_run();
-        assert_eq!(app.selected_run, 0);
+        app.items = vec![
+            MissionItem::Run(make_run("r1", &["A"])),
+            MissionItem::Run(make_run("r2", &["B"])),
+        ];
+        app.selected = 1;
+        app.prev_item();
+        assert_eq!(app.selected, 0);
     }
 
     #[test]
     fn prev_run_clamps_at_first_run() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A"]), make_run("r2", &["B"])];
-        app.selected_run = 0;
-        app.prev_run();
-        assert_eq!(app.selected_run, 0, "must not go below zero");
+        app.items = vec![
+            MissionItem::Run(make_run("r1", &["A"])),
+            MissionItem::Run(make_run("r2", &["B"])),
+        ];
+        app.selected = 0;
+        app.prev_item();
+        assert_eq!(app.selected, 0, "must not go below zero");
     }
 
     #[test]
     fn next_run_resets_node_cursor() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B", "C"]), make_run("r2", &["X"])];
+        app.items = vec![
+            MissionItem::Run(make_run("r1", &["A", "B", "C"])),
+            MissionItem::Run(make_run("r2", &["X"])),
+        ];
         app.selected_node = 2; // non-zero cursor on run 0
-        app.next_run();
-        assert_eq!(app.selected_run, 1);
+        app.next_item();
+        assert_eq!(app.selected, 1);
         assert_eq!(
             app.selected_node, 0,
             "node cursor must reset when switching runs"
@@ -285,11 +357,14 @@ mod tests {
     #[test]
     fn prev_run_resets_node_cursor() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A"]), make_run("r2", &["X", "Y", "Z"])];
-        app.selected_run = 1;
+        app.items = vec![
+            MissionItem::Run(make_run("r1", &["A"])),
+            MissionItem::Run(make_run("r2", &["X", "Y", "Z"])),
+        ];
+        app.selected = 1;
         app.selected_node = 2;
-        app.prev_run();
-        assert_eq!(app.selected_run, 0);
+        app.prev_item();
+        assert_eq!(app.selected, 0);
         assert_eq!(
             app.selected_node, 0,
             "node cursor must reset when switching runs"
@@ -297,10 +372,10 @@ mod tests {
     }
 
     #[test]
-    fn next_run_on_empty_runs_does_not_panic() {
+    fn next_run_on_empty_items_does_not_panic() {
         let mut app = App::new();
-        app.next_run();
-        assert_eq!(app.selected_run, 0);
+        app.next_item();
+        assert_eq!(app.selected, 0);
     }
 
     // ── selected_node accessor ────────────────────────────────────────────────
@@ -308,7 +383,10 @@ mod tests {
     #[test]
     fn selected_node_returns_correct_node() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["Alpha", "Beta", "Gamma"])];
+        app.items = vec![MissionItem::Run(make_run(
+            "r1",
+            &["Alpha", "Beta", "Gamma"],
+        ))];
         app.selected_node = 1;
         let node = app.selected_node().expect("should return Beta");
         assert_eq!(node.name, "Beta");
@@ -319,46 +397,52 @@ mod tests {
     #[test]
     fn replace_runs_swaps_runs() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A"])];
-        app.replace_runs(vec![make_run("r2", &["B", "C"])]);
-        assert_eq!(app.runs.len(), 1);
-        assert_eq!(app.runs[0].id, "r2");
+        app.items = vec![MissionItem::Run(make_run("r1", &["A"]))];
+        app.replace_items(vec![MissionItem::Run(make_run("r2", &["B", "C"]))]);
+        assert_eq!(app.items.len(), 1);
+        assert_eq!(app.selected_run().unwrap().id, "r2");
     }
 
     #[test]
     fn replace_runs_preserves_valid_selection() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B"]), make_run("r2", &["X", "Y"])];
-        app.selected_run = 1;
+        app.items = vec![
+            MissionItem::Run(make_run("r1", &["A", "B"])),
+            MissionItem::Run(make_run("r2", &["X", "Y"])),
+        ];
+        app.selected = 1;
         app.selected_node = 1;
         // New runs still have 2 runs, each with 2 nodes
-        app.replace_runs(vec![
-            make_run("r1", &["A", "B"]),
-            make_run("r2", &["X", "Y"]),
+        app.replace_items(vec![
+            MissionItem::Run(make_run("r1", &["A", "B"])),
+            MissionItem::Run(make_run("r2", &["X", "Y"])),
         ]);
-        assert_eq!(app.selected_run, 1, "run cursor preserved");
+        assert_eq!(app.selected, 1, "run cursor preserved");
         assert_eq!(app.selected_node, 1, "node cursor preserved");
     }
 
     #[test]
     fn replace_runs_clamps_run_cursor_when_fewer_runs() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A"]), make_run("r2", &["B"])];
-        app.selected_run = 1;
+        app.items = vec![
+            MissionItem::Run(make_run("r1", &["A"])),
+            MissionItem::Run(make_run("r2", &["B"])),
+        ];
+        app.selected = 1;
         // New runs has only one entry
-        app.replace_runs(vec![make_run("r1", &["A"])]);
-        assert_eq!(app.selected_run, 0, "run cursor must be clamped to 0");
+        app.replace_items(vec![MissionItem::Run(make_run("r1", &["A"]))]);
+        assert_eq!(app.selected, 0, "run cursor must be clamped to 0");
         assert_eq!(app.selected_node, 0, "node cursor reset after run clamp");
     }
 
     #[test]
     fn replace_runs_clamps_node_cursor_when_fewer_nodes() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B", "C"])];
+        app.items = vec![MissionItem::Run(make_run("r1", &["A", "B", "C"]))];
         app.selected_node = 2;
         // Same run id but now only 1 node
-        app.replace_runs(vec![make_run("r1", &["A"])]);
-        assert_eq!(app.selected_run, 0);
+        app.replace_items(vec![MissionItem::Run(make_run("r1", &["A"]))]);
+        assert_eq!(app.selected, 0);
         assert_eq!(
             app.selected_node, 0,
             "node cursor must clamp when run shrinks"
@@ -368,21 +452,21 @@ mod tests {
     #[test]
     fn replace_runs_empty_resets_both_cursors() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B"])];
-        app.selected_run = 0;
+        app.items = vec![MissionItem::Run(make_run("r1", &["A", "B"]))];
+        app.selected = 0;
         app.selected_node = 1;
-        app.replace_runs(vec![]);
-        assert!(app.runs.is_empty());
-        assert_eq!(app.selected_run, 0);
+        app.replace_items(vec![]);
+        assert!(app.items.is_empty());
+        assert_eq!(app.selected, 0);
         assert_eq!(app.selected_node, 0);
     }
 
     #[test]
     fn replace_runs_with_run_having_no_nodes_clamps_node_to_zero() {
         let mut app = App::new();
-        app.runs = vec![make_run("r1", &["A", "B"])];
+        app.items = vec![MissionItem::Run(make_run("r1", &["A", "B"]))];
         app.selected_node = 1;
-        app.replace_runs(vec![make_run("r1", &[])]);
+        app.replace_items(vec![MissionItem::Run(make_run("r1", &[]))]);
         assert_eq!(app.selected_node, 0);
     }
 }

@@ -265,53 +265,134 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
 
 // ── Render ─────────────────────────────────────────────────────────────────────
 
-/// Top-level render function — splits the frame 50/50 into graph (left) and
-/// detail (right) panes, then delegates to the pane-specific helpers.
+/// Top-level render function — splits the frame into three panes:
+/// list (left), graph/session (middle), and detail (right), then delegates.
 pub fn render(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Percentage(25), // Navigation list
+            Constraint::Percentage(40), // Graph / Session detail
+            Constraint::Percentage(35), // Node detail
+        ])
         .split(area);
 
-    render_graph_pane(frame, chunks[0], app);
-    render_detail_pane(frame, chunks[1], app);
+    render_list_pane(frame, chunks[0], app);
+    render_graph_pane(frame, chunks[1], app);
+    render_detail_pane(frame, chunks[2], app);
 }
 
-fn render_graph_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let run_title = app
-        .selected_run()
-        .map(|r| format!(" {} — {} ", r.workflow_name, r.id))
-        .unwrap_or_else(|| " No active runs ".to_string());
+fn render_list_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let block = Block::default()
+        .title(" Mission Control ")
+        .borders(Borders::ALL)
+        .border_style(crate::ui_theme::border_dim_style());
 
-    let block = Block::default().title(run_title).borders(Borders::ALL);
+    let mut lines = Vec::new();
+    for (i, item) in app.items.iter().enumerate() {
+        let is_selected = app.selected == i;
+        let mut style = if is_selected {
+            Style::default()
+                .bg(crate::ui_theme::surface())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
 
-    let lines = build_graph_lines(app);
-    let para = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
+        match item {
+            crate::monitor::app::MissionItem::Session(s) => {
+                let name = &s.name;
+                lines.push(Line::from(Span::styled(format!(" [sess] {name}"), style)));
+            }
+            crate::monitor::app::MissionItem::Run(r) => {
+                let name = &r.workflow_name;
+                // Add color based on status
+                let color = status_color(&r.status);
+                style = style.fg(color);
+                lines.push(Line::from(Span::styled(format!(" [run]  {name}"), style)));
+            }
+        }
+    }
 
+    let para = Paragraph::new(lines).block(block);
     frame.render_widget(para, area);
 }
 
-fn render_detail_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let title = app
-        .selected_node()
-        .map(|n| format!(" {} ", n.name))
-        .unwrap_or_else(|| " Node detail ".to_string());
-
-    let block = Block::default().title(title).borders(Borders::ALL);
-
-    let lines = match app.selected_node() {
-        Some(node) => format_node_detail(node),
-        None => {
-            // No node selected: show run input if available, else placeholder.
-            let placeholder = app
-                .selected_run()
-                .map(|_| "Select a node with ↑ / ↓  or  j / k".to_string())
-                .unwrap_or_else(|| "No active workflow runs found.".to_string());
-            vec![Line::from(placeholder)]
+fn render_graph_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let item = app.selected_item();
+    match item {
+        Some(crate::monitor::app::MissionItem::Run(r)) => {
+            let run_title = format!(" {} — {} ", r.workflow_name, r.id);
+            let block = Block::default()
+                .title(run_title)
+                .borders(Borders::ALL)
+                .border_style(crate::ui_theme::border_active_style());
+            let lines = build_graph_lines(app);
+            let para = Paragraph::new(lines)
+                .block(block)
+                .wrap(Wrap { trim: false });
+            frame.render_widget(para, area);
         }
+        Some(crate::monitor::app::MissionItem::Session(s)) => {
+            let title = format!(" Session: {} ", s.name);
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(crate::ui_theme::border_active_style());
+
+            let mut text = vec![];
+            text.push(Line::from(format!("State: {:?}", s.state)));
+            text.push(Line::from(format!("Agent State: {:?}", s.agent_state)));
+            if !s.foreground_cmd.is_empty() {
+                text.push(Line::from(format!("Cmd: {}", s.foreground_cmd)));
+            }
+            text.push(Line::from(""));
+            text.push(Line::from("Last Output:"));
+            text.push(Line::from(s.last_line.as_str()));
+
+            let para = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
+            frame.render_widget(para, area);
+        }
+        None => {
+            let block = Block::default()
+                .title(" No items ")
+                .borders(Borders::ALL)
+                .border_style(crate::ui_theme::border_dim_style());
+            frame.render_widget(block, area);
+        }
+    }
+}
+
+fn render_detail_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let item = app.selected_item();
+    let (title, lines) = match item {
+        Some(crate::monitor::app::MissionItem::Run(_)) => {
+            let t = app
+                .selected_node()
+                .map(|n| format!(" {} ", n.name))
+                .unwrap_or_else(|| " Node detail ".to_string());
+            let l = match app.selected_node() {
+                Some(node) => format_node_detail(node),
+                None => vec![Line::from(
+                    "Select a node with ↑ / ↓  or  j / k".to_string(),
+                )],
+            };
+            (t, l)
+        }
+        Some(crate::monitor::app::MissionItem::Session(_)) => (
+            " Node detail ".to_string(),
+            vec![Line::from("Not applicable for Sessions".to_string())],
+        ),
+        None => (
+            " Node detail ".to_string(),
+            vec![Line::from("No active items".to_string())],
+        ),
     };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(crate::ui_theme::border_dim_style());
 
     // Render banner (errors / status) in the bottom row of the detail pane.
     let inner = if let Some(banner) = &app.banner {
@@ -320,7 +401,8 @@ fn render_detail_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .areas(block.inner(area));
 
-        let banner_span = Span::styled(banner.clone(), Style::default().fg(Color::Yellow));
+        let banner_span =
+            Span::styled(banner.clone(), Style::default().fg(crate::ui_theme::rose()));
         frame.render_widget(Paragraph::new(Line::from(banner_span)), banner_area);
         content_area
     } else {
@@ -546,14 +628,14 @@ mod tests {
             edges: vec![],
         };
         app.layout = Some(build_layout(&empty_graph, &[]));
-        app.runs = vec![WorkflowRun {
+        app.items = vec![MissionItem::Run(WorkflowRun {
             id: "r1".into(),
             workflow_name: "wf".into(),
             status: RunStatus::Pending,
             nodes: vec![],
             started_at: None,
             elapsed_secs: None,
-        }];
+        })];
 
         let lines = build_graph_lines(&app);
         let text = lines_to_string(&lines);
@@ -580,14 +662,14 @@ mod tests {
 
         let mut app = crate::monitor::app::App::new();
         app.layout = Some(build_layout(&graph, &nodes_state));
-        app.runs = vec![WorkflowRun {
+        app.items = vec![MissionItem::Run(WorkflowRun {
             id: "r1".into(),
             workflow_name: "wf".into(),
             status: RunStatus::Running,
             nodes: nodes_state,
             started_at: None,
             elapsed_secs: None,
-        }];
+        })];
 
         let lines = build_graph_lines(&app);
         let text = lines_to_string(&lines);

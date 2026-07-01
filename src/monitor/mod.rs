@@ -54,31 +54,45 @@ pub async fn run(workflow_id: Option<String>) -> Result<()> {
         },
     };
 
-    if runs.is_empty() {
-        eprintln!("bastion monitor: no active workflow runs found.");
-        eprintln!("  Trigger a workflow first, then re-run `bastion monitor`.");
+    // Re-fetch sessions
+    let sessions = match crate::sessions::tmux::list_sessions_raw() {
+        Ok(raw) => {
+            let mut s = crate::sessions::model::parse_sessions(&raw);
+            for session in s.iter_mut() {
+                if let Ok(output) = crate::sessions::tmux::capture_pane_raw(&session.name) {
+                    let pane = crate::sessions::model::Pane::new(&session.name, output);
+                    session.last_line = pane.last_line().to_string();
+                }
+            }
+            s
+        }
+        Err(_) => vec![],
+    };
+
+    let items = app::build_mission_items(&sessions, &runs);
+    if items.is_empty() {
+        eprintln!("bastion monitor: no active workflow runs or sessions found.");
+        eprintln!("  Trigger a workflow or session first, then re-run `bastion monitor`.");
         return Ok(());
     }
 
-    // ── Build initial layout for the first run ────────────────────────────────
-    let initial_layout = match api_client.workflow_graph(&runs[0].workflow_name).await {
-        Ok(graph) => {
-            let layout = build_layout(&graph, &runs[0].nodes);
-            Some(layout)
-        }
-        Err(e) => {
-            // Non-fatal: enter the TUI without a layout; it will retry on the
-            // first poll tick.
-            eprintln!("bastion monitor: could not fetch workflow graph — {e}");
-            eprintln!("  Entering TUI without initial layout; will retry on first poll tick.");
-            None
-        }
-    };
-
     // ── Build initial App state ───────────────────────────────────────────────
     let mut app = App::new();
-    app.layout = initial_layout;
-    app.replace_runs(runs);
+    app.replace_items(items);
+
+    // ── Build initial layout for the first selected run (if any) ──────────────
+    if let Some(app::MissionItem::Run(run)) = app.selected_item() {
+        match api_client.workflow_graph(&run.workflow_name).await {
+            Ok(graph) => {
+                let layout = build_layout(&graph, &run.nodes);
+                app.layout = Some(layout);
+            }
+            Err(e) => {
+                eprintln!("bastion monitor: could not fetch workflow graph — {e}");
+                eprintln!("  Entering TUI without initial layout; will retry on first poll tick.");
+            }
+        }
+    }
 
     // ── Enter TUI event loop ──────────────────────────────────────────────────
     events::run_event_loop(

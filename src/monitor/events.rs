@@ -136,8 +136,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Up | KeyCode::Char('k') => app.prev_node(),
 
         // Run navigation
-        KeyCode::Right | KeyCode::Char('n') => app.next_run(),
-        KeyCode::Left | KeyCode::Char('p') => app.prev_run(),
+        KeyCode::Right | KeyCode::Char('n') => app.next_item(),
+        KeyCode::Left | KeyCode::Char('p') => app.prev_item(),
 
         _ => {}
     }
@@ -172,28 +172,48 @@ async fn poll_and_update(
         },
     };
 
-    if new_runs.is_empty() {
-        app.banner = Some("No active workflow runs found".to_string());
-        app.replace_runs(new_runs);
+    // Re-fetch sessions
+    let sessions = match crate::sessions::tmux::list_sessions_raw() {
+        Ok(raw) => {
+            let mut s = crate::sessions::model::parse_sessions(&raw);
+            for session in s.iter_mut() {
+                if let Ok(output) = crate::sessions::tmux::capture_pane_raw(&session.name) {
+                    let pane = crate::sessions::model::Pane::new(&session.name, output);
+                    session.last_line = pane.last_line().to_string();
+                }
+            }
+            s
+        }
+        Err(_) => vec![],
+    };
+
+    let items = crate::monitor::app::build_mission_items(&sessions, &new_runs);
+
+    if items.is_empty() {
+        app.banner = Some("No active workflow runs or sessions found".to_string());
+        app.replace_items(items);
         return;
     }
 
-    // Rebuild the layout for the currently (or about-to-be) selected run.
-    let run_idx = app.selected_run.min(new_runs.len() - 1);
-    let run = &new_runs[run_idx];
-    match api_client.workflow_graph(&run.workflow_name).await {
-        Ok(graph) => {
-            let layout = graph::build_layout(&graph, &run.nodes);
-            app.layout = Some(layout);
-            app.banner = None; // clear any previous error
-        }
-        Err(e) => {
-            app.banner = Some(format!("API: {e}"));
-            // Keep the old layout — stale is better than no layout.
-        }
-    }
+    app.replace_items(items);
 
-    app.replace_runs(new_runs);
+    // Rebuild the layout for the currently (or about-to-be) selected run.
+    if let Some(crate::monitor::app::MissionItem::Run(run)) = app.selected_item() {
+        match api_client.workflow_graph(&run.workflow_name).await {
+            Ok(graph) => {
+                let layout = graph::build_layout(&graph, &run.nodes);
+                app.layout = Some(layout);
+                app.banner = None; // clear any previous error
+            }
+            Err(e) => {
+                app.banner = Some(format!("API: {e}"));
+                // Keep the old layout — stale is better than no layout.
+            }
+        }
+    } else {
+        app.layout = None; // No layout if session selected
+        app.banner = None;
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -247,11 +267,12 @@ mod tests {
 
     fn app_with_runs(run_node_counts: &[usize]) -> App {
         let mut app = App::new();
-        app.runs = run_node_counts
+        let runs: Vec<_> = run_node_counts
             .iter()
             .enumerate()
             .map(|(i, &n)| make_run(&format!("r{i}"), n))
             .collect();
+        app.items = crate::monitor::app::build_mission_items(&[], &runs);
         app
     }
 
@@ -332,46 +353,46 @@ mod tests {
     fn right_arrow_advances_run() {
         let mut app = app_with_runs(&[2, 2]);
         handle_key(&mut app, key(KeyCode::Right));
-        assert_eq!(app.selected_run, 1);
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
     fn n_key_advances_run() {
         let mut app = app_with_runs(&[2, 2]);
         handle_key(&mut app, key(KeyCode::Char('n')));
-        assert_eq!(app.selected_run, 1);
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
     fn left_arrow_retreats_run() {
         let mut app = app_with_runs(&[2, 2]);
-        app.selected_run = 1;
+        app.selected = 1;
         handle_key(&mut app, key(KeyCode::Left));
-        assert_eq!(app.selected_run, 0);
+        assert_eq!(app.selected, 0);
     }
 
     #[test]
     fn p_key_retreats_run() {
         let mut app = app_with_runs(&[2, 2]);
-        app.selected_run = 1;
+        app.selected = 1;
         handle_key(&mut app, key(KeyCode::Char('p')));
-        assert_eq!(app.selected_run, 0);
+        assert_eq!(app.selected, 0);
     }
 
     #[test]
     fn right_clamps_at_last_run() {
         let mut app = app_with_runs(&[2, 2]);
-        app.selected_run = 1;
+        app.selected = 1;
         handle_key(&mut app, key(KeyCode::Right));
-        assert_eq!(app.selected_run, 1);
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
     fn left_clamps_at_first_run() {
         let mut app = app_with_runs(&[2, 2]);
-        app.selected_run = 0;
+        app.selected = 0;
         handle_key(&mut app, key(KeyCode::Left));
-        assert_eq!(app.selected_run, 0);
+        assert_eq!(app.selected, 0);
     }
 
     // ── unknown key is ignored ────────────────────────────────────────────────
@@ -383,7 +404,7 @@ mod tests {
         handle_key(&mut app, key(KeyCode::F(5)));
         assert!(!app.should_quit);
         assert_eq!(app.selected_node, 1);
-        assert_eq!(app.selected_run, 0);
+        assert_eq!(app.selected, 0);
     }
 
     // ── error-path: degrade on empty runs ────────────────────────────────────
