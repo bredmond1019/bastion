@@ -10,4 +10,7 @@ pub mod model;
 pub mod tmux;
 pub mod ui;
 
+#[cfg(test)]
+mod tui_tests;
+
 pub use commands::run;

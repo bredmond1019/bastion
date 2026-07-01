@@ -454,7 +454,7 @@ mod tests {
         assert_eq!(row.workflow_name, "rag_pipeline");
         assert_eq!(row.runs, 2);
         assert_eq!(row.tokens_in, 512 + 2048 + 1024, "sum of all input tokens");
-        assert_eq!(row.tokens_out, 0 + 256 + 0, "sum of all output tokens");
+        assert_eq!(row.tokens_out, 256, "sum of all output tokens");
     }
 
     #[test]

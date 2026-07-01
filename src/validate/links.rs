@@ -419,7 +419,7 @@ mod tests {
     fn valid_relative_link_to_existing_sibling() {
         let tmp = TempDir::new();
         let sibling = make_file(tmp.path(), "sibling.md", "# Sibling");
-        let source_content = format!("[Sibling](sibling.md)");
+        let source_content = "[Sibling](sibling.md)".to_string();
         let source = make_file(tmp.path(), "source.md", &source_content);
 
         let errors = validate_links(&source_content, &source);
