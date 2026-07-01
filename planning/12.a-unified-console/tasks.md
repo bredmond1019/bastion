@@ -26,7 +26,7 @@ Evolve the Bastion TUI into a dynamic, markdown-native IDE workspace featuring a
 - Enable `crossterm::event::EnableMouseCapture` in the terminal setup.
 - Map mouse click events (x, y) to a new `Action::SelectTab(usize)` state mutation to allow clicking tabs.
 
-### 3. Mission Control: Hierarchical DAG Tree
+### [done] 3. Mission Control: Hierarchical DAG Tree
 - **Target Files:** `src/monitor/app.rs`, `src/monitor/ui.rs`
 - Port the existing text-jumble DAG rendering into a structured, indented tree format using Ratatui list primitives and box-drawing characters (`├─`, `└─`).
 - Apply color-coding based on node execution status (Green for success, Red for failure).
@@ -71,6 +71,7 @@ cargo run -- --help
 ## Notes
 **2026-07-01**: Renamed SessionApp to AppState and introduced TabState and layout boundaries logic.
 **2026-07-01**: Updated TUI scaffolding to use mouse events and click handlers to navigate tabs.
+**2026-07-01**: Refactored monitor DAG rendering into an indented tree layout, and wired the monitor App into sessions/ui.rs when TabState::MissionControl is active.
 
 ## Amendment Log
 _No amendments yet._

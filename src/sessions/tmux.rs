@@ -282,6 +282,19 @@ pub fn attach_session(session_name: &str) -> Result<()> {
     });
 }
 
+/// Attach to an existing tmux session, handing the terminal to tmux.
+/// Before attaching, prints a styled banner instructing the user how to detach.
+pub fn suspend_and_attach(session_name: &str) -> Result<()> {
+    // Clear screen and print banner.
+    // Use ANSI escape codes for clearing screen and bold styled text.
+    print!("\x1B[2J\x1B[1;1H"); // clear screen and move cursor to top left
+    println!("\x1B[1m[ BASTION ]\x1B[0m Attaching to Agent. Press \x1B[1mCtrl-b d\x1B[0m to detach and return.\n");
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+
+    attach_session(session_name)
+}
+
 // ── Tests (pure, no live tmux) ────────────────────────────────────────────────
 
 #[cfg(test)]

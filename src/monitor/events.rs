@@ -71,7 +71,7 @@ pub async fn run_event_loop(
     // ── Event loop ────────────────────────────────────────────────────────────
     let result = async {
         loop {
-            terminal.draw(|f| ui::render(f, app))?;
+            terminal.draw(|f| ui::render(f, app, f.area()))?;
 
             tokio::select! {
                 biased; // prioritise keyboard events over timer ticks
