@@ -19,7 +19,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
@@ -52,25 +52,88 @@ pub fn session_row(s: &Session) -> String {
 /// Render the footer key legend (Normal mode) or the active input prompt.
 pub fn footer_hint(mode: &Mode) -> String {
     match mode {
-        Mode::Normal => "[a]ttach [n]ew [s]end [k]ill [q]uit  ↑/j move".to_string(),
+        Mode::Normal => {
+            "[a]ttach [n]ew [s]end [k]ill [q]uit  ↑/j ↓/k move  Tab/Shift+Tab switch tab"
+                .to_string()
+        }
         Mode::Input(InputKind::New) => "new session name (Enter=create, Esc=cancel): ".to_string(),
         Mode::Input(InputKind::Send) => "send to selected (Enter=send, Esc=cancel): ".to_string(),
     }
 }
 
 /// Return the footer/status line content shown in the bottom bar.
-/// In Normal mode: the transient status (or empty when none).
+/// In Normal mode: the transient status (or the key hint when none).
 /// In Input mode: the prompt prepended to the live input buffer.
 pub fn status_line(app: &AppState) -> String {
     match &app.mode {
-        Mode::Normal => app.status.clone().unwrap_or_default(),
+        Mode::Normal => app.status.clone().unwrap_or_else(|| footer_hint(&app.mode)),
         Mode::Input(_) => format!("{}{}", footer_hint(&app.mode), app.input),
+    }
+}
+
+/// Strip YAML frontmatter (`---` delimited block) from a markdown string.
+/// If no frontmatter is found the original string is returned unchanged.
+pub fn strip_frontmatter(md: &str) -> &str {
+    let trimmed = md.trim_start();
+    if !trimmed.starts_with("---") {
+        return md;
+    }
+    // Skip the opening `---` line.
+    let after_fence = &trimmed[3..];
+    // Find the closing `---`.
+    if let Some(pos) = after_fence.find("\n---") {
+        // Skip past `\n---` plus the newline that follows it.
+        let end = 3 + pos + 4; // 3 (opening) + pos + 4 ("\n---")
+        let rest = &trimmed[end..];
+        // Consume one optional newline after the closing fence.
+        rest.trim_start_matches('\n')
+    } else {
+        md
     }
 }
 
 // ── Frame builder (I/O — not unit-tested) ─────────────────────────────────────
 
-fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
+/// Build a colored sidebar list. Each session gets a state dot and name.
+fn build_sidebar_items(sessions: &[Session]) -> Vec<ListItem<'static>> {
+    sessions
+        .iter()
+        .map(|s| {
+            use crate::detect::AgentState;
+            use crate::sessions::model::SessionState;
+
+            // Choose dot character and color based on state.
+            let (dot, dot_style) = match s.agent_state {
+                AgentState::Working => ("● ", crate::ui_theme::state_working_style()),
+                AgentState::Blocked => ("● ", crate::ui_theme::state_blocked_style()),
+                AgentState::Idle => ("○ ", crate::ui_theme::state_idle_style()),
+                AgentState::Unknown => match s.state {
+                    SessionState::Running => ("● ", crate::ui_theme::state_running_style()),
+                    SessionState::Idle => ("○ ", crate::ui_theme::state_idle_style()),
+                },
+            };
+
+            let name_style = Style::default().fg(crate::ui_theme::text());
+            let spans = vec![
+                Span::styled(dot, dot_style),
+                Span::styled(s.name.clone(), name_style),
+            ];
+            ListItem::new(Line::from(spans))
+        })
+        .collect()
+}
+
+/// Core frame-builder. Takes an explicit `planning_root` so tests can inject a
+/// tempdir path without touching the process environment.
+fn draw_with_root(
+    frame: &mut Frame,
+    app: &AppState,
+    list_state: &mut ListState,
+    planning_root: &std::path::Path,
+) {
+    let th = &crate::ui_theme::border_dim();
+    let th_active = &crate::ui_theme::border_active();
+
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -78,64 +141,87 @@ fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
 
     let (sidebar_area, main_area) = app.compute_view(areas[0]);
 
+    // ── Sidebar ───────────────────────────────────────────────────────────────
+    let sidebar_block = Block::default()
+        .title(Span::styled(" spaces ", crate::ui_theme::title_style()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(*th));
+
     if app.sessions.is_empty() {
-        let msg = Paragraph::new("no sessions — press [n] to create one")
-            .block(Block::default().title("Spaces").borders(Borders::ALL));
+        let msg = Paragraph::new(Span::styled(
+            "  no sessions — [n] new",
+            Style::default().fg(crate::ui_theme::muted()),
+        ))
+        .block(sidebar_block);
         frame.render_widget(msg, sidebar_area);
     } else {
-        let items: Vec<ListItem> = app
-            .sessions
-            .iter()
-            .map(|s| ListItem::new(Line::from(session_row(s))))
-            .collect();
-
+        let items = build_sidebar_items(&app.sessions);
         let list = List::new(items)
-            .block(Block::default().title("Spaces").borders(Borders::ALL))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+            .block(sidebar_block)
+            .highlight_style(crate::ui_theme::list_selected_style())
+            .highlight_symbol("  ");
 
         list_state.select(Some(app.selected));
         frame.render_stateful_widget(list, sidebar_area, list_state);
     }
 
+    // ── Main area: tab bar + content ──────────────────────────────────────────
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(main_area);
 
+    // Tab bar — styled spans; active tab gets accent color + underline.
     use crate::sessions::app::TabState;
-    let tabs_text = app
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, tab)| {
-            let title = match tab {
-                TabState::SpaceOverview => "Space Overview",
-                TabState::Kanban => "Kanban Board",
-                TabState::MissionControl => "Mission Control",
-                TabState::MarkdownDocument(p) => p.to_str().unwrap_or("Doc"),
-            };
-            let style = if i == app.active_tab_index {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            };
-            Span::styled(format!(" {:<18} ", title), style)
-        })
-        .collect::<Vec<_>>();
+    let mut tab_spans: Vec<Span> = Vec::new();
+    // Leading spacer
+    tab_spans.push(Span::raw(" "));
+    for (i, tab) in app.tabs.iter().enumerate() {
+        let title = match tab {
+            TabState::SpaceOverview => "Space Overview",
+            TabState::Kanban => "Kanban Board",
+            TabState::MissionControl => "Mission Control",
+            TabState::MarkdownDocument(p) => p.to_str().unwrap_or("Doc"),
+        };
+        let label = format!(" {} ", title);
+        let style = if i == app.active_tab_index {
+            crate::ui_theme::tab_active_style()
+        } else {
+            crate::ui_theme::tab_inactive_style()
+        };
+        tab_spans.push(Span::styled(label, style));
+        // Separator between tabs
+        if i + 1 < app.tabs.len() {
+            tab_spans.push(Span::styled(
+                "  ",
+                Style::default().fg(crate::ui_theme::muted()),
+            ));
+        }
+    }
 
-    let tabs_paragraph =
-        Paragraph::new(Line::from(tabs_text)).block(Block::default().borders(Borders::ALL));
+    let tabs_bar = Paragraph::new(Line::from(tab_spans)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(*th_active)),
+    );
+    frame.render_widget(tabs_bar, main_chunks[0]);
 
-    frame.render_widget(tabs_paragraph, main_chunks[0]);
+    // Content block shared border style
+    let content_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(*th));
 
     match &app.tabs[app.active_tab_index] {
         TabState::MissionControl => {
             crate::monitor::ui::render(frame, &app.monitor_app, main_chunks[1]);
         }
         TabState::SpaceOverview => {
-            let status_md = std::fs::read_to_string("planning/status.md")
+            let status_md_path = planning_root.join("status.md");
+            let raw_md = std::fs::read_to_string(&status_md_path)
                 .unwrap_or_else(|_| "No planning/status.md found.".to_string());
-            let theme = bella_engine::Theme::dark();
+            // Strip YAML frontmatter before handing to bella.
+            let status_md = strip_frontmatter(&raw_md).to_owned();
+            let theme = bella_engine::Theme::bastion();
             let tables = bella_engine::links::TableExpansions::new();
             let rendered = bella_engine::render_with_edit(
                 &status_md,
@@ -145,38 +231,51 @@ fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
                 None,
                 &tables,
             );
-            let content_block = Block::default().borders(Borders::ALL);
             let paragraph = Paragraph::new(rendered.lines).block(content_block);
             frame.render_widget(paragraph, main_chunks[1]);
         }
         TabState::Kanban => {
-            let mut path = std::env::current_dir().unwrap_or_default();
-            if path.ends_with("bastion") {
-                path.pop();
-            }
-            path.push("planning");
-            path.push("state.json");
-            
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            let state_json_path = planning_root.join("state.json");
+            if let Ok(content) = std::fs::read_to_string(&state_json_path) {
                 if let Ok(state) = serde_json::from_str::<crate::overview::StateJson>(&content) {
                     crate::overview::render(frame, &state, main_chunks[1]);
                 } else {
-                    let p = Paragraph::new("Failed to parse state.json").block(Block::default().borders(Borders::ALL));
+                    let p = Paragraph::new(Span::styled(
+                        "Failed to parse state.json",
+                        Style::default().fg(crate::ui_theme::rose()),
+                    ))
+                    .block(content_block);
                     frame.render_widget(p, main_chunks[1]);
                 }
             } else {
-                let p = Paragraph::new("No planning/state.json found.").block(Block::default().borders(Borders::ALL));
+                let p = Paragraph::new(Span::styled(
+                    "No planning/state.json found.",
+                    Style::default().fg(crate::ui_theme::muted()),
+                ))
+                .block(content_block);
                 frame.render_widget(p, main_chunks[1]);
             }
         }
         _ => {
-            let content_block = Block::default().borders(Borders::ALL);
             frame.render_widget(content_block, main_chunks[1]);
         }
     }
 
-    let footer = Paragraph::new(status_line(app));
+    // ── Footer ────────────────────────────────────────────────────────────────
+    let footer_text = status_line(app);
+    let footer_style = if app.status.is_some() && matches!(app.mode, Mode::Normal) {
+        crate::ui_theme::footer_status_style()
+    } else {
+        crate::ui_theme::footer_style()
+    };
+    let footer = Paragraph::new(Span::styled(footer_text, footer_style));
     frame.render_widget(footer, areas[1]);
+}
+
+/// Thin real-world wrapper: resolves the planning root from the environment,
+/// then delegates to `draw_with_root`.
+fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
+    draw_with_root(frame, app, list_state, &crate::config::load_planning_root());
 }
 
 // ── tmux poll → Vec<Session> ──────────────────────────────────────────────────
@@ -333,6 +432,21 @@ pub fn run() -> Result<()> {
     result
 }
 
+// ── Test-only surface ────────────────────────────────────────────────────────
+
+/// Thin wrapper over `draw_with_root`, exposed only in test builds so that
+/// `tui_tests.rs` can drive a `TestBackend` frame with an injected planning root
+/// without touching the process environment.
+#[cfg(test)]
+pub fn draw_for_test(
+    frame: &mut ratatui::Frame,
+    app: &AppState,
+    list_state: &mut ratatui::widgets::ListState,
+    planning_root: &std::path::Path,
+) {
+    draw_with_root(frame, app, list_state, planning_root);
+}
+
 // ── Unit tests for pure helpers ───────────────────────────────────────────────
 
 #[cfg(test)]
@@ -403,6 +517,7 @@ mod tests {
         assert!(hint.contains("[s]"), "hint: {hint}");
         assert!(hint.contains("[k]"), "hint: {hint}");
         assert!(hint.contains("[q]"), "hint: {hint}");
+        assert!(hint.contains("Tab"), "hint: {hint}");
     }
 
     #[test]
@@ -415,10 +530,10 @@ mod tests {
     }
 
     #[test]
-    fn status_line_empty_when_no_status_normal() {
+    fn status_line_shows_key_hint_when_no_status_normal() {
         let app = make_app(&[]);
         let line = status_line(&app);
-        assert_eq!(line, "");
+        assert_eq!(line, footer_hint(&Mode::Normal));
     }
 
     #[test]

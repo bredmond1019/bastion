@@ -292,7 +292,7 @@ mod tests {
         let layout = build_layout(&graph, &live_nodes);
 
         assert!(
-            layout.node_states.get("NodeB").is_none(),
+            !layout.node_states.contains_key("NodeB"),
             "NodeB has not run and should have no status entry"
         );
     }

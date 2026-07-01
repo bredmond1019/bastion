@@ -273,6 +273,30 @@ impl Config {
     }
 }
 
+// ── Planning root ─────────────────────────────────────────────────────────────
+
+/// Resolve the `planning/` directory root.
+///
+/// Precedence:
+/// 1. `env_val` — value of `BASTION_PLANNING_ROOT` env var (if set and non-empty).
+/// 2. Built-in default: `PathBuf::from("planning")` (relative to cwd).
+///
+/// Pure function — no I/O, no env access. Call from `load_planning_root()` or tests directly.
+pub fn planning_root(env_val: Option<String>) -> PathBuf {
+    env_val
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("planning"))
+}
+
+/// Load the planning root from `BASTION_PLANNING_ROOT` env var + `.env` file.
+///
+/// **DB-free** — does not read or require `DATABASE_URL`.
+pub fn load_planning_root() -> PathBuf {
+    dotenvy::dotenv().ok();
+    planning_root(std::env::var("BASTION_PLANNING_ROOT").ok())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -710,5 +734,31 @@ client-a = "/Users/alice/clients/a"
         // --token "" (empty string from CLI) must also be rejected.
         let err = build_serve_config(None, Some(String::new()), None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingServeToken);
+    }
+
+    // ─── planning_root ────────────────────────────────────────────────────────
+
+    #[test]
+    fn planning_root_defaults_to_planning() {
+        let root = planning_root(None);
+        assert_eq!(root, PathBuf::from("planning"));
+    }
+
+    #[test]
+    fn planning_root_env_val_overrides_default() {
+        let root = planning_root(Some("/absolute/path/planning".into()));
+        assert_eq!(root, PathBuf::from("/absolute/path/planning"));
+    }
+
+    #[test]
+    fn planning_root_empty_env_val_falls_back_to_default() {
+        let root = planning_root(Some(String::new()));
+        assert_eq!(root, PathBuf::from("planning"));
+    }
+
+    #[test]
+    fn planning_root_relative_env_val_is_preserved_as_given() {
+        let root = planning_root(Some("../other/planning".into()));
+        assert_eq!(root, PathBuf::from("../other/planning"));
     }
 }

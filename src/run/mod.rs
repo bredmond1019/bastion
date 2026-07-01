@@ -172,14 +172,8 @@ mod tests {
         let out = format_trigger_success("wf", "tid-999");
         // Each key should be on its own line
         let lines: Vec<&str> = out.lines().collect();
-        assert!(
-            lines.iter().any(|l| *l == "workflow: wf"),
-            "lines: {lines:?}"
-        );
-        assert!(
-            lines.iter().any(|l| *l == "task_id: tid-999"),
-            "lines: {lines:?}"
-        );
+        assert!(lines.contains(&"workflow: wf"), "lines: {lines:?}");
+        assert!(lines.contains(&"task_id: tid-999"), "lines: {lines:?}");
     }
 
     // ── value_type_name ───────────────────────────────────────────────────────

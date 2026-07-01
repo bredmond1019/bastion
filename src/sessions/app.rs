@@ -61,7 +61,11 @@ pub struct AppState {
 impl AppState {
     pub fn new(sessions: Vec<Session>) -> Self {
         Self {
-            tabs: vec![TabState::SpaceOverview, TabState::Kanban, TabState::MissionControl],
+            tabs: vec![
+                TabState::SpaceOverview,
+                TabState::Kanban,
+                TabState::MissionControl,
+            ],
             active_tab_index: 0,
             sessions,
             selected: 0,
@@ -86,6 +90,20 @@ impl AppState {
         if self.active_tab_index >= self.tabs.len() {
             self.active_tab_index = self.tabs.len() - 1;
         }
+    }
+
+    /// Cycle to the next tab, wrapping around to the first.
+    pub fn next_tab(&mut self) {
+        self.active_tab_index = (self.active_tab_index + 1) % self.tabs.len();
+    }
+
+    /// Cycle to the previous tab, wrapping around to the last.
+    pub fn prev_tab(&mut self) {
+        self.active_tab_index = if self.active_tab_index == 0 {
+            self.tabs.len() - 1
+        } else {
+            self.active_tab_index - 1
+        };
     }
 
     pub fn compute_view(&self, area: Rect) -> (Rect, Rect) {
@@ -203,6 +221,14 @@ impl AppState {
                     }
                     KeyCode::Char('q') => {
                         self.should_quit = true;
+                        Action::None
+                    }
+                    KeyCode::Tab => {
+                        self.next_tab();
+                        Action::None
+                    }
+                    KeyCode::BackTab => {
+                        self.prev_tab();
                         Action::None
                     }
                     _ => Action::None,
@@ -562,6 +588,44 @@ mod tests {
         app.close_tab();
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active_tab_index, 1); // shifted back
+    }
+
+    #[test]
+    fn next_tab_advances_and_wraps() {
+        let mut app = AppState::new(vec![]);
+        assert_eq!(app.active_tab_index, 0);
+        app.next_tab();
+        assert_eq!(app.active_tab_index, 1);
+        app.next_tab();
+        assert_eq!(app.active_tab_index, 2);
+        app.next_tab();
+        assert_eq!(app.active_tab_index, 0); // wraps to first
+    }
+
+    #[test]
+    fn prev_tab_retreats_and_wraps() {
+        let mut app = AppState::new(vec![]);
+        assert_eq!(app.active_tab_index, 0);
+        app.prev_tab();
+        assert_eq!(app.active_tab_index, 2); // wraps to last
+        app.prev_tab();
+        assert_eq!(app.active_tab_index, 1);
+    }
+
+    #[test]
+    fn tab_key_advances_active_tab() {
+        let mut app = AppState::new(vec![]);
+        let action = app.on_key(KeyCode::Tab);
+        assert_eq!(action, Action::None);
+        assert_eq!(app.active_tab_index, 1);
+    }
+
+    #[test]
+    fn backtab_key_retreats_active_tab() {
+        let mut app = AppState::new(vec![]);
+        let action = app.on_key(KeyCode::BackTab);
+        assert_eq!(action, Action::None);
+        assert_eq!(app.active_tab_index, 2);
     }
 
     #[test]

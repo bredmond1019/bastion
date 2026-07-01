@@ -8,7 +8,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 use std::{fs, io};
@@ -36,13 +36,7 @@ pub struct BlockTask {
 
 pub fn run() -> Result<()> {
     // Read state.json from the planning directory
-    let mut path = std::env::current_dir()?;
-    // Up one directory if we are in core/bastion
-    if path.ends_with("bastion") {
-        path.pop();
-    }
-    path.push("planning");
-    path.push("state.json");
+    let path = crate::config::load_planning_root().join("state.json");
 
     let content = fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("Failed to read {:?}: {}", path, e))?;
@@ -91,16 +85,22 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
         .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(area);
 
-    // Header
-    let header = Paragraph::new(format!(
-        " Kanban Board — {} (updated {})",
-        state.repo, state.updated
+    // ── Header ────────────────────────────────────────────────────────────────
+    let header_text = format!(" Kanban Board — {} (updated {})", state.repo, state.updated);
+    let header = Paragraph::new(ratatui::text::Span::styled(
+        header_text,
+        ratatui::style::Style::default()
+            .fg(crate::ui_theme::text())
+            .add_modifier(Modifier::BOLD),
     ))
-    .style(Style::default().add_modifier(Modifier::BOLD))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(crate::ui_theme::border_active())),
+    );
     frame.render_widget(header, main_layout[0]);
 
-    // Columns
+    // ── Columns ───────────────────────────────────────────────────────────────
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -110,36 +110,75 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
         ])
         .split(main_layout[1]);
 
-    let render_col = |title: String, items: &[BlockTask], color: Color| -> List<'static> {
-        let list_items: Vec<ListItem> = items
+    // Build a single ListItem for a task:
+    //   Line 1: [ID]  (accent color)
+    //   Line 2: title (text color, will wrap inside the column width)
+    let build_items = |tasks: &[BlockTask]| -> Vec<ListItem<'static>> {
+        tasks
             .iter()
-            .map(|b| {
-                let repo = b.repo.as_deref().unwrap_or("unknown");
-                ListItem::new(format!("[{}] {}: {}", repo, b.id, b.title))
+            .flat_map(|b| {
+                let id_line = ratatui::text::Line::from(vec![ratatui::text::Span::styled(
+                    b.id.clone(),
+                    Style::default()
+                        .fg(crate::ui_theme::accent())
+                        .add_modifier(Modifier::BOLD),
+                )]);
+                let title_line = ratatui::text::Line::from(vec![ratatui::text::Span::styled(
+                    format!("  {}", b.title.clone()),
+                    Style::default().fg(crate::ui_theme::text()),
+                )]);
+                let sep = ratatui::text::Line::from("");
+                // id, title, blank separator between tasks
+                [
+                    ListItem::new(id_line),
+                    ListItem::new(title_line),
+                    ListItem::new(sep),
+                ]
             })
-            .collect();
-        List::new(list_items).block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(color)),
-        )
+            .collect()
     };
 
-    frame.render_widget(
-        render_col(
-            " In Progress (Now) ".to_string(),
-            &state.focus.now,
-            Color::Green,
-        ),
-        columns[0],
+    let now_items = build_items(&state.focus.now);
+    let next_items = build_items(&state.focus.next);
+    let blocked_items = build_items(&state.focus.blocked);
+
+    let now_list = List::new(now_items).block(
+        Block::default()
+            .title(ratatui::text::Span::styled(
+                " In Progress ",
+                Style::default()
+                    .fg(crate::ui_theme::sage())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(crate::ui_theme::border_dim())),
     );
-    frame.render_widget(
-        render_col(" Up Next ".to_string(), &state.focus.next, Color::Yellow),
-        columns[1],
+
+    let next_list = List::new(next_items).block(
+        Block::default()
+            .title(ratatui::text::Span::styled(
+                " Up Next ",
+                Style::default()
+                    .fg(crate::ui_theme::violet())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(crate::ui_theme::border_dim())),
     );
-    frame.render_widget(
-        render_col(" Blocked ".to_string(), &state.focus.blocked, Color::Red),
-        columns[2],
+
+    let blocked_list = List::new(blocked_items).block(
+        Block::default()
+            .title(ratatui::text::Span::styled(
+                " Blocked ",
+                Style::default()
+                    .fg(crate::ui_theme::rose())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(crate::ui_theme::border_dim())),
     );
+
+    frame.render_widget(now_list, columns[0]);
+    frame.render_widget(next_list, columns[1]);
+    frame.render_widget(blocked_list, columns[2]);
 }

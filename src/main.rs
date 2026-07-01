@@ -17,6 +17,7 @@ mod overview;
 mod run;
 mod serve;
 mod sessions;
+mod ui_theme;
 mod validate;
 
 use anyhow::Result;
