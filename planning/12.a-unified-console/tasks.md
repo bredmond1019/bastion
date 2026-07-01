@@ -19,7 +19,7 @@ Evolve the Bastion TUI into a dynamic, markdown-native IDE workspace featuring a
 - Implement a pure `compute_view(&self, area: Rect)` function that calculates and returns the structural `Rect` boundaries for the sidebar and main content area.
 - Write unit tests to assert that pushing/closing tabs updates the index correctly and that `compute_view` yields mathematically correct constraints.
 
-### 2. View: TUI Scaffolding & Mouse Events
+### [done] 2. View: TUI Scaffolding & Mouse Events
 - **Target Files:** `src/sessions/ui.rs`, `src/sessions/events.rs`
 - *(Depends on Task 1)*
 - Update `src/sessions/ui.rs` to consume the `Rect` boundaries from `compute_view()` and draw the structural `Block` borders (Collapsible Sidebar, Tab Bar, Main Area).
@@ -70,6 +70,7 @@ cargo run -- --help
 
 ## Notes
 **2026-07-01**: Renamed SessionApp to AppState and introduced TabState and layout boundaries logic.
+**2026-07-01**: Updated TUI scaffolding to use mouse events and click handlers to navigate tabs.
 
 ## Amendment Log
 _No amendments yet._
