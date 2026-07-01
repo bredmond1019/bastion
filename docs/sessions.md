@@ -45,38 +45,42 @@ Because the surface needs no database, this works even when the orchestrator sta
 
 ## Unified Console (TUI Dashboard)
 
-Running `bastion` (bare) or `bastion tui` opens the unified live ratatui console. The console is structured with a collapsible sidebar (labeled **spaces**) and a dynamic tab area:
+Running `bastion` (bare) or `bastion tui` opens the unified live ratatui console. The console is structured with a left sidebar (labeled **spaces**) and a dynamic tab area:
 
-- **Sidebar (Spaces):** Lists all tmux sessions with a live state dot (`●` = working/blocked/running,
-  `○` = idle) and the session name. The state is driven by the pure-logic AgentState manifest engine
-  (which parses live terminal output to classify the agent as `Working`, `Idle`, or `Blocked`) and
-  falls back to the foreground command (`SessionState::Running`/`Idle`) for non-agent shells. Each
-  session is added by pressing `n` — there is no separate "add space" flow; a space **is** a tmux
-  session.
-- **Space Overview Tab:** Renders the project's `planning/status.md` natively in the terminal using
-  the `bella-engine` markdown parser with an aesthetic dark blue/violet/cyan theme AST. YAML
-  frontmatter (the `---`-delimited block) is stripped before rendering.
-- **Kanban Board Tab:** Renders the project's Kanban tracker (open/blocked work items) as three
-  columns — In Progress, Up Next, Blocked — with each item stacked as `ID` (accent, bold) over
-  `title` (indented).
-- **Mission Control Tab:** Embeds the live workflow DAG tree, allowing you to monitor orchestrator
-  executions natively within the unified interface.
+- **Sidebar (Spaces):** Displays a hierarchical tree of your workspaces sourced directly from `brain.toml` (grouped by tiers: `_root`, `core`, `side`, `client`, `portfolio`). Navigate this tree to select your active project context.
+- **Space Overview Tab:** Features a split-pane layout with a built-in file browser on the left and a scrollable content pane on the right. By default, it opens the space's `planning/status.md`. You can browse the space's directories, preview markdown files in the content pane (using the `bella-engine` parser with a dark theme), or open them in new tabs.
+- **Kanban Board Tab:** Renders the project's Kanban tracker (open/blocked work items) from `planning/state.json` as three horizontal rows — In Progress, Up Next, Blocked — for improved legibility.
+- **Mission Control Tab:** A unified "active work" view. The left pane lists all live tmux sessions alongside running orchestrator workflow DAGs. Selecting a session displays its agent state (`Working`, `Idle`, or `Blocked`), foreground command, and recent output in the right detail pane. Selecting a run displays its node progression. All session management (attach, new, kill, send) happens here.
 
 ### Key bindings
 
+**Global / Navigation:**
 | Key | Action |
 |---|---|
-| `↑` / `↓` or `j` | Navigate session list |
-| `a` | Attach to the selected session (TUI suspends; returns cleanly on detach) |
-| `n` | Create a new named session (prompts for name inline) — this is how you add a new "space" |
-| `s` | Send a command to the selected session (prompts for command inline) |
-| `k` | Kill the selected session |
-| `q` / `Esc` | Quit the dashboard |
 | `Tab` / `Shift+Tab` | Cycle to the next / previous tab |
+| `q` / `Esc` | Quit the dashboard |
 | Mouse Click | Jump directly to a clicked tab |
 
-Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without
-making any change.
+**Space Overview Tab:**
+| Key | Action |
+|---|---|
+| `←` / `→` | Switch focus between Sidebar, File Browser, and Content pane |
+| `↑` / `↓` or `j` / `k` | Navigate the Spaces tree (when Sidebar is focused) or file list (when Browser is focused) |
+| `Enter` | Descend into a directory or load a markdown file into the Content pane |
+| `Backspace` | Ascend to the parent directory in the File Browser |
+| `t` | Open the selected markdown file in a new tab |
+| `PageUp` / `PageDown` | Scroll the Content pane (when focused) |
+
+**Mission Control Tab:**
+| Key | Action |
+|---|---|
+| `↑` / `↓` or `j` / `k` | Navigate the combined sessions/runs list |
+| `a` | Attach to the selected session (TUI suspends; returns cleanly on detach) |
+| `n` | Create a new named session (prompts for name inline) |
+| `s` | Send a command to the selected session (prompts for command inline) |
+| `k` | Kill the selected session |
+
+Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without making any change.
 
 tmux errors (missing tmux, no server, unknown session) surface as a status message inside the
 TUI rather than crashing the loop.
