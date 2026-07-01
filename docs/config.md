@@ -40,6 +40,8 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `BASTION_POLL_INTERVAL` | No | `2` | Monitor poll cadence in seconds |
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | Bind address for `bastion serve` |
 | `BASTION_SERVE_TOKEN` | Yes (for `bastion serve`) | — | Bearer token enforced on all protected routes; also settable via `--token` |
+| `BASTION_PLANNING_ROOT` | No | `planning/` | Root directory for planning state and harnesses |
+| `BASTION_BRAIN_TOML` | No | `brain.toml` | Path to the workspace definition registry |
 
 ## Config file
 
