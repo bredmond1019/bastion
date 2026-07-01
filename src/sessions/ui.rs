@@ -20,7 +20,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use std::{io, time::Duration};
@@ -69,10 +69,12 @@ fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
+    let (sidebar_area, main_area) = app.compute_view(areas[0]);
+
     if app.sessions.is_empty() {
         let msg = Paragraph::new("no sessions — press [n] to create one")
-            .block(Block::default().title("sessions").borders(Borders::ALL));
-        frame.render_widget(msg, areas[0]);
+            .block(Block::default().title("Spaces").borders(Borders::ALL));
+        frame.render_widget(msg, sidebar_area);
     } else {
         let items: Vec<ListItem> = app
             .sessions
@@ -81,12 +83,40 @@ fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().title("sessions").borders(Borders::ALL))
+            .block(Block::default().title("Spaces").borders(Borders::ALL))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
         list_state.select(Some(app.selected));
-        frame.render_stateful_widget(list, areas[0], list_state);
+        frame.render_stateful_widget(list, sidebar_area, list_state);
     }
+
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(main_area);
+    
+    use crate::sessions::app::TabState;
+    let tabs_text = app.tabs.iter().enumerate().map(|(i, tab)| {
+        let title = match tab {
+            TabState::SpaceOverview => "Space Overview",
+            TabState::MissionControl => "Mission Control",
+            TabState::MarkdownDocument(p) => p.to_str().unwrap_or("Doc"),
+        };
+        let style = if i == app.active_tab_index {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        Span::styled(format!(" {:<18} ", title), style)
+    }).collect::<Vec<_>>();
+    
+    let tabs_paragraph = Paragraph::new(Line::from(tabs_text))
+        .block(Block::default().borders(Borders::ALL));
+    
+    frame.render_widget(tabs_paragraph, main_chunks[0]);
+    
+    let content_block = Block::default().borders(Borders::ALL);
+    frame.render_widget(content_block, main_chunks[1]);
 
     let footer = Paragraph::new(status_line(app));
     frame.render_widget(footer, areas[1]);
@@ -126,6 +156,9 @@ fn execute_action(action: Action, app: &mut AppState) {
         Action::None | Action::Attach(_) => {
             // Attach is handled in the event loop (needs terminal suspension).
         }
+        Action::SelectTab(i) => {
+            app.active_tab_index = i;
+        }
         Action::New(name) => match tmux::new_session(&name, None) {
             Ok(()) => app.status = Some(format!("created '{name}'")),
             Err(e) => set_tmux_status(app, "new", &name, e),
@@ -156,29 +189,48 @@ fn run_inner(
         terminal.draw(|f| draw(f, app, &mut list_state))?;
 
         if event::poll(Duration::from_millis(REFRESH_MS))? {
-            if let Event::Key(k) = event::read()? {
-                let action = app.on_key(k.code);
+            match event::read()? {
+                Event::Key(k) => {
+                    let action = app.on_key(k.code);
 
-                if let Action::Attach(ref name) = action {
-                    // Suspend the TUI, hand the terminal to tmux, then restore.
-                    let name = name.clone();
-                    disable_raw_mode()?;
-                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                    if let Action::Attach(ref name) = action {
+                        // Suspend the TUI, hand the terminal to tmux, then restore.
+                        let name = name.clone();
+                        disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen, event::DisableMouseCapture)?;
 
-                    let res = tmux::attach_session(&name);
+                        let res = tmux::attach_session(&name);
 
-                    enable_raw_mode()?;
-                    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-                    terminal.clear()?;
+                        enable_raw_mode()?;
+                        execute!(terminal.backend_mut(), EnterAlternateScreen, event::EnableMouseCapture)?;
+                        terminal.clear()?;
 
-                    if let Err(e) = res {
-                        set_tmux_status(app, "attach", &name, e);
+                        if let Err(e) = res {
+                            set_tmux_status(app, "attach", &name, e);
+                        }
+                        app.set_sessions(poll_sessions());
+                        continue;
                     }
-                    app.set_sessions(poll_sessions());
-                    continue;
-                }
 
-                execute_action(action, app);
+                    execute_action(action, app);
+                }
+                Event::Mouse(m) => {
+                    if m.kind == event::MouseEventKind::Down(event::MouseButton::Left) {
+                        let areas = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([Constraint::Min(1), Constraint::Length(1)])
+                            .split(terminal.size()?.into());
+                        let (_, main_area) = app.compute_view(areas[0]);
+                        let main_chunks = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([Constraint::Length(3), Constraint::Min(0)])
+                            .split(main_area);
+                        
+                        let action = app.on_mouse(m.column, m.row, main_chunks[0]);
+                        execute_action(action, app);
+                    }
+                }
+                _ => {}
             }
         } else {
             // Timeout: refresh session list.
@@ -196,7 +248,7 @@ fn run_inner(
 pub fn run() -> Result<()> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -206,7 +258,7 @@ pub fn run() -> Result<()> {
     // Always tear down — even on the error path — so the terminal is never left
     // in raw mode or on the alternate screen.
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, event::DisableMouseCapture);
 
     result
 }

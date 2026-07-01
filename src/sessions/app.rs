@@ -37,6 +37,7 @@ pub enum Action {
     New(String),
     Send { session: String, keys: String },
     Kill(String),
+    SelectTab(usize),
     None,
 }
 
@@ -248,6 +249,19 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Map a mouse click to an `Action`.
+    pub fn on_mouse(&mut self, col: u16, row: u16, tab_bar_area: Rect) -> Action {
+        // Tab bar is rendered inside a block, so the actual text is at y + 1, x + 1
+        if row == tab_bar_area.y + 1 && col >= tab_bar_area.x + 1 && col < tab_bar_area.x + tab_bar_area.width - 1 {
+            let tab_width = 20;
+            let clicked_index = ((col - tab_bar_area.x - 1) / tab_width) as usize;
+            if clicked_index < self.tabs.len() {
+                return Action::SelectTab(clicked_index);
+            }
+        }
+        Action::None
     }
 }
 
