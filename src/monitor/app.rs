@@ -167,8 +167,6 @@ impl App {
 mod tests {
     use super::*;
     use crate::db::workflows::{NodeState, RunStatus, WorkflowRun};
-    use crate::detect::AgentState;
-    use crate::sessions::model::{Session, SessionState};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
