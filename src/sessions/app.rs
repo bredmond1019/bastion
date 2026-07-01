@@ -14,6 +14,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 #[derive(Debug, Clone, PartialEq)]
 pub enum TabState {
     SpaceOverview,
+    Kanban,
     MissionControl,
     MarkdownDocument(std::path::PathBuf),
 }
@@ -60,7 +61,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(sessions: Vec<Session>) -> Self {
         Self {
-            tabs: vec![TabState::SpaceOverview, TabState::MissionControl],
+            tabs: vec![TabState::SpaceOverview, TabState::Kanban, TabState::MissionControl],
             active_tab_index: 0,
             sessions,
             selected: 0,
@@ -542,25 +543,25 @@ mod tests {
     fn push_tab_updates_index() {
         let mut app = AppState::new(vec![]);
         app.push_tab(TabState::MissionControl);
-        assert_eq!(app.tabs.len(), 3);
-        assert_eq!(app.active_tab_index, 2);
-        assert_eq!(app.tabs[1], TabState::MissionControl);
+        assert_eq!(app.tabs.len(), 4);
+        assert_eq!(app.active_tab_index, 3);
+        assert_eq!(app.tabs[3], TabState::MissionControl);
     }
 
     #[test]
     fn close_tab_updates_index() {
         let mut app = AppState::new(vec![]);
         app.push_tab(TabState::MissionControl);
+        assert_eq!(app.tabs.len(), 4);
+        assert_eq!(app.active_tab_index, 3);
+
+        app.close_tab();
         assert_eq!(app.tabs.len(), 3);
-        assert_eq!(app.active_tab_index, 2);
+        assert_eq!(app.active_tab_index, 2); // shifted back
 
         app.close_tab();
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active_tab_index, 1); // shifted back
-
-        app.close_tab();
-        assert_eq!(app.tabs.len(), 1);
-        assert_eq!(app.active_tab_index, 0); // shifted back
     }
 
     #[test]
