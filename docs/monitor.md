@@ -39,8 +39,7 @@ bastion monitor --workflow-id <id>   # monitor a specific run by its events.id
 
 A two-pane TUI:
 
-- **Left — graph pane.** Each node is placed on a topological left-to-right grid (columns =
-  dependency depth). Node color reflects live `RunStatus`:
+- **Left — graph pane.** The workflow DAG is rendered as a structured, indented tree format using Ratatui list primitives and box-drawing characters (`├─`, `└─`). Node color reflects live `RunStatus`:
   - **yellow** `~` — running
   - **green** `+` — success
   - **red** `!` — failed
@@ -90,5 +89,4 @@ is surfaced as a banner rather than killing the TUI — the next successful tick
 - [inspect.md](inspect.md) — static post-mortem view of a completed run (no polling); use this
   after a run finishes.
 - [data-contract.md](data-contract.md) — the orchestrator field mappings the monitor reads.
-- [sessions.md](sessions.md) — the other surface (tmux session control), reachable as the bare
-  `bastion` / `bastion tui` dashboard.
+- [sessions.md](sessions.md) — the unified operator console, where the monitor is embedded within the **Mission Control** tab.
