@@ -2,10 +2,10 @@
   "spec_slug": "13.0-spine-primary-navigation",
   "branch": "13.0-spine-primary-navigation-flow-2",
   "started_at": "2026-07-02T09:02:58Z",
-  "updated_at": "2026-07-02T09:18:32Z",
+  "updated_at": "2026-07-02T09:27:23Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.0-spine-primary-navigation-flow-2",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -54,6 +54,27 @@
         "src/sessions/app.rs",
         "src/sessions/ui.rs",
         "src/sessions/tui_tests.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "src/sessions/ui.rs now renders the spine-only sidebar (Mission Control pinned, HQ/tier headers, space rows) from spine_rows() and routes the main area's Tier selection to a <tier>/planning/status.md overview with graceful empty-state degrade.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Removed the old \"no spaces\" empty-state sidebar branch since Mission Control is always the first spine row regardless of space_tree contents",
+        "Tier overview root resolved via crate::config::load_brain_toml_path().parent() (same convention already used by ui.rs's run()) rather than modifying app.rs's current_space_planning_root() (kept app.rs untouched per task ownership boundary)",
+        "Added tier_status_path(brain_root, tier) as a small pure/testable helper for the otherwise I/O-heavy tier routing arm",
+        "Fixed a pre-existing clippy::bool_assert_comparison failure in src/brain/spaces.rs (left over from Task 1) since it blocked the crate-wide `cargo clippy -D warnings` gate required by this task's validation",
+        "Updated footer_hint's key-legend text to drop the stale \"Tab/Shift+Tab switch tab\" reference now that tab machinery is gone (task 2), and updated its test accordingly"
+      ],
+      "files_changed": [
+        "src/sessions/ui.rs",
+        "src/sessions/tui_tests.rs",
+        "src/brain/spaces.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -162,13 +183,37 @@
         "filesReadKb": null,
         "inTokEst": 602,
         "outTok": 2678
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 269,
+        "filesReadKb": null,
+        "inTokEst": 269,
+        "outTok": 892
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 930,
+        "filesReadKb": null,
+        "inTokEst": 930,
+        "outTok": 26673
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 602,
+        "filesReadKb": null,
+        "inTokEst": 602,
+        "outTok": 2271
       }
     ],
     "total": {
-      "promptTokEst": 6645,
+      "promptTokEst": 8446,
       "filesReadKb": 0,
-      "inTokEst": 6645,
-      "outTok": 102754
+      "inTokEst": 8446,
+      "outTok": 132590
     }
   }
 }
