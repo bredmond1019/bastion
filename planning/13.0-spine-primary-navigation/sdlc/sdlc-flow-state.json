@@ -1,0 +1,94 @@
+{
+  "spec_slug": "13.0-spine-primary-navigation",
+  "branch": "13.0-spine-primary-navigation-flow-2",
+  "started_at": "2026-07-02T09:02:58Z",
+  "updated_at": "2026-07-02T09:02:58Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.0-spine-primary-navigation-flow-2",
+  "status": "running",
+  "current_task": 1,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "src/brain/spaces.rs now exposes SpineRow/SelectedNode plus spine_rows(), a presentation layer that pins Mission Control first, renames the _root tier to Hq while collapsing the brain leaf into it, and orders learn-ai/base-template beneath Hq followed by the remaining tiers.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "SpineRow and SelectedNode mirror the same shape (MissionControl/Hq/Tier(String)/Space(SpaceEntry)) per the spec's literal wording, with SpineRow::as_selected_node() as a convenience mapper for the downstream app.rs/ui.rs tasks",
+        "Hq row carries no SpaceEntry payload; its data source (brain root '.') is documented in doc comments as an implicit convention rather than embedded data, since the spec text lists 'Hq' as a bare variant",
+        "The Hq row is only emitted when a '_root' tier exists in the tree (covers the empty/degenerate-tree test case) rather than being unconditionally synthesized",
+        "Fixed a pre-existing clippy::collapsible_if lint in load_space_tree (same file) using an edition-2024 let-chain, since it blocked the Task 1 clippy gate",
+        "Created local-only symlinks (core/bastion/portfolio -> ../../portfolio, core/bastion/trees/bella -> ../../bella) to work around a worktree path-dependency depth bug in Cargo.toml; not committed, left in place to help downstream tasks in this pipeline build/test"
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.0-spine-primary-navigation-flow-2/src/brain/spaces.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": null,
+    "findings": [],
+    "attempts": 0
+  },
+  "docs": {
+    "changed": [],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 790,
+        "filesReadKb": null,
+        "inTokEst": 790,
+        "outTok": 4501
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 240,
+        "filesReadKb": null,
+        "inTokEst": 240,
+        "outTok": 1009
+      },
+      {
+        "label": "update-task-1",
+        "model": "haiku",
+        "promptTokEst": 269,
+        "filesReadKb": null,
+        "inTokEst": 269,
+        "outTok": 1180
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 930,
+        "filesReadKb": null,
+        "inTokEst": 930,
+        "outTok": 21553
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 602,
+        "filesReadKb": null,
+        "inTokEst": 602,
+        "outTok": 2044
+      }
+    ],
+    "total": {
+      "promptTokEst": 2831,
+      "filesReadKb": 0,
+      "inTokEst": 2831,
+      "outTok": 30287
+    }
+  }
+}
