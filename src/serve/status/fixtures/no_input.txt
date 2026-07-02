@@ -1,6 +1,0 @@
-⠸ Thinking about your request...
-
-Reading file src/serve/mod.rs
-Writing 47 lines to src/serve/ws/session.rs
-
-esc to interrupt
