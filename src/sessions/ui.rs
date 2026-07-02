@@ -357,7 +357,8 @@ fn draw_with_root(
 /// Thin real-world wrapper: resolves the planning root from the environment,
 /// then delegates to `draw_with_root`.
 fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
-    draw_with_root(frame, app, list_state, &crate::config::load_planning_root());
+    let root = app.current_space_planning_root();
+    draw_with_root(frame, app, list_state, &root);
 }
 
 // ── tmux poll → Vec<Session> ──────────────────────────────────────────────────
