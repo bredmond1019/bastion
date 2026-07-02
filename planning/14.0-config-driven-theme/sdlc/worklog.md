@@ -19,3 +19,6 @@ Validated: gating checks (fast tripwire)
 What: Validated BA.14.0 config-driven theme system: all Validation Commands pass and manual tmux smoke test confirms named/unknown/absent [theme] config all resolve correctly (bastion default, no panic) in the live TUI.
 Decisions: Ran the TUI via `bastion tui` (not `bastion sessions`, which is the non-interactive list command) for the tmux smoke test.; Since only one named preset (bastion) exists yet, verified chrome/markdown theme-sharing via the existing unit-tested to_bella_theme seam rather than a live cross-palette visual diff, and recorded that scope note in the task's Notes section.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/config.md, docs/sessions.md
