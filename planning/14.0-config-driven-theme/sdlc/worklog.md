@@ -1,0 +1,27 @@
+# Worklog — 14.0-config-driven-theme
+
+## Task 1 — PASSED (1 attempt)
+What: src/ui_theme.rs now defines a runtime Theme struct (bastion preset) selected via theme_by_name, exposed via a process-wide OnceLock accessor (current_theme/init_theme), with a pure to_bella_theme mapping to bella_engine::Theme; all named color/style functions read from the active theme instead of baked rgb() literals.
+Decisions: Kept only the `bastion` preset implemented for now (theme_by_name falls back to it for any other name, including empty) — 'dark'/'light' are named in the spec as future room-for-more, not required deliverables for Task 1, and inventing new palettes now would step into BA.14.3's color-retune scope.; Theme.name uses &'static str (not String) since only compile-time preset names exist yet; to_bella_theme converts to String only at the mapping boundary since bella_engine::Theme::name is String.; bella mapping fills the 6-slot heading array with [accent, violet, cyan, sage, text, muted] and derives code_fg/code_bg/status_fg/status_bg from existing bastion theme fields (sage/surface/text/border_active) rather than inventing new colors, keeping all rgb() literals confined to Theme::bastion().; Found and fixed a pre-existing worktree infra gap unrelated to this task: Cargo.toml's `../../portfolio/...` path deps resolve fine from the main repo root but break one level deeper in `trees/<branch>/` worktrees (workflow-engine-core/mcp/nodes crates). Added an untracked symlink `core/bastion/portfolio -> /Users/brandon/Dev/agentic-portfolio/portfolio` (sibling to the existing `trees/bella` symlink pattern) so `cargo build/test/clippy/fmt` and `--release` all work in this and future worktrees; this is a local filesystem fix, not a git change.
+Validated: gating checks (fast tripwire)
+
+## Task 2 — PASSED (1 attempt)
+What: FileConfig now has an optional [theme] section (ThemeConfig { name }) with a pure resolve_theme() that resolves to a ui_theme::Theme via theme_by_name, defaulting to bastion when the section/name is absent or unknown; existing configs without [theme] still deserialize unchanged.
+Decisions: Left planning/14.0-config-driven-theme/tasks.md untouched even though it shows as modified (checkbox already set to [~] by the pipeline before this task ran, same pattern as Task 1) — treated checkbox/status tracking in tasks.md as orchestrator-managed state, not something this task commit should own.; resolve_theme lives in src/config.rs (not ui_theme.rs) since this task owns only config.rs; it calls crate::ui_theme::theme_by_name, keeping the theme-name→Theme lookup itself owned by Task 1's file.
+Validated: gating checks (fast tripwire)
+
+## Task 3 — PASSED (1 attempt)
+What: sessions/ui.rs now initializes the process-wide runtime theme from resolved config at TUI startup and hands the mapped bella_engine::Theme to both render_with_edit call sites, so chrome and the markdown view share one theme.
+Decisions: Added init_theme_from_config() as a thin wrapper (config::load_workspace_registry + config::resolve_theme + ui_theme::init_theme) called at the top of run(); left untested directly per Rule 6's 'trivial wrapper over already-tested pure functions' exception, documented in tasks.md ## Notes with deferral of the manual smoke test to Task 4's Validate step.; Avoided calling ui_theme::init_theme inside unit tests to sidestep ACTIVE_THEME's process-wide OnceLock hazard (shared across the whole cargo test binary); tests instead assert against whatever current_theme() resolves to at call time, which is deterministic and parallel-safe.; Replaced both bella_engine::Theme::mission_control() call sites with ui_theme::to_bella_theme(ui_theme::current_theme()); no ../bella files touched since the existing bella_engine::Theme struct already covered the mapping (Rule 7 caveat not triggered).
+Validated: gating checks (fast tripwire)
+
+## Task 4 — PASSED (1 attempt)
+What: Validated BA.14.0 config-driven theme system: all Validation Commands pass and manual tmux smoke test confirms named/unknown/absent [theme] config all resolve correctly (bastion default, no panic) in the live TUI.
+Decisions: Ran the TUI via `bastion tui` (not `bastion sessions`, which is the non-interactive list command) for the tmux smoke test.; Since only one named preset (bastion) exists yet, verified chrome/markdown theme-sharing via the existing unit-tested to_bella_theme seam rather than a live cross-palette visual diff, and recorded that scope note in the task's Notes section.
+Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/config.md, docs/sessions.md
+
+## Wrap-up — PASS
+Next: Decide among BA.13.2 / BA.13.3 / BA.13.5 / BA.14.1 / BA.14.2 per state.json's focus.next ordering, or resume Phase 15 (bastion-product packaging plan). See planning/handoff.md for the open question.
