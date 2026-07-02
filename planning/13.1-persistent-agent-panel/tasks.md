@@ -38,7 +38,7 @@ Add an always-visible bottom "agents · priority" strip listing every tmux sessi
 - Register the module with `pub mod agent_panel;` in `src/sessions/mod.rs`.
 - **Tests (Rule 6):** unit-test `agent_panel_rows` produces one row per session, sorted so a Blocked session precedes a Working precedes an Idle; cover the empty-slice case.
 
-### 3. BA.13.1.3 Reserve + render the bottom strip in `src/sessions/ui.rs`
+### 3. BA.13.1.3 Reserve + render the bottom strip in `src/sessions/ui.rs` (in progress)
 - **Owns:** `src/sessions/ui.rs` (only file touched by this task). **Depends on:** BA.13.1.2 (`agent_panel_rows`/`AgentPanelRow`) and BA.13.1.1 (`session_urgency`).
 - Reserve an always-on bottom strip in the top-level vertical split so it renders under **every** `SelectedNode` (Mission Control / HQ / Tier / Space), with a min-height fallback when vertical space is tight.
 - Render `agent_panel_rows` with themed state dots/colors sourced from the runtime theme (`ui_theme::current_theme()` — BA.14.0), never literal colors.
