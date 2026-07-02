@@ -1138,6 +1138,251 @@ Forward-looking — refine Files when each becomes next.
 
 ---
 
+## Phase 13 — Unified Console Structural Restructure (Design A) *(independent track; follows Phase 12)*
+
+> **Continuation of the Unified Console work** (Phase 12 "Unified Console Cleanup" was the ad-hoc
+> `planning/bastion-tui-improvements/plan.md` — now closed). This phase resolves the two structural
+> problems that survived that pass: (1) the `spaces` spine is *inconsistent* — Space Overview and
+> Kanban respect the sidebar selection but Mission Control's session list is built globally
+> (`build_mission_items`, `src/monitor/app.rs:14`) and never filters by the selected space; (2) the
+> top tab bar is the wrong abstraction — Overview + Board are just two *ways of looking at the selected
+> space*. **Design A** makes the spine the only primary navigator: no top-level tabs, `◆ Mission
+> Control` pinned atop the spine as the global cross-space view, a per-space `Overview · Board ·
+> Sessions` sub-tab bar, and a persistent always-visible "agents · priority" panel for full cross-space
+> transparency. Governed by the approved plan (session 2026-07-01). **This track is DB-free (D4) and
+> read-only vs the orchestrator (D2).** Local order: 13.0 is foundational; **BA.14.0 (theme system)
+> lands between 13.0 and 13.1** so new panes consume the config-driven theme; 13.1/13.2 build on 13.0;
+> 13.4 builds on 13.0 + 13.3; 13.3 and 13.5 are independent capabilities.
+
+### Block BA.13.0 — Spine model + primary navigation
+- **What:** Replace the three-tab layout with a spine-only navigator. Add a `SpineRow` model
+  (`MissionControl` pinned first, `Hq`, selectable `Tier`, `Space`) and `spine_rows()`; rewrite
+  selection to wrap over all rows (drop the header-skip); route the main area on the selected node
+  (Mission Control → existing `monitor::ui::render`; Space/Hq → existing Space Overview; Tier → tier
+  overview rooted at `<tier>/` with graceful empty-state degrade). Rename the `_root` tier → `HQ`,
+  collapse the redundant `brain` leaf into the `HQ` row (data source = brain root `.`), keep
+  `learn-ai`/`base-template` as `HQ` children. Delete the top tab bar and `Tab`/`BackTab` tab-cycling.
+- **Why:** The spine must be the single source of "what am I looking at"; the inconsistent, tab-based
+  model is the root of the disconnect. Everything else in Phase 13/14 hangs off this foundation.
+- **Files:**
+  - *Modified* `src/brain/spaces.rs` (add `SpineRow` + `spine_rows()`, `_root`→`HQ` + collapse logic;
+    presentation layer over the unchanged `parse_space_tree`)
+  - *Modified* `src/sessions/app.rs` (`selected_space`→`selected_spine`, derived `selected_node()`,
+    rewrite `select_next`/`select_prev`, update `reinit_browser`/`current_space_planning_root`/
+    `selected_session`/`selected_space_slug`, remove `tabs`/`active_tab_index`/`next_tab`/`prev_tab`/
+    `push_tab`/`close_tab` + `Tab`/`BackTab` arms)
+  - *Modified* `src/sessions/ui.rs` (`build_sidebar_items` renders pinned `◆ Mission Control` +
+    selectable tier/`HQ` headers; delete the tab-bar block; main-area routing on `SelectedNode`)
+- **Out of scope:** the sub-tab bar itself (BA.13.4), the agent panel (BA.13.1), theming refactor
+  (BA.14.0), mouse (BA.13.2). Markdown "open" (`t`) becomes a transient full-screen overlay flag here
+  only insofar as needed to remove the tab dependency; overlay polish is deferred.
+- **Acceptance criteria:** no top tab bar renders; `◆ Mission Control` is the first spine row and is
+  selectable; tier headers (`HQ`/`core`/`side`/`client`/`portfolio`) are selectable; selecting a tier
+  shows `<tier>/planning/status.md` or a graceful empty-state; the `brain` leaf no longer appears and
+  `HQ` is its replacement with `learn-ai`/`base-template` beneath it; `spine_rows()`, `select_next/prev`
+  wrap, and `selected_node()` are unit-tested and a `draw_for_test` asserts the new sidebar; gated
+  checks pass.
+
+### Block BA.13.1 — Persistent global agent panel
+- **What:** An always-visible bottom "agents · priority" strip listing every tmux session across all
+  spaces with its detected `AgentState` (Working/Blocked/Idle/Unknown), sorted by urgency
+  (Blocked/needs-input first), rendered under every `SelectedNode`. Extract the urgency ordering from
+  `build_mission_items` into a pure `session_urgency(&Session) -> u8` reused in both places (preserve
+  `build_mission_items` signature — shared by `monitor/events.rs`). Add a pure
+  `agent_panel_rows(&[Session]) -> Vec<AgentPanelRow>`.
+- **Why:** The user's hard requirement — full cross-space transparency of session state while focused
+  on one space (the Herdr-grade fleet-status pattern), reusing the existing `detect/` engine.
+- **Files:**
+  - *Modified* `src/monitor/app.rs` (extract pure `session_urgency`; reuse in `build_mission_items`)
+  - *Modified* `src/sessions/ui.rs` (reserve the always-on bottom strip in the top-level vertical
+    split; render rows with themed state dots/colors; min-height fallback)
+  - *New/Modified* `src/sessions/` builder for `agent_panel_rows` (module placement per the existing
+    sessions layout)
+- **Interfaces / shared surface:** consumes `detect_state` output already applied in `poll_sessions`;
+  consumes the runtime theme from BA.14.0 for its colors.
+- **Out of scope:** click-to-jump on panel rows (that lands in BA.13.2 mouse); grouping rows by
+  space (uses `session_urgency` ordering now; cwd-based grouping refines after BA.13.3).
+- **Depends on:** Block BA.13.0, and BA.14.0 (theme).
+- **Acceptance criteria:** the panel renders under every `SelectedNode` (unit + `draw_for_test`); a
+  Blocked session sorts above a Working one above an Idle one (`session_urgency` unit-tested for all
+  four states + Running); colors come from the runtime theme, not literals; gated checks pass.
+
+### Block BA.13.2 — Mouse interactivity
+- **What:** Extend the already-enabled mouse capture (`ui.rs:499`; tab-bar clicks already work) into a
+  full pure dispatcher. Store per-pane viewport `Rect`s on `AppState` during draw (`spine_area`,
+  `subtab_area`, `browser_area`, `content_area`, `agent_panel_area`); rewrite `on_mouse` to route
+  clicks via `bella_engine::geometry::point_in`: spine → `selected_spine`; sub-tab → `sub_tab`;
+  browser list → `file_browser.selected`; content → scroll + `body_pos`; agent panel → jump to that
+  session's space + `SubTab::Sessions`. Handle `ScrollUp`/`ScrollDown`.
+- **Why:** User-prioritized — bella had full mouse support and the architecture already exists here;
+  this restores click-to-select and wheel-scroll across the new panes.
+- **Files:**
+  - *Modified* `src/sessions/app.rs` (viewport `Rect` fields; pure `on_mouse` dispatcher)
+  - *Modified* `src/sessions/ui.rs` (store Rects during draw; extend the Mouse event arm for scroll)
+- **Interfaces / shared surface:** reuses `bella_engine::geometry::{point_in, body_pos, select_word_at}`
+  (already exported; bastion already depends on `bella_engine`).
+- **Out of scope:** the standalone `monitor` subcommand's own event loop (`monitor/events.rs`) —
+  separate, out of scope unless explicitly requested; word/link selection in the content pane is
+  optional/best-effort.
+- **Depends on:** Block BA.13.0.
+- **Acceptance criteria:** clicking a spine row / sub-tab / browser entry / agent-panel row selects it;
+  wheel scrolls the content pane; `on_mouse` is unit-tested per pane with synthetic Rects+coords
+  yielding the asserted `Action`/state (no terminal); gated checks pass.
+
+### Block BA.13.3 — Session → space mapping
+- **What:** Capture tmux `#{pane_current_path}` and map each session to the space whose `repo_path` is
+  the longest prefix of its cwd; sessions matching no repo (or the brain root) fall to an HQ/unassigned
+  bucket. Pure `session_space(cwd, &SpaceTree)` + `map_sessions_to_spaces` in `spaces.rs`.
+- **Why:** Enables per-space Sessions filtering (BA.13.4) and cwd-based agent-panel grouping; today the
+  only link is slug-name equality (`app.rs:217`), which is brittle.
+- **Files:**
+  - *Modified* `src/sessions/tmux.rs` (append `\t#{pane_current_path}` to the list-sessions format
+    const; update the format-const test)
+  - *Modified* `src/sessions/model.rs` (add `cwd` to `Session`; `parse_session_line`
+    `splitn(5..)`→`splitn(6..)` with graceful default for a missing field)
+  - *Modified* `src/brain/spaces.rs` (pure `session_space` + `map_sessions_to_spaces`)
+- **Interfaces / shared surface:** the mapping fns should be reusable by `src/serve/*` for WS parity
+  (D2/D4: DB-free, read-only) — do not change WS behavior in this block, just make the fns available.
+- **Out of scope:** wiring the mapping into any UI (that is BA.13.4 / agent-panel grouping); multi-window
+  cwd edge cases (first-pane cwd is accepted for v1, noted as a caveat).
+- **Acceptance criteria:** `parse_session_line` handles 6 fields and a missing 6th (unit-tested);
+  `session_space` longest-prefix resolution is unit-tested (deeper repo wins, brain-root fallback,
+  no-match → None); the format-const test asserts the new field; gated checks pass.
+
+### Block BA.13.4 — Per-space sub-tab bar (`Overview · Board · Sessions`)
+- **What:** Add `SubTab { Overview, Board, Sessions }` + `sub_tab` state (reset to `Overview` on spine
+  change); repurpose `Tab`/`BackTab` to cycle sub-tabs; render the sub-tab bar for Space/Tier/HQ nodes
+  (not Mission Control). Route Overview → existing Space Overview; Board → existing Kanban
+  (`crate::overview::render`, already per-space); Sessions → new pane listing sessions filtered to the
+  selected space via a pure `filter_sessions_for_space`, reusing `session_row` + the urgency sort.
+- **Why:** Couples the per-space views under one navigator (the user's original intuition) and gives the
+  spine selection meaning across all three views.
+- **Files:**
+  - *Modified* `src/sessions/app.rs` (`SubTab` enum + field; sub-tab cycling; reset-on-spine-change;
+    pure `filter_sessions_for_space`)
+  - *Modified* `src/sessions/ui.rs` (render the sub-tab bar + the new Sessions pane)
+- **Interfaces / shared surface:** consumes `map_sessions_to_spaces` (BA.13.3); reuses
+  `crate::overview::render` and `session_urgency`.
+- **Out of scope:** Mission Control's internal layout (BA.14.2); the agent panel (BA.13.1).
+- **Depends on:** Block BA.13.0, Block BA.13.3.
+- **Acceptance criteria:** a selected Space/Tier/HQ shows `Overview · Board · Sessions` and `Tab`
+  cycles them; Mission Control shows no sub-tab bar; the Sessions pane lists only sessions mapped to the
+  selected space; `filter_sessions_for_space` + sub-tab cycle/reset are unit-tested; a `draw_for_test`
+  asserts the three labels for a Space and none for Mission Control; gated checks pass.
+
+### Block BA.13.5 — HQ file-browser exclusion
+- **What:** Add an additive `exclude: Option<Vec<PathBuf>>` to `bella_engine::browser::Browser` (applied
+  in the dir-listing filter; no-op when `None`); when the selected node is `HQ` (browsing `.`), derive
+  the exclude list from `brain.toml` (tier dirs + direct-child repo dirs) via a pure helper so the file
+  browser stops duplicating the spine.
+- **Why:** At the HQ root the browser currently lists `core/ side/ client/ portfolio/ learn-ai/
+  base-template/` alongside `docs/ planning/` — redundant with the spaces spine.
+- **Files:**
+  - *Modified* `core/bella/crates/bella-engine/src/browser.rs` (additive `exclude` field + filter)
+  - *Modified* `src/sessions/app.rs` (`reinit_browser` sets the exclude list for the HQ node)
+  - *Modified* `src/brain/spaces.rs` (pure exclude-derivation helper)
+- **Out of scope:** any change to non-HQ browsing; changing bella's own UX (the field is additive and
+  bastion-side).
+- **Depends on:** Block BA.13.0.
+- **Acceptance criteria:** browsing HQ hides the tier/repo dirs and still shows `docs/`/`planning/`/etc.;
+  the exclude filter (bella-engine) and the bastion derivation helper are unit-tested; bella's own tests
+  still pass; gated checks pass in both crates.
+
+---
+
+## Phase 14 — Unified Console Polish & Config-Driven Theming *(independent track; interleaves with Phase 13)*
+
+> **The polish + theming half of the Unified Console work.** Colors are already centralized in
+> `src/ui_theme.rs` (named functions via `bella_engine::palette::rgb()` with xterm-256 downgrade), a
+> configurable `Theme` struct already exists in `bella_engine` (`dark`/`light`/`bastion`), and config is
+> already TOML (`~/.config/bastion/config.toml`, `FileConfig`) — so this phase is mostly refactor-and-
+> extend, not build-from-scratch. **BA.14.0 (the config-driven theme system) is sequenced to land right
+> after BA.13.0 and before BA.13.1/13.4**, so every new pane is built against the runtime theme rather
+> than retrofitted. The remaining blocks (padding/collapse/truncation, Mission Control refinement, color
+> pass) build on BA.13.0's structure and BA.14.0's theme. DB-free (D4), read-only (D2).
+
+### Block BA.14.0 — Config-driven theme system
+- **What:** Make all color config-oriented. Refactor `src/ui_theme.rs` so its functions read a runtime
+  `Theme` (threaded, or a process-wide `OnceCell` set at startup) instead of returning baked `rgb()`
+  constants; add an optional `[theme]` section to `FileConfig` (theme *name* selection at minimum);
+  provide named presets (default `bastion`, room for more); map the selected theme →
+  `bella_engine::Theme` and pass it to `render_with_edit` (replacing the fixed `Theme::bastion()`) so
+  the markdown view and TUI chrome share one theme.
+- **Why:** The user wants themes to be swappable later and one theme applied app-wide (chrome +
+  markdown). Doing this early prevents the new Phase-13 panes from hardcoding colors.
+- **Files:**
+  - *Modified* `src/ui_theme.rs` (functions read a runtime `Theme`; no fixed rgb/`Color::` literals
+    outside the theme definition)
+  - *Modified* `src/config.rs` (extend `FileConfig` with the optional `[theme]` section + resolution)
+  - *Modified* `src/sessions/ui.rs` (pass the mapped `bella_engine::Theme` to `render_with_edit`)
+  - *Modified* `core/bella/crates/bella-engine/src/theme.rs` (only if the bastion→bella mapping needs a
+    new constructor/preset; otherwise consume the existing `Theme`)
+- **Interfaces / shared surface:** consumes `bella_engine::palette::rgb` + `bella_engine::Theme`;
+  establishes the runtime-`Theme` accessor that all other UI blocks consume.
+- **Out of scope:** full custom-palette-in-TOML (per-role overrides) — a later extension; the actual
+  color-value retune (BA.14.3).
+- **Depends on:** Block BA.13.0.
+- **Acceptance criteria:** a theme resolves by name from config with a default fallback when `[theme]`
+  is absent/unknown (unit-tested); `ui_theme` functions return the active theme's colors; the
+  bastion→bella `Theme` mapping is unit-tested; the markdown view and chrome visibly share the theme;
+  gated checks pass.
+
+### Block BA.14.1 — Layout polish (padding, collapsible sidebar, skinnier browser)
+- **What:** Add `Padding` to the panes for breathing room (there is none today); add a
+  `sidebar_collapsed: bool` to `AppState` with `compute_view` returning zero/minimal sidebar width when
+  collapsed, plus a toggle key + mouse target; reduce the file-browser split width and add width-aware
+  `…` ellipsis truncation to entry rendering (pure `truncate_*` helper).
+- **Why:** Herdr-grade polish — proper spacing, a collapsible spine, and a tidy browser that doesn't
+  overflow long names.
+- **Files:**
+  - *Modified* `src/sessions/ui.rs` (pane `Padding`; narrower browser split; ellipsis rendering)
+  - *Modified* `src/sessions/app.rs` (`sidebar_collapsed` field; `compute_view` conditional widths;
+    toggle handling; pure `truncate_*` helper)
+- **Interfaces / shared surface:** styling via the BA.14.0 runtime theme.
+- **Out of scope:** Mission Control's layout (BA.14.2); color values (BA.14.3).
+- **Depends on:** Block BA.13.0.
+- **Acceptance criteria:** panes render with padding; the sidebar collapses/expands via key and mouse;
+  long browser names show `…`; `truncate_*` (boundaries, multibyte) and `compute_view` collapsed-vs-
+  expanded widths are unit-tested; gated checks pass.
+
+### Block BA.14.2 — Mission Control refinement (conditional panes + inline indicators)
+- **What:** Make the Mission Control 3-pane layout conditional: for a selected tmux session render **2
+  panes** (list + session detail, wider) and drop `Node detail`; keep 3 panes for a workflow run. Add
+  inline status indicators (state glyph + themed color) to the Mission Control list rows so
+  session/workflow state is visible in that view too.
+- **Why:** The `Node detail` column is "Not applicable for Sessions" today yet still reserves 35% of
+  the width; and the operator wants at-a-glance state inside Mission Control, not only in the agent
+  panel.
+- **Files:**
+  - *Modified* `src/monitor/ui.rs` (conditional 2/3-pane `Layout`; inline row indicators)
+  - *Modified* `src/monitor/app.rs` (only if a selection-type accessor is needed for the layout choice)
+- **Interfaces / shared surface:** reuses `session_urgency` (BA.13.1) + the runtime theme's `state_*`
+  styles.
+- **Out of scope:** triggering workflows from Mission Control (not built yet; deferred); the agent
+  panel (BA.13.1).
+- **Depends on:** Block BA.13.0.
+- **Acceptance criteria:** selecting a tmux session shows 2 panes (no Node detail); selecting a workflow
+  run shows 3; list rows show themed state indicators; the layout-selection logic and indicator styling
+  are unit-tested (a `draw_for_test` asserts pane count per selection type); gated checks pass.
+
+### Block BA.14.3 — Color pass (more greens/cyans, modern feel)
+- **What:** Retune the theme values to introduce more greens/cyans across states and accents for a
+  modern terminal feel, keeping the purple + black dark base; verify contrast on truecolor and
+  xterm-256 downgrade.
+- **Why:** The final aesthetic pass once BA.14.0 has centralized every color into the theme definition.
+- **Files:**
+  - *Modified* `src/ui_theme.rs` / the theme-preset definition (color values only)
+  - *Modified* `core/bella/crates/bella-engine/src/theme.rs` (only if the shared markdown preset needs
+    matching retune)
+- **Interfaces / shared surface:** edits the theme presets consumed app-wide via BA.14.0.
+- **Out of scope:** structural/layout changes; adding new theme presets beyond the retuned default.
+- **Depends on:** Block BA.14.0.
+- **Acceptance criteria:** the default theme shows the retuned palette (more greens/cyans) with the
+  purple/black base intact; colors still downgrade correctly on xterm-256 (spot-checked); any theme
+  unit tests still pass; gated checks pass.
+
+---
+
 ## Quick Reference Sequence Table
 
 | Phase | Block | What | Why | Role in destination |
@@ -1180,6 +1425,16 @@ Forward-looking — refine Files when each becomes next.
 | 11 | G | Engine workflow surfaces in `serve` *(BastionUI; prog. N, post-v1)* | Trigger/inspect/kill runs via the gateway (D25) | Engine control server half |
 | 11 | H | Chat backend via Claude Code SDK *(BastionUI; prog. P, post-v1)* | Think out loud while building | Chat server half |
 | 11 | I | FCM background push relay *(BastionUI; prog. R, post-v1)* | Alerts when the app is closed | Background push server half |
+| 13 | 0 | Spine model + primary navigation (Design A) | Kill top tabs; spine is the only navigator | Foundation of the unified console |
+| 13 | 1 | Persistent global agent panel | Cross-space session-state transparency at a glance | Always-on fleet status |
+| 13 | 2 | Mouse interactivity | Restore click/scroll across the new panes | Ergonomic operator surface |
+| 13 | 3 | Session → space mapping (cwd) | Link tmux sessions to spaces robustly | Enables per-space Sessions + grouping |
+| 13 | 4 | Per-space sub-tab bar (Overview · Board · Sessions) | Couple the per-space views under one spine | The unified per-space workspace |
+| 13 | 5 | HQ file-browser exclusion | Stop the browser duplicating the spine at HQ | Clean HQ overview |
+| 14 | 0 | Config-driven theme system | All color config-oriented; one theme app-wide | Themeable foundation |
+| 14 | 1 | Layout polish (padding, collapse, truncation) | Herdr-grade spacing + collapsible spine | Modern, tidy chrome |
+| 14 | 2 | Mission Control refinement (conditional panes + indicators) | Drop Node detail for sessions; inline state | Focused operational view |
+| 14 | 3 | Color pass (more greens/cyans) | Modern terminal feel on the purple/black base | Final aesthetic |
 
 > Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
 > Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any
@@ -1211,6 +1466,16 @@ Forward-looking — refine Files when each becomes next.
 > tags (`prog. A/D/E/G/I/K/N/P/R`) belong to the *BastionUI* program and are unrelated to the
 > bastion-product letters above. The peer Flutter blocks execute in the `bastion-ui` repo; later
 > Engine-kill (11G) consumes the orchestrator's existing **Block I** abort endpoint.
+>
+> **Phases 13–14 (Unified Console restructure + polish/theming) are a fifth independent track** —
+> continuation of the ad-hoc Phase 12 "Unified Console Cleanup" (now closed). They are DB-free (D4) and
+> read-only vs the orchestrator (D2), touching `src/sessions/`, `src/brain/spaces.rs`, `src/monitor/`,
+> `src/ui_theme.rs`, `src/config.rs`, and one additive field in `bella-engine`'s browser/theme. The
+> cross-phase ordering is deliberate: **BA.13.0 (spine) → BA.14.0 (theme) → BA.13.1/13.2 → BA.13.3 →
+> BA.13.4 → BA.14.1/14.2 → BA.13.5 → BA.14.3**, so new panes are built against the config-driven theme
+> rather than retrofitted. Governed by the approved plan (session 2026-07-01,
+> `.claude/plans/`). Prerequisite noted in BA.13.0: `side`/`client`/`portfolio` tiers lack tier-level
+> `state.json`/master-plan (HQ backlog ticket filed) — the tier overview degrades gracefully until then.
 
 ---
 

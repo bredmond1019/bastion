@@ -248,12 +248,127 @@
           "origin": null
         }
       ]
+    },
+    {
+      "title": "Phase 13 — Unified Console Structural Restructure",
+      "blocks": [
+        {
+          "id": "BA.13.0",
+          "title": "Spine model + primary navigation (Design A)",
+          "status": "open",
+          "depends_on": [],
+          "wave": 130,
+          "origin": null
+        },
+        {
+          "id": "BA.13.1",
+          "title": "Persistent global agent panel",
+          "status": "open",
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null },
+            { "type": "block", "repo": "bastion", "id": "BA.14.0", "what": null }
+          ],
+          "wave": 140,
+          "origin": null
+        },
+        {
+          "id": "BA.13.2",
+          "title": "Mouse interactivity",
+          "status": "open",
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+          ],
+          "wave": 140,
+          "origin": null
+        },
+        {
+          "id": "BA.13.3",
+          "title": "Session to space mapping (cwd)",
+          "status": "open",
+          "depends_on": [],
+          "wave": 140,
+          "origin": null
+        },
+        {
+          "id": "BA.13.4",
+          "title": "Per-space sub-tab bar (Overview / Board / Sessions)",
+          "status": "open",
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null },
+            { "type": "block", "repo": "bastion", "id": "BA.13.3", "what": null }
+          ],
+          "wave": 150,
+          "origin": null
+        },
+        {
+          "id": "BA.13.5",
+          "title": "HQ file-browser exclusion",
+          "status": "open",
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+          ],
+          "wave": 140,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "title": "Phase 14 — Unified Console Polish & Theming",
+      "blocks": [
+        {
+          "id": "BA.14.0",
+          "title": "Config-driven theme system",
+          "status": "open",
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+          ],
+          "wave": 135,
+          "origin": null
+        },
+        {
+          "id": "BA.14.1",
+          "title": "Layout polish (padding, collapsible sidebar, skinnier browser)",
+          "status": "open",
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+          ],
+          "wave": 150,
+          "origin": null
+        },
+        {
+          "id": "BA.14.2",
+          "title": "Mission Control refinement (conditional panes + inline indicators)",
+          "status": "open",
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+          ],
+          "wave": 150,
+          "origin": null
+        },
+        {
+          "id": "BA.14.3",
+          "title": "Color pass (more greens/cyans)",
+          "status": "open",
+          "depends_on": [
+            { "type": "block", "repo": "bastion", "id": "BA.14.0", "what": null }
+          ],
+          "wave": 155,
+          "origin": null
+        }
+      ]
     }
   ],
   "repos": [],
   "cross_repo": [],
   "tiers": [],
   "note": null,
-  "backlog": [],
+  "backlog": [
+    {
+      "id": "BA.BL.1",
+      "title": "Audit and populate missing planning/state.json and master-plan.md across all repos",
+      "status": "open",
+      "note": "Many sub-brains and projects currently lack these files, resulting in empty/missing kanban and space overviews in the TUI."
+    }
+  ],
   "carryover": []
 }
