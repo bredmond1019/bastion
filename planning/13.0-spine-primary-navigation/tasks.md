@@ -25,7 +25,7 @@ Replace the three-tab layout with a spine-only navigator: `SpineRow` model (`Mis
 
 ## Step-by-Step Tasks
 
-### BA.13.0.1 Spine model in `src/brain/spaces.rs`
+### 1. BA.13.0.1 Spine model in `src/brain/spaces.rs`
 - **Owns:** `src/brain/spaces.rs` (only file touched by this task).
 - Add a `SpineRow` model as a presentation layer over the unchanged `parse_space_tree` output — do **not** modify `parse_space_tree` itself. Row kinds: `MissionControl` (pinned first), `Hq`, `Tier(name)`, `Space(...)`.
 - Add a `SelectedNode` enum (the routing target consumed by `app.rs` + `ui.rs`): `MissionControl`, `Hq`, `Tier(name)`, `Space(...)`. Define it here so both downstream tasks share one type.
@@ -33,7 +33,7 @@ Replace the three-tab layout with a spine-only navigator: `SpineRow` model (`Mis
 - Rename the `_root` tier → `HQ`; collapse the redundant `brain` leaf into the `HQ` row (data source = brain root `.`); keep `learn-ai`/`base-template` as `HQ` children.
 - **Tests (Rule 6):** unit-test `spine_rows()` against a `parse_space_tree` fixture asserting order (Mission Control first), the `HQ` rename, the collapsed-`brain` invariant (no standalone `brain` leaf), and that `learn-ai`/`base-template` appear under `HQ`. Cover an empty/degenerate tree.
 
-### BA.13.0.2 Selection + node routing in `src/sessions/app.rs`
+### 2. BA.13.0.2 Selection + node routing in `src/sessions/app.rs`
 - **Owns:** `src/sessions/app.rs` (only file touched by this task). **Depends on:** BA.13.0.1 (`SpineRow`/`SelectedNode`).
 - Replace `selected_space` with `selected_spine` (index into `spine_rows()`); add a derived `selected_node() -> SelectedNode`.
 - Rewrite `select_next`/`select_prev` to **wrap over all rows** (drop the header-skip logic) — Mission Control and tier headers are now selectable.
@@ -41,14 +41,14 @@ Replace the three-tab layout with a spine-only navigator: `SpineRow` model (`Mis
 - Remove the tab machinery entirely: `tabs`, `active_tab_index`, `next_tab`, `prev_tab`, `push_tab`, `close_tab`, and the `Tab`/`BackTab` key arms. Where the markdown "open" (`t`) path depended on pushing a tab, replace it with a transient full-screen overlay flag sufficient to drop the tab dependency (overlay polish deferred).
 - **Tests (Rule 6):** unit-test `select_next`/`select_prev` wrap-around across the full spine (including wrap at both ends), and `selected_node()` returning the correct `SelectedNode` for Mission Control, `HQ`, a tier header, and a space row.
 
-### BA.13.0.3 Sidebar render + main-area routing in `src/sessions/ui.rs`
+### 3. BA.13.0.3 Sidebar render + main-area routing in `src/sessions/ui.rs`
 - **Owns:** `src/sessions/ui.rs` (only file touched by this task). **Depends on:** BA.13.0.2 (`selected_spine`/`selected_node()`).
 - Rewrite `build_sidebar_items` to render the pinned `◆ Mission Control` row plus selectable tier/`HQ` headers and space rows from `spine_rows()`.
 - Delete the top tab-bar rendering block.
 - Route the main area on `selected_node()` (`SelectedNode`): Mission Control → existing `monitor::ui::render`; Space/Hq → existing Space Overview; Tier → tier overview rooted at `<tier>/planning/status.md` with a graceful empty-state degrade when the file/tier is absent.
 - **Tests (Rule 6):** a `draw_for_test` (following the existing sessions TUI test pattern) asserting the new sidebar contains `◆ Mission Control` first, shows selectable `HQ`/`core`/`side`/`client`/`portfolio` headers, no longer renders a top tab bar, and no longer shows a standalone `brain` leaf. Assert the tier empty-state degrade renders without panicking.
 
-### BA.13.0.4 Validate
+### 4. BA.13.0.4 Validate
 - Run the Validation Commands listed below and confirm all pass.
 - Manually smoke-test the TUI (`cargo run -- sessions` or the unified-console entry) via tmux `capture-pane`: confirm no top tab bar, `◆ Mission Control` selectable at the top of the spine, tier headers selectable, selecting a tier shows its status or empty-state, and the `brain` leaf is gone. Record the result in `## Notes`.
 
