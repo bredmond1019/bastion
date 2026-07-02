@@ -19,3 +19,6 @@ Validated: gating checks (fast tripwire)
 What: Validated BA.13.1 (fmt/clippy/test/release build all green after fixing a clippy collapsible-if lint) and manually smoke-tested the agents-priority strip via tmux capture-pane across Mission Control, a tier, and a space; results recorded in tasks.md Notes.
 Decisions: Fixed a clippy::collapsible_if warning surfaced by --all-targets in the task-3 test code (nested if-let/if in build_space_item_working_dot_tracks_runtime_theme) by collapsing to a let-chain — no behavior change, required for the clippy gate to pass.; Used cargo clippy --all-targets rather than plain cargo clippy since the spec's harness/CLAUDE.md gate must cover test code too; the plain command alone would have missed the test-only warning.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/sessions.md
