@@ -26,7 +26,7 @@ Add an always-visible bottom "agents · priority" strip listing every tmux sessi
 
 ## Step-by-Step Tasks
 
-### 1. BA.13.1.1 Extract pure `session_urgency` in `src/monitor/app.rs`
+### 1. BA.13.1.1 Extract pure `session_urgency` in `src/monitor/app.rs` (in progress)
 - **Owns:** `src/monitor/app.rs` (only file touched by this task).
 - Extract the urgency ordering currently inline in `build_mission_items` into a pure `session_urgency(&Session) -> u8` (lower value = higher urgency, Blocked/needs-input first), and reuse it inside `build_mission_items`.
 - **Preserve the `build_mission_items` signature** (`build_mission_items(sessions: &[Session], runs: &[WorkflowRun]) -> Vec<MissionItem>`) — it is shared by `monitor/events.rs`. This is a refactor with no behaviour change to Mission Control's output.
