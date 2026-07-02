@@ -20,6 +20,14 @@ pub enum TabState {
     MarkdownDocument(std::path::PathBuf),
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum OverviewPane {
+    #[default]
+    Sidebar,
+    Browser,
+    Content,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputKind {
     New,
@@ -57,6 +65,10 @@ pub struct AppState {
     pub monitor_app: crate::monitor::app::App,
     pub space_tree: SpaceTree,
     pub selected_space: usize,
+    pub file_browser: bella_engine::browser::Browser,
+    pub space_overview_scroll: u16,
+    pub overview_pane: OverviewPane,
+    pub space_overview_file: Option<std::path::PathBuf>,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -79,10 +91,26 @@ impl AppState {
             monitor_app: crate::monitor::app::App::new(),
             space_tree,
             selected_space: 0,
+            file_browser: bella_engine::browser::Browser::new(std::path::PathBuf::from(".")),
+            space_overview_scroll: 0,
+            overview_pane: OverviewPane::Sidebar,
+            space_overview_file: None,
         };
         // initialize selected_space to the first non-header if possible
         app.ensure_valid_selection();
+        app.reinit_browser();
         app
+    }
+
+    pub fn reinit_browser(&mut self) {
+        let flat = self.space_tree.flatten();
+        if let Some((_, _, Some(repo))) = flat.get(self.selected_space) {
+            let path = repo.repo_path.clone();
+            let mut browser = bella_engine::browser::Browser::new(path.clone());
+            browser.root_boundary = Some(path);
+            self.file_browser = browser;
+            self.space_overview_scroll = 0;
+        }
     }
 
     fn ensure_valid_selection(&mut self) {
@@ -144,6 +172,7 @@ impl AppState {
             if !flat[next].0 {
                 // not a header
                 self.selected_space = next;
+                self.reinit_browser();
                 return;
             }
         }
@@ -165,6 +194,7 @@ impl AppState {
             if !flat[prev].0 {
                 // not a header
                 self.selected_space = prev;
+                self.reinit_browser();
                 return;
             }
         }
@@ -234,10 +264,113 @@ impl AppState {
     pub fn on_key(&mut self, key: KeyCode) -> Action {
         match &self.mode.clone() {
             Mode::Normal => {
-                // Clear transient status on any action key.
+                let is_space_overview = self.tabs[self.active_tab_index] == TabState::SpaceOverview;
+                self.status = Option::None;
+
+                // Handle pane focus switching in SpaceOverview
+                if is_space_overview {
+                    match key {
+                        KeyCode::Right => {
+                            self.overview_pane = match self.overview_pane {
+                                OverviewPane::Sidebar => OverviewPane::Browser,
+                                OverviewPane::Browser => OverviewPane::Content,
+                                OverviewPane::Content => OverviewPane::Content,
+                            };
+                            return Action::None;
+                        }
+                        KeyCode::Left => {
+                            self.overview_pane = match self.overview_pane {
+                                OverviewPane::Sidebar => OverviewPane::Sidebar,
+                                OverviewPane::Browser => OverviewPane::Sidebar,
+                                OverviewPane::Content => OverviewPane::Browser,
+                            };
+                            return Action::None;
+                        }
+                        _ => {}
+                    }
+                }
+
+                if is_space_overview {
+                    match self.overview_pane {
+                        OverviewPane::Browser => {
+                            match key {
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    self.file_browser.move_cursor(-1, 20);
+                                    return Action::None;
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    self.file_browser.move_cursor(1, 20);
+                                    return Action::None;
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(target) = self.file_browser.descend() {
+                                        let mut b = bella_engine::browser::Browser::new(target);
+                                        b.root_boundary = self.file_browser.root_boundary.clone();
+                                        self.file_browser = b;
+                                    } else if let Some(entry) = self.file_browser.selected_entry() {
+                                        let is_md = entry.kind
+                                            == bella_engine::browser::BrowserEntryKind::Markdown;
+                                        if is_md {
+                                            self.space_overview_file = Some(entry.path.clone());
+                                            self.space_overview_scroll = 0;
+                                        }
+                                    }
+                                    return Action::None;
+                                }
+                                KeyCode::Char('t') => {
+                                    if let Some(entry) = self.file_browser.selected_entry() {
+                                        let is_md = entry.kind
+                                            == bella_engine::browser::BrowserEntryKind::Markdown;
+                                        if is_md {
+                                            self.push_tab(TabState::MarkdownDocument(
+                                                entry.path.clone(),
+                                            ));
+                                        }
+                                    }
+                                    return Action::None;
+                                }
+                                KeyCode::Backspace => {
+                                    if let Some(parent) = self.file_browser.ascend_target() {
+                                        let mut b = bella_engine::browser::Browser::new(parent);
+                                        b.root_boundary = self.file_browser.root_boundary.clone();
+                                        self.file_browser = b;
+                                    }
+                                    return Action::None;
+                                }
+                                _ => {} // let it fall through? No, wait, if we are in Browser, we probably shouldn't fall through to global keys like 'q', etc unless we want to. Let's allow global keys for anything not explicitly handled.
+                            }
+                        }
+                        OverviewPane::Content => match key {
+                            KeyCode::PageUp => {
+                                self.space_overview_scroll =
+                                    self.space_overview_scroll.saturating_sub(10);
+                                return Action::None;
+                            }
+                            KeyCode::PageDown => {
+                                self.space_overview_scroll =
+                                    self.space_overview_scroll.saturating_add(10);
+                                return Action::None;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                self.space_overview_scroll =
+                                    self.space_overview_scroll.saturating_sub(1);
+                                return Action::None;
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                self.space_overview_scroll =
+                                    self.space_overview_scroll.saturating_add(1);
+                                return Action::None;
+                            }
+                            _ => {}
+                        },
+                        OverviewPane::Sidebar => {
+                            // Sidebar uses global Up/Down/j to navigate spaces
+                        }
+                    }
+                }
+
                 match key {
                     KeyCode::Down | KeyCode::Char('j') => {
-                        self.status = Option::None;
                         self.select_next();
                         if self.tabs[self.active_tab_index] == TabState::MissionControl {
                             self.monitor_app.next_item();
@@ -245,7 +378,6 @@ impl AppState {
                         Action::None
                     }
                     KeyCode::Up => {
-                        self.status = Option::None;
                         self.select_prev();
                         if self.tabs[self.active_tab_index] == TabState::MissionControl {
                             self.monitor_app.prev_item();
@@ -253,30 +385,25 @@ impl AppState {
                         Action::None
                     }
                     KeyCode::Char('a') => {
-                        self.status = Option::None;
                         if let Some(s) = self.selected_session_for_actions() {
                             Action::Attach(s.name.clone())
                         } else if let Some(slug) = self.selected_space_slug() {
-                            // Even if not running, we could theoretically try to attach or start, but action expects a name
                             Action::Attach(slug)
                         } else {
                             Action::None
                         }
                     }
                     KeyCode::Char('n') => {
-                        self.status = Option::None;
                         self.input.clear();
                         self.mode = Mode::Input(InputKind::New);
                         Action::None
                     }
                     KeyCode::Char('s') => {
                         if let Some(s) = self.selected_session_for_actions() {
-                            let _name = s.name.clone(); // ensure borrow ends
-                            self.status = Option::None;
+                            let _name = s.name.clone();
                             self.input.clear();
                             self.mode = Mode::Input(InputKind::Send);
                         } else if self.selected_space_slug().is_some() {
-                            self.status = Option::None;
                             self.input.clear();
                             self.mode = Mode::Input(InputKind::Send);
                         } else {
@@ -285,7 +412,7 @@ impl AppState {
                         Action::None
                     }
                     KeyCode::Char('k') => {
-                        self.status = Option::None;
+                        // Global 'k' is Kill, but if in SpaceOverview Content/Browser, it was already handled above.
                         if let Some(s) = self.selected_session_for_actions() {
                             Action::Kill(s.name.clone())
                         } else if let Some(slug) = self.selected_space_slug() {

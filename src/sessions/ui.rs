@@ -240,8 +240,64 @@ fn draw_with_root(
             crate::monitor::ui::render(frame, &app.monitor_app, main_chunks[1]);
         }
         TabState::SpaceOverview => {
-            let status_md_path = planning_root.join("status.md");
-            let raw_md = std::fs::read_to_string(&status_md_path)
+            let overview_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(30), Constraint::Min(0)])
+                .split(main_chunks[1]);
+
+            // Browser Pane
+            let browser_border = if app.overview_pane == crate::sessions::app::OverviewPane::Browser
+            {
+                *th_active
+            } else {
+                *th
+            };
+            let browser_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(browser_border))
+                .title(Span::styled(
+                    " file browser ",
+                    crate::ui_theme::title_style(),
+                ));
+
+            let mut list_items = Vec::new();
+            for entry in &app.file_browser.entries {
+                let prefix = match entry.kind {
+                    bella_engine::browser::BrowserEntryKind::ParentDir => " ⇧ ",
+                    bella_engine::browser::BrowserEntryKind::Dir => " 📁 ",
+                    bella_engine::browser::BrowserEntryKind::Markdown => " 📄 ",
+                };
+                let span = Span::raw(format!("{}{}", prefix, entry.display));
+                list_items.push(ListItem::new(Line::from(vec![span])));
+            }
+            let mut list_state = ListState::default();
+            list_state.select(Some(app.file_browser.selected));
+            // Apply browser scroll offset manually if List doesn't do it automatically, wait List handles scroll implicitly via state!
+            let browser_list = List::new(list_items)
+                .block(browser_block)
+                .highlight_style(crate::ui_theme::list_selected_style())
+                .highlight_symbol(">>");
+
+            frame.render_stateful_widget(browser_list, overview_chunks[0], &mut list_state);
+
+            // Content Pane
+            let content_border = if app.overview_pane == crate::sessions::app::OverviewPane::Content
+            {
+                *th_active
+            } else {
+                *th
+            };
+            let content_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(content_border))
+                .title(Span::styled(" content ", crate::ui_theme::title_style()));
+
+            let file_path = match &app.space_overview_file {
+                Some(p) => p.clone(),
+                None => planning_root.join("status.md"),
+            };
+
+            let raw_md = std::fs::read_to_string(&file_path)
                 .unwrap_or_else(|_| "No planning/status.md found.".to_string());
             // Strip YAML frontmatter before handing to bella.
             let status_md = strip_frontmatter(&raw_md).to_owned();
@@ -250,13 +306,15 @@ fn draw_with_root(
             let rendered = bella_engine::render_with_edit(
                 &status_md,
                 None,
-                main_chunks[1].width.saturating_sub(2), // account for borders
+                overview_chunks[1].width.saturating_sub(2), // account for borders
                 &theme,
                 None,
                 &tables,
             );
-            let paragraph = Paragraph::new(rendered.lines).block(content_block);
-            frame.render_widget(paragraph, main_chunks[1]);
+            let paragraph = Paragraph::new(rendered.lines)
+                .block(content_block)
+                .scroll((app.space_overview_scroll, 0));
+            frame.render_widget(paragraph, overview_chunks[1]);
         }
         TabState::Kanban => {
             let state_json_path = planning_root.join("state.json");
