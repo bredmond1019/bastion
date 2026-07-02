@@ -1,4 +1,4 @@
 template: base-template
-commit: 00ad2834e232d3243a3578132b02db01a7be40ab
+commit: 9cca6e8a54d75aaac3d078c11cb3ffea75d61bb7
 generated: 2026-06-18
-synced: 2026-06-26 — harness pull (Wave 5: redesign D37–D43, engines rewrite, /ticket /review-PR /merge-train, docs/workflows/), base-template c408273
+synced: 2026-07-02 — add /sync-downstream-harness command

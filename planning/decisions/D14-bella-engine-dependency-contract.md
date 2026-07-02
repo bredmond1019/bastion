@@ -6,7 +6,7 @@ doc_id: D14-bella-engine-dependency-contract
 layer: [console]
 project: bastion
 status: active
-keywords: [bella-engine, bella, cross-repo dependency, path dependency, shared substrate, images feature, Theme, mission control]
+keywords: [bella-engine, bella, cross-repo dependency, path dependency, shared substrate, images feature, Theme]
 related: [D11-herdr-reference-only, D13-unified-console-target]
 ---
 

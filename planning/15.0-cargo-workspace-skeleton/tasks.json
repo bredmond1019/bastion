@@ -1,0 +1,42 @@
+[
+  {
+    "task_id": 1,
+    "title": "Create the workspace and relocate bastion into crates/bastion/",
+    "description": "Build the workspace container and move the package with history preserved:\n- `git mv src crates/bastion/src` so the entire source tree (including its `manifests/` and `fixtures/` assets) relocates with git history intact; confirm no `src/` remains at repo root.\n- Author `crates/bastion/Cargo.toml` from the current root manifest: carry over `[package]` (name `bastion`, version, `edition = \"2024\"`), the full `[dependencies]` set, and `[dev-dependencies]` (`tempfile`). Repoint the four sibling path deps to the new depth (two extra `../`): `bella-engine = { path = \"../../../bella/crates/bella-engine\" }` and the three `workflow-engine-*` at `../../../../portfolio/workflow-engine-rs/crates/…`. Do NOT add `default-features = false` to `bella-engine` (CLAUDE.md rule 7).\n- Replace the root `Cargo.toml` with a virtual workspace manifest: `[workspace]`, `members = [\"crates/bastion\"]`, and `resolver = \"3\"` (edition-2024-compatible). It must no longer declare the `bastion` `[package]` or its dependencies.\n- Do not move any behavior into new crates — this block only builds the container (out of scope per the block).",
+    "acceptance_criteria": [],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["Cargo.toml", "crates/bastion/Cargo.toml", "crates/bastion/src/"],
+    "dependsOn": []
+  },
+  {
+    "task_id": 2,
+    "title": "Restore a green build and test suite after the relocation",
+    "description": "Prove the moved workspace builds and that no test regressed, and repair any residual breakage the relocation introduced:\n- Regenerate `Cargo.lock` (workspace-root lockfile) and run the full gate.\n- Fix any breakage caused specifically by the move: path-dep depth errors, workspace `resolver` warnings, and any hardcoded root-relative path in tests. In particular re-verify the `CARGO_MANIFEST_DIR`-relative fixture joins in `crates/bastion/src/validate/report.rs` and `crates/bastion/src/brain/code_graph.rs` (they join `src/…` off the manifest dir, which is now `crates/bastion` — should still resolve since fixtures moved with the tree; adjust only if a path assumed the old repo root).\n- Confirm `include_str!`/`include_bytes!` fixture loads (detect/db/brain golden tests) still compile and pass unchanged.\n- The `bastion` binary and the entire pre-existing test suite must pass with the same tests, all green — no new tests are expected since no behavior changed.",
+    "acceptance_criteria": [],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["Cargo.lock", "crates/bastion/src/validate/report.rs", "crates/bastion/src/brain/code_graph.rs"],
+    "dependsOn": [1]
+  },
+  {
+    "task_id": 3,
+    "title": "Reflect the new layout in repo docs",
+    "description": "Update in-repo references that name the old `src/…` layout so they point at `crates/bastion/src/…`:\n- `CLAUDE.md` → the `## Directory map` fenced tree (`src/main.rs`, `src/cli.rs`, the `src/<module>/` rows) — rewrite to the `crates/bastion/src/…` layout and add the top-level `crates/bastion/` container.\n- `AGENT.md` and `GEMINI.md` → apply the same fix only where they mirror the directory map or reference `src/…` paths; leave unrelated content untouched.\n- This is documentation-only and disjoint from the source/manifest changes; it must not alter build behavior.",
+    "acceptance_criteria": [],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["CLAUDE.md", "AGENT.md", "GEMINI.md"],
+    "dependsOn": [1]
+  },
+  {
+    "task_id": 4,
+    "title": "Validate",
+    "description": "Run the Validation Commands listed in tasks.md and confirm all pass: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`, `cargo run -- --help`.",
+    "acceptance_criteria": [],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": [],
+    "dependsOn": [1, 2, 3]
+  }
+]

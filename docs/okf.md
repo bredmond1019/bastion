@@ -1,26 +1,26 @@
 ---
 type: Reference
 title: okf — OKF Frontmatter Model & Serializer (write path)
-description: "Reference for the `src/okf` module: the OkfFrontmatter model and serialize_frontmatter, the write direction of the OKF frontmatter contract used by scaffolding (bastion init) and future backfill (adopt)."
+description: "Reference for the `crates/bastion/src/okf` module: the OkfFrontmatter model and serialize_frontmatter, the write direction of the OKF frontmatter contract used by scaffolding (bastion init) and future backfill (adopt)."
 doc_id: okf
 layer: [console, factory, meta]
 project: bastion
 status: active
-keywords: [OKF, frontmatter, serializer, write path, okf-core, scaffolding, YAML, bastion init]
+keywords: [OKF, frontmatter, serializer, write path, okf-core, scaffolding, YAML]
 related: [validate, brain, bastion-product-plan]
 ---
 
 # okf — OKF Frontmatter Model & Serializer
 
-`src/okf` is the **write direction** of the OKF frontmatter contract. Everywhere else in the stack
-*reads* or *validates* frontmatter — `src/validate/frontmatter.rs` parses and checks it, `src/brain/okf.rs`
+`crates/bastion/src/okf` is the **write direction** of the OKF frontmatter contract. Everywhere else in the stack
+*reads* or *validates* frontmatter — `crates/bastion/src/validate/frontmatter.rs` parses and checks it, `crates/bastion/src/brain/okf.rs`
 extracts `doc_id`/`title` for the graph, and `mev` validates a whole corpus. Nothing could **emit** a
-compliant OKF frontmatter block until this module. That gap is what `src/okf` fills.
+compliant OKF frontmatter block until this module. That gap is what `crates/bastion/src/okf` fills.
 
 > **Why it exists:** the [Bastion Product plan](../planning/bastion-product/plan.md) turns `bastion` into
 > an adoptable "agent OS." Standing up a brain in someone else's repo (`bastion init`) and backfilling
 > frontmatter onto existing docs (`bastion adopt`, later) both require *producing* correct frontmatter, not
-> just checking it. `src/okf` is the in-repo prototype of the future **`okf-core`** crate (plan block
+> just checking it. `crates/bastion/src/okf` is the in-repo prototype of the future **`okf-core`** crate (plan block
 > **BA.15.1**) — kept pure and dependency-light so it lifts into a workspace crate cleanly.
 
 ## What OKF frontmatter is
@@ -33,7 +33,7 @@ frontmatter is what makes the corpus queryable as a graph (see [brain.md](brain.
 
 ## The model — `OkfFrontmatter`
 
-`src/okf/mod.rs` defines `OkfFrontmatter`, a `serde`-derived struct mirroring the OKF contract:
+`crates/bastion/src/okf/mod.rs` defines `OkfFrontmatter`, a `serde`-derived struct mirroring the OKF contract:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -70,7 +70,7 @@ Emits a canonical `---`-fenced block (opening + closing fence + trailing newline
 ### Quoting
 
 The serializer is **hand-rolled** (no `serde_yaml` dependency) to match the house-style hand-rolled parser
-in `src/validate/frontmatter.rs`. A scalar is left bare unless it would be misparsed by YAML, in which case
+in `crates/bastion/src/validate/frontmatter.rs`. A scalar is left bare unless it would be misparsed by YAML, in which case
 it is double-quoted with `\` and `"` escaped. `needs_quote` quotes when the value:
 
 - has significant leading/trailing whitespace,
@@ -98,7 +98,7 @@ value ever serialized in a form the validator rejected, these tests would fail f
 | `serialize_frontmatter(&OkfFrontmatter) -> String` | fn | emit a canonical `---`-fenced block |
 
 Both `parse_frontmatter` (crate-internal) and `validate_frontmatter` (public) in
-`src/validate/frontmatter.rs` are the complementary **read/validate** side.
+`crates/bastion/src/validate/frontmatter.rs` are the complementary **read/validate** side.
 
 ## Status & roadmap
 

@@ -22,14 +22,6 @@
         "blocked_by": []
       },
       {
-        "id": "BA.13.1",
-        "title": "Persistent global agent panel",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": []
-      },
-      {
         "id": "BA.13.2",
         "title": "Mouse interactivity",
         "status": null,
@@ -479,7 +471,7 @@
         {
           "id": "BA.13.1",
           "title": "Persistent global agent panel",
-          "status": "open",
+          "status": "closed",
           "depends_on": [
             {
               "type": "block",
@@ -495,68 +487,7 @@
             }
           ],
           "wave": 140,
-          "origin": null,
-          "tasks": [
-            {
-              "task_id": 1,
-              "title": "Extract pure session_urgency in src/monitor/app.rs",
-              "description": "Extract the urgency ordering inline in build_mission_items into a pure session_urgency(&Session)->u8 (Blocked/needs-input first) and reuse it there; preserve build_mission_items signature (shared by monitor/events.rs). Unit-test all AgentState values + Running and assert build_mission_items ordering unchanged.",
-              "acceptance_criteria": [
-                "session_urgency(&Session)->u8 extracted, reused in build_mission_items",
-                "build_mission_items signature preserved (shared by monitor/events.rs)",
-                "session_urgency unit-tested for Working/Blocked/Idle/Unknown + Running with Blocked>Working>Idle ordering",
-                "build_mission_items ordering regression asserted unchanged"
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 2,
-              "title": "Pure agent_panel_rows builder in src/sessions/agent_panel.rs",
-              "description": "Add AgentPanelRow model + pure agent_panel_rows(&[Session])->Vec<AgentPanelRow> mapping every session and sorting by session_urgency; no I/O or theme access in the pure builder. Register pub mod agent_panel in src/sessions/mod.rs. Unit-test one row per session, urgency sort, and empty slice.",
-              "acceptance_criteria": [
-                "new src/sessions/agent_panel.rs with AgentPanelRow + pure agent_panel_rows",
-                "module registered via pub mod agent_panel in src/sessions/mod.rs",
-                "rows sorted by session_urgency (Blocked before Working before Idle)",
-                "unit tests cover one-row-per-session, sort order, empty slice"
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 3,
-              "title": "Reserve + render the bottom strip in src/sessions/ui.rs",
-              "description": "Reserve an always-on bottom strip in the top-level vertical split so it renders under every SelectedNode with a min-height fallback; render agent_panel_rows with themed state dots/colors from ui_theme::current_theme() (never literals). draw_for_test asserts strip under >=2 SelectedNodes, urgency order, and min-height no-panic.",
-              "acceptance_criteria": [
-                "always-on bottom strip reserved in top-level vertical split, renders under every SelectedNode",
-                "rows rendered with runtime-theme colors, no literals",
-                "min-height fallback renders without panic",
-                "draw_for_test asserts strip under >=2 SelectedNodes and urgency order"
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 4,
-              "title": "Validate",
-              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI via tmux capture-pane (multiple sessions, differing states) and record the result in Notes.",
-              "acceptance_criteria": [
-                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
-                "TUI smoke test (strip visible under Mission Control/tier/space, Blocked first, themed colors) recorded in tasks.md Notes"
-              ],
-              "status": "pending",
-              "validation_commands": [
-                "cargo fmt --check",
-                "cargo clippy -- -D warnings",
-                "cargo test",
-                "cargo build --release"
-              ],
-              "max_attempts": 3
-            }
-          ]
+          "origin": null
         },
         {
           "id": "BA.13.2",
@@ -571,7 +502,54 @@
             }
           ],
           "wave": 140,
-          "origin": null
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Viewport Rect fields + pure on_mouse dispatcher in src/sessions/app.rs",
+              "description": "Add spine_area/browser_area/content_area/agent_panel_area Rect fields to AppState (no subtab_area). Add pure on_mouse(kind,col,row)->Option<Action> routing via bella_engine::geometry::point_in: spine->selected_spine, browser->file_browser.selected, content->scroll/body_pos, agent-panel->selected_spine (space jump, no SubTab), ScrollUp/Down->content scroll, outside->None. Unit-test each pane with synthetic Rects+coords, no terminal.",
+              "acceptance_criteria": [
+                "spine/browser/content/agent_panel Rect fields added (no subtab_area)",
+                "pure on_mouse routes each pane via point_in and handles ScrollUp/Down + out-of-bounds no-op",
+                "agent-panel click jumps to session's space via selected_spine only (no SubTab)",
+                "on_mouse unit-tested per pane with synthetic Rects+coords, no terminal"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Store pane Rects during draw + extend Mouse event arm in src/sessions/ui.rs",
+              "description": "During draw, write each pane's computed viewport Rect back onto AppState. Replace the out-of-scope Mouse stub (~ui.rs:498) to forward Down/ScrollUp/ScrollDown into AppState::on_mouse and apply the result, kept as a thin shell over the pure on_mouse. draw_for_test asserts pane Rects are populated (non-zero) after a draw.",
+              "acceptance_criteria": [
+                "pane viewport Rects written onto AppState during draw",
+                "Mouse event arm forwards Down/ScrollUp/ScrollDown into on_mouse and applies the result",
+                "event arm is a thin shell over pure on_mouse",
+                "draw_for_test asserts pane Rects populated after draw"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Validate",
+              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI mouse (spine/browser/agent-panel clicks + content wheel-scroll), noting any interactive-only limitation in Notes.",
+              "acceptance_criteria": [
+                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
+                "TUI mouse smoke test recorded in tasks.md Notes (incl. any interactive-only limitation)"
+              ],
+              "status": "pending",
+              "validation_commands": [
+                "cargo fmt --check",
+                "cargo clippy -- -D warnings",
+                "cargo test",
+                "cargo build --release"
+              ],
+              "max_attempts": 3
+            }
+          ]
         },
         {
           "id": "BA.13.3",

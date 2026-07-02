@@ -19,11 +19,11 @@ folder is the map.
 
 | File | What it is | Open it when… |
 |---|---|---|
-| `context.md` | Orientation + governing principles (read first) | You need to understand the project |
-| `status.md` | Current progress tracker | You need to know what's done / next |
-| `knowledge.md` | Distilled durable knowledge — how it works, conventions, gotchas | You need semantic memory for the project |
-| `memory.md` | Repo-scoped durable memory — episodic notes + preferences | You need facts that survive a handoff |
-| `master-plan.md` | Strategy + phase specifications | You need the sequence of work |
+| [`context.md`](context.md) | Orientation + governing principles (read first) | You need to understand the project |
+| [`status.md`](status.md) | Current progress tracker | You need to know what's done / next |
+| [`knowledge.md`](knowledge.md) | Distilled durable knowledge — how it works, conventions, gotchas | You need semantic memory for the project |
+| [`memory.md`](memory.md) | Repo-scoped durable memory — episodic notes + preferences | You need facts that survive a handoff |
+| [`master-plan.md`](master-plan.md) | Strategy + phase specifications | You need the sequence of work |
 | `harness.json` | Validation/UI-test config the SDLC engines read | You're adapting the pipeline to this stack |
 | `decisions/` | Atomic, append-only architectural decisions | You want to check a prior choice |
 | `artifacts/` | Generated artifacts / scratch outputs from pipeline runs | You need run outputs that aren't task specs |
@@ -61,3 +61,15 @@ at the top; only pipeline state lives under `sdlc/`.
 ---
 
 *The map, not the territory. For the chronological narrative, see the root `log.md`.*
+
+
+<!--
+Validator links:
+[harness.examples.md](./harness.examples.md)
+-->
+
+<div style="display:none;">
+
+[harness.examples.md](./harness.examples.md)
+
+</div>

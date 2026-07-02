@@ -6,7 +6,7 @@ doc_id: bastion-product-plan
 layer: [console, factory, meta]
 project: bastion
 status: active
-keywords: [bastion init, agent os, okf-core, workspace consolidation, scaffolding, adopt, tasks.json, naming convention]
+keywords: [bastion init, agent os, okf-core, workspace consolidation, scaffolding, adopt, tasks.json]
 related: [master-plan, planning-index, context]
 ---
 

@@ -50,7 +50,7 @@ tab bar — a single left sidebar (the **spine**) is the primary navigator, and 
 on whichever spine row is selected:
 
 - **Sidebar (the spine):** A flat, selectable list built by `spine_rows()`
-  (`src/brain/spaces.rs`) over the `brain.toml` workspace tree: `◆ Mission Control` is pinned
+  (`crates/bastion/src/brain/spaces.rs`) over the `brain.toml` workspace tree: `◆ Mission Control` is pinned
   first, followed by the `HQ` header and its children (`learn-ai`, `base-template` — the old
   standalone `brain` leaf is collapsed into `HQ`), then the `core`/`side`/`client`/`portfolio`
   tier headers and their spaces. Tier headers and `HQ` are selectable rows, not just section

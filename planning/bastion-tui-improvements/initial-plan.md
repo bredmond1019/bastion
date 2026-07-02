@@ -7,7 +7,7 @@ layer: [console, surface]
 project: bastion
 status: active
 keywords: [tui, plan, layout, herdr, bella, mission-control, BA.12.A]
-related: [notes, bastion-mission-notes, herdr-bella-console-research]
+related: [core:core-master-plan, core:bastion-workspace-kanban-tui, core:bastion-mission-notes, core:herdr-bella-console-research]
 ---
 
 # BA.12.A Unified Operator Console — Initial Plan
