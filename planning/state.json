@@ -897,9 +897,9 @@
         "cross_repo": null
       },
       "kind": "constraint",
-      "text": "The sdlc-flow/sdlc-task engines' D16 preflight lint requires literal `### N. <title>` numbered task headings in tasks.md (regex `^### [0-9]+\\.`). Block-ID-prefixed headings like `### BA.13.0.1 <title>` fail the lint with 'No task headings (D16)'. When authoring specs by hand (or once BA.15.6's naming-convention engine lands), keep the leading `### N.` numeral and put the block/task ID inline in the title text instead, e.g. `### 1. BA.13.0.1 <title>`.",
+      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all — it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape — dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
       "related": [],
-      "clears_when": null,
+      "clears_when": "BA.15.5 and BA.15.6 land (tasks.json companion + naming-convention engine)",
       "created": "2026-07-02"
     }
   ]
