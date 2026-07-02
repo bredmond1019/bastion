@@ -36,6 +36,22 @@
         "note": null,
         "repo": null,
         "blocked_by": []
+      },
+      {
+        "id": "BA.15.0",
+        "title": "Cargo workspace skeleton",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.15.11",
+        "title": "Engine packaging (deferred, not scoped)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
       }
     ],
     "blocked": [
@@ -182,6 +198,198 @@
             "type": "block",
             "repo": "bastion",
             "id": "BA.14.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.1",
+        "title": "Extract okf-core",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.2",
+        "title": "Unify the CLI; mev to library",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.1",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.3",
+        "title": "Licensing + front-door README",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.4",
+        "title": "Vendor + embed the template pack",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.5",
+        "title": "tasks.json emission + state.json block sync",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.4",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.1",
+            "what": "state schema"
+          }
+        ]
+      },
+      {
+        "id": "BA.15.6",
+        "title": "Naming-convention engine",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.1",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.7",
+        "title": "brain.toml serializer + full SpaceEntry round-trip",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.8",
+        "title": "bastion init (greenfield scaffold)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.4",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.6",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.7",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.9",
+        "title": "bastion assess (read-only diagnostic)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.1",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.6",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.15.10",
+        "title": "bastion adopt (deferred, not scoped)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.1",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.4",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.6",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.7",
             "what": null
           }
         ]
@@ -491,6 +699,219 @@
           "origin": null
         }
       ]
+    },
+    {
+      "title": "Phase 15 — Bastion Product Packaging",
+      "blocks": [
+        {
+          "id": "BA.15.0",
+          "title": "Cargo workspace skeleton",
+          "status": "open",
+          "depends_on": [],
+          "wave": 200,
+          "origin": null
+        },
+        {
+          "id": "BA.15.1",
+          "title": "Extract okf-core",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.0",
+              "what": null
+            }
+          ],
+          "wave": 200,
+          "origin": null
+        },
+        {
+          "id": "BA.15.2",
+          "title": "Unify the CLI; mev to library",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.1",
+              "what": null
+            }
+          ],
+          "wave": 200,
+          "origin": null
+        },
+        {
+          "id": "BA.15.3",
+          "title": "Licensing + front-door README",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.0",
+              "what": null
+            }
+          ],
+          "wave": 200,
+          "origin": null
+        },
+        {
+          "id": "BA.15.4",
+          "title": "Vendor + embed the template pack",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.0",
+              "what": null
+            }
+          ],
+          "wave": 210,
+          "origin": null
+        },
+        {
+          "id": "BA.15.5",
+          "title": "tasks.json emission + state.json block sync",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.4",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.1",
+              "what": "state schema"
+            }
+          ],
+          "wave": 210,
+          "origin": null
+        },
+        {
+          "id": "BA.15.6",
+          "title": "Naming-convention engine",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.1",
+              "what": null
+            }
+          ],
+          "wave": 210,
+          "origin": null
+        },
+        {
+          "id": "BA.15.7",
+          "title": "brain.toml serializer + full SpaceEntry round-trip",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.0",
+              "what": null
+            }
+          ],
+          "wave": 220,
+          "origin": null
+        },
+        {
+          "id": "BA.15.8",
+          "title": "bastion init (greenfield scaffold)",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.4",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.6",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.7",
+              "what": null
+            }
+          ],
+          "wave": 220,
+          "origin": null
+        },
+        {
+          "id": "BA.15.9",
+          "title": "bastion assess (read-only diagnostic)",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.1",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.6",
+              "what": null
+            }
+          ],
+          "wave": 220,
+          "origin": null
+        },
+        {
+          "id": "BA.15.10",
+          "title": "bastion adopt (deferred, not scoped)",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.1",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.4",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.6",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.7",
+              "what": null
+            }
+          ],
+          "wave": 230,
+          "origin": null
+        },
+        {
+          "id": "BA.15.11",
+          "title": "Engine packaging (deferred, not scoped)",
+          "status": "open",
+          "depends_on": [],
+          "wave": 230,
+          "origin": null
+        }
+      ]
     }
   ],
   "repos": [],
@@ -512,17 +933,15 @@
   "carryover": [
     {
       "slug": "engine-fmt-red",
-      "scope": { "repo": "bastion" },
+      "scope": {
+        "repo": "bastion",
+        "tier": null,
+        "cross_repo": null
+      },
       "kind": "known_issue",
       "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) — not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
-      "created": "2026-07-02"
-    },
-    {
-      "slug": "bastion-product-blocks-untracked",
-      "scope": { "repo": "bastion" },
-      "kind": "deferred",
-      "text": "Phase 15 (BA.15.0-BA.15.11) is authored in planning/bastion-product/plan.md but NOT yet injected into state.json tracks[]. Add the Phase 15 track (with depends_on waves) when execution starts, then `mev emit-state --write`.",
-      "clears_when": "Phase 15 track added to state.json tracks[]",
+      "related": [],
+      "clears_when": null,
       "created": "2026-07-02"
     }
   ]
