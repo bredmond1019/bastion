@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-01T21:35:00Z
+timestamp: 2026-07-02T04:21:27Z
 ---
 
 # Log — bastion
@@ -11,7 +11,48 @@ timestamp: 2026-07-01T21:35:00Z
 
 ---
 
-## [2026-07-01]
+## [run: 2026-07-02]
+
+Completed BA.13.0 (spec `13.0-spine-primary-navigation`), replacing the unified console's
+three-tab layout with a spine-only primary navigator across four tasks. Task 1 added the
+`SpineRow`/`SelectedNode` presentation model in `src/brain/spaces.rs` — Mission Control pinned
+first, the `_root` tier renamed to `HQ` with the redundant `brain` leaf collapsed into it, and
+`learn-ai`/`base-template` nested under `HQ`. Task 2 rewrote `src/sessions/app.rs`: `selected_spine`
+replaced `selected_space`, `select_next`/`select_prev` now wrap over all rows (headers included),
+and the entire tab-machinery (`tabs`, `active_tab_index`, push/close/next/prev) was removed in
+favor of a transient markdown-overlay flag; the implementation was correct on the first pass but
+required adapting `src/sessions/ui.rs` and `src/sessions/tui_tests.rs` (Task 3's files) to the new
+API to keep the crate compiling — a scoped deviation recorded in the spec's Amendment Log. Task 3
+then delivered the full `src/sessions/ui.rs` rewrite: sidebar rendering from `spine_rows()`, the
+top tab bar deleted, and main-area routing on `selected_node()` including a `<tier>/planning/status.md`
+tier-overview panel with a graceful empty-state degrade. Task 4 ran the full validation suite
+(fmt, clippy -D warnings, test — 1022 passed, build --release) and smoke-tested the TUI live via
+tmux, confirming no tab bar, a selectable pinned Mission Control, selectable tier headers, working
+tier routing, and no standalone `brain` leaf. Review verdict: **PASS**. Next: pick up the next
+Phase 13 block (sub-tab bar BA.13.4 or agent panel BA.13.1) per `planning/master-plan.md`.
+
+```
+1a6a5dd chore: flow state — docs
+05e117a docs: update docs for 13.0-spine-primary-navigation
+d616294 chore: flow state — task 4 passed
+a03ee6f feat: implement 13.0-spine-primary-navigation-task4
+8b2bf88 chore: flow state — task 3 passed
+531431c feat: implement 13.0-spine-primary-navigation-task3
+2742f37 chore: flow state — task 2 passed
+234d499 fix: fix pass 1 for 13.0-spine-primary-navigation-task2
+```
+
+---
+
+## [2026-07-02]
+
+### Bastion Product packaging plan authored + OKF write path prototyped
+
+- **What:** Authored `planning/bastion-product/plan.md` — the bastion **Phase 15** roadmap (BA.15.0–BA.15.11) to package bastion as a self-contained open-source "agent OS" (`bastion init`/`assess` now, `adopt` deferred), consolidating `mev`, `bella-engine`, `workflow-engine-rs`, and `base-template` into one cargo workspace behind a unified `bastion` binary. The plan bakes in the `tasks.json` companion convention (BA.15.5) and the `PREFIX.PHASE.BLOCK[.TASK]` naming engine (BA.15.6). Added `src/okf/mod.rs` (new module, wired via `mod okf;` in `src/main.rs`): the `OkfFrontmatter` model + `serialize_frontmatter()` — the net-new OKF frontmatter **write** path (nothing in the stack could emit OKF frontmatter before; `mev` only validated). 18 unit tests, all green (`cargo test okf::` → 44 passed); rustfmt clean; 0 clippy findings — a head start on BA.15.1 (okf-core). Added 2 `carryover[]` entries to `state.json` (`engine-fmt-red` known_issue; `bastion-product-blocks-untracked` deferred) and wrote `planning/handoff.md`.
+- **Why:** To capture the product-packaging direction as a sequenced, canonical block roadmap before implementation, and to de-risk BA.15.1 by prototyping the OKF write path in-repo now — the one net-new capability the workspace consolidation depends on. Next agent picks up the workspace consolidation (BA.15.0) or continues in-repo prototyping toward `bastion init` (BA.15.8).
+- **Refs:** `planning/bastion-product/plan.md`, `src/okf/mod.rs`, `planning/handoff.md`
+
+---
 
 ### BA.12.G Space Overview file browsing implemented
 

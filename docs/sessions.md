@@ -45,33 +45,54 @@ Because the surface needs no database, this works even when the orchestrator sta
 
 ## Unified Console (TUI Dashboard)
 
-Running `bastion` (bare) or `bastion tui` opens the unified live ratatui console. The console is structured with a left sidebar (labeled **spaces**) and a dynamic tab area:
+Running `bastion` (bare) or `bastion tui` opens the unified live ratatui console. There is no top
+tab bar — a single left sidebar (the **spine**) is the primary navigator, and the main area routes
+on whichever spine row is selected:
 
-- **Sidebar (Spaces):** Displays a hierarchical tree of your workspaces sourced directly from `brain.toml` (grouped by tiers: `_root`, `core`, `side`, `client`, `portfolio`). Navigate this tree to select your active project context.
-- **Space Overview Tab:** Features a split-pane layout with a built-in file browser on the left and a scrollable content pane on the right. By default, it opens the space's `planning/status.md`. You can browse the space's directories, preview markdown files in the content pane (using the `bella-engine` parser with a dark theme), or open them in new tabs.
-- **Kanban Board Tab:** Renders the project's Kanban tracker (open/blocked work items) from `planning/state.json` as three horizontal rows — In Progress, Up Next, Blocked — for improved legibility.
-- **Mission Control Tab:** A unified "active work" view. The left pane lists all live tmux sessions alongside running orchestrator workflow DAGs. Selecting a session displays its agent state (`Working`, `Idle`, or `Blocked`), foreground command, and recent output in the right detail pane. Selecting a run displays its node progression. All session management (attach, new, kill, send) happens here.
+- **Sidebar (the spine):** A flat, selectable list built by `spine_rows()`
+  (`src/brain/spaces.rs`) over the `brain.toml` workspace tree: `◆ Mission Control` is pinned
+  first, followed by the `HQ` header and its children (`learn-ai`, `base-template` — the old
+  standalone `brain` leaf is collapsed into `HQ`), then the `core`/`side`/`client`/`portfolio`
+  tier headers and their spaces. Tier headers and `HQ` are selectable rows, not just section
+  labels. `↑`/`↓`/`j`/`k` move through the spine and **wrap** at both ends.
+- **Mission Control (selecting `◆ Mission Control`):** A unified "active work" view in the main
+  area. The left pane lists all live tmux sessions alongside running orchestrator workflow DAGs.
+  Selecting a session displays its agent state (`Working`, `Idle`, or `Blocked`), foreground
+  command, and recent output in the right detail pane. Selecting a run displays its node
+  progression. All session management (attach, new, kill, send) happens here.
+- **Space Overview (selecting `HQ` or a space row):** A split-pane layout with a built-in file
+  browser on the left and a scrollable content pane on the right. By default, it opens the
+  space's `planning/status.md`. You can browse the space's directories or preview markdown files
+  in the content pane (using the `bella-engine` parser with a dark theme). Pressing `t` opens the
+  selected markdown file as a transient full-screen overlay instead of a new tab (overlay polish
+  is deferred; tab machinery has been removed).
+- **Tier overview (selecting a tier header — `HQ`/`core`/`side`/`client`/`portfolio`):** Routes
+  the main area to that tier's `<tier>/planning/status.md`. If the file or tier directory is
+  absent, the pane degrades gracefully to an empty state instead of panicking.
+
+The Kanban board view and mouse-click tab switching described in earlier revisions of this doc
+have been removed along with the top tab bar; mouse support and a dedicated Kanban view are
+tracked separately and are out of scope here.
 
 ### Key bindings
 
 **Global / Navigation:**
 | Key | Action |
 |---|---|
-| `Tab` / `Shift+Tab` | Cycle to the next / previous tab |
+| `↑`/`↓` or `j`/`k` | Move selection through the spine (wraps at both ends) |
 | `q` / `Esc` | Quit the dashboard |
-| Mouse Click | Jump directly to a clicked tab |
 
-**Space Overview Tab:**
+**Space Overview (`HQ` / space rows):**
 | Key | Action |
 |---|---|
-| `←` / `→` | Switch focus between Sidebar, File Browser, and Content pane |
-| `↑` / `↓` or `j` / `k` | Navigate the Spaces tree (when Sidebar is focused) or file list (when Browser is focused) |
+| `←` / `→` | Switch focus between the file Browser and the Content pane |
+| `↑` / `↓` or `j` / `k` | Navigate the file list (when Browser is focused) |
 | `Enter` | Descend into a directory or load a markdown file into the Content pane |
 | `Backspace` | Ascend to the parent directory in the File Browser |
-| `t` | Open the selected markdown file in a new tab |
+| `t` | Open the selected markdown file as a full-screen overlay |
 | `PageUp` / `PageDown` | Scroll the Content pane (when focused) |
 
-**Mission Control Tab:**
+**Mission Control:**
 | Key | Action |
 |---|---|
 | `↑` / `↓` or `j` / `k` | Navigate the combined sessions/runs list |
