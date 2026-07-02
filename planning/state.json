@@ -20,6 +20,22 @@
         "note": null,
         "repo": null,
         "blocked_by": []
+      },
+      {
+        "id": "BA.13.0",
+        "title": "Spine model + primary navigation (Design A)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.13.3",
+        "title": "Session to space mapping (cwd)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
       }
     ],
     "blocked": [
@@ -34,6 +50,138 @@
             "type": "block",
             "repo": "bastion",
             "id": "BA.7.B",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.13.1",
+        "title": "Persistent global agent panel",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.13.0",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.14.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.13.2",
+        "title": "Mouse interactivity",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.13.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.13.4",
+        "title": "Per-space sub-tab bar (Overview / Board / Sessions)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.13.0",
+            "what": null
+          },
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.13.3",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.13.5",
+        "title": "HQ file-browser exclusion",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.13.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.14.0",
+        "title": "Config-driven theme system",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.13.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.14.1",
+        "title": "Layout polish (padding, collapsible sidebar, skinnier browser)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.13.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.14.2",
+        "title": "Mission Control refinement (conditional panes + inline indicators)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.13.0",
+            "what": null
+          }
+        ]
+      },
+      {
+        "id": "BA.14.3",
+        "title": "Color pass (more greens/cyans)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.14.0",
             "what": null
           }
         ]
@@ -154,70 +302,7 @@
             }
           ],
           "wave": 4,
-          "origin": null,
-          "tasks": [
-            {
-              "task_id": 1,
-              "title": "Promote file browser into bella-engine",
-              "description": "Add ignore crate to bella-engine. Move browser.rs to bella-engine and decouple Browser from App. Add root_boundary. Export mod browser.",
-              "acceptance_criteria": [
-                "bella-engine has ignore dependency.",
-                "Browser is decoupled and returns Option<PathBuf>.",
-                "ascend_target is blocked at root_boundary, verified by unit test."
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 2,
-              "title": "Refactor bella to consume shared browser",
-              "description": "Delete bella's browser.rs and consume bella_engine::browser::Browser in app, events, and ui.",
-              "acceptance_criteria": [
-                "bella builds and tests pass.",
-                "bella's UX is unchanged."
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 3,
-              "title": "Integrate file browser into bastion AppState",
-              "description": "Add file_browser and space_overview_scroll to AppState. Instantiate it rooted at selected_space with root_boundary. Handle navigation and file loading.",
-              "acceptance_criteria": [
-                "Selecting a space roots the file browser correctly.",
-                "Browser cannot navigate above root_boundary.",
-                "Selecting a file loads it; distinct key opens in new tab."
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 4,
-              "title": "Render file browser and scrollable content in bastion UI",
-              "description": "Render file-browser alongside content pane in Space Overview. Add native Ratatui scrolling using space_overview_scroll and handle PageUp/PageDown/j/k.",
-              "acceptance_criteria": [
-                "File browser renders.",
-                "Content pane scrolls via keys, confirmed manually."
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 5,
-              "title": "Validate",
-              "description": "Run gating checks for both apps.",
-              "acceptance_criteria": [
-                "Both bastion's and bella's gating checks pass."
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            }
-          ]
+          "origin": null
         }
       ]
     },
@@ -265,8 +350,18 @@
           "title": "Persistent global agent panel",
           "status": "open",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null },
-            { "type": "block", "repo": "bastion", "id": "BA.14.0", "what": null }
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.13.0",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.14.0",
+              "what": null
+            }
           ],
           "wave": 140,
           "origin": null
@@ -276,7 +371,12 @@
           "title": "Mouse interactivity",
           "status": "open",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.13.0",
+              "what": null
+            }
           ],
           "wave": 140,
           "origin": null
@@ -294,8 +394,18 @@
           "title": "Per-space sub-tab bar (Overview / Board / Sessions)",
           "status": "open",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null },
-            { "type": "block", "repo": "bastion", "id": "BA.13.3", "what": null }
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.13.0",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.13.3",
+              "what": null
+            }
           ],
           "wave": 150,
           "origin": null
@@ -305,7 +415,12 @@
           "title": "HQ file-browser exclusion",
           "status": "open",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.13.0",
+              "what": null
+            }
           ],
           "wave": 140,
           "origin": null
@@ -320,7 +435,12 @@
           "title": "Config-driven theme system",
           "status": "open",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.13.0",
+              "what": null
+            }
           ],
           "wave": 135,
           "origin": null
@@ -330,7 +450,12 @@
           "title": "Layout polish (padding, collapsible sidebar, skinnier browser)",
           "status": "open",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.13.0",
+              "what": null
+            }
           ],
           "wave": 150,
           "origin": null
@@ -340,7 +465,12 @@
           "title": "Mission Control refinement (conditional panes + inline indicators)",
           "status": "open",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.13.0", "what": null }
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.13.0",
+              "what": null
+            }
           ],
           "wave": 150,
           "origin": null
@@ -350,7 +480,12 @@
           "title": "Color pass (more greens/cyans)",
           "status": "open",
           "depends_on": [
-            { "type": "block", "repo": "bastion", "id": "BA.14.0", "what": null }
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.14.0",
+              "what": null
+            }
           ],
           "wave": 155,
           "origin": null
@@ -364,10 +499,14 @@
   "note": null,
   "backlog": [
     {
-      "id": "BA.BL.1",
+      "slug": "audit-populate-planning-files",
       "title": "Audit and populate missing planning/state.json and master-plan.md across all repos",
-      "status": "open",
-      "note": "Many sub-brains and projects currently lack these files, resulting in empty/missing kanban and space overviews in the TUI."
+      "repo": "bastion",
+      "type": "chore",
+      "status": "idea",
+      "depends_on": [],
+      "block": null,
+      "notes": null
     }
   ],
   "carryover": []
