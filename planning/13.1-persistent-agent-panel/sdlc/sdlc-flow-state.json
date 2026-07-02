@@ -1,0 +1,91 @@
+{
+  "spec_slug": "13.1-persistent-agent-panel",
+  "branch": "13.1-persistent-agent-panel-flow",
+  "started_at": "2026-07-02T14:33:02Z",
+  "updated_at": "2026-07-02T14:33:02Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.1-persistent-agent-panel-flow",
+  "status": "running",
+  "current_task": 1,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Extracted pure session_urgency(&Session) -> u8 out of build_mission_items in src/monitor/app.rs, reused it in build_mission_items, and added exhaustive unit tests covering all four AgentState values plus SessionState::Running, plus a build_mission_items ordering regression test.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Kept build_mission_items's existing logic for WorkflowRun urgency untouched (only the Session branch was factored into session_urgency), since the task scoped only the session ordering extraction.",
+        "Added a make_session test helper in monitor/app.rs's tests module rather than reusing any existing fixture, since none existed for Session construction in this file."
+      ],
+      "files_changed": [
+        "src/monitor/app.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": null,
+    "findings": [],
+    "attempts": 0
+  },
+  "docs": {
+    "changed": [],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 786,
+        "filesReadKb": null,
+        "inTokEst": 786,
+        "outTok": 2855
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 237,
+        "filesReadKb": null,
+        "inTokEst": 237,
+        "outTok": 956
+      },
+      {
+        "label": "update-task-1",
+        "model": "haiku",
+        "promptTokEst": 265,
+        "filesReadKb": null,
+        "inTokEst": 265,
+        "outTok": 1469
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 919,
+        "filesReadKb": null,
+        "inTokEst": 919,
+        "outTok": 6042
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 594,
+        "filesReadKb": null,
+        "inTokEst": 594,
+        "outTok": 2193
+      }
+    ],
+    "total": {
+      "promptTokEst": 2801,
+      "filesReadKb": 0,
+      "inTokEst": 2801,
+      "outTok": 13515
+    }
+  }
+}
