@@ -33,7 +33,7 @@ Make all color config-oriented: `ui_theme` functions read a runtime `Theme`, an 
 - Expose the runtime-`Theme` accessor + an init/setter that all other UI blocks (Phase 13/14) consume.
 - **Tests (Rule 6):** unit-test `theme_by_name` for a known preset, the default when the name is absent, and the fallback for an unknown name; unit-test the bastion→bella mapping (asserting mapped colors/roles); assert the accessor returns the `bastion` default before any init.
 
-### 2. BA.14.0.2 `[theme]` config section + resolution in `src/config.rs`
+### 2. [~] BA.14.0.2 `[theme]` config section + resolution in `src/config.rs`
 - **Owns:** `src/config.rs` (only file touched by this task). **Depends on:** BA.14.0.1 (preset names / `theme_by_name`).
 - Extend `FileConfig` with an optional `[theme]` section carrying (at minimum) a theme *name* selection; keep it fully optional so existing configs parse unchanged.
 - Add resolution: config `[theme].name` (or absent) → resolved `Theme` via the BA.14.0.1 lookup, with a default fallback when the section is absent or the name is unknown.
