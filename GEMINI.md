@@ -79,21 +79,24 @@ Only the observability track (`monitor`, `costs`) needs this; the session surfac
 bastion/
 ├── .claude/            ← Gemini skills + SDLC workflow engines
 ├── planning/           ← context, status, master-plan, harness.json, decisions/
-├── src/
-│   ├── main.rs         ← clap dispatch
-│   ├── cli.rs          ← subskill definitions
-│   ├── config.rs       ← env/config loading
-│   ├── observ/         ← structured error taxonomy (C001–C014) + tracing helpers (Phase 7)
-│   ├── db/             ← PostgreSQL queries (workflows, costs)
-│   ├── api/            ← reqwest client for FastAPI
-│   ├── monitor/        ← live TUI graph inspector (ratatui + petgraph)
-│   ├── inspect/        ← static post-mortem graph view
-│   ├── validate/       ← markdown/MDX content validation
-│   ├── costs/          ← LLM spend summary
-│   ├── run/            ← workflow trigger + stack health check
-│   ├── sessions/       ← tmux session control (Phase 5; shells to tmux, no DB) — D4
-│   └── brain/          ← OKF corpus reader + petgraph structural queries (Phase 6)
-└── Cargo.toml
+├── crates/
+│   └── bastion/        ← the bastion package
+│       ├── src/
+│       │   ├── main.rs         ← clap dispatch
+│       │   ├── cli.rs          ← subskill definitions
+│       │   ├── config.rs       ← env/config loading
+│       │   ├── observ/         ← structured error taxonomy (C001–C014) + tracing helpers (Phase 7)
+│       │   ├── db/             ← PostgreSQL queries (workflows, costs)
+│       │   ├── api/            ← reqwest client for FastAPI
+│       │   ├── monitor/        ← live TUI graph inspector (ratatui + petgraph)
+│       │   ├── inspect/        ← static post-mortem graph view
+│       │   ├── validate/       ← markdown/MDX content validation
+│       │   ├── costs/          ← LLM spend summary
+│       │   ├── run/            ← workflow trigger + stack health check
+│       │   ├── sessions/       ← tmux session control (Phase 5; shells to tmux, no DB) — D4
+│       │   └── brain/          ← OKF corpus reader + petgraph structural queries (Phase 6)
+│       └── Cargo.toml
+└── Cargo.toml          ← workspace manifest
 ```
 
 ## What NOT to touch
