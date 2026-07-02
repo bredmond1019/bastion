@@ -313,7 +313,7 @@
   },
   "tracks": [
     {
-      "title": "Phase 11 — BastionUI serve API",
+      "title": "Phase 11 \u2014 BastionUI serve API",
       "blocks": [
         {
           "id": "BA.11.C0",
@@ -371,7 +371,7 @@
       ]
     },
     {
-      "title": "Phase 12 — Unified Console Cleanup",
+      "title": "Phase 12 \u2014 Unified Console Cleanup",
       "blocks": [
         {
           "id": "BA.12.C",
@@ -430,7 +430,7 @@
       ]
     },
     {
-      "title": "Phase 7 — Costs",
+      "title": "Phase 7 \u2014 Costs",
       "blocks": [
         {
           "id": "BA.7.B",
@@ -458,7 +458,7 @@
       ]
     },
     {
-      "title": "Phase 13 — Unified Console Structural Restructure",
+      "title": "Phase 13 \u2014 Unified Console Structural Restructure",
       "blocks": [
         {
           "id": "BA.13.0",
@@ -502,7 +502,54 @@
             }
           ],
           "wave": 140,
-          "origin": null
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Viewport Rect fields + pure on_mouse dispatcher in src/sessions/app.rs",
+              "description": "Add spine_area/browser_area/content_area/agent_panel_area Rect fields to AppState (no subtab_area). Add pure on_mouse(kind,col,row)->Option<Action> routing via bella_engine::geometry::point_in: spine->selected_spine, browser->file_browser.selected, content->scroll/body_pos, agent-panel->selected_spine (space jump, no SubTab), ScrollUp/Down->content scroll, outside->None. Unit-test each pane with synthetic Rects+coords, no terminal.",
+              "acceptance_criteria": [
+                "spine/browser/content/agent_panel Rect fields added (no subtab_area)",
+                "pure on_mouse routes each pane via point_in and handles ScrollUp/Down + out-of-bounds no-op",
+                "agent-panel click jumps to session's space via selected_spine only (no SubTab)",
+                "on_mouse unit-tested per pane with synthetic Rects+coords, no terminal"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Store pane Rects during draw + extend Mouse event arm in src/sessions/ui.rs",
+              "description": "During draw, write each pane's computed viewport Rect back onto AppState. Replace the out-of-scope Mouse stub (~ui.rs:498) to forward Down/ScrollUp/ScrollDown into AppState::on_mouse and apply the result, kept as a thin shell over the pure on_mouse. draw_for_test asserts pane Rects are populated (non-zero) after a draw.",
+              "acceptance_criteria": [
+                "pane viewport Rects written onto AppState during draw",
+                "Mouse event arm forwards Down/ScrollUp/ScrollDown into on_mouse and applies the result",
+                "event arm is a thin shell over pure on_mouse",
+                "draw_for_test asserts pane Rects populated after draw"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Validate",
+              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI mouse (spine/browser/agent-panel clicks + content wheel-scroll), noting any interactive-only limitation in Notes.",
+              "acceptance_criteria": [
+                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
+                "TUI mouse smoke test recorded in tasks.md Notes (incl. any interactive-only limitation)"
+              ],
+              "status": "pending",
+              "validation_commands": [
+                "cargo fmt --check",
+                "cargo clippy -- -D warnings",
+                "cargo test",
+                "cargo build --release"
+              ],
+              "max_attempts": 3
+            }
+          ]
         },
         {
           "id": "BA.13.3",
@@ -551,7 +598,7 @@
       ]
     },
     {
-      "title": "Phase 14 — Unified Console Polish & Theming",
+      "title": "Phase 14 \u2014 Unified Console Polish & Theming",
       "blocks": [
         {
           "id": "BA.14.0",
@@ -616,7 +663,7 @@
       ]
     },
     {
-      "title": "Phase 15 — Bastion Product Packaging",
+      "title": "Phase 15 \u2014 Bastion Product Packaging",
       "blocks": [
         {
           "id": "BA.15.0",
@@ -854,7 +901,7 @@
         "cross_repo": null
       },
       "kind": "known_issue",
-      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) — not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
+      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) \u2014 not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
       "related": [],
       "clears_when": null,
       "created": "2026-07-02"
@@ -867,7 +914,7 @@
         "cross_repo": null
       },
       "kind": "constraint",
-      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all — it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape — dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
+      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all \u2014 it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape \u2014 dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
       "related": [],
       "clears_when": "BA.15.5 and BA.15.6 land (tasks.json companion + naming-convention engine)",
       "created": "2026-07-02"
