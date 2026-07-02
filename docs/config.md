@@ -110,7 +110,7 @@ Built-in defaults apply only when both the environment and file omit a value.
 
 `DATABASE_URL` is the only required value — it must appear in at least one source.
 
-## Public API (`src/config.rs`)
+## Public API (`crates/bastion/src/config.rs`)
 
 ### `ConfigError`
 

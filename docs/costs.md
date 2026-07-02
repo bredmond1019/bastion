@@ -54,14 +54,14 @@ Columns:
 | Runs | Distinct `events.id` count in the window |
 | Tokens In | Sum of `node_runs[*].usage.input_tokens` across all nodes in all runs |
 | Tokens Out | Sum of `node_runs[*].usage.output_tokens` across all nodes in all runs |
-| Est. USD | Dollar estimate using the hardcoded per-model price table in `src/costs/pricing.rs` |
+| Est. USD | Dollar estimate using the hardcoded per-model price table in `crates/bastion/src/costs/pricing.rs` |
 
 Rows are sorted by `Est. USD` descending. A TOTAL row appears after the separator. If any
 node references a model not in the price table, a trailing notice lists the unpriced model count.
 
 ## Pricing
 
-Prices are hardcoded in `src/costs/pricing.rs` (`price_for(model) -> Option<ModelPrice>`).
+Prices are hardcoded in `crates/bastion/src/costs/pricing.rs` (`price_for(model) -> Option<ModelPrice>`).
 Unknown models contribute `$0.00` to the estimate and are reported as unpriced. No config file
 or environment variable is needed.
 

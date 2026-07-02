@@ -24,7 +24,7 @@ bastion validate <PATH>
 
 ## File Discovery
 
-`find_markdown_files(root: &Path) -> Vec<PathBuf>` (in `src/validate/mod.rs`):
+`find_markdown_files(root: &Path) -> Vec<PathBuf>` (in `crates/bastion/src/validate/mod.rs`):
 
 - Accepts a directory or a single file path.
 - Recursively collects files with `.md` or `.mdx` extensions.
@@ -34,7 +34,7 @@ bastion validate <PATH>
 
 ## Shared Error Types
 
-Defined in `src/validate/mod.rs` and used by all submodules.
+Defined in `crates/bastion/src/validate/mod.rs` and used by all submodules.
 
 ### `ValidationError`
 
@@ -63,11 +63,11 @@ pub struct ValidationError {
 
 | Module | File | Public function | Status |
 |---|---|---|---|
-| `frontmatter` | `src/validate/frontmatter.rs` | `validate_frontmatter(content: &str, file: &Path) -> Vec<ValidationError>` | Implemented (Task 2) |
-| `links` | `src/validate/links.rs` | `validate_links(content: &str, file: &Path) -> Vec<ValidationError>` | Implemented (Task 3) |
-| `report` | `src/validate/report.rs` | `render_report(errors: &[ValidationError], files_scanned: usize) -> String` | Implemented (Task 4) |
+| `frontmatter` | `crates/bastion/src/validate/frontmatter.rs` | `validate_frontmatter(content: &str, file: &Path) -> Vec<ValidationError>` | Implemented (Task 2) |
+| `links` | `crates/bastion/src/validate/links.rs` | `validate_links(content: &str, file: &Path) -> Vec<ValidationError>` | Implemented (Task 3) |
+| `report` | `crates/bastion/src/validate/report.rs` | `render_report(errors: &[ValidationError], files_scanned: usize) -> String` | Implemented (Task 4) |
 
-## Report Rendering (`src/validate/report.rs`)
+## Report Rendering (`crates/bastion/src/validate/report.rs`)
 
 Implemented in Task 4. Produces a greppable, human-readable report string from a slice of `ValidationError` values.
 
@@ -94,13 +94,13 @@ Each error is rendered as:
 ```
 docs/guide.md:3: missing-field: required field 'description' is missing
 docs/guide.md:7: broken-link: relative link target 'nonexistent.md' does not exist
-src/validate/fixtures/bad-frontmatter.md:4: empty-field: required field 'description' is empty
+crates/bastion/src/validate/fixtures/bad-frontmatter.md:4: empty-field: required field 'description' is empty
 2 error(s) across 2 file(s)
 ```
 
-## Test Fixtures (`src/validate/fixtures/`)
+## Test Fixtures (`crates/bastion/src/validate/fixtures/`)
 
-Three fixture files are used by the integration tests in `src/validate/report.rs`:
+Three fixture files are used by the integration tests in `crates/bastion/src/validate/report.rs`:
 
 | Fixture | Purpose |
 |---|---|
@@ -110,7 +110,7 @@ Three fixture files are used by the integration tests in `src/validate/report.rs
 
 External URLs and pure `#`-anchors in `broken-links.md` confirm that `is_skipped_target` is respected end-to-end.
 
-## Link Checking (`src/validate/links.rs`)
+## Link Checking (`crates/bastion/src/validate/links.rs`)
 
 Implemented in Task 3. All link-logic lives in pure functions; only `validate_links` touches the filesystem.
 
@@ -144,9 +144,9 @@ The `run()` shell is `async` to match the dispatch site in `main.rs`, but all I/
 
 **Dirty path — fixture directory (expect exit 1):**
 ```
-$ cargo run -- validate src/validate/fixtures
-src/validate/fixtures/bad-frontmatter.md:4: empty-field: required field `description` is present but empty
-src/validate/fixtures/broken-links.md:14: broken-link: broken link: nonexistent-file.md
+$ cargo run -- validate crates/bastion/src/validate/fixtures
+crates/bastion/src/validate/fixtures/bad-frontmatter.md:4: empty-field: required field `description` is present but empty
+crates/bastion/src/validate/fixtures/broken-links.md:14: broken-link: broken link: nonexistent-file.md
 2 error(s) across 2 file(s)
 Error: 2 error(s) found
 EXIT CODE: 1
@@ -154,7 +154,7 @@ EXIT CODE: 1
 
 **Clean path — single good file (expect exit 0):**
 ```
-$ cargo run -- validate src/validate/fixtures/good.md
+$ cargo run -- validate crates/bastion/src/validate/fixtures/good.md
 no issues found across 1 file(s)
 EXIT CODE: 0
 ```
