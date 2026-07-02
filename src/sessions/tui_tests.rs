@@ -10,9 +10,10 @@
 //
 // NOTE: navigation is keyed off `selected_spine` / `selected_node()` (the spine
 // model — BA.13.0), not the old tab machinery. `tab_bar_contains_all_tab_names`
-// is gone with the top tab bar; a spine-sidebar assertion (`draw_for_test`
-// asserting `◆ Mission Control` first, selectable tier/HQ headers, no tab bar)
-// belongs to BA.13.0.3 (`src/sessions/ui.rs` sidebar rewrite).
+// is gone with the top tab bar; `sidebar_shows_pinned_mission_control_and_selectable_headers`
+// below (BA.13.0.3) is its replacement — it asserts `◆ Mission Control` renders
+// first, tier/HQ headers are shown, no top tab bar renders, and no standalone
+// `brain` leaf appears.
 
 #[cfg(test)]
 mod tests {
@@ -43,6 +44,34 @@ mod tests {
             }],
         ));
         tree.tiers.push(("core".to_string(), vec![]));
+        AppState::new(vec![], tree)
+    }
+
+    /// Build an `AppState` covering every spine row kind: `Hq` (with a collapsed
+    /// `brain` leaf + `learn-ai` child) and all four non-`Hq` tiers
+    /// (`core`/`side`/`client`/`portfolio`).
+    fn app_with_all_tiers() -> AppState {
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push((
+            "_root".to_string(),
+            vec![
+                SpaceEntry {
+                    slug: "brain".to_string(),
+                    tier: "_root".to_string(),
+                    repo_path: std::path::PathBuf::from("."),
+                    heading: None,
+                },
+                SpaceEntry {
+                    slug: "learn-ai".to_string(),
+                    tier: "_root".to_string(),
+                    repo_path: std::path::PathBuf::from("learn-ai"),
+                    heading: None,
+                },
+            ],
+        ));
+        for tier in ["core", "side", "client", "portfolio"] {
+            tree.tiers.push((tier.to_string(), vec![]));
+        }
         AppState::new(vec![], tree)
     }
 
@@ -167,6 +196,51 @@ mod tests {
         );
 
         render_frame(&app, dir.path(), 80, 24);
+    }
+
+    // ── Sidebar (spine primary navigation) ────────────────────────────────────
+
+    /// The sidebar renders `◆ Mission Control` first (before `HQ`), shows every
+    /// selectable tier/`HQ` header, no longer renders a top tab bar (the old
+    /// `Space Overview` / `Kanban Board` tab labels), and no longer shows a
+    /// standalone `brain` leaf.
+    #[test]
+    fn sidebar_shows_pinned_mission_control_and_selectable_headers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_planning_fixtures(dir.path());
+
+        let app = app_with_all_tiers();
+        let buf = render_frame(&app, dir.path(), 100, 40);
+        let text = buf_to_string(&buf);
+
+        let mc_idx = text
+            .find("Mission Control")
+            .expect("Mission Control must render");
+        let hq_idx = text.find("HQ").expect("HQ header must render");
+        assert!(
+            mc_idx < hq_idx,
+            "Mission Control must render before HQ; frame:\n{text}"
+        );
+
+        for tier in ["core", "side", "client", "portfolio"] {
+            assert!(
+                text.contains(tier),
+                "sidebar must show selectable tier header '{tier}'; frame:\n{text}"
+            );
+        }
+
+        // The old top tab bar rendered "Space Overview" / "Kanban Board" labels —
+        // neither should appear anywhere in the frame now that the spine is the
+        // single primary navigator.
+        assert!(
+            !text.contains("Space Overview") && !text.contains("Kanban Board"),
+            "no top tab bar must render; frame:\n{text}"
+        );
+
+        assert!(
+            !text.contains("brain"),
+            "no standalone 'brain' leaf must render (collapsed into HQ); frame:\n{text}"
+        );
     }
 
     // ── Layout invariants ─────────────────────────────────────────────────────

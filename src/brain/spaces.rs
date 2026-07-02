@@ -214,9 +214,9 @@ repo_path = "."
         let tree = parse_space_tree(toml).unwrap();
         let flat = tree.flatten();
         assert_eq!(flat.len(), 2);
-        assert_eq!(flat[0].0, true);
+        assert!(flat[0].0);
         assert_eq!(flat[0].1, "_root");
-        assert_eq!(flat[1].0, false);
+        assert!(!flat[1].0);
         assert_eq!(flat[1].1, "brain");
         assert!(flat[1].2.is_some());
     }

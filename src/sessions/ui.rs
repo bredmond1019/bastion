@@ -4,7 +4,7 @@
 // Synchronous event loop (Decision D5 — no tokio coupling).
 // DB-free (Decision D4 — no Config::load, no Postgres pool).
 
-use crate::brain::spaces::SelectedNode;
+use crate::brain::spaces::{SelectedNode, SpineRow};
 use crate::sessions::app::{Action, AppState, InputKind, Mode};
 use crate::sessions::commands::{Degraded, degrade_tmux_error};
 use crate::sessions::model::{Pane, Session, parse_sessions};
@@ -54,8 +54,7 @@ pub fn session_row(s: &Session) -> String {
 pub fn footer_hint(mode: &Mode) -> String {
     match mode {
         Mode::Normal => {
-            "[a]ttach [n]ew [s]end [k]ill [q]uit  ↑/j ↓/k move  Tab/Shift+Tab switch tab"
-                .to_string()
+            "[a]ttach [n]ew [s]end [k]ill [q]uit  ↑/j ↓/k move spine (wraps)".to_string()
         }
         Mode::Input(InputKind::New) => "new session name (Enter=create, Esc=cancel): ".to_string(),
         Mode::Input(InputKind::Send) => "send to selected (Enter=send, Esc=cancel): ".to_string(),
@@ -70,6 +69,12 @@ pub fn status_line(app: &AppState) -> String {
         Mode::Normal => app.status.clone().unwrap_or_else(|| footer_hint(&app.mode)),
         Mode::Input(_) => format!("{}{}", footer_hint(&app.mode), app.input),
     }
+}
+
+/// Compute the path to a tier's `planning/status.md`, rooted at the brain repo root
+/// (e.g. `<brain_root>/core/planning/status.md`). Pure — no I/O.
+pub fn tier_status_path(brain_root: &std::path::Path, tier: &str) -> std::path::PathBuf {
+    brain_root.join(tier).join("planning").join("status.md")
 }
 
 /// Strip YAML frontmatter (`---` delimited block) from a markdown string.
@@ -95,54 +100,76 @@ pub fn strip_frontmatter(md: &str) -> &str {
 
 // ── Frame builder (I/O — not unit-tested) ─────────────────────────────────────
 
-/// Build a colored sidebar list from the SpaceTree. Each repo gets a state dot and name.
+/// Build the sidebar item for a single `Space` row: a state dot + the space's slug,
+/// colored by the matching session's detected `AgentState` (falling back to the raw
+/// tmux `SessionState` when the agent state is unknown, and to idle when no matching
+/// session exists at all).
+fn build_space_item(app: &AppState, label: &str) -> ListItem<'static> {
+    let mut dot = "  ○ ";
+    let mut dot_style = crate::ui_theme::state_idle_style();
+
+    if let Some(s) = app.sessions.iter().find(|s| s.name == label) {
+        use crate::detect::AgentState;
+        use crate::sessions::model::SessionState;
+        match s.agent_state {
+            AgentState::Working => {
+                dot = "  ● ";
+                dot_style = crate::ui_theme::state_working_style();
+            }
+            AgentState::Blocked => {
+                dot = "  ● ";
+                dot_style = crate::ui_theme::state_blocked_style();
+            }
+            AgentState::Idle => {
+                dot = "  ○ ";
+                dot_style = crate::ui_theme::state_idle_style();
+            }
+            AgentState::Unknown => match s.state {
+                SessionState::Running => {
+                    dot = "  ● ";
+                    dot_style = crate::ui_theme::state_running_style();
+                }
+                SessionState::Idle => {
+                    dot = "  ○ ";
+                    dot_style = crate::ui_theme::state_idle_style();
+                }
+            },
+        }
+    }
+
+    let name_style = Style::default().fg(crate::ui_theme::text());
+    let spans = vec![
+        Span::styled(dot, dot_style),
+        Span::styled(label.to_string(), name_style),
+    ];
+    ListItem::new(Line::from(spans))
+}
+
+/// Build the primary-navigation sidebar from `spine_rows()` — the pinned
+/// `◆ Mission Control` row, the `HQ` header + its `learn-ai`/`base-template`
+/// children, then the remaining tier headers (`core`/`side`/`client`/`portfolio`/
+/// any other) with their space rows. Every row is selectable (headers included),
+/// matching `AppState::select_next`/`select_prev`'s wrap-over-all-rows behaviour.
 fn build_sidebar_items(app: &AppState) -> Vec<ListItem<'static>> {
     let mut items = Vec::new();
-    let flat_tree = app.space_tree.flatten();
 
-    for (is_header, label, _repo_opt) in flat_tree {
-        if is_header {
-            let span = Span::styled(format!(" ▾ {}", label), crate::ui_theme::muted());
-            items.push(ListItem::new(Line::from(vec![span])));
-        } else {
-            let mut dot = "  ○ ";
-            let mut dot_style = crate::ui_theme::state_idle_style();
-
-            if let Some(s) = app.sessions.iter().find(|s| s.name == label) {
-                use crate::detect::AgentState;
-                use crate::sessions::model::SessionState;
-                match s.agent_state {
-                    AgentState::Working => {
-                        dot = "  ● ";
-                        dot_style = crate::ui_theme::state_working_style();
-                    }
-                    AgentState::Blocked => {
-                        dot = "  ● ";
-                        dot_style = crate::ui_theme::state_blocked_style();
-                    }
-                    AgentState::Idle => {
-                        dot = "  ○ ";
-                        dot_style = crate::ui_theme::state_idle_style();
-                    }
-                    AgentState::Unknown => match s.state {
-                        SessionState::Running => {
-                            dot = "  ● ";
-                            dot_style = crate::ui_theme::state_running_style();
-                        }
-                        SessionState::Idle => {
-                            dot = "  ○ ";
-                            dot_style = crate::ui_theme::state_idle_style();
-                        }
-                    },
-                }
+    for row in app.spine_rows() {
+        match row {
+            SpineRow::MissionControl => {
+                let span = Span::styled(" ◆ Mission Control", crate::ui_theme::title_style());
+                items.push(ListItem::new(Line::from(vec![span])));
             }
-
-            let name_style = Style::default().fg(crate::ui_theme::text());
-            let spans = vec![
-                Span::styled(dot, dot_style),
-                Span::styled(label, name_style),
-            ];
-            items.push(ListItem::new(Line::from(spans)));
+            SpineRow::Hq => {
+                let span = Span::styled(" ▾ HQ", crate::ui_theme::muted());
+                items.push(ListItem::new(Line::from(vec![span])));
+            }
+            SpineRow::Tier(name) => {
+                let span = Span::styled(format!(" ▾ {name}"), crate::ui_theme::muted());
+                items.push(ListItem::new(Line::from(vec![span])));
+            }
+            SpineRow::Space(entry) => {
+                items.push(build_space_item(app, &entry.slug));
+            }
         }
     }
     items
@@ -172,29 +199,21 @@ fn draw_with_root(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(*th));
 
-    if app.space_tree.tiers.is_empty() {
-        let msg = Paragraph::new(Span::styled(
-            "  no spaces",
-            Style::default().fg(crate::ui_theme::muted()),
-        ))
-        .block(sidebar_block);
-        frame.render_widget(msg, sidebar_area);
-    } else {
-        let items = build_sidebar_items(app);
-        let list = List::new(items)
-            .block(sidebar_block)
-            .highlight_style(crate::ui_theme::list_selected_style())
-            .highlight_symbol("  ");
+    // `◆ Mission Control` is pinned first by `spine_rows()` regardless of whether
+    // `space_tree` has any tiers, so the sidebar always has at least one row —
+    // no "no spaces" empty-state branch is needed here anymore.
+    let items = build_sidebar_items(app);
+    let list = List::new(items)
+        .block(sidebar_block)
+        .highlight_style(crate::ui_theme::list_selected_style())
+        .highlight_symbol("  ");
 
-        list_state.select(Some(app.selected_spine));
-        frame.render_stateful_widget(list, sidebar_area, list_state);
-    }
+    list_state.select(Some(app.selected_spine));
+    frame.render_stateful_widget(list, sidebar_area, list_state);
 
     // ── Main area: content ──────────────────────────────────────────────────
     // NOTE: the top tab bar is gone (spine is now the single primary navigator);
-    // routing below keys off `selected_node()`. The sidebar rewrite + tier-overview
-    // routing is finished out in BA.13.0.3 — this is a minimal compile-fix routing
-    // so the crate builds against the new `AppState` API.
+    // routing below keys off `selected_node()`.
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0)])
@@ -209,8 +228,34 @@ fn draw_with_root(
         SelectedNode::MissionControl => {
             crate::monitor::ui::render(frame, &app.monitor_app, main_chunks[0]);
         }
-        SelectedNode::Tier(_) => {
-            frame.render_widget(content_block, main_chunks[0]);
+        SelectedNode::Tier(tier_name) => {
+            // Rooted at `<brain_root>/<tier>/planning/status.md`; missing tier/file
+            // degrades gracefully to a placeholder instead of panicking.
+            let brain_root = crate::config::load_brain_toml_path()
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let file_path = tier_status_path(&brain_root, &tier_name);
+
+            let raw_md = std::fs::read_to_string(&file_path)
+                .unwrap_or_else(|_| format!("No {} found.", file_path.display()));
+            let status_md = strip_frontmatter(&raw_md).to_owned();
+            let theme = bella_engine::Theme::mission_control();
+            let tables = bella_engine::links::TableExpansions::new();
+            let rendered = bella_engine::render_with_edit(
+                &status_md,
+                None,
+                main_chunks[0].width.saturating_sub(2), // account for borders
+                &theme,
+                None,
+                &tables,
+            );
+            let tier_block = content_block.clone().title(Span::styled(
+                format!(" {tier_name} "),
+                crate::ui_theme::title_style(),
+            ));
+            let paragraph = Paragraph::new(rendered.lines).block(tier_block);
+            frame.render_widget(paragraph, main_chunks[0]);
         }
         SelectedNode::Hq | SelectedNode::Space(_) => {
             let overview_chunks = Layout::default()
@@ -544,7 +589,9 @@ mod tests {
         assert!(hint.contains("[s]"), "hint: {hint}");
         assert!(hint.contains("[k]"), "hint: {hint}");
         assert!(hint.contains("[q]"), "hint: {hint}");
-        assert!(hint.contains("Tab"), "hint: {hint}");
+        // The top tab bar + Tab/Shift+Tab cycling is gone (spine is now the single
+        // primary navigator) — the hint must not reference it.
+        assert!(!hint.contains("Tab"), "hint: {hint}");
     }
 
     #[test]
@@ -577,6 +624,27 @@ mod tests {
         assert!(
             line.contains("Enter=create"),
             "status_line missing prompt: {line}"
+        );
+    }
+
+    // ── tier_status_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn tier_status_path_joins_tier_planning_status() {
+        let root = std::path::Path::new("/brain");
+        let path = tier_status_path(root, "core");
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/brain/core/planning/status.md")
+        );
+    }
+
+    #[test]
+    fn tier_status_path_differs_per_tier() {
+        let root = std::path::Path::new("/brain");
+        assert_ne!(
+            tier_status_path(root, "core"),
+            tier_status_path(root, "side")
         );
     }
 }
