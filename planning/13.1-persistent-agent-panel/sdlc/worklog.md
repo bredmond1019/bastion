@@ -25,3 +25,6 @@ Patched: docs/sessions.md
 
 ## Wrap-up — PASS
 Next: Pick the next Phase 13/14 block per state.json's focus.next ordering: BA.13.2 / BA.13.3 / BA.13.5 (Phase 13), or BA.14.1 / BA.14.2 / BA.14.3 (color pass, unblocked by BA.14.0), or resume Phase 15 (bastion-product packaging plan).
+
+## PR
+https://github.com/bredmond1019/bastion/pull/12
