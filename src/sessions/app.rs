@@ -110,8 +110,19 @@ impl AppState {
             browser.root_boundary = Some(path);
             self.file_browser = browser;
             self.space_overview_scroll = 0;
+            self.space_overview_file = None; // Reset the file view when changing spaces
         }
     }
+
+    pub fn current_space_planning_root(&self) -> std::path::PathBuf {
+        let flat = self.space_tree.flatten();
+        if let Some((_, _, Some(repo))) = flat.get(self.selected_space) {
+            repo.repo_path.join("planning")
+        } else {
+            crate::config::load_planning_root()
+        }
+    }
+
 
     fn ensure_valid_selection(&mut self) {
         let flat = self.space_tree.flatten();

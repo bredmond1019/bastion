@@ -38,7 +38,21 @@ struct BrainToml {
 
 pub fn load_space_tree(brain_toml_path: &Path) -> Result<SpaceTree> {
     let content = std::fs::read_to_string(brain_toml_path)?;
-    parse_space_tree(&content)
+    let mut tree = parse_space_tree(&content)?;
+
+    if let Some(parent) = brain_toml_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            for tier in &mut tree.tiers {
+                for repo in &mut tier.1 {
+                    if repo.repo_path.is_relative() {
+                        repo.repo_path = parent.join(&repo.repo_path);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(tree)
 }
 
 pub fn parse_space_tree(content: &str) -> Result<SpaceTree> {
