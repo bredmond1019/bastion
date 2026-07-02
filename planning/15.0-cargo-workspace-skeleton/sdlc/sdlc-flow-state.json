@@ -2,10 +2,10 @@
   "spec_slug": "15.0-cargo-workspace-skeleton",
   "branch": "15.0-cargo-workspace-skeleton-flow",
   "started_at": "2026-07-02T21:52:55Z",
-  "updated_at": "2026-07-02T22:13:53Z",
+  "updated_at": "2026-07-02T22:21:12Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.0-cargo-workspace-skeleton-flow",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -33,6 +33,24 @@
         "Cargo.toml",
         "crates/bastion/Cargo.toml",
         "crates/bastion/src/ (git mv of ~100 files from src/)"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Root Cargo.toml is now a true virtual workspace manifest (members = [\"crates/bastion\"], resolver = \"3\") with the stale duplicate root src/ tree removed, Cargo.lock regenerated at the workspace root, and the full gate (fmt/clippy/test/build/--help) green with all 1056 pre-existing tests passing unchanged.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Found task 1's prior commit had NOT actually completed the relocation: root Cargo.toml still declared the full [package] bastion manifest and a duplicate src/ tree existed alongside crates/bastion/src/ (byte-identical, verified via diff -rq) — cargo build was silently building the root package only, never touching the crates/bastion copy. Since task 2's charter is 'restore a green build after the relocation,' completed the actual relocation as part of this task: converted root Cargo.toml to a bare [workspace] manifest and `git rm -r src` to remove the stale duplicate, rather than leaving it half-done and only 'fixing' incidental breakage.",
+        "No changes were needed in crates/bastion/src/validate/report.rs or crates/bastion/src/brain/code_graph.rs — their CARGO_MANIFEST_DIR-relative fixture joins already resolve correctly now that the crate manifest lives at crates/bastion/Cargo.toml, exactly as the spec's Context Pointers predicted."
+      ],
+      "files_changed": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/ (removed — duplicate of crates/bastion/src/, left over from an incomplete task 1 relocation)"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -109,13 +127,29 @@
         "filesReadKb": null,
         "inTokEst": 598,
         "outTok": null
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 1016,
+        "filesReadKb": null,
+        "inTokEst": 1016,
+        "outTok": 6238
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 598,
+        "filesReadKb": null,
+        "inTokEst": 598,
+        "outTok": 7691
       }
     ],
     "total": {
-      "promptTokEst": 4876,
+      "promptTokEst": 6490,
       "filesReadKb": 0,
-      "inTokEst": 4876,
-      "outTok": 0
+      "inTokEst": 6490,
+      "outTok": 13929
     }
   }
 }
