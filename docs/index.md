@@ -39,6 +39,7 @@ and `Bastion/docs/ownership.md`.
 | [brain.md](brain.md) | `bastion brain` — OKF corpus discovery, graph construction, structural queries |
 | [code.md](code.md) | `bastion code` — tree-sitter symbol/reference/dependents lookup over Rust source |
 | [validate.md](validate.md) | `bastion validate` — Markdown/MDX content validation |
+| [okf.md](okf.md) | `src/okf` — OKF frontmatter model + `serialize_frontmatter` (the write path; future `okf-core`) |
 
 ## Infrastructure
 
