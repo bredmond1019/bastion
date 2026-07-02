@@ -398,7 +398,7 @@
   },
   "tracks": [
     {
-      "title": "Phase 11 — BastionUI serve API",
+      "title": "Phase 11 \u2014 BastionUI serve API",
       "blocks": [
         {
           "id": "BA.11.C0",
@@ -456,7 +456,7 @@
       ]
     },
     {
-      "title": "Phase 12 — Unified Console Cleanup",
+      "title": "Phase 12 \u2014 Unified Console Cleanup",
       "blocks": [
         {
           "id": "BA.12.C",
@@ -515,7 +515,7 @@
       ]
     },
     {
-      "title": "Phase 7 — Costs",
+      "title": "Phase 7 \u2014 Costs",
       "blocks": [
         {
           "id": "BA.7.B",
@@ -543,7 +543,7 @@
       ]
     },
     {
-      "title": "Phase 13 — Unified Console Structural Restructure",
+      "title": "Phase 13 \u2014 Unified Console Structural Restructure",
       "blocks": [
         {
           "id": "BA.13.0",
@@ -551,7 +551,68 @@
           "status": "open",
           "depends_on": [],
           "wave": 130,
-          "origin": null
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Spine model in src/brain/spaces.rs",
+              "description": "Add SpineRow + SelectedNode + spine_rows() as a presentation layer over parse_space_tree; rename _root tier to HQ and collapse the brain leaf into HQ (children learn-ai/base-template). Unit-test spine_rows ordering, HQ rename, collapsed-brain invariant, and empty tree.",
+              "acceptance_criteria": [
+                "SpineRow and SelectedNode types added to spaces.rs",
+                "spine_rows() emits Mission Control first, then HQ + children, then tiers",
+                "_root renamed to HQ and brain leaf collapsed (no standalone brain leaf)",
+                "spine_rows() unit-tested against a parse_space_tree fixture incl. empty tree"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Selection + node routing in src/sessions/app.rs",
+              "description": "Replace selected_space with selected_spine; add derived selected_node(); rewrite select_next/select_prev to wrap over all rows (drop header-skip); update reinit_browser/current_space_planning_root/selected_session/selected_space_slug; remove tabs/active_tab_index/next_tab/prev_tab/push_tab/close_tab and Tab/BackTab arms, replacing the 't' open path with a transient overlay flag. Unit-test wrap-around and selected_node() mapping.",
+              "acceptance_criteria": [
+                "selected_spine + selected_node() replace selected_space",
+                "select_next/select_prev wrap over all spine rows (headers selectable)",
+                "all tab machinery and Tab/BackTab arms removed",
+                "select wrap and selected_node() mapping unit-tested for Mission Control/HQ/tier/space"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Sidebar render + main-area routing in src/sessions/ui.rs",
+              "description": "Rewrite build_sidebar_items to render pinned Mission Control + selectable tier/HQ headers + spaces; delete the top tab-bar block; route the main area on selected_node() (Mission Control->monitor::ui::render, Space/Hq->Space Overview, Tier->tier overview rooted at <tier>/planning/status.md with graceful empty-state). draw_for_test asserts the new sidebar and no tab bar.",
+              "acceptance_criteria": [
+                "build_sidebar_items renders Mission Control first + selectable HQ/tier headers",
+                "top tab-bar rendering deleted",
+                "main area routes on SelectedNode incl. tier empty-state degrade without panic",
+                "draw_for_test asserts new sidebar, no tab bar, no standalone brain leaf"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 4,
+              "title": "Validate",
+              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI via tmux capture-pane and record the result in Notes.",
+              "acceptance_criteria": [
+                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
+                "TUI smoke test result recorded in tasks.md Notes"
+              ],
+              "status": "pending",
+              "validation_commands": [
+                "cargo fmt --check",
+                "cargo clippy -- -D warnings",
+                "cargo test",
+                "cargo build --release"
+              ],
+              "max_attempts": 3
+            }
+          ]
         },
         {
           "id": "BA.13.1",
@@ -636,7 +697,7 @@
       ]
     },
     {
-      "title": "Phase 14 — Unified Console Polish & Theming",
+      "title": "Phase 14 \u2014 Unified Console Polish & Theming",
       "blocks": [
         {
           "id": "BA.14.0",
@@ -701,7 +762,7 @@
       ]
     },
     {
-      "title": "Phase 15 — Bastion Product Packaging",
+      "title": "Phase 15 \u2014 Bastion Product Packaging",
       "blocks": [
         {
           "id": "BA.15.0",
@@ -939,7 +1000,7 @@
         "cross_repo": null
       },
       "kind": "known_issue",
-      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) — not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
+      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) \u2014 not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
       "related": [],
       "clears_when": null,
       "created": "2026-07-02"
