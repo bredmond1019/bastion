@@ -301,7 +301,7 @@ fn draw_with_root(
                 .unwrap_or_else(|_| "No planning/status.md found.".to_string());
             // Strip YAML frontmatter before handing to bella.
             let status_md = strip_frontmatter(&raw_md).to_owned();
-            let theme = bella_engine::Theme::bastion();
+            let theme = bella_engine::Theme::mission_control();
             let tables = bella_engine::links::TableExpansions::new();
             let rendered = bella_engine::render_with_edit(
                 &status_md,
