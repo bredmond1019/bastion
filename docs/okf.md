@@ -6,7 +6,7 @@ doc_id: okf
 layer: [console, factory, meta]
 project: bastion
 status: active
-keywords: [OKF, frontmatter, serializer, write path, okf-core, scaffolding, YAML, bastion init]
+keywords: [OKF, frontmatter, serializer, write path, okf-core, scaffolding, YAML]
 related: [validate, brain, bastion-product-plan]
 ---
 
