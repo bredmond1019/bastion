@@ -44,7 +44,7 @@ Add an always-visible bottom "agents · priority" strip listing every tmux sessi
 - Render `agent_panel_rows` with themed state dots/colors sourced from the runtime theme (`ui_theme::current_theme()` — BA.14.0), never literal colors.
 - **Tests:** a `draw_for_test` (existing `tui_tests.rs` pattern) asserting the strip renders under at least two different `SelectedNode` selections, that rows appear in urgency order, and that the min-height fallback renders without panic when the frame is short.
 
-### 4. BA.13.1.4 Validate
+### 4. BA.13.1.4 Validate (in progress)
 - Run the Validation Commands listed below and confirm all pass.
 - Manually smoke-test the TUI via tmux `capture-pane`: with multiple tmux sessions in differing states, confirm the agents·priority strip is visible under Mission Control, a tier, and a space; Blocked sorts first; colors track the active theme. Record the result in `## Notes`.
 
@@ -65,7 +65,19 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+- **Task 4 validation (BA.13.1.4):** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  `cargo test` (1056 passed / 0 failed / 3 ignored), and `cargo build --release` all pass. Fixed one
+  new `clippy::collapsible_if` lint in `src/sessions/ui.rs`'s `build_space_item_working_dot_tracks_runtime_theme`
+  test (collapsed the nested `if let Some(cell) = ... { if cell.symbol() == ... }` into a single
+  let-chain condition) — no behaviour change, test still asserts the same thing.
+- **Manual smoke test (tmux `capture-pane`):** launched `./target/release/bastion tui` inside a
+  scratch tmux session (`bastion-tui-test`, 200x50) alongside four other live tmux sessions
+  (`bastion-smoke-1`, `bastion-smoke-2`, `orchestration`, `Core`). Captured the pane at three
+  `SelectedNode` positions — Mission Control (root), a tier (`core`), and a space (`bastion`) — via
+  spine `Down` key navigation. The "agents · priority" strip rendered at the bottom of the frame in
+  all three captures, listing all five tmux sessions with themed state-dot glyphs (idle `○` in all
+  cases, since none of the scratch sessions had agent-triggering pane output). No panics observed at
+  the 200x50 frame size. Cleaned up all three scratch tmux sessions afterward.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
