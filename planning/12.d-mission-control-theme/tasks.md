@@ -12,21 +12,7 @@ Replace Mission Control's hardcoded `ratatui::Color` values with the shared `ui_
 - `CLAUDE.md` (pure-logic-is-tested rule — `status_color()` is a small pure function)
 
 ## Step-by-Step Tasks
-
-### BA.12.D.1 Theme `status_color()` and error/banner spans
-- **Target Files:** `src/monitor/ui.rs`
-- Replace `RunStatus::Running` → `Color::Yellow` with `ui_theme::cyan()`, `Success` → `Color::Green` with `ui_theme::sage()`, `Failed` → `Color::Red` with `ui_theme::rose()`, `Pending` → `Color::DarkGray` with `ui_theme::muted()`.
-- Replace error span styling and the banner span's `Color::Red`/`Color::Yellow` usage with `ui_theme::rose()` (reuse; do not introduce a new `warn()` helper unless no existing color fits).
-- Remove all remaining `Color::Yellow`/`Color::Green`/`Color::Red`/`Color::DarkGray` literals from this file.
-- Add or extend a unit test for `status_color()` asserting each `RunStatus` variant maps to the expected `ui_theme` color function's output.
-
-### BA.12.D.2 Theme Mission Control borders
-- **Target Files:** `src/monitor/ui.rs`
-- Update the graph pane and detail pane block borders to use `ui_theme::border_dim_style()` (inactive) / `ui_theme::border_active_style()` (active), matching the border treatment already used by the Kanban board.
-- Manually smoke test via `tmux capture-pane` that Mission Control now matches the console's color scheme and record the result in this spec's `## Notes`.
-
-### BA.12.D.3 Validate
-- Run the Validation Commands listed below and confirm all pass.
+See `tasks.json` in this directory — the task list is defined there, not here.
 
 ## Acceptance Criteria
 - `status_color()` has a unit test asserting each `RunStatus` variant maps to the expected `ui_theme` color.

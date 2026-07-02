@@ -26,29 +26,7 @@ Rebuild mouse handling as a pure `on_mouse` dispatcher that stores per-pane view
 - **Out of scope (hard boundary, from the block + scope decision):** the standalone `monitor` subcommand's own event loop (`src/monitor/events.rs`); word/link selection in the content pane (optional/best-effort — `select_word_at` may be wired but is not required); sub-tab click routing and `SubTab::Sessions` (BA.13.4).
 
 ## Step-by-Step Tasks
-
-### BA.13.2.1 Viewport `Rect` fields + pure `on_mouse` dispatcher in `src/sessions/app.rs`
-- **Owns:** `src/sessions/app.rs` (only file touched by this task).
-- Add per-pane viewport `Rect` fields to `AppState`, defaulting to empty/zero `Rect`s: `spine_area`, `browser_area`, `content_area`, `agent_panel_area`. (Do **not** add `subtab_area` — deferred to BA.13.4.)
-- Add a pure `on_mouse(&mut self, kind, col, row) -> Option<Action>` (match the repo's existing action/return convention) that routes via `bella_engine::geometry::point_in(rect, col, row)`:
-  - `spine_area` → set `selected_spine` to the clicked row (respecting the wrapping/selectable-row model from BA.13.0).
-  - `browser_area` → set `file_browser.selected` to the clicked entry.
-  - `content_area` → scroll / cursor position via `bella_engine::geometry::body_pos`.
-  - `agent_panel_area` → jump to that session's **space** by setting `selected_spine` (no `SubTab` — deferred).
-  - `ScrollUp`/`ScrollDown` anywhere over the content pane → scroll the content pane.
-  - Clicks outside all known Rects → no-op (`None`).
-- **Tests (Rule 6):** unit-test `on_mouse` per pane with synthetic `Rect`s + coords (no terminal), asserting: a spine click selects the right row; a browser click selects the right entry; a content-pane scroll adjusts the scroll offset; an agent-panel click sets `selected_spine` to that session's space; an out-of-bounds click is a no-op. Cover `ScrollUp` and `ScrollDown`.
-
-### BA.13.2.2 Store pane `Rect`s during draw + extend the Mouse event arm in `src/sessions/ui.rs`
-- **Owns:** `src/sessions/ui.rs` (only file touched by this task). **Depends on:** BA.13.2.1 (the `Rect` fields + `on_mouse`).
-- During draw, write each pane's computed viewport `Rect` back onto `AppState` (`spine_area`, `browser_area`, `content_area`, `agent_panel_area`) so `on_mouse` has live geometry.
-- Extend the Mouse event arm (replacing the "out of scope" stub around `ui.rs:498`) to forward `Down`/`ScrollUp`/`ScrollDown` events into `AppState::on_mouse` and apply the returned `Action`/state, mirroring how key events are dispatched.
-- Keep this arm a thin shell over the pure `on_mouse` (Rule 6): translate crossterm `MouseEvent` → `(kind, col, row)`, call `on_mouse`, apply the result.
-- **Tests:** a `draw_for_test` (existing `tui_tests.rs` pattern) asserting the pane `Rect`s are populated after a draw (non-zero for the visible panes) so `on_mouse` routing has real geometry to match against.
-
-### BA.13.2.3 Validate
-- Run the Validation Commands listed below and confirm all pass.
-- Manually smoke-test the TUI via tmux (mouse events can't be scripted through `send-keys`, so drive interactively where possible): click a spine row, a browser entry, and an agent-panel row; wheel-scroll the content pane; confirm each selects/scrolls the expected target and clicks outside panes are inert. Record the result (including any interactive-only limitation) in `## Notes`.
+See `tasks.json` in this directory — the task list is defined there, not here.
 
 ## Acceptance Criteria
 - Clicking a spine row selects it (`selected_spine`); clicking a browser entry selects it (`file_browser.selected`); clicking an agent-panel row jumps to that session's space.
