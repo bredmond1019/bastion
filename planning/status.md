@@ -5,7 +5,7 @@ description: Rollup status for Bastion sub-brain.
 doc_id: bastion-status
 layer: [meta]
 status: active
-updated: 2026-07-02T14:50:53Z
+updated: 2026-07-02T15:01:31Z
 now: "BA.13.1 (spec 13.1-persistent-agent-panel) done — /sdlc-flow ran all 4 tasks to PASS, review PASS, docs patched. Status: Done."
 next: "Pick the next Phase 13/14 block per focus.next — BA.13.2 / BA.13.3 / BA.13.5 (Phase 13) or BA.14.1 / BA.14.2 / BA.14.3 (color pass) are unblocked. See planning/handoff.md."
 blocked: []
