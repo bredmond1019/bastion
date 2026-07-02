@@ -25,7 +25,7 @@ Make all color config-oriented: `ui_theme` functions read a runtime `Theme`, an 
 
 ## Step-by-Step Tasks
 
-### BA.14.0.1 Runtime `Theme` refactor + accessor + bella mapping in `src/ui_theme.rs`
+### 1. BA.14.0.1 Runtime `Theme` refactor + accessor + bella mapping in `src/ui_theme.rs`
 - **Owns:** `src/ui_theme.rs` (only file touched by this task).
 - Refactor the `ui_theme` functions so they read a runtime `Theme` (process-wide `OnceCell`/`OnceLock` set at startup, with a `bastion` default when unset) instead of returning baked `rgb()` constants. No fixed `rgb(...)`/`Color::` literals should remain outside the theme definition itself.
 - Provide named presets keyed by name (default `bastion`, with room for more, e.g. `dark`/`light`), and a pure `theme_by_name(&str) -> Theme` (or equivalent) that falls back to the default for an absent/unknown name.
@@ -33,20 +33,20 @@ Make all color config-oriented: `ui_theme` functions read a runtime `Theme`, an 
 - Expose the runtime-`Theme` accessor + an init/setter that all other UI blocks (Phase 13/14) consume.
 - **Tests (Rule 6):** unit-test `theme_by_name` for a known preset, the default when the name is absent, and the fallback for an unknown name; unit-test the bastion→bella mapping (asserting mapped colors/roles); assert the accessor returns the `bastion` default before any init.
 
-### BA.14.0.2 `[theme]` config section + resolution in `src/config.rs`
+### 2. BA.14.0.2 `[theme]` config section + resolution in `src/config.rs`
 - **Owns:** `src/config.rs` (only file touched by this task). **Depends on:** BA.14.0.1 (preset names / `theme_by_name`).
 - Extend `FileConfig` with an optional `[theme]` section carrying (at minimum) a theme *name* selection; keep it fully optional so existing configs parse unchanged.
 - Add resolution: config `[theme].name` (or absent) → resolved `Theme` via the BA.14.0.1 lookup, with a default fallback when the section is absent or the name is unknown.
 - **Tests (Rule 6):** unit-test parsing a `config.toml` fixture *with* a `[theme]` name, *without* a `[theme]` section (→ default), and with an *unknown* name (→ default fallback); confirm a pre-existing config with no `[theme]` still deserializes.
 
-### BA.14.0.3 Apply runtime theme at the sessions entry in `src/sessions/ui.rs`
+### 3. BA.14.0.3 Apply runtime theme at the sessions entry in `src/sessions/ui.rs`
 - **Owns:** `src/sessions/ui.rs` (only file touched by this task). **Depends on:** BA.14.0.1 (accessor/init + bella mapping) and BA.14.0.2 (resolved `Theme` from `FileConfig`).
 - At the sessions/TUI entry, initialize the runtime-`Theme` accessor from the resolved `FileConfig` theme (so chrome reads the active theme).
 - Replace the fixed `Theme::bastion()` passed to `render_with_edit` with the mapped `bella_engine::Theme` from the active theme, so the markdown view and TUI chrome share one theme.
 - **Cross-repo caveat (Rule 7):** if and only if the mapping cannot be expressed against the existing `bella_engine::Theme` API, add the minimal constructor in `../bella/crates/bella-engine/src/theme.rs` and record the coordination in `## Notes` + the Amendment Log; otherwise touch no bella files.
 - **Tests:** a `draw_for_test` (existing sessions TUI test pattern) asserting a non-default theme selection changes the rendered chrome color for at least one element, and that `render_with_edit` receives the mapped theme (assert via the pure mapping seam rather than pixel colors where the render is opaque).
 
-### BA.14.0.4 Validate
+### 4. BA.14.0.4 Validate
 - Run the Validation Commands listed below and confirm all pass.
 - Manually smoke-test the TUI via tmux `capture-pane`: set a `[theme]` name in a scratch config (and unset it), confirm the chrome + markdown view visibly share the theme and that an absent/unknown name falls back to `bastion` without panic. Record the result in `## Notes`.
 
