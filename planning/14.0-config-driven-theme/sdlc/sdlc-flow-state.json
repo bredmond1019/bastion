@@ -2,10 +2,10 @@
   "spec_slug": "14.0-config-driven-theme",
   "branch": "14.0-config-driven-theme-flow-4",
   "started_at": "2026-07-02T13:14:35Z",
-  "updated_at": "2026-07-02T13:18:26Z",
+  "updated_at": "2026-07-02T13:27:03Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/14.0-config-driven-theme-flow-4",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -37,6 +37,24 @@
       ],
       "files_changed": [
         "src/config.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "sessions/ui.rs now initializes the process-wide runtime theme from resolved config at TUI startup and hands the mapped bella_engine::Theme to both render_with_edit call sites, so chrome and the markdown view share one theme.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Added init_theme_from_config() as a thin wrapper (config::load_workspace_registry + config::resolve_theme + ui_theme::init_theme) called at the top of run(); left untested directly per Rule 6's 'trivial wrapper over already-tested pure functions' exception, documented in tasks.md ## Notes with deferral of the manual smoke test to Task 4's Validate step.",
+        "Avoided calling ui_theme::init_theme inside unit tests to sidestep ACTIVE_THEME's process-wide OnceLock hazard (shared across the whole cargo test binary); tests instead assert against whatever current_theme() resolves to at call time, which is deterministic and parallel-safe.",
+        "Replaced both bella_engine::Theme::mission_control() call sites with ui_theme::to_bella_theme(ui_theme::current_theme()); no ../bella files touched since the existing bella_engine::Theme struct already covered the mapping (Rule 7 caveat not triggered)."
+      ],
+      "files_changed": [
+        "src/sessions/ui.rs",
+        "planning/14.0-config-driven-theme/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -121,13 +139,37 @@
         "filesReadKb": null,
         "inTokEst": 592,
         "outTok": 2251
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 264,
+        "filesReadKb": null,
+        "inTokEst": 264,
+        "outTok": 1113
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 913,
+        "filesReadKb": null,
+        "inTokEst": 913,
+        "outTok": 20788
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 592,
+        "filesReadKb": null,
+        "inTokEst": 592,
+        "outTok": 2599
       }
     ],
     "total": {
-      "promptTokEst": 4553,
+      "promptTokEst": 6322,
       "filesReadKb": 0,
-      "inTokEst": 4553,
-      "outTok": 41900
+      "inTokEst": 6322,
+      "outTok": 66400
     }
   }
 }
