@@ -25,7 +25,7 @@ Make all color config-oriented: `ui_theme` functions read a runtime `Theme`, an 
 
 ## Step-by-Step Tasks
 
-### 1. BA.14.0.1 Runtime `Theme` refactor + accessor + bella mapping in `src/ui_theme.rs`
+### 1. [~] BA.14.0.1 Runtime `Theme` refactor + accessor + bella mapping in `src/ui_theme.rs`
 - **Owns:** `src/ui_theme.rs` (only file touched by this task).
 - Refactor the `ui_theme` functions so they read a runtime `Theme` (process-wide `OnceCell`/`OnceLock` set at startup, with a `bastion` default when unset) instead of returning baked `rgb()` constants. No fixed `rgb(...)`/`Color::` literals should remain outside the theme definition itself.
 - Provide named presets keyed by name (default `bastion`, with room for more, e.g. `dark`/`light`), and a pure `theme_by_name(&str) -> Theme` (or equivalent) that falls back to the default for an absent/unknown name.
