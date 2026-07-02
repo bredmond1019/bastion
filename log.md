@@ -2,12 +2,68 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-02T09:56:13Z
+timestamp: 2026-07-02T13:53:23Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [run: 2026-07-02]
+
+Completed BA.13.1 (spec `13.1-persistent-agent-panel`) via `/sdlc-flow`, adding an always-visible
+bottom "agents · priority" strip to the sessions TUI. Task 1 extracted a pure
+`session_urgency(&Session) -> u8` out of `build_mission_items` in `src/monitor/app.rs` (Blocked
+sorts above Working above Idle, plus Running) and reused it, preserving `build_mission_items`'s
+signature shared with `monitor/events.rs`. Task 2 added a pure `agent_panel_rows` builder +
+`AgentPanelRow` model in a new `src/sessions/agent_panel.rs`, sorted via `session_urgency` with no
+I/O or theme access in the builder itself. Task 3 wired the strip into `src/sessions/ui.rs`: a new
+pure `agent_panel_strip_height(row_count, frame_height)` sizes it (3–7 lines, shrinking toward 0
+without underflow/panic on tight frames) and it renders under every `SelectedNode` with themed
+state dots sourced from `ui_theme::current_theme()` (BA.14.0), never literal colors. Task 4
+validated the full gate (`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test` — 1056 passed / 0 failed / 3 ignored, `cargo build --release`), fixing one
+`clippy::collapsible_if` lint surfaced by `--all-targets` in the task-3 test code, and manually
+smoke-tested via tmux `capture-pane` across Mission Control, a tier, and a space with five live
+tmux sessions — the strip rendered correctly at all three `SelectedNode` positions with no panics.
+End review verdict: **PASS** (0 findings, 1 attempt). Docs patched: `docs/sessions.md`. No spec
+amendments were needed — all four tasks landed as written. Next: pick the next Phase 13/14 block
+(`BA.13.2` / `BA.13.3` / `BA.13.5`, or `BA.14.1`–`BA.14.3`) per `state.json`'s `focus.next`
+ordering.
+
+```
+9d2330b chore: flow state — docs
+c85c345 docs: update docs for 13.1-persistent-agent-panel
+7725ace chore: flow state — task 4 passed
+4e0be0d feat: implement 13.1-persistent-agent-panel-task4
+8555a0f chore: flow state — task 3 passed
+1f9c4ad feat: implement 13.1-persistent-agent-panel-task3
+40492fb chore: flow state — task 2 passed
+c4256b5 feat: implement 13.1-persistent-agent-panel-task2
+a4e318c chore: flow state — task 1 passed
+d519319 feat: implement 13.1-persistent-agent-panel-task1
+```
+
+---
+
+## [run: 2026-07-02]
+
+Closed out BA.14.0 after the `/sdlc-flow 14.0-config-driven-theme` pipeline had already landed
+4/4 tasks with a PASS review and PR #11 open but unmerged. Ran a light `/code-review low` pass
+over the merged diff, which came back with 0 findings, and confirmed docs (`docs/config.md`,
+`docs/sessions.md`) were already updated by the pipeline — nothing left to fix. PR #11 was
+squash-merged via `gh pr merge --squash`; the worktree `trees/14.0-config-driven-theme-flow-4`
+was fast-forward merged into local `main`, then local `main` was `git reset --hard origin/main`
+to resync with GitHub's squash commit after first content-verifying the two were equivalent. The
+worktree and its branch were removed via `/clean-worktree`. `state.json`'s BA.14.0 block was
+closed (`status: "closed"`, `tasks[]` array dropped), and `mev emit-state --write` plus
+`mev validate-brain --state` were run clean (0 errors, no new warnings). `planning/handoff.md`
+was rewritten for the next agent, pointing at BA.13.1 as the suggested next pick, now unblocked
+by BA.14.0 landing. Why: continuing/closing out the BA.14.0 block workflow after the SDLC
+pipeline completed, so the merged work is fully reconciled in git, state, and handoff before
+picking up the next block.
 
 ---
 

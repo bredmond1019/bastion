@@ -11,23 +11,29 @@ pub enum MissionItem {
     Run(WorkflowRun),
 }
 
+/// Urgency ordering for a session, lower value = higher urgency.
+///
+/// Blocked (needs input) sorts first (0), Working or an actively `Running`
+/// session sorts next (1), everything else (Idle, Unknown) sorts last (2).
+pub fn session_urgency(session: &Session) -> u8 {
+    if session.agent_state == crate::detect::AgentState::Blocked {
+        0
+    } else if session.agent_state == crate::detect::AgentState::Working
+        || session.state == crate::sessions::model::SessionState::Running
+    {
+        1
+    } else {
+        2
+    }
+}
+
 pub fn build_mission_items(sessions: &[Session], runs: &[WorkflowRun]) -> Vec<MissionItem> {
     let mut items = Vec::new();
     items.extend(sessions.iter().cloned().map(MissionItem::Session));
     items.extend(runs.iter().cloned().map(MissionItem::Run));
 
     items.sort_by_key(|item| match item {
-        MissionItem::Session(s) => {
-            if s.agent_state == crate::detect::AgentState::Blocked {
-                0
-            } else if s.agent_state == crate::detect::AgentState::Working
-                || s.state == crate::sessions::model::SessionState::Running
-            {
-                1
-            } else {
-                2
-            }
-        }
+        MissionItem::Session(s) => session_urgency(s),
         MissionItem::Run(r) => {
             if r.status == crate::db::workflows::RunStatus::Running
                 || r.status == crate::db::workflows::RunStatus::Pending
@@ -167,8 +173,21 @@ impl App {
 mod tests {
     use super::*;
     use crate::db::workflows::{NodeState, RunStatus, WorkflowRun};
+    use crate::detect::AgentState;
+    use crate::sessions::model::SessionState;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn make_session(name: &str, agent_state: AgentState, state: SessionState) -> Session {
+        Session {
+            name: name.to_string(),
+            state,
+            window_count: 1,
+            foreground_cmd: String::new(),
+            last_line: String::new(),
+            agent_state,
+        }
+    }
 
     fn make_node(name: &str) -> NodeState {
         NodeState {
@@ -466,5 +485,78 @@ mod tests {
         app.selected_node = 1;
         app.replace_items(vec![MissionItem::Run(make_run("r1", &[]))]);
         assert_eq!(app.selected_node, 0);
+    }
+
+    // ── session_urgency ───────────────────────────────────────────────────────
+
+    #[test]
+    fn session_urgency_blocked_is_most_urgent() {
+        let s = make_session("s1", AgentState::Blocked, SessionState::Idle);
+        assert_eq!(session_urgency(&s), 0);
+    }
+
+    #[test]
+    fn session_urgency_working_is_mid_urgency() {
+        let s = make_session("s1", AgentState::Working, SessionState::Idle);
+        assert_eq!(session_urgency(&s), 1);
+    }
+
+    #[test]
+    fn session_urgency_running_session_state_is_mid_urgency() {
+        // Working AgentState wouldn't apply here — Idle agent state, but the
+        // tmux-level SessionState is Running.
+        let s = make_session("s1", AgentState::Idle, SessionState::Running);
+        assert_eq!(session_urgency(&s), 1);
+    }
+
+    #[test]
+    fn session_urgency_idle_is_least_urgent() {
+        let s = make_session("s1", AgentState::Idle, SessionState::Idle);
+        assert_eq!(session_urgency(&s), 2);
+    }
+
+    #[test]
+    fn session_urgency_unknown_is_least_urgent() {
+        let s = make_session("s1", AgentState::Unknown, SessionState::Idle);
+        assert_eq!(session_urgency(&s), 2);
+    }
+
+    #[test]
+    fn session_urgency_blocked_sorts_above_working_above_idle() {
+        let blocked = make_session("blocked", AgentState::Blocked, SessionState::Idle);
+        let working = make_session("working", AgentState::Working, SessionState::Idle);
+        let idle = make_session("idle", AgentState::Idle, SessionState::Idle);
+        assert!(session_urgency(&blocked) < session_urgency(&working));
+        assert!(session_urgency(&working) < session_urgency(&idle));
+    }
+
+    // ── build_mission_items ordering (regression) ────────────────────────────
+
+    #[test]
+    fn build_mission_items_orders_sessions_by_urgency() {
+        let idle = make_session("idle", AgentState::Idle, SessionState::Idle);
+        let blocked = make_session("blocked", AgentState::Blocked, SessionState::Idle);
+        let working = make_session("working", AgentState::Working, SessionState::Idle);
+        let items = build_mission_items(&[idle, blocked, working], &[]);
+
+        let names: Vec<&str> = items
+            .iter()
+            .map(|item| match item {
+                MissionItem::Session(s) => s.name.as_str(),
+                MissionItem::Run(_) => unreachable!("no runs in this fixture"),
+            })
+            .collect();
+        assert_eq!(names, vec!["blocked", "working", "idle"]);
+    }
+
+    #[test]
+    fn build_mission_items_mixes_sessions_and_runs() {
+        let blocked = make_session("blocked", AgentState::Blocked, SessionState::Idle);
+        let running_run = make_run("r1", &["A"]); // RunStatus::Running -> urgency 1
+        let items = build_mission_items(&[blocked], &[running_run]);
+        assert_eq!(items.len(), 2);
+        // Blocked session (urgency 0) must precede the running run (urgency 1).
+        assert!(matches!(items[0], MissionItem::Session(_)));
+        assert!(matches!(items[1], MissionItem::Run(_)));
     }
 }
