@@ -2,12 +2,31 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-02T09:56:13Z
+timestamp: 2026-07-02T13:53:23Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [run: 2026-07-02]
+
+Closed out BA.14.0 after the `/sdlc-flow 14.0-config-driven-theme` pipeline had already landed
+4/4 tasks with a PASS review and PR #11 open but unmerged. Ran a light `/code-review low` pass
+over the merged diff, which came back with 0 findings, and confirmed docs (`docs/config.md`,
+`docs/sessions.md`) were already updated by the pipeline — nothing left to fix. PR #11 was
+squash-merged via `gh pr merge --squash`; the worktree `trees/14.0-config-driven-theme-flow-4`
+was fast-forward merged into local `main`, then local `main` was `git reset --hard origin/main`
+to resync with GitHub's squash commit after first content-verifying the two were equivalent. The
+worktree and its branch were removed via `/clean-worktree`. `state.json`'s BA.14.0 block was
+closed (`status: "closed"`, `tasks[]` array dropped), and `mev emit-state --write` plus
+`mev validate-brain --state` were run clean (0 errors, no new warnings). `planning/handoff.md`
+was rewritten for the next agent, pointing at BA.13.1 as the suggested next pick, now unblocked
+by BA.14.0 landing. Why: continuing/closing out the BA.14.0 block workflow after the SDLC
+pipeline completed, so the merged work is fully reconciled in git, state, and handoff before
+picking up the next block.
 
 ---
 
