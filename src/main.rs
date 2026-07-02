@@ -153,10 +153,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 args,
                 monitor,
             } => run::trigger(workflow, args, monitor).await,
-            Commands::RunNative {
-                workflow,
-                args,
-            } => crate::engine::run_native(workflow, args).await,
+            Commands::RunNative { workflow, args } => {
+                crate::engine::run_native(workflow, args).await
+            }
             Commands::Status => run::status().await,
             // Sessions path is DB-free (D4): no Config::load(), no Postgres pool.
             // All session verbs are sync blocking (D5): no async/tokio coupling.
