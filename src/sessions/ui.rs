@@ -4,6 +4,7 @@
 // Synchronous event loop (Decision D5 — no tokio coupling).
 // DB-free (Decision D4 — no Config::load, no Postgres pool).
 
+use crate::brain::spaces::SelectedNode;
 use crate::sessions::app::{Action, AppState, InputKind, Mode};
 use crate::sessions::commands::{Degraded, degrade_tmux_error};
 use crate::sessions::model::{Pane, Session, parse_sessions};
@@ -185,65 +186,37 @@ fn draw_with_root(
             .highlight_style(crate::ui_theme::list_selected_style())
             .highlight_symbol("  ");
 
-        list_state.select(Some(app.selected_space));
+        list_state.select(Some(app.selected_spine));
         frame.render_stateful_widget(list, sidebar_area, list_state);
     }
 
-    // ── Main area: tab bar + content ──────────────────────────────────────────
+    // ── Main area: content ──────────────────────────────────────────────────
+    // NOTE: the top tab bar is gone (spine is now the single primary navigator);
+    // routing below keys off `selected_node()`. The sidebar rewrite + tier-overview
+    // routing is finished out in BA.13.0.3 — this is a minimal compile-fix routing
+    // so the crate builds against the new `AppState` API.
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .constraints([Constraint::Min(0)])
         .split(main_area);
-
-    // Tab bar — styled spans; active tab gets accent color + underline.
-    use crate::sessions::app::TabState;
-    let mut tab_spans: Vec<Span> = Vec::new();
-    // Leading spacer
-    tab_spans.push(Span::raw(" "));
-    for (i, tab) in app.tabs.iter().enumerate() {
-        let title = match tab {
-            TabState::SpaceOverview => "Space Overview",
-            TabState::Kanban => "Kanban Board",
-            TabState::MissionControl => "Mission Control",
-            TabState::MarkdownDocument(p) => p.to_str().unwrap_or("Doc"),
-        };
-        let label = format!(" {} ", title);
-        let style = if i == app.active_tab_index {
-            crate::ui_theme::tab_active_style()
-        } else {
-            crate::ui_theme::tab_inactive_style()
-        };
-        tab_spans.push(Span::styled(label, style));
-        // Separator between tabs
-        if i + 1 < app.tabs.len() {
-            tab_spans.push(Span::styled(
-                "  ",
-                Style::default().fg(crate::ui_theme::muted()),
-            ));
-        }
-    }
-
-    let tabs_bar = Paragraph::new(Line::from(tab_spans)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(*th_active)),
-    );
-    frame.render_widget(tabs_bar, main_chunks[0]);
 
     // Content block shared border style
     let content_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(*th));
 
-    match &app.tabs[app.active_tab_index] {
-        TabState::MissionControl => {
-            crate::monitor::ui::render(frame, &app.monitor_app, main_chunks[1]);
+    match app.selected_node() {
+        SelectedNode::MissionControl => {
+            crate::monitor::ui::render(frame, &app.monitor_app, main_chunks[0]);
         }
-        TabState::SpaceOverview => {
+        SelectedNode::Tier(_) => {
+            frame.render_widget(content_block, main_chunks[0]);
+        }
+        SelectedNode::Hq | SelectedNode::Space(_) => {
             let overview_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(30), Constraint::Min(0)])
-                .split(main_chunks[1]);
+                .split(main_chunks[0]);
 
             // Browser Pane
             let browser_border = if app.overview_pane == crate::sessions::app::OverviewPane::Browser
@@ -316,31 +289,6 @@ fn draw_with_root(
                 .scroll((app.space_overview_scroll, 0));
             frame.render_widget(paragraph, overview_chunks[1]);
         }
-        TabState::Kanban => {
-            let state_json_path = planning_root.join("state.json");
-            if let Ok(content) = std::fs::read_to_string(&state_json_path) {
-                if let Ok(state) = serde_json::from_str::<crate::overview::StateJson>(&content) {
-                    crate::overview::render(frame, &state, main_chunks[1]);
-                } else {
-                    let p = Paragraph::new(Span::styled(
-                        "Failed to parse state.json",
-                        Style::default().fg(crate::ui_theme::rose()),
-                    ))
-                    .block(content_block);
-                    frame.render_widget(p, main_chunks[1]);
-                }
-            } else {
-                let p = Paragraph::new(Span::styled(
-                    "No planning/state.json found.",
-                    Style::default().fg(crate::ui_theme::muted()),
-                ))
-                .block(content_block);
-                frame.render_widget(p, main_chunks[1]);
-            }
-        }
-        _ => {
-            frame.render_widget(content_block, main_chunks[1]);
-        }
     }
 
     // ── Footer ────────────────────────────────────────────────────────────────
@@ -396,9 +344,6 @@ fn execute_action(action: Action, app: &mut AppState) {
         Action::None | Action::Attach(_) => {
             // Attach is handled in the event loop (needs terminal suspension).
         }
-        Action::SelectTab(i) => {
-            app.active_tab_index = i;
-        }
         Action::New(name) => match tmux::new_session(&name, None) {
             Ok(()) => app.status = Some(format!("created '{name}'")),
             Err(e) => set_tmux_status(app, "new", &name, e),
@@ -429,56 +374,40 @@ fn run_inner(
         terminal.draw(|f| draw(f, app, &mut list_state))?;
 
         if event::poll(Duration::from_millis(REFRESH_MS))? {
-            match event::read()? {
-                Event::Key(k) => {
-                    let action = app.on_key(k.code);
+            // Mouse handling (click-to-select on the tab bar) is out of scope for
+            // this block (BA.13.2 — the top tab bar itself is gone) and deferred; only
+            // key events are handled here.
+            if let Event::Key(k) = event::read()? {
+                let action = app.on_key(k.code);
 
-                    if let Action::Attach(ref name) = action {
-                        // Suspend the TUI, hand the terminal to tmux, then restore.
-                        let name = name.clone();
-                        disable_raw_mode()?;
-                        execute!(
-                            terminal.backend_mut(),
-                            LeaveAlternateScreen,
-                            event::DisableMouseCapture
-                        )?;
+                if let Action::Attach(ref name) = action {
+                    // Suspend the TUI, hand the terminal to tmux, then restore.
+                    let name = name.clone();
+                    disable_raw_mode()?;
+                    execute!(
+                        terminal.backend_mut(),
+                        LeaveAlternateScreen,
+                        event::DisableMouseCapture
+                    )?;
 
-                        let res = tmux::suspend_and_attach(&name);
+                    let res = tmux::suspend_and_attach(&name);
 
-                        enable_raw_mode()?;
-                        execute!(
-                            terminal.backend_mut(),
-                            EnterAlternateScreen,
-                            event::EnableMouseCapture
-                        )?;
-                        terminal.clear()?;
+                    enable_raw_mode()?;
+                    execute!(
+                        terminal.backend_mut(),
+                        EnterAlternateScreen,
+                        event::EnableMouseCapture
+                    )?;
+                    terminal.clear()?;
 
-                        if let Err(e) = res {
-                            set_tmux_status(app, "attach", &name, e);
-                        }
-                        app.set_sessions(poll_sessions());
-                        continue;
+                    if let Err(e) = res {
+                        set_tmux_status(app, "attach", &name, e);
                     }
-
-                    execute_action(action, app);
+                    app.set_sessions(poll_sessions());
+                    continue;
                 }
-                Event::Mouse(m)
-                    if m.kind == event::MouseEventKind::Down(event::MouseButton::Left) =>
-                {
-                    let areas = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Min(1), Constraint::Length(1)])
-                        .split(terminal.size()?.into());
-                    let (_, main_area) = app.compute_view(areas[0]);
-                    let main_chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(3), Constraint::Min(0)])
-                        .split(main_area);
 
-                    let action = app.on_mouse(m.column, m.row, main_chunks[0]);
-                    execute_action(action, app);
-                }
-                _ => {}
+                execute_action(action, app);
             }
         } else {
             // Timeout: refresh session list.
