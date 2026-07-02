@@ -13,6 +13,45 @@ timestamp: 2026-07-02T09:56:13Z
 
 ## [run: 2026-07-02]
 
+Completed BA.14.0 (spec `14.0-config-driven-theme`), making all UI color config-driven off a
+runtime theme shared by chrome and the markdown view, across four tasks. Task 1 refactored
+`src/ui_theme.rs`: a runtime `Theme` struct (`bastion` preset) is now selected via a pure
+`theme_by_name` lookup and exposed through a process-wide `OnceLock` accessor
+(`current_theme`/`init_theme`), with every named color/style function reading from the active
+theme instead of baked `rgb()` literals, plus a pure `to_bella_theme` mapping to
+`bella_engine::Theme`. Task 2 extended `src/config.rs`'s `FileConfig` with an optional `[theme]`
+section (`ThemeConfig { name }`) and a pure `resolve_theme()` that falls back to `bastion` when
+the section or name is absent/unknown, keeping existing configs backward-compatible. Task 3 wired
+`src/sessions/ui.rs` to initialize the runtime theme from resolved config at TUI startup
+(`init_theme_from_config()`) and replaced both `render_with_edit` call sites' fixed
+`Theme::mission_control()` with the mapped runtime theme, so chrome and the markdown view render
+from one source of truth. Task 4 ran the full validation suite (fmt, clippy -D warnings, test —
+1037 passed/3 ignored, build --release) and smoke-tested the live TUI via tmux across three
+config states (named `bastion`, unknown preset name, absent `[theme]` section), confirming the
+fallback resolves correctly with no panic in all cases. Review verdict: **PASS** (0 findings, 1
+attempt). No `../bella` files were touched — the existing `bella_engine::Theme` struct already
+covered the mapping, so Rule 7's cross-repo coordination caveat was never triggered. Notable
+decision: only the `bastion` preset is implemented for now (`dark`/`light` are room-for-more, not
+required for this block — inventing new palettes now would step into BA.14.3's color-retune
+scope). Docs updated: `docs/config.md`, `docs/sessions.md`. Next: pick up the next Phase 14/13
+block (BA.13.2 / BA.13.3 / BA.13.5 / BA.14.1 / BA.14.2) per `planning/master-plan.md` and
+`state.json`'s `focus.next`.
+
+```
+667f1db chore: flow state — docs
+41f1276 docs: update docs for 14.0-config-driven-theme
+3df1933 chore: flow state — task 4 passed
+73ae242 feat: implement 14.0-config-driven-theme-task4
+f1563b8 chore: flow state — task 3 passed
+9d9e758 feat: implement 14.0-config-driven-theme-task3
+92c353c chore: flow state — task 2 passed
+c0d2ab9 feat: implement 14.0-config-driven-theme-task2
+```
+
+---
+
+## [run: 2026-07-02]
+
 Completed BA.13.0 (spec `13.0-spine-primary-navigation`), replacing the unified console's
 three-tab layout with a spine-only primary navigator across four tasks. Task 1 added the
 `SpineRow`/`SelectedNode` presentation model in `src/brain/spaces.rs` — Mission Control pinned
