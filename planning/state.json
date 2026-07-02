@@ -14,14 +14,6 @@
         "blocked_by": []
       },
       {
-        "id": "BA.12.F",
-        "title": "Spaces: brain.toml-driven hierarchy tree",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": []
-      },
-      {
         "id": "BA.11.E",
         "title": "Quick-action command endpoint (inject / spawn)",
         "status": null,
@@ -31,21 +23,6 @@
       }
     ],
     "blocked": [
-      {
-        "id": "BA.12.G",
-        "title": "Space Overview: scrollable content + shared file browser",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.12.F",
-            "what": null
-          }
-        ]
-      },
       {
         "id": "BA.7.C",
         "title": "Budget alerts + bastion kill",
@@ -152,7 +129,7 @@
         {
           "id": "BA.12.F",
           "title": "Spaces: brain.toml-driven hierarchy tree",
-          "status": "open",
+          "status": "closed",
           "depends_on": [
             {
               "type": "block",
@@ -167,7 +144,7 @@
         {
           "id": "BA.12.G",
           "title": "Space Overview: scrollable content + shared file browser",
-          "status": "open",
+          "status": "closed",
           "depends_on": [
             {
               "type": "block",
@@ -177,7 +154,70 @@
             }
           ],
           "wave": 4,
-          "origin": null
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Promote file browser into bella-engine",
+              "description": "Add ignore crate to bella-engine. Move browser.rs to bella-engine and decouple Browser from App. Add root_boundary. Export mod browser.",
+              "acceptance_criteria": [
+                "bella-engine has ignore dependency.",
+                "Browser is decoupled and returns Option<PathBuf>.",
+                "ascend_target is blocked at root_boundary, verified by unit test."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Refactor bella to consume shared browser",
+              "description": "Delete bella's browser.rs and consume bella_engine::browser::Browser in app, events, and ui.",
+              "acceptance_criteria": [
+                "bella builds and tests pass.",
+                "bella's UX is unchanged."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Integrate file browser into bastion AppState",
+              "description": "Add file_browser and space_overview_scroll to AppState. Instantiate it rooted at selected_space with root_boundary. Handle navigation and file loading.",
+              "acceptance_criteria": [
+                "Selecting a space roots the file browser correctly.",
+                "Browser cannot navigate above root_boundary.",
+                "Selecting a file loads it; distinct key opens in new tab."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 4,
+              "title": "Render file browser and scrollable content in bastion UI",
+              "description": "Render file-browser alongside content pane in Space Overview. Add native Ratatui scrolling using space_overview_scroll and handle PageUp/PageDown/j/k.",
+              "acceptance_criteria": [
+                "File browser renders.",
+                "Content pane scrolls via keys, confirmed manually."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 5,
+              "title": "Validate",
+              "description": "Run gating checks for both apps.",
+              "acceptance_criteria": [
+                "Both bastion's and bella's gating checks pass."
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            }
+          ]
         }
       ]
     },

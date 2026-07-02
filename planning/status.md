@@ -5,9 +5,9 @@ description: Rollup status for Bastion sub-brain.
 doc_id: bastion-status
 layer: [meta]
 status: active
-updated: 2026-07-01T19:36:42Z
-now: "Unified console visual overhaul closed out — compile error + 5 clippy findings fixed, real Tab/Shift+Tab tab-cycling wired up, docs/sessions.md updated; all gates green (fmt/clippy/test/build)."
-next: "BA.11.E — Quick-action command endpoint (inject / spawn) OR BA.7.B Exact bastion costs."
+updated: 2026-07-01T18:45:33-03:00
+now: "BA.12.G Space Overview file browsing implemented."
+next: "Phase 12 Unified Console Follow-up Cleanup complete."
 blocked: []
 ---
 
@@ -18,14 +18,8 @@ blocked: []
 > Working board — keep all five queues live. **Never end a meaningful session with every queue
 > empty.** The headlines of **now / next / blocked** mirror the frontmatter scalars above.
 
-- **now** — Unified console visual overhaul closed out: fixed the `AgentState::Working`
-  compile error blocking the build, cleaned up 5 clippy findings from a newer clippy version,
-  fixed a `status_line` test regression, wired real Tab/Shift+Tab tab-cycling (`next_tab`/`prev_tab`
-  in `sessions/app.rs`) to match the footer's key hint, and updated `docs/sessions.md`'s Unified
-  Console section (Kanban tab, key bindings, `BASTION_PLANNING_ROOT`). All gates green: fmt,
-  clippy -D warnings, `cargo test` (994 passed), release build. `state.json` carryover cleared,
-  `planning/handoff.md` deleted.
-- **next** — BA.11.E — Quick-action command endpoint (inject / spawn) OR BA.7.B Exact bastion costs.
+- **now** — BA.12.G Space Overview file browsing implemented. Integrated `bella_engine::browser` into `bastion` `AppState`. Added pane focus handling to the `SpaceOverview` tab (Sidebar, Browser, Content) with split-screen ratatui rendering and native layout scrolling. Markdown selections can now be previewed in the content pane or opened into a new tab via keybindings. Tests for `bella` and `bastion` passed.
+- **next** — Phase 12 Unified Console Follow-up Cleanup complete.
 - **blocked** — nothing blocked
 - **improve** — `blank_code_spans` handles single-backtick inline spans only (fenced triple-backtick blocks out of scope); confirm `bastion validate` skips `trees/` if worktrees accumulate `.md` files; `status` config-file API URL not loaded when `DATABASE_URL` absent
 - **recurring** — none yet

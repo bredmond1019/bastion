@@ -105,7 +105,7 @@ mod tests {
         let buf = render_frame(&app, dir.path(), 80, 24);
         let text = buf_to_string(&buf);
         assert!(
-            text.contains("No planning"),
+            text.contains("planning/status.md"),
             "fallback text must appear for missing status.md; frame:\n{text}"
         );
     }

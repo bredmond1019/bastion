@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-01T19:36:42Z
+timestamp: 2026-07-01T21:35:00Z
 ---
 
 # Log — bastion
@@ -12,6 +12,23 @@ timestamp: 2026-07-01T19:36:42Z
 ---
 
 ## [2026-07-01]
+
+### BA.12.G Space Overview file browsing implemented
+
+- **What:** Integrated `bella_engine::browser` into `bastion` `AppState`. Added pane focus handling to the `SpaceOverview` tab (Sidebar, Browser, Content) with split-screen ratatui rendering and native layout scrolling. Markdown selections can now be previewed in the content pane or opened into a new tab via keybindings. Tests for `bella` and `bastion` passed.
+- **Why:** To fulfill the BA.12.G requirements of reusing the `bella` file browser inside `bastion`'s Space Overview, bringing directory navigation into the unified TUI.
+- **Refs:** `src/sessions/app.rs`, `src/sessions/ui.rs`, `src/sessions/tui_tests.rs`, `planning/bastion-tui-improvements/tasks.md`
+
+---
+
+
+### BA.12.F SpaceTree parsing and sidebar UI implemented
+
+- **What:** Replaced the flat session sidebar in the TUI with a Spaces tree sourced from `brain.toml` across tier groups (`_root`, `core`, `side`, `client`, `portfolio`). Added pure TOML parsing logic for `SpaceTree`, updated `AppState` for hierarchical UI selection (skipping headers), and mapped `BASTION_BRAIN_TOML` env var in `config.rs`. Validation commands ran and tests passed.
+- **Why:** To improve navigation and grouping of workspaces in the session control console as part of the unified visual overhaul.
+- **Refs:** `src/brain/spaces.rs`, `src/config.rs`, `src/sessions/app.rs`, `src/sessions/ui.rs`, `planning/bastion-tui-improvements/tasks.md`
+
+---
 
 ### Unified TUI console visual overhaul
 
