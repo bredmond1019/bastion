@@ -6,6 +6,7 @@ doc_id: bastion-tui-ux-redesign
 layer: [console]
 project: bastion
 status: draft
+related: [bastion-tui-improvements, initial-plan]
 ---
 
 # Bastion TUI UX Redesign & Fixes (Phase 13)
