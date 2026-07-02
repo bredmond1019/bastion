@@ -12,7 +12,7 @@ related: [bastion-master-plan, 13-0-spine-primary-navigation-tasks]
 
 # Task Spec — Phase 14, Block BA.14.0: Config-driven theme system
 
-**Status:** Not started · **Last run:** never
+**Status:** Complete · **Last run:** 2026-07-02
 
 ## Goal
 Make all color config-oriented: `ui_theme` functions read a runtime `Theme`, an optional `[theme]` config section selects a named preset (default `bastion`, default fallback), and the same theme maps to `bella_engine::Theme` for `render_with_edit` so chrome and the markdown view share one theme.
@@ -46,7 +46,7 @@ Make all color config-oriented: `ui_theme` functions read a runtime `Theme`, an 
 - **Cross-repo caveat (Rule 7):** if and only if the mapping cannot be expressed against the existing `bella_engine::Theme` API, add the minimal constructor in `../bella/crates/bella-engine/src/theme.rs` and record the coordination in `## Notes` + the Amendment Log; otherwise touch no bella files.
 - **Tests:** a `draw_for_test` (existing sessions TUI test pattern) asserting a non-default theme selection changes the rendered chrome color for at least one element, and that `render_with_edit` receives the mapped theme (assert via the pure mapping seam rather than pixel colors where the render is opaque).
 
-### 4. BA.14.0.4 Validate
+### 4. [x] BA.14.0.4 Validate
 - Run the Validation Commands listed below and confirm all pass.
 - Manually smoke-test the TUI via tmux `capture-pane`: set a `[theme]` name in a scratch config (and unset it), confirm the chrome + markdown view visibly share the theme and that an absent/unknown name falls back to `bastion` without panic. Record the result in `## Notes`.
 
@@ -95,6 +95,24 @@ cargo build --release
     `theme_by_name`, so there is no second named preset to switch to for a true "non-default
     theme" comparison; tests instead assert against whatever `current_theme()` resolves to at
     call time, which is deterministic and safe under parallel test execution.
+
+- **Task 4 (BA.14.0.4):** Validation Commands all pass: `cargo fmt --check` (clean),
+  `cargo clippy -- -D warnings` (clean), `cargo test` (1037 passed, 0 failed, 3 ignored),
+  `cargo build --release` (clean). Manual TUI smoke test via tmux (`bastion tui`, 200x50 pane,
+  `capture-pane -p -e`) against a scratch `XDG_CONFIG_HOME`, cycling three states: (1)
+  `[theme]\nname = "bastion"` — chrome renders the `bastion` preset colors (violet
+  `38;2;136;153;255` selected-item accent, dim border `38;2;61;64;88`, matching
+  `ui_theme::theme_by_name("bastion")`'s known values); (2) `[theme]\nname =
+  "nonexistent-preset"` — same rendered colors, confirming the unknown-name fallback resolves to
+  `bastion` with no panic and no visible glitch; (3) config file removed entirely (absent
+  `[theme]` section) — same rendered colors again, confirming the absent-section fallback. No
+  crash/panic observed in any of the three runs; `[q]` cleanly quit each session. Only one named
+  preset (`bastion`) exists today (per Task 3's note), so "chrome and markdown view visibly share
+  the theme" was verified at the code-seam level (Task 1/3's unit tests assert
+  `to_bella_theme(current_theme())` is the exact value both `render_with_edit` call sites
+  receive) rather than by visually diffing two different palettes in the live TUI — a true
+  cross-palette visual comparison is blocked on a second preset landing (out of scope for
+  BA.14.0 per the block's boundary). No `../bella` files were touched at any point in this spec.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
