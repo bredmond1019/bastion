@@ -12,7 +12,7 @@ related: [bastion-master-plan, 13-0-spine-primary-navigation-tasks, 14-0-config-
 
 # Task Spec — Phase 13, Block BA.13.1: Persistent global agent panel
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-07-02 (`/sdlc-flow`, 4/4 tasks passed, review PASS)
 
 ## Goal
 Add an always-visible bottom "agents · priority" strip listing every tmux session across all spaces with its detected `AgentState`, sorted by urgency (Blocked/needs-input first), rendered under every `SelectedNode`.
