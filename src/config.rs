@@ -102,6 +102,37 @@ pub struct FileConfig {
     pub workspaces: Option<HashMap<String, PathBuf>>,
     /// Default workspace name — used when `--workspace` is omitted.
     pub default_workspace: Option<String>,
+    /// Optional `[theme]` section — selects a named UI theme preset (BA.14.0).
+    /// Fully optional; absent entirely for existing configs, which parse unchanged.
+    pub theme: Option<ThemeConfig>,
+}
+
+/// The `[theme]` TOML table.
+///
+/// ```toml
+/// [theme]
+/// name = "bastion"
+/// ```
+#[derive(Debug, serde::Deserialize, Default, PartialEq)]
+pub struct ThemeConfig {
+    /// Theme preset name — resolved via `ui_theme::theme_by_name`. Any value not
+    /// recognized as a known preset falls back to the `bastion` default there.
+    pub name: Option<String>,
+}
+
+/// Resolve the active `ui_theme::Theme` from a parsed `FileConfig`.
+///
+/// - `[theme]` section absent → default (`ui_theme::theme_by_name("")`, i.e. `bastion`).
+/// - `[theme].name` absent → same default.
+/// - `[theme].name` present → looked up via `ui_theme::theme_by_name`, which itself
+///   falls back to the `bastion` default for an unknown name. Never panics.
+pub fn resolve_theme(file: &FileConfig) -> crate::ui_theme::Theme {
+    let name = file
+        .theme
+        .as_ref()
+        .and_then(|t| t.name.as_deref())
+        .unwrap_or("");
+    crate::ui_theme::theme_by_name(name)
 }
 
 /// Parse TOML `contents` into a `FileConfig`.
@@ -567,6 +598,83 @@ client-a = "/Users/alice/clients/a"
         if let Some(ws) = &fc.workspaces {
             assert!(ws.is_empty());
         }
+    }
+
+    // ─── parse_file / resolve_theme: [theme] section (BA.14.0) ────────────────
+
+    #[test]
+    fn parse_file_with_theme_name_round_trips() {
+        let toml = r#"
+[theme]
+name = "bastion"
+"#;
+        let fc = parse_file(toml).expect("TOML with [theme] should parse");
+        let theme = fc.theme.expect("[theme] should be present");
+        assert_eq!(theme.name.as_deref(), Some("bastion"));
+    }
+
+    #[test]
+    fn parse_file_without_theme_section_yields_none() {
+        let toml = r#"database_url = "postgres://no-theme/db""#;
+        let fc = parse_file(toml).expect("TOML without [theme] should parse");
+        assert!(fc.theme.is_none());
+    }
+
+    #[test]
+    fn parse_file_pre_existing_config_with_no_theme_still_deserializes() {
+        // A config written before BA.14.0 — no [theme] section at all.
+        let toml = r#"
+database_url = "postgres://legacy/db"
+default_workspace = "brain"
+
+[workspaces]
+brain = "/Users/alice/brain"
+"#;
+        let fc = parse_file(toml).expect("pre-existing config should still parse");
+        assert!(fc.theme.is_none());
+        assert_eq!(fc.database_url.as_deref(), Some("postgres://legacy/db"));
+    }
+
+    #[test]
+    fn resolve_theme_with_known_name_selects_preset() {
+        let fc = FileConfig {
+            theme: Some(ThemeConfig {
+                name: Some("bastion".to_string()),
+            }),
+            ..Default::default()
+        };
+        let theme = resolve_theme(&fc);
+        assert_eq!(theme, crate::ui_theme::theme_by_name("bastion"));
+    }
+
+    #[test]
+    fn resolve_theme_with_absent_section_falls_back_to_default() {
+        let fc = FileConfig::default();
+        let theme = resolve_theme(&fc);
+        assert_eq!(theme, crate::ui_theme::theme_by_name(""));
+    }
+
+    #[test]
+    fn resolve_theme_with_absent_name_falls_back_to_default() {
+        let fc = FileConfig {
+            theme: Some(ThemeConfig { name: None }),
+            ..Default::default()
+        };
+        let theme = resolve_theme(&fc);
+        assert_eq!(theme, crate::ui_theme::theme_by_name(""));
+    }
+
+    #[test]
+    fn resolve_theme_with_unknown_name_falls_back_to_default() {
+        let fc = FileConfig {
+            theme: Some(ThemeConfig {
+                name: Some("nonexistent-preset".to_string()),
+            }),
+            ..Default::default()
+        };
+        let theme = resolve_theme(&fc);
+        assert_eq!(theme, crate::ui_theme::theme_by_name("nonexistent-preset"));
+        assert_eq!(theme.name, "bastion");
     }
 
     // ─── resolve_workspace_root ───────────────────────────────────────────────
