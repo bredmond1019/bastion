@@ -22,3 +22,6 @@ Validated: gating checks (fast tripwire)
 
 ## Docs
 Patched: docs/config.md, docs/sessions.md
+
+## Wrap-up — PASS
+Next: Decide among BA.13.2 / BA.13.3 / BA.13.5 / BA.14.1 / BA.14.2 per state.json's focus.next ordering, or resume Phase 15 (bastion-product packaging plan). See planning/handoff.md for the open question.

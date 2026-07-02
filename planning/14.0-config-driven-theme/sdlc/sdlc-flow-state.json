@@ -2,9 +2,9 @@
   "spec_slug": "14.0-config-driven-theme",
   "branch": "14.0-config-driven-theme-flow-4",
   "started_at": "2026-07-02T13:14:35Z",
-  "updated_at": "2026-07-02T13:37:05Z",
+  "updated_at": "2026-07-02T13:40:08Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/14.0-config-driven-theme-flow-4",
-  "status": "docs",
+  "status": "done",
   "current_task": 4,
   "tasks": {
     "1": {
@@ -222,13 +222,21 @@
         "filesReadKb": null,
         "inTokEst": 821,
         "outTok": 5176
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 847,
+        "filesReadKb": null,
+        "inTokEst": 847,
+        "outTok": 7469
       }
     ],
     "total": {
-      "promptTokEst": 9922,
+      "promptTokEst": 10769,
       "filesReadKb": 0,
-      "inTokEst": 9922,
-      "outTok": 90283
+      "inTokEst": 10769,
+      "outTok": 97752
     }
   }
 }
