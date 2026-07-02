@@ -5,3 +5,7 @@
 //! rather than maintaining their own copies of the model/serializer/parser, so
 //! the frontmatter contract has exactly one source of truth across the
 //! workspace.
+
+mod parse;
+
+pub use parse::{Frontmatter, ParseResult, extract_frontmatter, parse_frontmatter};
