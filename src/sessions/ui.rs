@@ -240,7 +240,7 @@ fn draw_with_root(
             let raw_md = std::fs::read_to_string(&file_path)
                 .unwrap_or_else(|_| format!("No {} found.", file_path.display()));
             let status_md = strip_frontmatter(&raw_md).to_owned();
-            let theme = bella_engine::Theme::mission_control();
+            let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
             let tables = bella_engine::links::TableExpansions::new();
             let rendered = bella_engine::render_with_edit(
                 &status_md,
@@ -319,7 +319,7 @@ fn draw_with_root(
                 .unwrap_or_else(|_| "No planning/status.md found.".to_string());
             // Strip YAML frontmatter before handing to bella.
             let status_md = strip_frontmatter(&raw_md).to_owned();
-            let theme = bella_engine::Theme::mission_control();
+            let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
             let tables = bella_engine::links::TableExpansions::new();
             let rendered = bella_engine::render_with_edit(
                 &status_md,
@@ -466,8 +466,23 @@ fn run_inner(
     Ok(())
 }
 
+/// Resolve the active theme from the on-disk config (DB-free — see D4) and
+/// initialize the process-wide runtime theme so chrome and the markdown view
+/// (`render_with_edit`) share one palette. A missing/unreadable/malformed
+/// config degrades gracefully to the `bastion` default rather than panicking.
+fn init_theme_from_config() {
+    let file = crate::config::load_workspace_registry(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
+    .unwrap_or_default();
+    crate::ui_theme::init_theme(crate::config::resolve_theme(&file));
+}
+
 /// Launch the interactive session dashboard (synchronous; no tokio).
 pub fn run() -> Result<()> {
+    init_theme_from_config();
+
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
@@ -646,5 +661,73 @@ mod tests {
             tier_status_path(root, "core"),
             tier_status_path(root, "side")
         );
+    }
+
+    // ── Runtime theme drives chrome + the render_with_edit seam (BA.14.0.3) ────
+
+    /// A "working" session's sidebar dot must be colored from the live
+    /// `current_theme()` (the same runtime theme `state_working_style()` reads),
+    /// not a baked literal — proving chrome tracks the runtime theme instead of a
+    /// fixed color.
+    #[test]
+    fn build_space_item_working_dot_tracks_runtime_theme() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let session = Session {
+            name: "core".to_string(),
+            state: SessionState::Running,
+            window_count: 1,
+            foreground_cmd: String::new(),
+            last_line: String::new(),
+            agent_state: crate::detect::AgentState::Working,
+        };
+        let app = make_app(&[session]);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        let dir = std::env::temp_dir();
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &app, &mut list_state, &dir);
+            })
+            .expect("draw must not panic");
+        let buf = terminal.backend().buffer().clone();
+
+        let expected = crate::ui_theme::current_theme().sage;
+        let mut found_dot = false;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if let Some(cell) = buf.cell((x, y)) {
+                    if cell.symbol() == "●" {
+                        found_dot = true;
+                        assert_eq!(
+                            cell.fg, expected,
+                            "working-state dot must render with the runtime theme's sage color"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(found_dot, "expected a working-state session dot to render");
+    }
+
+    /// `draw_with_root` hands `render_with_edit` the theme produced by
+    /// `to_bella_theme(current_theme())` — assert that seam stays in lock-step
+    /// with the live runtime theme (rather than asserting on opaque rendered
+    /// pixel colors, which `render_with_edit`'s markdown layout makes brittle).
+    #[test]
+    fn render_with_edit_receives_theme_mapped_from_current_theme() {
+        let live = crate::ui_theme::current_theme();
+        let mapped = crate::ui_theme::to_bella_theme(live);
+
+        assert_eq!(mapped.fg, live.text);
+        assert_eq!(mapped.muted, live.muted);
+        assert_eq!(mapped.link, live.cyan);
+        assert_eq!(mapped.link_focused, live.violet);
+        assert_eq!(mapped.code_fg, live.sage);
+        assert_eq!(mapped.code_bg, Some(live.surface));
+        assert_eq!(mapped.rule, live.border_dim);
+        assert_eq!(mapped.status_bg, live.border_active);
     }
 }
