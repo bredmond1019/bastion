@@ -70,7 +70,25 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+
+**Task 4 — Validate (2026-07-02).** Ran the full validation suite from the worktree root:
+`cargo fmt --check` clean, `cargo clippy -- -D warnings` clean, `cargo test` — 1022 passed / 0
+failed / 3 ignored, `cargo build --release` clean.
+
+Manual TUI smoke test via a detached tmux session (`tmux new-session -d ... "cargo run -- tui"`,
+driven with `tmux send-keys` + `tmux capture-pane -p`):
+- No top tab bar renders anywhere in the frame.
+- `◆ Mission Control` is the first spine row, pinned, and selectable — selecting it renders the
+  existing Mission Control session list in the main area.
+- Tier headers (`HQ`, `core`, `side`, `client`, `portfolio`) are present and selectable in the
+  sidebar.
+- Selecting the `core` tier header routes the main area to a tier overview panel titled `core`
+  rendering `core/planning/status.md` (rollup table + Momentum/Metrics), confirming the
+  tier-overview routing path works without panicking.
+- No standalone `brain` leaf appears; `HQ` is present with `learn-ai` and `base-template`
+  nested beneath it.
+
+All acceptance criteria for this block are satisfied; no regressions observed.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
