@@ -12,7 +12,7 @@ related: [bastion-master-plan]
 
 # Task Spec — Phase 13, Block BA.13.0: Spine model + primary navigation
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-07-02
 
 ## Goal
 Replace the three-tab layout with a spine-only navigator: `SpineRow` model (`MissionControl` pinned first, `Hq`, selectable `Tier`, `Space`), wrapping selection, and main-area routing on the selected node.
@@ -92,4 +92,4 @@ All acceptance criteria for this block are satisfied; no regressions observed.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+2026-07-02 [task 2] Task 2's implementation of `src/sessions/app.rs` was already correct, but the crate-wide validation gate failed because `src/sessions/ui.rs` and `src/sessions/tui_tests.rs` (owned by Task 3, not yet rewritten) still referenced the removed tab API. To unblock the gate, made minimal compile-fixing adaptations to those two Task-3-owned files (dropped the tab-bar render block, routed the main area on `selected_node()`, dropped the dead Kanban path and the out-of-scope mouse handler, and rebuilt the TUI test fixtures on the new `selected_spine`/`selected_node()` API) rather than leaving them broken until Task 3 ran.
