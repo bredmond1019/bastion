@@ -13,8 +13,7 @@ Decisions: Found task 1's prior commit had NOT actually completed the relocation
 Validated: gating checks (fast tripwire)
 
 ## Task 3 — PASSED (1 attempt)
-What: Updated the Directory map in CLAUDE.md, AGENT.md, and GEMINI.md to reflect the crates/bastion/src/ layout (workspace container) instead of the old top-level src/.
-Decisions: Kept the module list and inline comments identical to the pre-move version, only adding the crates/bastion/ nesting level and annotating the root Cargo.toml as the workspace manifest.; This task is documentation-only (matches spec scope); no cargo commands were run since the acceptance criteria for task 3 don't include build validation (that's task 4).
+What: Updated CLAUDE.md, AGENT.md, and GEMINI.md directory-map trees to reflect the crates/bastion/src/ layout from the cargo workspace relocation, leaving all other content untouched.
 Validated: gating checks (fast tripwire)
 
 ## Docs
