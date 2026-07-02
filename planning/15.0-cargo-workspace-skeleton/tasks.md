@@ -12,7 +12,7 @@ related: [bastion-product-plan, master-plan]
 
 # Task Spec — Phase 15, Block BA.15.0 (Cargo workspace skeleton)
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-07-02 (/sdlc-flow, PASS)
 
 ## Goal
 Introduce a root `[workspace]` and move today's `bastion` sources under `crates/bastion/` — building the
@@ -69,4 +69,10 @@ cargo run -- --help
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-07-02 [task 1] SDLC worktrees live one directory level deeper than a standard checkout
+  (`core/bastion/trees/<spec>/...`), which breaks any relative path dep reaching outside
+  `core/bastion/`. Rather than deepening the committed path-dep strings (which would break
+  resolution from a standard non-worktree checkout after merge), the fix was an untracked local
+  symlink outside the worktree (`core/bastion/portfolio -> agentic-portfolio/portfolio`),
+  mirroring the existing `trees/bella -> ../../bella` pattern already used for `bella-engine`.
+  The committed `Cargo.toml` path depths are unchanged from the spec's Context Pointers.

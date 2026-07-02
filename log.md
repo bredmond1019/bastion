@@ -13,6 +13,38 @@ timestamp: 2026-07-02T15:01:31Z
 
 ## [run: 2026-07-02]
 
+Completed BA.15.0 (spec `15.0-cargo-workspace-skeleton`) via `/sdlc-flow`, introducing a root
+Cargo virtual workspace and relocating the `bastion` package under `crates/bastion/` with no
+behavior change. Task 1 added a root `[workspace]` `Cargo.toml` and `git mv`'d `src/` →
+`crates/bastion/src/`, repointing the four sibling path deps (`bella-engine`,
+`workflow-engine-core`/`-mcp`/`-nodes`) to the new relative depth; a worktree-specific resolution
+issue (SDLC worktrees live one directory level deeper than the standard checkout, breaking
+relative path deps that reach outside `core/bastion/`) was worked around with an untracked local
+symlink (`core/bastion/portfolio -> agentic-portfolio/portfolio`), matching the existing pattern
+already used for `bella-engine`, rather than by changing the committed (correct-for-standard-
+layout) path depths. Task 2 verified the relocated workspace builds clean with the full 1056-test
+suite green and no residual breakage, requiring no fixes. Task 3 updated the Directory map in
+`CLAUDE.md`, `AGENT.md`, and `GEMINI.md` to reflect the new `crates/bastion/src/` layout. Task 4
+confirmed full validation (fmt, clippy `-D warnings`, test, release build, `cargo run -- --help`)
+green with no further changes needed. End review verdict: PASS (0 findings); docs patched across
+11 files. Next: pick the next Phase 15 block (`bastion-product` packaging plan, BA.15.1+), now
+unblocked by the workspace skeleton, or resume a Phase 13/14 block.
+
+```
+826bdb1 chore: flow state — docs
+79b8f3f docs: update docs for 15.0-cargo-workspace-skeleton
+b262e7e chore: flow state — task 3 passed
+0bce3e4 feat: implement 15.0-cargo-workspace-skeleton-task3
+cb77ae7 chore: flow state — task 1 passed
+d9f5cd9 feat: implement 15.0-cargo-workspace-skeleton-task1
+bcededd chore: init worktree 15.0-cargo-workspace-skeleton-flow
+601d11a chore: add spec for 15.0-cargo-workspace-skeleton
+```
+
+---
+
+## [run: 2026-07-02]
+
 Closed out BA.13.1 after the `/sdlc-flow 13.1-persistent-agent-panel` pipeline had already landed
 4/4 tasks with a PASS review, docs patched, and PR #12 open. Ran a light `/code-review low` pass
 over the merged diff, which came back with 0 findings, and confirmed docs (`docs/sessions.md`)
