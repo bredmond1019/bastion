@@ -5,6 +5,8 @@
 // DB-free (Decision D4 — no Config::load, no Postgres pool).
 
 use crate::brain::spaces::{SelectedNode, SpineRow};
+use crate::detect::AgentState;
+use crate::sessions::agent_panel::{AgentPanelRow, agent_panel_rows};
 use crate::sessions::app::{Action, AppState, InputKind, Mode};
 use crate::sessions::commands::{Degraded, degrade_tmux_error};
 use crate::sessions::model::{Pane, Session, parse_sessions};
@@ -98,6 +100,56 @@ pub fn strip_frontmatter(md: &str) -> &str {
     }
 }
 
+/// Preferred (`MIN_HEIGHT`..=`MAX_HEIGHT`) total height (borders + rows) for the
+/// always-on bottom "agents · priority" strip, given how many sessions it needs
+/// to show and the full frame height. Grows with `row_count` up to `MAX_HEIGHT`,
+/// but shrinks (down to `0`, never panics/underflows) once the frame is too
+/// short to spare `MIN_HEIGHT` after reserving room for the main content area
+/// and the one-line footer — the "min-height fallback" for tight terminals.
+/// Pure — no `Frame`/I/O, unit-tested directly.
+pub fn agent_panel_strip_height(row_count: usize, frame_height: u16) -> u16 {
+    const MIN_HEIGHT: u16 = 3; // 1 content row + 2 border lines
+    const MAX_HEIGHT: u16 = 7; // 5 content rows + 2 border lines
+
+    let desired = (row_count as u16)
+        .saturating_add(2)
+        .clamp(MIN_HEIGHT, MAX_HEIGHT);
+
+    // Always leave at least 1 line for the main content area and 1 for the
+    // footer; when the frame can't spare that, shrink toward 0 rather than
+    // producing a layout that overflows the frame.
+    let available = frame_height.saturating_sub(2);
+    desired.min(available)
+}
+
+/// Dot glyph + themed style for one `AgentState`, used by the sidebar space
+/// dots and the agent panel strip. Reads the live runtime theme (BA.14.0) —
+/// never a literal color.
+fn agent_state_dot(state: AgentState) -> (&'static str, Style) {
+    match state {
+        AgentState::Blocked => ("● ", crate::ui_theme::state_blocked_style()),
+        AgentState::Working => ("● ", crate::ui_theme::state_working_style()),
+        AgentState::Idle => ("○ ", crate::ui_theme::state_idle_style()),
+        AgentState::Unknown => ("○ ", crate::ui_theme::state_idle_style()),
+    }
+}
+
+/// Build the list rows for the agent panel strip from already-urgency-sorted
+/// `AgentPanelRow`s, applying the themed state dot to each.
+fn build_agent_panel_items(rows: &[AgentPanelRow]) -> Vec<ListItem<'static>> {
+    rows.iter()
+        .map(|row| {
+            let (dot, dot_style) = agent_state_dot(row.agent_state);
+            let name_style = Style::default().fg(crate::ui_theme::text());
+            let spans = vec![
+                Span::styled(dot, dot_style),
+                Span::styled(row.label.clone(), name_style),
+            ];
+            ListItem::new(Line::from(spans))
+        })
+        .collect()
+}
+
 // ── Frame builder (I/O — not unit-tested) ─────────────────────────────────────
 
 /// Build the sidebar item for a single `Space` row: a state dot + the space's slug,
@@ -186,9 +238,19 @@ fn draw_with_root(
     let th = &crate::ui_theme::border_dim();
     let th_active = &crate::ui_theme::border_active();
 
+    // The bottom "agents · priority" strip (BA.13.1.3) is always reserved,
+    // regardless of `SelectedNode` — it renders under Mission Control, HQ,
+    // every tier, and every space.
+    let panel_rows = agent_panel_rows(&app.sessions);
+    let strip_height = agent_panel_strip_height(panel_rows.len(), frame.area().height);
+
     let areas = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(strip_height),
+            Constraint::Length(1),
+        ])
         .split(frame.area());
 
     let (sidebar_area, main_area) = app.compute_view(areas[0]);
@@ -336,6 +398,20 @@ fn draw_with_root(
         }
     }
 
+    // ── Agent panel strip ────────────────────────────────────────────────────
+    // Always-on cross-space "agents · priority" strip, sorted by urgency
+    // (Blocked/needs-input first — `session_urgency`/`agent_panel_rows`,
+    // BA.13.1.1/.2). Renders under every `SelectedNode`.
+    let strip_block = Block::default()
+        .title(Span::styled(
+            " agents · priority ",
+            crate::ui_theme::title_style(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(*th));
+    let strip_list = List::new(build_agent_panel_items(&panel_rows)).block(strip_block);
+    frame.render_widget(strip_list, areas[1]);
+
     // ── Footer ────────────────────────────────────────────────────────────────
     let footer_text = status_line(app);
     let footer_style = if app.status.is_some() && matches!(app.mode, Mode::Normal) {
@@ -344,7 +420,7 @@ fn draw_with_root(
         crate::ui_theme::footer_style()
     };
     let footer = Paragraph::new(Span::styled(footer_text, footer_style));
-    frame.render_widget(footer, areas[1]);
+    frame.render_widget(footer, areas[2]);
 }
 
 /// Thin real-world wrapper: resolves the planning root from the environment,
@@ -661,6 +737,41 @@ mod tests {
             tier_status_path(root, "core"),
             tier_status_path(root, "side")
         );
+    }
+
+    // ── agent_panel_strip_height (pure, BA.13.1.3) ──────────────────────────────
+
+    #[test]
+    fn strip_height_grows_with_row_count_up_to_max() {
+        assert_eq!(agent_panel_strip_height(0, 24), 3);
+        assert_eq!(agent_panel_strip_height(1, 24), 3);
+        assert_eq!(agent_panel_strip_height(3, 24), 5);
+        // 5 sessions -> desired 7, capped at MAX_HEIGHT (7).
+        assert_eq!(agent_panel_strip_height(5, 24), 7);
+        // Growing further does not exceed the cap.
+        assert_eq!(agent_panel_strip_height(50, 24), 7);
+    }
+
+    #[test]
+    fn strip_height_shrinks_toward_zero_on_tiny_frames() {
+        // No room to spare beyond main(1) + footer(1) -> strip collapses to 0.
+        assert_eq!(agent_panel_strip_height(0, 2), 0);
+        assert_eq!(agent_panel_strip_height(0, 1), 0);
+        assert_eq!(agent_panel_strip_height(0, 0), 0);
+        // A little more room than the reserved main+footer lines, but still
+        // below MIN_HEIGHT -> never underflows/panics, just yields what's left.
+        assert_eq!(agent_panel_strip_height(0, 4), 2);
+    }
+
+    #[test]
+    fn strip_height_never_exceeds_available_frame_space() {
+        for frame_height in 0..30u16 {
+            let h = agent_panel_strip_height(10, frame_height);
+            assert!(
+                h <= frame_height.saturating_sub(2),
+                "strip height {h} must not exceed frame_height({frame_height}) - 2"
+            );
+        }
     }
 
     // ── Runtime theme drives chrome + the render_with_edit seam (BA.14.0.3) ────
