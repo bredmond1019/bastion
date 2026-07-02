@@ -10,7 +10,7 @@ keywords: [observability, tracing, errors, ErrorCode, ConsoleError, CommandEvent
 related: [config]
 ---
 
-# Observability (`src/observ/`)
+# Observability (`crates/bastion/src/observ/`)
 
 The `observ` module is the structured observability spine for bastion. It provides:
 
@@ -23,7 +23,7 @@ All pure logic (record construction, JSON serialization, error Display) is teste
 
 ---
 
-## Error taxonomy (`src/observ/errors.rs`)
+## Error taxonomy (`crates/bastion/src/observ/errors.rs`)
 
 ### `ErrorCode`
 
@@ -67,7 +67,7 @@ pub struct ErrorContext {
 
 ---
 
-## Command events (`src/observ/mod.rs`)
+## Command events (`crates/bastion/src/observ/mod.rs`)
 
 ### `EventPhase`
 
@@ -118,7 +118,7 @@ Installs the process-global `tracing-subscriber`. Call exactly once at startup (
 
 ---
 
-## Dispatch instrumentation (`src/main.rs`)
+## Dispatch instrumentation (`crates/bastion/src/main.rs`)
 
 Every subcommand dispatch is wrapped with start/outcome events:
 
