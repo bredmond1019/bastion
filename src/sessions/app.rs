@@ -4,21 +4,13 @@
 // This module holds every state transition and key→action mapping,
 // tested exhaustively without spawning any process.
 
-use crate::brain::spaces::SpaceTree;
+use crate::brain::spaces::{SelectedNode, SpaceTree, SpineRow};
 use crate::sessions::model::Session;
 use crossterm::event::KeyCode;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TabState {
-    SpaceOverview,
-    Kanban,
-    MissionControl,
-    MarkdownDocument(std::path::PathBuf),
-}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum OverviewPane {
@@ -47,14 +39,11 @@ pub enum Action {
     New(String),
     Send { session: String, keys: String },
     Kill(String),
-    SelectTab(usize),
     None,
 }
 
 /// State for the interactive session dashboard.
 pub struct AppState {
-    pub tabs: Vec<TabState>,
-    pub active_tab_index: usize,
     pub sessions: Vec<Session>,
     pub selected: usize,
     pub mode: Mode,
@@ -64,11 +53,16 @@ pub struct AppState {
     pub should_quit: bool,
     pub monitor_app: crate::monitor::app::App,
     pub space_tree: SpaceTree,
-    pub selected_space: usize,
+    /// Index into `spine_rows()` — the single primary-navigation selection cursor.
+    pub selected_spine: usize,
     pub file_browser: bella_engine::browser::Browser,
     pub space_overview_scroll: u16,
     pub overview_pane: OverviewPane,
     pub space_overview_file: Option<std::path::PathBuf>,
+    /// Transient full-screen markdown overlay flag, set by the `t` ("open") key in the
+    /// file browser. Replaces the old tab-push behaviour; overlay rendering/close-key
+    /// polish is deferred to a later block.
+    pub markdown_overlay: Option<std::path::PathBuf>,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -76,12 +70,6 @@ pub struct AppState {
 impl AppState {
     pub fn new(sessions: Vec<Session>, space_tree: SpaceTree) -> Self {
         let mut app = Self {
-            tabs: vec![
-                TabState::SpaceOverview,
-                TabState::Kanban,
-                TabState::MissionControl,
-            ],
-            active_tab_index: 0,
             sessions,
             selected: 0,
             mode: Mode::Normal,
@@ -90,77 +78,65 @@ impl AppState {
             should_quit: false,
             monitor_app: crate::monitor::app::App::new(),
             space_tree,
-            selected_space: 0,
+            selected_spine: 0,
             file_browser: bella_engine::browser::Browser::new(std::path::PathBuf::from(".")),
             space_overview_scroll: 0,
             overview_pane: OverviewPane::Sidebar,
             space_overview_file: None,
+            markdown_overlay: None,
         };
-        // initialize selected_space to the first non-header if possible
-        app.ensure_valid_selection();
+        // `spine_rows()` always pins Mission Control first, so index 0 is always a
+        // valid selection — no header-skip initialization needed.
         app.reinit_browser();
         app
     }
 
+    /// The ordered, flattened primary-navigation spine for the current `space_tree`.
+    pub fn spine_rows(&self) -> Vec<SpineRow> {
+        crate::brain::spaces::spine_rows(&self.space_tree)
+    }
+
+    /// The main-area routing target for the currently selected spine row.
+    /// Falls back to `MissionControl` (the pinned first row) if the index is out of
+    /// range, which cannot happen in practice since `spine_rows()` is never empty.
+    pub fn selected_node(&self) -> SelectedNode {
+        self.spine_rows()
+            .get(self.selected_spine)
+            .map(SpineRow::as_selected_node)
+            .unwrap_or(SelectedNode::MissionControl)
+    }
+
     pub fn reinit_browser(&mut self) {
-        let flat = self.space_tree.flatten();
-        if let Some((_, _, Some(repo))) = flat.get(self.selected_space) {
-            let path = repo.repo_path.clone();
-            let mut browser = bella_engine::browser::Browser::new(path.clone());
-            browser.root_boundary = Some(path);
-            self.file_browser = browser;
-            self.space_overview_scroll = 0;
-            self.space_overview_file = None; // Reset the file view when changing spaces
+        match self.selected_node() {
+            SelectedNode::Space(entry) => {
+                let path = entry.repo_path.clone();
+                let mut browser = bella_engine::browser::Browser::new(path.clone());
+                browser.root_boundary = Some(path);
+                self.file_browser = browser;
+                self.space_overview_scroll = 0;
+                self.space_overview_file = None; // Reset the file view when changing spaces
+            }
+            SelectedNode::Hq => {
+                // The brain repo's root ("."), collapsed from the old `brain` leaf.
+                let path = std::path::PathBuf::from(".");
+                let mut browser = bella_engine::browser::Browser::new(path.clone());
+                browser.root_boundary = Some(path);
+                self.file_browser = browser;
+                self.space_overview_scroll = 0;
+                self.space_overview_file = None;
+            }
+            SelectedNode::MissionControl | SelectedNode::Tier(_) => {}
         }
     }
 
     pub fn current_space_planning_root(&self) -> std::path::PathBuf {
-        let flat = self.space_tree.flatten();
-        if let Some((_, _, Some(repo))) = flat.get(self.selected_space) {
-            repo.repo_path.join("planning")
-        } else {
-            crate::config::load_planning_root()
+        match self.selected_node() {
+            SelectedNode::Space(entry) => entry.repo_path.join("planning"),
+            SelectedNode::Hq => std::path::PathBuf::from(".").join("planning"),
+            SelectedNode::MissionControl | SelectedNode::Tier(_) => {
+                crate::config::load_planning_root()
+            }
         }
-    }
-
-
-    fn ensure_valid_selection(&mut self) {
-        let flat = self.space_tree.flatten();
-        if flat.is_empty() {
-            return;
-        }
-        if flat.get(self.selected_space).map(|f| f.0).unwrap_or(true) {
-            self.select_next();
-        }
-    }
-
-    pub fn push_tab(&mut self, tab: TabState) {
-        self.tabs.push(tab);
-        self.active_tab_index = self.tabs.len() - 1;
-    }
-
-    pub fn close_tab(&mut self) {
-        if self.tabs.len() <= 1 {
-            return;
-        }
-        self.tabs.remove(self.active_tab_index);
-        if self.active_tab_index >= self.tabs.len() {
-            self.active_tab_index = self.tabs.len() - 1;
-        }
-    }
-
-    /// Cycle to the next tab, wrapping around to the first.
-    pub fn next_tab(&mut self) {
-        self.active_tab_index = (self.active_tab_index + 1) % self.tabs.len();
-    }
-
-    /// Cycle to the previous tab, wrapping around to the last.
-    pub fn prev_tab(&mut self) {
-        self.active_tab_index = if self.active_tab_index == 0 {
-            self.tabs.len() - 1
-        } else {
-            self.active_tab_index - 1
-        };
     }
 
     pub fn compute_view(&self, area: Rect) -> (Rect, Rect) {
@@ -171,58 +147,42 @@ impl AppState {
         (chunks[0], chunks[1])
     }
 
-    /// Move selection to the next session (wraps around).
+    /// Move selection to the next spine row, wrapping around. Every row (including
+    /// Mission Control and tier headers) is selectable now, so there is no
+    /// header-skip logic — unlike the old space-only navigation.
     pub fn select_next(&mut self) {
-        let flat = self.space_tree.flatten();
-        if flat.is_empty() {
+        let len = self.spine_rows().len();
+        if len == 0 {
             return;
         }
-        let start = self.selected_space;
-        for i in 1..=flat.len() {
-            let next = (start + i) % flat.len();
-            if !flat[next].0 {
-                // not a header
-                self.selected_space = next;
-                self.reinit_browser();
-                return;
-            }
-        }
+        self.selected_spine = (self.selected_spine + 1) % len;
+        self.reinit_browser();
     }
 
-    /// Move selection to the previous session (wraps around).
+    /// Move selection to the previous spine row, wrapping around.
     pub fn select_prev(&mut self) {
-        let flat = self.space_tree.flatten();
-        if flat.is_empty() {
+        let len = self.spine_rows().len();
+        if len == 0 {
             return;
         }
-        let start = self.selected_space;
-        for i in 1..=flat.len() {
-            let prev = if start < i {
-                flat.len() - (i - start)
-            } else {
-                start - i
-            };
-            if !flat[prev].0 {
-                // not a header
-                self.selected_space = prev;
-                self.reinit_browser();
-                return;
-            }
-        }
+        self.selected_spine = if self.selected_spine == 0 {
+            len - 1
+        } else {
+            self.selected_spine - 1
+        };
+        self.reinit_browser();
     }
 
     pub fn selected_session(&self) -> Option<&Session> {
-        let flat = self.space_tree.flatten();
-        if let Some((_, _, Some(repo))) = flat.get(self.selected_space) {
-            return self.sessions.iter().find(|s| s.name == repo.slug);
+        if let SelectedNode::Space(entry) = self.selected_node() {
+            return self.sessions.iter().find(|s| s.name == entry.slug);
         }
         None
     }
 
     pub fn selected_space_slug(&self) -> Option<String> {
-        let flat = self.space_tree.flatten();
-        if let Some((_, _, Some(repo))) = flat.get(self.selected_space) {
-            return Some(repo.slug.clone());
+        if let SelectedNode::Space(entry) = self.selected_node() {
+            return Some(entry.slug);
         }
         None
     }
@@ -236,7 +196,7 @@ impl AppState {
     }
 
     pub fn selected_session_for_actions(&self) -> Option<&Session> {
-        if self.tabs[self.active_tab_index] == TabState::MissionControl {
+        if self.selected_node() == SelectedNode::MissionControl {
             if let Some(crate::monitor::app::MissionItem::Session(s)) =
                 self.monitor_app.selected_item()
             {
@@ -275,7 +235,12 @@ impl AppState {
     pub fn on_key(&mut self, key: KeyCode) -> Action {
         match &self.mode.clone() {
             Mode::Normal => {
-                let is_space_overview = self.tabs[self.active_tab_index] == TabState::SpaceOverview;
+                // Space Overview renders for both `Hq` and `Space` nodes; Mission
+                // Control and tier headers route elsewhere (ui.rs).
+                let is_space_overview = matches!(
+                    self.selected_node(),
+                    SelectedNode::Hq | SelectedNode::Space(_)
+                );
                 self.status = Option::None;
 
                 // Handle pane focus switching in SpaceOverview
@@ -333,9 +298,10 @@ impl AppState {
                                         let is_md = entry.kind
                                             == bella_engine::browser::BrowserEntryKind::Markdown;
                                         if is_md {
-                                            self.push_tab(TabState::MarkdownDocument(
-                                                entry.path.clone(),
-                                            ));
+                                            // Transient full-screen overlay flag — replaces
+                                            // the old tab-push. Overlay rendering/close-key
+                                            // polish is deferred.
+                                            self.markdown_overlay = Some(entry.path.clone());
                                         }
                                     }
                                     return Action::None;
@@ -383,14 +349,14 @@ impl AppState {
                 match key {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.select_next();
-                        if self.tabs[self.active_tab_index] == TabState::MissionControl {
+                        if self.selected_node() == SelectedNode::MissionControl {
                             self.monitor_app.next_item();
                         }
                         Action::None
                     }
                     KeyCode::Up => {
                         self.select_prev();
-                        if self.tabs[self.active_tab_index] == TabState::MissionControl {
+                        if self.selected_node() == SelectedNode::MissionControl {
                             self.monitor_app.prev_item();
                         }
                         Action::None
@@ -434,14 +400,6 @@ impl AppState {
                     }
                     KeyCode::Char('q') => {
                         self.should_quit = true;
-                        Action::None
-                    }
-                    KeyCode::Tab => {
-                        self.next_tab();
-                        Action::None
-                    }
-                    KeyCode::BackTab => {
-                        self.prev_tab();
                         Action::None
                     }
                     _ => Action::None,
@@ -498,21 +456,9 @@ impl AppState {
         }
     }
 
-    /// Map a mouse click to an `Action`.
-    pub fn on_mouse(&mut self, col: u16, row: u16, tab_bar_area: Rect) -> Action {
-        // Tab bar is rendered inside a block, so the actual text is at y + 1, x + 1
-        if row == tab_bar_area.y + 1
-            && col > tab_bar_area.x
-            && col < tab_bar_area.x + tab_bar_area.width - 1
-        {
-            let tab_width = 20;
-            let clicked_index = ((col - tab_bar_area.x - 1) / tab_width) as usize;
-            if clicked_index < self.tabs.len() {
-                return Action::SelectTab(clicked_index);
-            }
-        }
-        Action::None
-    }
+    // Mouse support (BA.13.2) is out of scope for this block. The old `on_mouse`
+    // only handled top tab-bar clicks, which no longer exist now that the spine
+    // is the single primary navigator; it is removed rather than left to bit-rot.
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -553,12 +499,56 @@ mod tests {
         AppState::new(sessions.to_vec(), tree)
     }
 
+    /// A truly empty spine: no tiers at all, so `spine_rows()` is just
+    /// `[MissionControl]` (len 1).
+    fn make_empty_app() -> AppState {
+        AppState::new(vec![], SpaceTree::default())
+    }
+
+    /// A spine covering every row kind: Mission Control, Hq (+ a collapsed
+    /// `brain` leaf + a `learn-ai` child), and a `core` tier with one space.
+    /// `spine_rows()` == `[MC, Hq, Space(learn-ai), Tier(core), Space(bastion)]`.
+    fn make_full_app() -> AppState {
+        let tree = SpaceTree {
+            tiers: vec![
+                (
+                    "_root".to_string(),
+                    vec![
+                        crate::brain::spaces::SpaceEntry {
+                            slug: "brain".to_string(),
+                            tier: "_root".to_string(),
+                            repo_path: std::path::PathBuf::from("."),
+                            heading: None,
+                        },
+                        crate::brain::spaces::SpaceEntry {
+                            slug: "learn-ai".to_string(),
+                            tier: "_root".to_string(),
+                            repo_path: std::path::PathBuf::from("learn-ai"),
+                            heading: None,
+                        },
+                    ],
+                ),
+                (
+                    "core".to_string(),
+                    vec![crate::brain::spaces::SpaceEntry {
+                        slug: "bastion".to_string(),
+                        tier: "core".to_string(),
+                        repo_path: std::path::PathBuf::from("core/bastion"),
+                        heading: None,
+                    }],
+                ),
+            ],
+        };
+        AppState::new(vec![], tree)
+    }
+
     // ── Constructor ───────────────────────────────────────────────────────────
 
     #[test]
-    fn new_starts_at_first_non_header_normal_mode() {
+    fn new_starts_at_mission_control_normal_mode() {
         let app = make_app(&make_sessions(&["alpha", "beta"]));
-        assert_eq!(app.selected_space, 1);
+        assert_eq!(app.selected_spine, 0);
+        assert_eq!(app.selected_node(), SelectedNode::MissionControl);
         assert_eq!(app.mode, Mode::Normal);
         assert!(!app.should_quit);
         assert!(app.status.is_none());
@@ -567,68 +557,113 @@ mod tests {
     // ── Navigation ────────────────────────────────────────────────────────────
 
     #[test]
-    fn select_next_wraps() {
+    fn select_next_wraps_at_end_of_spine() {
+        // spine = [MC, Tier(core), a, b, c] — len 5.
         let mut app = make_app(&make_sessions(&["a", "b", "c"]));
-        app.selected_space = 3;
+        app.selected_spine = 4;
         app.select_next();
-        assert_eq!(app.selected_space, 1);
+        assert_eq!(app.selected_spine, 0);
     }
 
     #[test]
-    fn select_prev_wraps() {
+    fn select_prev_wraps_at_start_of_spine() {
         let mut app = make_app(&make_sessions(&["a", "b", "c"]));
-        app.selected_space = 1;
+        app.selected_spine = 0;
         app.select_prev();
-        assert_eq!(app.selected_space, 3);
+        assert_eq!(app.selected_spine, 4);
     }
 
     #[test]
-    fn select_next_empty_is_noop() {
-        let mut app = make_app(&[]);
+    fn select_next_visits_every_row_including_headers() {
+        // spine = [MC, Tier(core), a, b] — len 4. Mission Control and the tier
+        // header are now selectable, unlike the old header-skip logic.
+        let mut app = make_app(&make_sessions(&["a", "b"]));
+        let mut seen = vec![app.selected_spine];
+        for _ in 0..4 {
+            app.select_next();
+            seen.push(app.selected_spine);
+        }
+        assert_eq!(seen, vec![0, 1, 2, 3, 0]);
+    }
+
+    #[test]
+    fn select_next_on_single_row_spine_is_noop() {
+        let mut app = make_empty_app();
         app.select_next();
-        assert_eq!(app.selected_space, 0);
+        assert_eq!(app.selected_spine, 0);
     }
 
     #[test]
-    fn select_prev_empty_is_noop() {
-        let mut app = make_app(&[]);
+    fn select_prev_on_single_row_spine_is_noop() {
+        let mut app = make_empty_app();
         app.select_prev();
-        assert_eq!(app.selected_space, 0);
+        assert_eq!(app.selected_spine, 0);
+    }
+
+    // ── selected_node ────────────────────────────────────────────────────────
+
+    #[test]
+    fn selected_node_maps_every_row_kind() {
+        // spine = [MC, Hq, Space(learn-ai), Tier(core), Space(bastion)].
+        let mut app = make_full_app();
+        assert_eq!(app.selected_node(), SelectedNode::MissionControl);
+
+        app.selected_spine = 1;
+        assert_eq!(app.selected_node(), SelectedNode::Hq);
+
+        app.selected_spine = 3;
+        assert_eq!(app.selected_node(), SelectedNode::Tier("core".to_string()));
+
+        app.selected_spine = 4;
+        match app.selected_node() {
+            SelectedNode::Space(entry) => assert_eq!(entry.slug, "bastion"),
+            other => panic!("expected Space(bastion), got {other:?}"),
+        }
     }
 
     #[test]
-    fn single_session_next_prev_stay_at_one() {
-        let mut app = make_app(&make_sessions(&["only"]));
-        app.select_next();
-        assert_eq!(app.selected_space, 1);
-        app.select_prev();
-        assert_eq!(app.selected_space, 1);
+    fn selected_node_out_of_range_falls_back_to_mission_control() {
+        let mut app = make_empty_app();
+        app.selected_spine = 99;
+        assert_eq!(app.selected_node(), SelectedNode::MissionControl);
     }
 
     // ── set_sessions ─────────────────────────────────────────────────────────
 
     #[test]
-    fn set_sessions_does_not_change_selected_space() {
+    fn set_sessions_does_not_change_selected_spine() {
         let mut app = make_app(&make_sessions(&["a", "b", "c"]));
-        app.selected_space = 2;
+        app.selected_spine = 2;
         app.set_sessions(make_sessions(&["x"]));
-        assert_eq!(app.selected_space, 2);
+        assert_eq!(app.selected_spine, 2);
     }
 
     #[test]
-    fn set_sessions_empty_does_not_change_selected_space() {
+    fn set_sessions_empty_does_not_change_selected_spine() {
         let mut app = make_app(&make_sessions(&["a", "b"]));
-        app.selected_space = 1;
+        app.selected_spine = 1;
         app.set_sessions(vec![]);
-        assert_eq!(app.selected_space, 1);
+        assert_eq!(app.selected_spine, 1);
     }
 
     // ── selected_session ─────────────────────────────────────────────────────
 
     #[test]
-    fn selected_session_returns_none_when_empty() {
-        let app = make_app(&[]);
+    fn selected_session_returns_none_when_not_on_a_space_row() {
+        let app = make_empty_app();
         assert!(app.selected_session().is_none());
+    }
+
+    #[test]
+    fn selected_session_returns_session_when_on_a_space_row() {
+        // spine = [MC, Tier(core), alpha] — len 3.
+        let mut app = make_app(&make_sessions(&["alpha"]));
+        app.selected_spine = 2;
+        app.reinit_browser();
+        assert_eq!(
+            app.selected_session().map(|s| s.name.as_str()),
+            Some("alpha")
+        );
     }
 
     // ── Input-buffer editing ──────────────────────────────────────────────────
@@ -648,44 +683,49 @@ mod tests {
     // ── on_key: Normal mode navigation ───────────────────────────────────────
 
     #[test]
-    fn on_key_j_and_down_advance() {
+    fn on_key_j_and_down_advance_through_headers_too() {
+        // spine = [MC, Tier(core), a, b, c] — len 5, starting at MC (index 0).
         let mut app = make_app(&make_sessions(&["a", "b", "c"]));
         let a1 = app.on_key(KeyCode::Char('j'));
         assert_eq!(a1, Action::None);
-        assert_eq!(app.selected_space, 2);
+        assert_eq!(app.selected_spine, 1); // Tier(core) header, now selectable
         let a2 = app.on_key(KeyCode::Down);
         assert_eq!(a2, Action::None);
-        assert_eq!(app.selected_space, 3);
+        assert_eq!(app.selected_spine, 2); // first space row
     }
 
     #[test]
     fn on_key_up_retreats() {
         let mut app = make_app(&make_sessions(&["a", "b", "c"]));
-        app.selected_space = 3;
+        app.selected_spine = 3;
+        app.reinit_browser();
         let a = app.on_key(KeyCode::Up);
         assert_eq!(a, Action::None);
-        assert_eq!(app.selected_space, 2);
+        assert_eq!(app.selected_spine, 2);
     }
 
     // ── on_key: Normal mode actions ───────────────────────────────────────────
 
     #[test]
     fn on_key_a_returns_attach_with_selected_name() {
+        // spine = [MC, Tier(core), Space(my-session)] — len 3.
         let mut app = make_app(&make_sessions(&["my-session"]));
+        app.selected_spine = 2;
+        app.reinit_browser();
         let action = app.on_key(KeyCode::Char('a'));
         assert_eq!(action, Action::Attach("my-session".into()));
     }
 
     #[test]
-    fn on_key_a_empty_list_is_none() {
-        let mut app = make_app(&[]);
+    fn on_key_a_on_mission_control_with_no_item_is_none() {
+        let mut app = make_empty_app();
         let action = app.on_key(KeyCode::Char('a'));
         assert_eq!(action, Action::None);
     }
 
     #[test]
     fn on_key_n_enters_new_input_mode() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         let action = app.on_key(KeyCode::Char('n'));
         assert_eq!(action, Action::None);
         assert_eq!(app.mode, Mode::Input(InputKind::New));
@@ -694,6 +734,8 @@ mod tests {
     #[test]
     fn on_key_s_enters_send_input_mode_when_selected() {
         let mut app = make_app(&make_sessions(&["alpha"]));
+        app.selected_spine = 2;
+        app.reinit_browser();
         let action = app.on_key(KeyCode::Char('s'));
         assert_eq!(action, Action::None);
         assert_eq!(app.mode, Mode::Input(InputKind::Send));
@@ -701,7 +743,7 @@ mod tests {
 
     #[test]
     fn on_key_s_no_selection_sets_status() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         let action = app.on_key(KeyCode::Char('s'));
         assert_eq!(action, Action::None);
         assert!(app.status.is_some());
@@ -711,23 +753,48 @@ mod tests {
     #[test]
     fn on_key_k_returns_kill_with_selected_name() {
         let mut app = make_app(&make_sessions(&["victim"]));
+        app.selected_spine = 2;
+        app.reinit_browser();
         let action = app.on_key(KeyCode::Char('k'));
         assert_eq!(action, Action::Kill("victim".into()));
     }
 
     #[test]
     fn on_key_q_sets_should_quit() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         let action = app.on_key(KeyCode::Char('q'));
         assert_eq!(action, Action::None);
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn t_key_sets_markdown_overlay_on_markdown_entry() {
+        // Land on a Space row so `is_space_overview` gates the browser keys.
+        let mut app = make_app(&make_sessions(&["alpha"]));
+        app.selected_spine = 2;
+        app.reinit_browser();
+        app.overview_pane = OverviewPane::Browser;
+        app.file_browser.entries = vec![bella_engine::browser::BrowserEntry {
+            path: std::path::PathBuf::from("alpha/README.md"),
+            display: "README.md".to_string(),
+            kind: bella_engine::browser::BrowserEntryKind::Markdown,
+        }];
+        app.file_browser.selected = 0;
+        assert!(app.markdown_overlay.is_none());
+
+        let action = app.on_key(KeyCode::Char('t'));
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            app.markdown_overlay,
+            Some(std::path::PathBuf::from("alpha/README.md"))
+        );
     }
 
     // ── on_key: Input mode ────────────────────────────────────────────────────
 
     #[test]
     fn input_mode_char_appends() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         app.mode = Mode::Input(InputKind::New);
         app.on_key(KeyCode::Char('a'));
         app.on_key(KeyCode::Char('b'));
@@ -736,7 +803,7 @@ mod tests {
 
     #[test]
     fn input_mode_backspace_pops() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         app.mode = Mode::Input(InputKind::New);
         app.input = "abc".into();
         app.on_key(KeyCode::Backspace);
@@ -745,7 +812,7 @@ mod tests {
 
     #[test]
     fn input_mode_esc_cancels_to_normal() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         app.mode = Mode::Input(InputKind::New);
         app.input = "partial".into();
         let action = app.on_key(KeyCode::Esc);
@@ -756,7 +823,7 @@ mod tests {
 
     #[test]
     fn input_mode_enter_new_returns_new_action() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         app.mode = Mode::Input(InputKind::New);
         app.input = "fresh".into();
         let action = app.on_key(KeyCode::Enter);
@@ -766,7 +833,7 @@ mod tests {
 
     #[test]
     fn input_mode_enter_new_empty_sets_status() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         app.mode = Mode::Input(InputKind::New);
         let action = app.on_key(KeyCode::Enter);
         assert_eq!(action, Action::None);
@@ -776,6 +843,8 @@ mod tests {
     #[test]
     fn input_mode_enter_send_returns_send_action() {
         let mut app = make_app(&make_sessions(&["target"]));
+        app.selected_spine = 2;
+        app.reinit_browser();
         app.mode = Mode::Input(InputKind::Send);
         app.input = "cargo test".into();
         let action = app.on_key(KeyCode::Enter);
@@ -791,81 +860,16 @@ mod tests {
 
     #[test]
     fn input_mode_enter_send_no_selection_is_none() {
-        let mut app = make_app(&[]);
+        let mut app = make_empty_app();
         app.mode = Mode::Input(InputKind::Send);
         app.input = "whatever".into();
         let action = app.on_key(KeyCode::Enter);
         assert_eq!(action, Action::None);
     }
 
-    // ── Tab Management ────────────────────────────────────────────────────────
-
-    #[test]
-    fn push_tab_updates_index() {
-        let mut app = make_app(&[]);
-        app.push_tab(TabState::MissionControl);
-        assert_eq!(app.tabs.len(), 4);
-        assert_eq!(app.active_tab_index, 3);
-        assert_eq!(app.tabs[3], TabState::MissionControl);
-    }
-
-    #[test]
-    fn close_tab_updates_index() {
-        let mut app = make_app(&[]);
-        app.push_tab(TabState::MissionControl);
-        assert_eq!(app.tabs.len(), 4);
-        assert_eq!(app.active_tab_index, 3);
-
-        app.close_tab();
-        assert_eq!(app.tabs.len(), 3);
-        assert_eq!(app.active_tab_index, 2); // shifted back
-
-        app.close_tab();
-        assert_eq!(app.tabs.len(), 2);
-        assert_eq!(app.active_tab_index, 1); // shifted back
-    }
-
-    #[test]
-    fn next_tab_advances_and_wraps() {
-        let mut app = make_app(&[]);
-        assert_eq!(app.active_tab_index, 0);
-        app.next_tab();
-        assert_eq!(app.active_tab_index, 1);
-        app.next_tab();
-        assert_eq!(app.active_tab_index, 2);
-        app.next_tab();
-        assert_eq!(app.active_tab_index, 0); // wraps to first
-    }
-
-    #[test]
-    fn prev_tab_retreats_and_wraps() {
-        let mut app = make_app(&[]);
-        assert_eq!(app.active_tab_index, 0);
-        app.prev_tab();
-        assert_eq!(app.active_tab_index, 2); // wraps to last
-        app.prev_tab();
-        assert_eq!(app.active_tab_index, 1);
-    }
-
-    #[test]
-    fn tab_key_advances_active_tab() {
-        let mut app = make_app(&[]);
-        let action = app.on_key(KeyCode::Tab);
-        assert_eq!(action, Action::None);
-        assert_eq!(app.active_tab_index, 1);
-    }
-
-    #[test]
-    fn backtab_key_retreats_active_tab() {
-        let mut app = make_app(&[]);
-        let action = app.on_key(KeyCode::BackTab);
-        assert_eq!(action, Action::None);
-        assert_eq!(app.active_tab_index, 2);
-    }
-
     #[test]
     fn compute_view_math() {
-        let app = make_app(&[]);
+        let app = make_empty_app();
         let area = Rect::new(0, 0, 100, 50);
         let (sidebar, main) = app.compute_view(area);
         assert_eq!(sidebar.width, 30);
