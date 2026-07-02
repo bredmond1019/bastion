@@ -888,6 +888,19 @@
       "related": [],
       "clears_when": null,
       "created": "2026-07-02"
+    },
+    {
+      "slug": "sdlc-flow-task-heading-format",
+      "scope": {
+        "repo": "bastion",
+        "tier": null,
+        "cross_repo": null
+      },
+      "kind": "constraint",
+      "text": "The sdlc-flow/sdlc-task engines' D16 preflight lint requires literal `### N. <title>` numbered task headings in tasks.md (regex `^### [0-9]+\\.`). Block-ID-prefixed headings like `### BA.13.0.1 <title>` fail the lint with 'No task headings (D16)'. When authoring specs by hand (or once BA.15.6's naming-convention engine lands), keep the leading `### N.` numeral and put the block/task ID inline in the title text instead, e.g. `### 1. BA.13.0.1 <title>`.",
+      "related": [],
+      "clears_when": null,
+      "created": "2026-07-02"
     }
   ]
 }
