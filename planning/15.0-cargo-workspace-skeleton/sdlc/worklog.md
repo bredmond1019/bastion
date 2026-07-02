@@ -11,3 +11,6 @@ Validated: gating checks (fast tripwire)
 What: Updated the Directory map in CLAUDE.md, AGENT.md, and GEMINI.md to reflect the crates/bastion/src/ layout (workspace container) instead of the old top-level src/.
 Decisions: Kept the module list and inline comments identical to the pre-move version, only adding the crates/bastion/ nesting level and annotating the root Cargo.toml as the workspace manifest.; This task is documentation-only (matches spec scope); no cargo commands were run since the acceptance criteria for task 3 don't include build validation (that's task 4).
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/brain.md, docs/code.md, docs/config.md, docs/costs.md, docs/detect.md, docs/index.md, docs/observ.md, docs/okf.md, docs/serve-api.md, docs/sessions.md, docs/validate.md
