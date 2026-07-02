@@ -14,3 +14,6 @@ Validated: gating checks (fast tripwire)
 
 ## Docs
 Patched: docs/brain.md, docs/code.md, docs/config.md, docs/costs.md, docs/detect.md, docs/index.md, docs/observ.md, docs/okf.md, docs/serve-api.md, docs/sessions.md, docs/validate.md
+
+## Wrap-up — PASS
+Next: Pick the next Phase 15 block (bastion-product packaging plan, BA.15.1+), now unblocked by the workspace skeleton, or resume Phase 13/14 blocks per state.json's regenerated focus.next ordering.
