@@ -266,6 +266,135 @@ mod tests {
         }
     }
 
+    // ── Agent panel strip (BA.13.1.3) ───────────────────────────────────────────
+
+    /// Build an `AppState` with a fixed set of sessions (mixed `AgentState`s)
+    /// and a two-tier space tree, so `selected_spine` can be driven to
+    /// different `SelectedNode`s while the panel's session list stays fixed.
+    fn app_with_sessions() -> AppState {
+        use crate::detect::AgentState;
+        use crate::sessions::model::{Session, SessionState};
+
+        let sessions = vec![
+            Session {
+                name: "idle-sess".to_string(),
+                state: SessionState::Idle,
+                window_count: 1,
+                foreground_cmd: String::new(),
+                last_line: String::new(),
+                agent_state: AgentState::Idle,
+            },
+            Session {
+                name: "blocked-sess".to_string(),
+                state: SessionState::Idle,
+                window_count: 1,
+                foreground_cmd: String::new(),
+                last_line: String::new(),
+                agent_state: AgentState::Blocked,
+            },
+            Session {
+                name: "working-sess".to_string(),
+                state: SessionState::Running,
+                window_count: 1,
+                foreground_cmd: String::new(),
+                last_line: String::new(),
+                agent_state: AgentState::Working,
+            },
+        ];
+
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push((
+            "_root".to_string(),
+            vec![SpaceEntry {
+                slug: "learn-ai".to_string(),
+                tier: "_root".to_string(),
+                repo_path: std::path::PathBuf::from("learn-ai"),
+                heading: None,
+            }],
+        ));
+        tree.tiers.push(("core".to_string(), vec![]));
+
+        AppState::new(sessions, tree)
+    }
+
+    /// The "agents · priority" strip title renders under Mission Control (the
+    /// pinned first spine row) and under a tier header (a second, distinct
+    /// `SelectedNode`) — proving it's reserved under every selection, not just
+    /// one branch of the content match.
+    #[test]
+    fn agent_panel_strip_renders_under_multiple_selected_nodes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_planning_fixtures(dir.path());
+
+        let mut app = app_with_sessions();
+
+        app.selected_spine = 0; // Mission Control
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::MissionControl
+        );
+        let buf_mc = render_frame(&app, dir.path(), 100, 40);
+        let text_mc = buf_to_string(&buf_mc);
+        assert!(
+            text_mc.contains("agents"),
+            "strip must render under Mission Control; frame:\n{text_mc}"
+        );
+
+        app.selected_spine = 3; // Tier(core) — [MissionControl, Hq, Space(learn-ai), Tier(core)]
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Tier("core".to_string())
+        );
+        let buf_tier = render_frame(&app, dir.path(), 100, 40);
+        let text_tier = buf_to_string(&buf_tier);
+        assert!(
+            text_tier.contains("agents"),
+            "strip must render under a tier header too; frame:\n{text_tier}"
+        );
+    }
+
+    /// The strip's rows appear in urgency order (Blocked before Working before
+    /// Idle), matching `agent_panel_rows`/`session_urgency`.
+    #[test]
+    fn agent_panel_strip_rows_appear_in_urgency_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_planning_fixtures(dir.path());
+
+        let app = app_with_sessions(); // selected_spine = 0 = Mission Control
+        let buf = render_frame(&app, dir.path(), 100, 40);
+        let text = buf_to_string(&buf);
+
+        let blocked_idx = text
+            .find("blocked-sess")
+            .expect("blocked session must render in the strip");
+        let working_idx = text
+            .find("working-sess")
+            .expect("working session must render in the strip");
+        let idle_idx = text
+            .find("idle-sess")
+            .expect("idle session must render in the strip");
+
+        assert!(
+            blocked_idx < working_idx && working_idx < idle_idx,
+            "strip rows must be urgency-ordered (blocked < working < idle); frame:\n{text}"
+        );
+    }
+
+    /// The strip's min-height fallback renders without panic even when the
+    /// frame is too short to spare its preferred height.
+    #[test]
+    fn agent_panel_strip_min_height_fallback_no_panic_on_short_frame() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_planning_fixtures(dir.path());
+
+        let app = app_with_sessions();
+        // 5 rows tall: barely enough for the 1-line footer + a sliver of main
+        // content; the strip must shrink instead of panicking or overflowing.
+        render_frame(&app, dir.path(), 80, 5);
+        // Even more extreme — 1 row tall.
+        render_frame(&app, dir.path(), 80, 1);
+    }
+
     // ── planning_root pure-function sanity check ──────────────────────────────
 
     /// Verify the pure planning_root() helper is reachable and defaults correctly.
