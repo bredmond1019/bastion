@@ -809,14 +809,14 @@ mod tests {
         let mut found_dot = false;
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                if let Some(cell) = buf.cell((x, y)) {
-                    if cell.symbol() == "●" {
-                        found_dot = true;
-                        assert_eq!(
-                            cell.fg, expected,
-                            "working-state dot must render with the runtime theme's sage color"
-                        );
-                    }
+                if let Some(cell) = buf.cell((x, y))
+                    && cell.symbol() == "●"
+                {
+                    found_dot = true;
+                    assert_eq!(
+                        cell.fg, expected,
+                        "working-state dot must render with the runtime theme's sage color"
+                    );
                 }
             }
         }
