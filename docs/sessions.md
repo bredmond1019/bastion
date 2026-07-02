@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [tmux, session control, attach, send, capture, ask, TUI dashboard]
-related: [claude-code-workflow, monitor, serve-api]
+related: [claude-code-workflow, monitor, serve-api, config]
 ---
 
 # Session Control
@@ -63,7 +63,8 @@ on whichever spine row is selected:
 - **Space Overview (selecting `HQ` or a space row):** A split-pane layout with a built-in file
   browser on the left and a scrollable content pane on the right. By default, it opens the
   space's `planning/status.md`. You can browse the space's directories or preview markdown files
-  in the content pane (using the `bella-engine` parser with a dark theme). Pressing `t` opens the
+  in the content pane (using the `bella-engine` parser with the console's active theme, selectable
+  via the `[theme]` config section — see [config.md](config.md#theme-section)). Pressing `t` opens the
   selected markdown file as a transient full-screen overlay instead of a new tab (overlay polish
   is deferred; tab machinery has been removed).
 - **Tier overview (selecting a tier header — `HQ`/`core`/`side`/`client`/`portfolio`):** Routes
