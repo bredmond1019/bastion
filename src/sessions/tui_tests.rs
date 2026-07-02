@@ -227,6 +227,6 @@ mod tests {
     #[test]
     fn planning_root_pure_default() {
         let root = crate::config::planning_root(None);
-        assert_eq!(root, std::path::PathBuf::from("planning"));
+        assert!(root.ends_with("planning"));
     }
 }

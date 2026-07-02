@@ -273,6 +273,25 @@ impl Config {
     }
 }
 
+/// Helper: Walk up from the current directory looking for a target file/dir.
+/// Returns the absolute path if found, or `PathBuf::from(target)` if it hits the root without finding it.
+fn walk_up_for(target: &str) -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut curr = cwd.as_path();
+        loop {
+            let candidate = curr.join(target);
+            if candidate.exists() {
+                return candidate;
+            }
+            match curr.parent() {
+                Some(parent) => curr = parent,
+                None => break,
+            }
+        }
+    }
+    PathBuf::from(target)
+}
+
 // ── Planning root ─────────────────────────────────────────────────────────────
 
 /// Resolve the `planning/` directory root.
@@ -286,7 +305,7 @@ pub fn planning_root(env_val: Option<String>) -> PathBuf {
     env_val
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("planning"))
+        .unwrap_or_else(|| walk_up_for("planning"))
 }
 
 /// Load the planning root from `BASTION_PLANNING_ROOT` env var + `.env` file.
@@ -306,7 +325,7 @@ pub fn brain_toml_path(env_val: Option<String>) -> PathBuf {
     env_val
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("brain.toml"))
+        .unwrap_or_else(|| walk_up_for("brain.toml"))
 }
 
 /// Load the brain.toml path from `BASTION_BRAIN_TOML` env var + `.env` file.
@@ -759,7 +778,7 @@ client-a = "/Users/alice/clients/a"
     #[test]
     fn planning_root_defaults_to_planning() {
         let root = planning_root(None);
-        assert_eq!(root, PathBuf::from("planning"));
+        assert!(root.ends_with("planning"));
     }
 
     #[test]
@@ -771,7 +790,7 @@ client-a = "/Users/alice/clients/a"
     #[test]
     fn planning_root_empty_env_val_falls_back_to_default() {
         let root = planning_root(Some(String::new()));
-        assert_eq!(root, PathBuf::from("planning"));
+        assert!(root.ends_with("planning"));
     }
 
     #[test]
@@ -785,7 +804,7 @@ client-a = "/Users/alice/clients/a"
     #[test]
     fn brain_toml_path_defaults_to_brain_toml() {
         let root = brain_toml_path(None);
-        assert_eq!(root, PathBuf::from("brain.toml"));
+        assert!(root.ends_with("brain.toml"));
     }
 
     #[test]
