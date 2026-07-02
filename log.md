@@ -2,12 +2,35 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-02T13:53:23Z
+timestamp: 2026-07-02T15:01:31Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [run: 2026-07-02]
+
+Closed out BA.13.1 after the `/sdlc-flow 13.1-persistent-agent-panel` pipeline had already landed
+4/4 tasks with a PASS review, docs patched, and PR #12 open. Ran a light `/code-review low` pass
+over the merged diff, which came back with 0 findings, and confirmed docs (`docs/sessions.md`)
+were already updated by the pipeline — nothing left to fix. PR #12 was squash-merged on GitHub;
+local `main` was resynced with `origin/main`, picking up both the squash commit
+(`9e2fa7f 13.1-persistent-agent-panel: 4 task(s), review PASS (#12)`) and a trailing PR-metadata
+bookkeeping commit (`e12b4a7 chore: flow state — pr #12`). The worktree and its branch were
+removed. `state.json`'s BA.13.1 block was closed (`status: "closed"`, `tasks[]` array dropped),
+and `mev emit-state --write` was run to regenerate `focus.next`. `planning/handoff.md` was
+rewritten for the next agent, pointing at `BA.13.2` / `BA.13.3` / `BA.13.5` (Phase 13) and
+`BA.14.1`–`BA.14.3` (Phase 14 color pass) as the unblocked next picks. Why: reconciling the
+merged BA.13.1 work in git, state, and handoff before picking up the next block — same pattern as
+the prior BA.14.0 close-out entry below.
+
+```
+e12b4a7 chore: flow state — pr #12
+9e2fa7f 13.1-persistent-agent-panel: 4 task(s), review PASS (#12)
+```
 
 ---
 
