@@ -2,10 +2,10 @@
   "spec_slug": "13.1-persistent-agent-panel",
   "branch": "13.1-persistent-agent-panel-flow",
   "started_at": "2026-07-02T14:33:02Z",
-  "updated_at": "2026-07-02T14:33:02Z",
+  "updated_at": "2026-07-02T14:36:18Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.1-persistent-agent-panel-flow",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -19,6 +19,24 @@
       ],
       "files_changed": [
         "src/monitor/app.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added a pure agent_panel_rows builder + AgentPanelRow model in src/sessions/agent_panel.rs that maps sessions to rows sorted by session_urgency (Blocked first), registered as a new sessions module, with 5 unit tests covering empty-slice, one-row-per-session, sort ordering, row content, and Running-state parity.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "AgentPanelRow carries only label + AgentState per spec (no theme/color fields) to keep the builder pure; theme mapping is deferred to Task 3's render shell.",
+        "Reused monitor::app::session_urgency directly rather than duplicating urgency logic, since it was already extracted pure in Task 1."
+      ],
+      "files_changed": [
+        "src/sessions/agent_panel.rs",
+        "src/sessions/mod.rs",
+        "planning/13.1-persistent-agent-panel/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -79,13 +97,37 @@
         "filesReadKb": null,
         "inTokEst": 594,
         "outTok": 2193
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 265,
+        "filesReadKb": null,
+        "inTokEst": 265,
+        "outTok": 1025
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 919,
+        "filesReadKb": null,
+        "inTokEst": 919,
+        "outTok": 6071
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 594,
+        "filesReadKb": null,
+        "inTokEst": 594,
+        "outTok": 1879
       }
     ],
     "total": {
-      "promptTokEst": 2801,
+      "promptTokEst": 4579,
       "filesReadKb": 0,
-      "inTokEst": 2801,
-      "outTok": 13515
+      "inTokEst": 4579,
+      "outTok": 22490
     }
   }
 }
