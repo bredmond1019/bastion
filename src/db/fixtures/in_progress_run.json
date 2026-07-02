@@ -1,0 +1,72 @@
+{
+  "node_runs": {
+    "DataIngestionNode": {
+      "status": "success",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": "2026-06-20T10:00:00Z"
+    },
+    "EmbeddingNode": {
+      "status": "success",
+      "error": null,
+      "input": {
+        "text": "Sample document content for embedding",
+        "model": "text-embedding-3-small"
+      },
+      "usage": {
+        "input_tokens": 512,
+        "output_tokens": 0,
+        "model": "text-embedding-3-small"
+      },
+      "started_at": "2026-06-20T10:00:05Z"
+    },
+    "LLMSummaryNode": {
+      "status": "running",
+      "error": null,
+      "input": {
+        "context": "Retrieved chunks for summarization",
+        "prompt": "Summarize the following document"
+      },
+      "usage": null,
+      "started_at": "2026-06-20T10:00:12Z"
+    },
+    "ValidationNode": {
+      "status": "pending",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": null
+    },
+    "OutputFormatterNode": {
+      "status": "pending",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": null
+    }
+  },
+  "nodes": {
+    "DataIngestionNode": {
+      "output": {
+        "documents_loaded": 3,
+        "total_bytes": 15240
+      }
+    },
+    "EmbeddingNode": {
+      "output": {
+        "embedding_dim": 1536,
+        "chunks_embedded": 12
+      }
+    },
+    "LLMSummaryNode": {
+      "output": null
+    },
+    "ValidationNode": {
+      "output": null
+    },
+    "OutputFormatterNode": {
+      "output": null
+    }
+  }
+}
