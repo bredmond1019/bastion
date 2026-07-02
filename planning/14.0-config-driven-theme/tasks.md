@@ -39,7 +39,7 @@ Make all color config-oriented: `ui_theme` functions read a runtime `Theme`, an 
 - Add resolution: config `[theme].name` (or absent) → resolved `Theme` via the BA.14.0.1 lookup, with a default fallback when the section is absent or the name is unknown.
 - **Tests (Rule 6):** unit-test parsing a `config.toml` fixture *with* a `[theme]` name, *without* a `[theme]` section (→ default), and with an *unknown* name (→ default fallback); confirm a pre-existing config with no `[theme]` still deserializes.
 
-### 3. BA.14.0.3 Apply runtime theme at the sessions entry in `src/sessions/ui.rs`
+### 3. [~] BA.14.0.3 Apply runtime theme at the sessions entry in `src/sessions/ui.rs`
 - **Owns:** `src/sessions/ui.rs` (only file touched by this task). **Depends on:** BA.14.0.1 (accessor/init + bella mapping) and BA.14.0.2 (resolved `Theme` from `FileConfig`).
 - At the sessions/TUI entry, initialize the runtime-`Theme` accessor from the resolved `FileConfig` theme (so chrome reads the active theme).
 - Replace the fixed `Theme::bastion()` passed to `render_with_edit` with the mapped `bella_engine::Theme` from the active theme, so the markdown view and TUI chrome share one theme.
@@ -67,7 +67,34 @@ cargo build --release
 ```
 
 ## Notes
-<filled in as work happens>
+- **Task 3 (BA.14.0.3):** `src/sessions/ui.rs` now initializes the process-wide runtime theme
+  at the top of `run()` via `init_theme_from_config()` — a thin wrapper over already-tested pure
+  functions (`config::load_workspace_registry`, `config::resolve_theme`, `ui_theme::init_theme`)
+  reading `XDG_CONFIG_HOME`/`HOME`. Both `render_with_edit` call sites now pass
+  `ui_theme::to_bella_theme(ui_theme::current_theme())` instead of the fixed
+  `bella_engine::Theme::mission_control()`, so chrome and the markdown view read the same
+  runtime theme. No `../bella` files were touched — the existing `bella_engine::Theme` struct
+  covers the mapping (Rule 7 caveat not triggered).
+  - Per Rule 6, `init_theme_from_config`'s I/O shell is a trivial wrapper and is not
+    independently unit-tested; its constituent pure functions already carry unit tests in
+    `src/config.rs` (BA.14.0.2) and `src/ui_theme.rs` (BA.14.0.1). Manual smoke-test of the
+    live `run()` path (setting/unsetting `[theme]` in a scratch config and confirming no panic +
+    the fallback to `bastion`) is deferred to Task 4's Validate step, which owns that check for
+    the whole spec.
+  - Added two tests in `src/sessions/ui.rs`'s own test module (no other files touched):
+    `build_space_item_working_dot_tracks_runtime_theme` renders a working-state session via
+    `draw_for_test`/`TestBackend` and asserts the sidebar dot's `Cell::fg` equals
+    `ui_theme::current_theme().sage` (proving chrome reads live from the runtime theme, not a
+    baked literal); `render_with_edit_receives_theme_mapped_from_current_theme` asserts the
+    `to_bella_theme(current_theme())` seam that both `render_with_edit` call sites use stays in
+    lock-step with the live theme's fields (mapping asserted directly rather than via opaque
+    rendered pixel colors, per the task's test guidance).
+  - Not exercised: mutating the global runtime theme mid-test-binary via `ui_theme::init_theme`
+    was deliberately avoided in these tests — `ACTIVE_THEME` is a process-wide `OnceLock` shared
+    across the whole `cargo test` binary, and only one preset (`bastion`) currently exists via
+    `theme_by_name`, so there is no second named preset to switch to for a true "non-default
+    theme" comparison; tests instead assert against whatever `current_theme()` resolves to at
+    call time, which is deterministic and safe under parallel test execution.
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
