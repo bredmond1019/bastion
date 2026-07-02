@@ -343,7 +343,7 @@
   },
   "tracks": [
     {
-      "title": "Phase 11 — BastionUI serve API",
+      "title": "Phase 11 \u2014 BastionUI serve API",
       "blocks": [
         {
           "id": "BA.11.C0",
@@ -401,7 +401,7 @@
       ]
     },
     {
-      "title": "Phase 12 — Unified Console Cleanup",
+      "title": "Phase 12 \u2014 Unified Console Cleanup",
       "blocks": [
         {
           "id": "BA.12.C",
@@ -460,7 +460,7 @@
       ]
     },
     {
-      "title": "Phase 7 — Costs",
+      "title": "Phase 7 \u2014 Costs",
       "blocks": [
         {
           "id": "BA.7.B",
@@ -488,7 +488,7 @@
       ]
     },
     {
-      "title": "Phase 13 — Unified Console Structural Restructure",
+      "title": "Phase 13 \u2014 Unified Console Structural Restructure",
       "blocks": [
         {
           "id": "BA.13.0",
@@ -581,7 +581,7 @@
       ]
     },
     {
-      "title": "Phase 14 — Unified Console Polish & Theming",
+      "title": "Phase 14 \u2014 Unified Console Polish & Theming",
       "blocks": [
         {
           "id": "BA.14.0",
@@ -596,7 +596,67 @@
             }
           ],
           "wave": 135,
-          "origin": null
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Runtime Theme refactor + accessor + bella mapping in src/ui_theme.rs",
+              "description": "Refactor ui_theme functions to read a process-wide runtime Theme (OnceCell/OnceLock, bastion default) instead of baked rgb() constants; add named presets + pure theme_by_name with default/unknown fallback; add pure bastion->bella_engine::Theme mapping consuming existing bella presets; expose accessor + init. Unit-test lookup fallbacks, mapping, and default-before-init.",
+              "acceptance_criteria": [
+                "ui_theme functions read a runtime Theme; no fixed rgb/Color:: literals outside the theme definition",
+                "theme_by_name returns preset / default (absent) / default (unknown), unit-tested",
+                "bastion->bella Theme mapping is a pure fn, unit-tested",
+                "accessor returns bastion default before init"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "[theme] config section + resolution in src/config.rs",
+              "description": "Extend FileConfig with an optional [theme] section (theme name at minimum), fully optional so existing configs parse unchanged; resolve name->Theme via BA.14.0.1 lookup with default fallback. Unit-test parsing with/without [theme] and with an unknown name.",
+              "acceptance_criteria": [
+                "FileConfig gains optional [theme] section; existing configs still deserialize",
+                "resolution maps [theme].name -> Theme with default fallback (absent/unknown)",
+                "parse fixtures with/without [theme] and unknown name unit-tested"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Apply runtime theme at sessions entry in src/sessions/ui.rs",
+              "description": "Initialize the runtime-Theme accessor from the resolved FileConfig theme at the sessions/TUI entry; replace fixed Theme::bastion() passed to render_with_edit with the mapped bella_engine::Theme so chrome + markdown share one theme. Edit ../bella theme.rs only if a new constructor is unavoidable (Rule 7), recording coordination. draw_for_test asserts a non-default selection changes chrome + mapped theme reaches render_with_edit.",
+              "acceptance_criteria": [
+                "runtime theme initialized from FileConfig at sessions entry",
+                "render_with_edit receives the mapped bella Theme (not fixed Theme::bastion())",
+                "bella files untouched unless a new constructor was unavoidable (then coordination recorded)",
+                "draw_for_test asserts theme selection affects chrome"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 4,
+              "title": "Validate",
+              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI via tmux capture-pane (theme name set/unset/unknown) and record the result in Notes.",
+              "acceptance_criteria": [
+                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
+                "TUI smoke test (theme shared chrome+markdown, unknown->fallback, no panic) recorded in tasks.md Notes"
+              ],
+              "status": "pending",
+              "validation_commands": [
+                "cargo fmt --check",
+                "cargo clippy -- -D warnings",
+                "cargo test",
+                "cargo build --release"
+              ],
+              "max_attempts": 3
+            }
+          ]
         },
         {
           "id": "BA.14.1",
@@ -646,7 +706,7 @@
       ]
     },
     {
-      "title": "Phase 15 — Bastion Product Packaging",
+      "title": "Phase 15 \u2014 Bastion Product Packaging",
       "blocks": [
         {
           "id": "BA.15.0",
@@ -884,7 +944,7 @@
         "cross_repo": null
       },
       "kind": "known_issue",
-      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) — not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
+      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) \u2014 not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
       "related": [],
       "clears_when": null,
       "created": "2026-07-02"
@@ -897,7 +957,7 @@
         "cross_repo": null
       },
       "kind": "constraint",
-      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all — it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape — dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
+      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all \u2014 it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape \u2014 dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
       "related": [],
       "clears_when": "BA.15.5 and BA.15.6 land (tasks.json companion + naming-convention engine)",
       "created": "2026-07-02"
