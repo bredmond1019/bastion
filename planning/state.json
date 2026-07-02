@@ -22,8 +22,8 @@
         "blocked_by": []
       },
       {
-        "id": "BA.14.0",
-        "title": "Config-driven theme system",
+        "id": "BA.13.1",
+        "title": "Persistent global agent panel",
         "status": null,
         "note": null,
         "repo": null,
@@ -70,6 +70,14 @@
         "blocked_by": []
       },
       {
+        "id": "BA.14.3",
+        "title": "Color pass (more greens/cyans)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
         "id": "BA.15.0",
         "title": "Cargo workspace skeleton",
         "status": null,
@@ -103,21 +111,6 @@
         ]
       },
       {
-        "id": "BA.13.1",
-        "title": "Persistent global agent panel",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.14.0",
-            "what": null
-          }
-        ]
-      },
-      {
         "id": "BA.13.4",
         "title": "Per-space sub-tab bar (Overview / Board / Sessions)",
         "status": null,
@@ -128,21 +121,6 @@
             "type": "block",
             "repo": "bastion",
             "id": "BA.13.3",
-            "what": null
-          }
-        ]
-      },
-      {
-        "id": "BA.14.3",
-        "title": "Color pass (more greens/cyans)",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.14.0",
             "what": null
           }
         ]
@@ -517,7 +495,68 @@
             }
           ],
           "wave": 140,
-          "origin": null
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Extract pure session_urgency in src/monitor/app.rs",
+              "description": "Extract the urgency ordering inline in build_mission_items into a pure session_urgency(&Session)->u8 (Blocked/needs-input first) and reuse it there; preserve build_mission_items signature (shared by monitor/events.rs). Unit-test all AgentState values + Running and assert build_mission_items ordering unchanged.",
+              "acceptance_criteria": [
+                "session_urgency(&Session)->u8 extracted, reused in build_mission_items",
+                "build_mission_items signature preserved (shared by monitor/events.rs)",
+                "session_urgency unit-tested for Working/Blocked/Idle/Unknown + Running with Blocked>Working>Idle ordering",
+                "build_mission_items ordering regression asserted unchanged"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Pure agent_panel_rows builder in src/sessions/agent_panel.rs",
+              "description": "Add AgentPanelRow model + pure agent_panel_rows(&[Session])->Vec<AgentPanelRow> mapping every session and sorting by session_urgency; no I/O or theme access in the pure builder. Register pub mod agent_panel in src/sessions/mod.rs. Unit-test one row per session, urgency sort, and empty slice.",
+              "acceptance_criteria": [
+                "new src/sessions/agent_panel.rs with AgentPanelRow + pure agent_panel_rows",
+                "module registered via pub mod agent_panel in src/sessions/mod.rs",
+                "rows sorted by session_urgency (Blocked before Working before Idle)",
+                "unit tests cover one-row-per-session, sort order, empty slice"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Reserve + render the bottom strip in src/sessions/ui.rs",
+              "description": "Reserve an always-on bottom strip in the top-level vertical split so it renders under every SelectedNode with a min-height fallback; render agent_panel_rows with themed state dots/colors from ui_theme::current_theme() (never literals). draw_for_test asserts strip under >=2 SelectedNodes, urgency order, and min-height no-panic.",
+              "acceptance_criteria": [
+                "always-on bottom strip reserved in top-level vertical split, renders under every SelectedNode",
+                "rows rendered with runtime-theme colors, no literals",
+                "min-height fallback renders without panic",
+                "draw_for_test asserts strip under >=2 SelectedNodes and urgency order"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 4,
+              "title": "Validate",
+              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI via tmux capture-pane (multiple sessions, differing states) and record the result in Notes.",
+              "acceptance_criteria": [
+                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
+                "TUI smoke test (strip visible under Mission Control/tier/space, Blocked first, themed colors) recorded in tasks.md Notes"
+              ],
+              "status": "pending",
+              "validation_commands": [
+                "cargo fmt --check",
+                "cargo clippy -- -D warnings",
+                "cargo test",
+                "cargo build --release"
+              ],
+              "max_attempts": 3
+            }
+          ]
         },
         {
           "id": "BA.13.2",
@@ -586,7 +625,7 @@
         {
           "id": "BA.14.0",
           "title": "Config-driven theme system",
-          "status": "open",
+          "status": "closed",
           "depends_on": [
             {
               "type": "block",
@@ -596,67 +635,7 @@
             }
           ],
           "wave": 135,
-          "origin": null,
-          "tasks": [
-            {
-              "task_id": 1,
-              "title": "Runtime Theme refactor + accessor + bella mapping in src/ui_theme.rs",
-              "description": "Refactor ui_theme functions to read a process-wide runtime Theme (OnceCell/OnceLock, bastion default) instead of baked rgb() constants; add named presets + pure theme_by_name with default/unknown fallback; add pure bastion->bella_engine::Theme mapping consuming existing bella presets; expose accessor + init. Unit-test lookup fallbacks, mapping, and default-before-init.",
-              "acceptance_criteria": [
-                "ui_theme functions read a runtime Theme; no fixed rgb/Color:: literals outside the theme definition",
-                "theme_by_name returns preset / default (absent) / default (unknown), unit-tested",
-                "bastion->bella Theme mapping is a pure fn, unit-tested",
-                "accessor returns bastion default before init"
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 2,
-              "title": "[theme] config section + resolution in src/config.rs",
-              "description": "Extend FileConfig with an optional [theme] section (theme name at minimum), fully optional so existing configs parse unchanged; resolve name->Theme via BA.14.0.1 lookup with default fallback. Unit-test parsing with/without [theme] and with an unknown name.",
-              "acceptance_criteria": [
-                "FileConfig gains optional [theme] section; existing configs still deserialize",
-                "resolution maps [theme].name -> Theme with default fallback (absent/unknown)",
-                "parse fixtures with/without [theme] and unknown name unit-tested"
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 3,
-              "title": "Apply runtime theme at sessions entry in src/sessions/ui.rs",
-              "description": "Initialize the runtime-Theme accessor from the resolved FileConfig theme at the sessions/TUI entry; replace fixed Theme::bastion() passed to render_with_edit with the mapped bella_engine::Theme so chrome + markdown share one theme. Edit ../bella theme.rs only if a new constructor is unavoidable (Rule 7), recording coordination. draw_for_test asserts a non-default selection changes chrome + mapped theme reaches render_with_edit.",
-              "acceptance_criteria": [
-                "runtime theme initialized from FileConfig at sessions entry",
-                "render_with_edit receives the mapped bella Theme (not fixed Theme::bastion())",
-                "bella files untouched unless a new constructor was unavoidable (then coordination recorded)",
-                "draw_for_test asserts theme selection affects chrome"
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 4,
-              "title": "Validate",
-              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI via tmux capture-pane (theme name set/unset/unknown) and record the result in Notes.",
-              "acceptance_criteria": [
-                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
-                "TUI smoke test (theme shared chrome+markdown, unknown->fallback, no panic) recorded in tasks.md Notes"
-              ],
-              "status": "pending",
-              "validation_commands": [
-                "cargo fmt --check",
-                "cargo clippy -- -D warnings",
-                "cargo test",
-                "cargo build --release"
-              ],
-              "max_attempts": 3
-            }
-          ]
+          "origin": null
         },
         {
           "id": "BA.14.1",

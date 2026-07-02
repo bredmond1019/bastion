@@ -70,6 +70,13 @@ on whichever spine row is selected:
 - **Tier overview (selecting a tier header — `HQ`/`core`/`side`/`client`/`portfolio`):** Routes
   the main area to that tier's `<tier>/planning/status.md`. If the file or tier directory is
   absent, the pane degrades gracefully to an empty state instead of panicking.
+- **Agents · priority strip (always on):** A bottom strip, reserved and rendered under every
+  spine selection (Mission Control, `HQ`, tier headers, and spaces alike), lists every live tmux
+  session as one row — a themed status dot plus session name — sorted by urgency (`Blocked`/
+  needs-input first, then `Working`/`Running`, then `Idle`/`Unknown`). The strip's height grows
+  from 3 to a 7-line cap as session count increases, and shrinks toward 0 (never panics) when the
+  frame is too short to spare the room, so it degrades gracefully on small terminals instead of
+  crowding out the 1-line main area and footer.
 
 The Kanban board view and mouse-click tab switching described in earlier revisions of this doc
 have been removed along with the top tab bar; mouse support and a dedicated Kanban view are
