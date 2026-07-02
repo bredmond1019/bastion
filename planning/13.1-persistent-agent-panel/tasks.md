@@ -26,25 +26,25 @@ Add an always-visible bottom "agents · priority" strip listing every tmux sessi
 
 ## Step-by-Step Tasks
 
-### BA.13.1.1 Extract pure `session_urgency` in `src/monitor/app.rs`
+### 1. BA.13.1.1 Extract pure `session_urgency` in `src/monitor/app.rs`
 - **Owns:** `src/monitor/app.rs` (only file touched by this task).
 - Extract the urgency ordering currently inline in `build_mission_items` into a pure `session_urgency(&Session) -> u8` (lower value = higher urgency, Blocked/needs-input first), and reuse it inside `build_mission_items`.
 - **Preserve the `build_mission_items` signature** (`build_mission_items(sessions: &[Session], runs: &[WorkflowRun]) -> Vec<MissionItem>`) — it is shared by `monitor/events.rs`. This is a refactor with no behaviour change to Mission Control's output.
 - **Tests (Rule 6):** unit-test `session_urgency` for all four `AgentState` values (Working/Blocked/Idle/Unknown) **plus Running**, asserting Blocked sorts above Working above Idle; add/keep a regression assertion that `build_mission_items` ordering is unchanged.
 
-### BA.13.1.2 Pure `agent_panel_rows` builder in `src/sessions/agent_panel.rs`
+### 2. BA.13.1.2 Pure `agent_panel_rows` builder in `src/sessions/agent_panel.rs`
 - **Owns:** new `src/sessions/agent_panel.rs` + `mod` declaration line in `src/sessions/mod.rs`. **Depends on:** BA.13.1.1 (`session_urgency`).
 - Add an `AgentPanelRow` model (session label + detected `AgentState` + whatever the render needs) and a pure `agent_panel_rows(&[Session]) -> Vec<AgentPanelRow>` that maps every session and sorts by `session_urgency` (Blocked/needs-input first). No I/O, no theme access in this pure builder — rows carry state, colors are applied at render time.
 - Register the module with `pub mod agent_panel;` in `src/sessions/mod.rs`.
 - **Tests (Rule 6):** unit-test `agent_panel_rows` produces one row per session, sorted so a Blocked session precedes a Working precedes an Idle; cover the empty-slice case.
 
-### BA.13.1.3 Reserve + render the bottom strip in `src/sessions/ui.rs`
+### 3. BA.13.1.3 Reserve + render the bottom strip in `src/sessions/ui.rs`
 - **Owns:** `src/sessions/ui.rs` (only file touched by this task). **Depends on:** BA.13.1.2 (`agent_panel_rows`/`AgentPanelRow`) and BA.13.1.1 (`session_urgency`).
 - Reserve an always-on bottom strip in the top-level vertical split so it renders under **every** `SelectedNode` (Mission Control / HQ / Tier / Space), with a min-height fallback when vertical space is tight.
 - Render `agent_panel_rows` with themed state dots/colors sourced from the runtime theme (`ui_theme::current_theme()` — BA.14.0), never literal colors.
 - **Tests:** a `draw_for_test` (existing `tui_tests.rs` pattern) asserting the strip renders under at least two different `SelectedNode` selections, that rows appear in urgency order, and that the min-height fallback renders without panic when the frame is short.
 
-### BA.13.1.4 Validate
+### 4. BA.13.1.4 Validate
 - Run the Validation Commands listed below and confirm all pass.
 - Manually smoke-test the TUI via tmux `capture-pane`: with multiple tmux sessions in differing states, confirm the agents·priority strip is visible under Mission Control, a tier, and a space; Blocked sorts first; colors track the active theme. Record the result in `## Notes`.
 
