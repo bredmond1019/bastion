@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-02T15:01:31Z
+timestamp: 2026-07-02T22:46:57Z
 ---
 
 # Log — bastion
@@ -40,6 +40,61 @@ d9f5cd9 feat: implement 15.0-cargo-workspace-skeleton-task1
 bcededd chore: init worktree 15.0-cargo-workspace-skeleton-flow
 601d11a chore: add spec for 15.0-cargo-workspace-skeleton
 ```
+
+Merged PR #13 (`gh pr merge 13 --squash`) after a light `/code-review low` pass found 0 findings
+and confirmed docs were already current; local `main` was resynced with `origin/main` (squash
+commit `f818677 15.0-cargo-workspace-skeleton: 4 task(s), review PASS (#13)`), and the worktree +
+branch were removed via `/clean-worktree`.
+
+---
+
+## [run: 2026-07-02]
+
+### Phase 15 (BA.15) prioritized; Phase 13/14 paused; 12 planning folders archived
+
+- **What:** Oriented on the new cross-repo consolidation plan at `core/planning/bastion-master-plan.md`
+  (Bastion AgentOS consolidation program) and, per operator request, prioritized **BA.15** (Bastion
+  Product Packaging — workspace consolidation, `okf-core`/`mev-core`, `bastion init`/`assess`) as the
+  next focus. Brain-level decision **D40** (`docs/decisions/D40-ba15-posture-open-source-for-myself.md`,
+  created in a prior turn) resolved the `HQ.D1` posture gate: BA.15 is demand-first for the operator's
+  own use *and* released open source — not a contradiction — keeping BA.15.3 (licensing + README) in
+  scope; registered in `docs/decisions/index.md` and cross-referenced from
+  `core/bastion/planning/decisions/index.md`'s new "Cross-Repo (brain-level)" section. Phase 15 was
+  registered in `core/bastion/planning/master-plan.md` (full `BA.15.0`–`BA.15.11` block sections + 12
+  Quick Reference Sequence Table rows + a trailing note flagging Phase 15 as a sixth independent track
+  that should not run concurrently with Phases 13/14) in a prior turn. The operator then decided to
+  **pause Phase 13/14** (Unified Console restructure/theming) to focus on BA.15. Archived 12
+  completed/shelved planning concept-folders via the `/archive` skill's D35 distillation loop:
+  `11.B-session-rest`, `11.C-websocket-hub`, `11.C0-agent-state-detection`, `12.a-unified-console`,
+  `12.c-kanban-rows`, `12.d-mission-control-theme`, `12.e-mission-control-sessions`,
+  `13.0-spine-primary-navigation`, `13.1-persistent-agent-panel`, `13.2-mouse-interactivity` (shelved,
+  never started — archived anyway per explicit operator instruction as part of the Phase 13/14 pause),
+  `14.0-config-driven-theme`, `phase11-blockD`. Each was distilled into `planning/knowledge.md` /
+  `planning/memory.md` with provenance lines before `git mv` into `planning/archive/` (which didn't
+  exist yet — created `planning/archive/index.md`). Two drift findings surfaced and were logged in
+  `memory.md`: (a) `BA.12.D` (Mission Control theme) is marked `closed` in `state.json` but
+  `status_color()`/error-span retheming was never actually implemented in source; (b)
+  `phase11-blockD`'s documented `workflow_done` WebSocket event (`docs/serve-api.md` v0.3) was never
+  wired to the live Hub (`FlowWatcher` only referenced in its own tests). Ran
+  `mev validate-brain --graph --links --structure --state --sync` from the brain root: 7 errors, 0
+  warnings — all 7 pre-existing dead links unrelated to this session (three never-created files:
+  `core/planning/core-master-plan/migration.md`, `core/planning/bastion-mission/notes.md`,
+  `core/planning/bastion-mission/roadmap.md`, referenced from `core/planning/master-plan.md` and
+  `docs/decisions/D38-cortex-naming-and-agent-pager-prioritization.md`). None of today's edits (Phase 15
+  section, D40, the 12 archives) introduced new errors or warnings.
+- **Why:** Cross-repo re-prioritization toward BA.15 required resolving the posture gate first (D40),
+  registering the newly-detailed phase in the local master-plan, and clearing out the planning
+  directory's now-stale/paused Phase 11–14 concept folders so the tree reflects the new focus cleanly
+  before BA.15.0 (Cargo workspace skeleton) starts.
+- **Refs:** `core/planning/bastion-master-plan.md`; `docs/decisions/D40-ba15-posture-open-source-for-myself.md`;
+  `docs/decisions/index.md`; `core/bastion/planning/decisions/index.md`; `core/bastion/planning/master-plan.md`
+  (Phase 15); `core/bastion/planning/bastion-product/plan.md`; `core/bastion/planning/archive/index.md`;
+  `core/bastion/planning/memory.md`; `core/bastion/planning/knowledge.md`.
+
+No formal `BA.N.N` block was completed in the traditional sense this session — this was
+planning/consolidation/hygiene work. State: `BA.13.2`/`.3`/`.5` and `BA.14.1`–`.3` remain `open` in
+`state.json` but are now explicitly paused; `BA.15.0`–`.11` remain `open` and are now the active focus,
+starting with `BA.15.0` (Cargo workspace skeleton, no dependencies).
 
 ---
 

@@ -5,7 +5,7 @@ description: "Atomic sub-step decomposition of Task 1 (core types, manifest sche
 doc_id: 11-c0-breakdown
 layer: [console, surface]
 project: bastion
-status: active
+status: archived
 keywords: [breakdown, agent-state detection, manifest engine, gate matcher, region selector, detect, regex]
 related: [11-c0-agent-state-detection, master-plan]
 phase: 11

@@ -70,8 +70,32 @@
         "blocked_by": []
       },
       {
-        "id": "BA.15.0",
-        "title": "Cargo workspace skeleton",
+        "id": "BA.15.1",
+        "title": "Extract okf-core",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.15.3",
+        "title": "Licensing + front-door README",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.15.4",
+        "title": "Vendor + embed the template pack",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.15.7",
+        "title": "brain.toml serializer + full SpaceEntry round-trip",
         "status": null,
         "note": null,
         "repo": null,
@@ -118,21 +142,6 @@
         ]
       },
       {
-        "id": "BA.15.1",
-        "title": "Extract okf-core",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.0",
-            "what": null
-          }
-        ]
-      },
-      {
         "id": "BA.15.2",
         "title": "Unify the CLI; mev to library",
         "status": null,
@@ -143,36 +152,6 @@
             "type": "block",
             "repo": "bastion",
             "id": "BA.15.1",
-            "what": null
-          }
-        ]
-      },
-      {
-        "id": "BA.15.3",
-        "title": "Licensing + front-door README",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.0",
-            "what": null
-          }
-        ]
-      },
-      {
-        "id": "BA.15.4",
-        "title": "Vendor + embed the template pack",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.0",
             "what": null
           }
         ]
@@ -209,21 +188,6 @@
             "type": "block",
             "repo": "bastion",
             "id": "BA.15.1",
-            "what": null
-          }
-        ]
-      },
-      {
-        "id": "BA.15.7",
-        "title": "brain.toml serializer + full SpaceEntry round-trip",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.0",
             "what": null
           }
         ]
@@ -502,54 +466,7 @@
             }
           ],
           "wave": 140,
-          "origin": null,
-          "tasks": [
-            {
-              "task_id": 1,
-              "title": "Viewport Rect fields + pure on_mouse dispatcher in src/sessions/app.rs",
-              "description": "Add spine_area/browser_area/content_area/agent_panel_area Rect fields to AppState (no subtab_area). Add pure on_mouse(kind,col,row)->Option<Action> routing via bella_engine::geometry::point_in: spine->selected_spine, browser->file_browser.selected, content->scroll/body_pos, agent-panel->selected_spine (space jump, no SubTab), ScrollUp/Down->content scroll, outside->None. Unit-test each pane with synthetic Rects+coords, no terminal.",
-              "acceptance_criteria": [
-                "spine/browser/content/agent_panel Rect fields added (no subtab_area)",
-                "pure on_mouse routes each pane via point_in and handles ScrollUp/Down + out-of-bounds no-op",
-                "agent-panel click jumps to session's space via selected_spine only (no SubTab)",
-                "on_mouse unit-tested per pane with synthetic Rects+coords, no terminal"
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 2,
-              "title": "Store pane Rects during draw + extend Mouse event arm in src/sessions/ui.rs",
-              "description": "During draw, write each pane's computed viewport Rect back onto AppState. Replace the out-of-scope Mouse stub (~ui.rs:498) to forward Down/ScrollUp/ScrollDown into AppState::on_mouse and apply the result, kept as a thin shell over the pure on_mouse. draw_for_test asserts pane Rects are populated (non-zero) after a draw.",
-              "acceptance_criteria": [
-                "pane viewport Rects written onto AppState during draw",
-                "Mouse event arm forwards Down/ScrollUp/ScrollDown into on_mouse and applies the result",
-                "event arm is a thin shell over pure on_mouse",
-                "draw_for_test asserts pane Rects populated after draw"
-              ],
-              "status": "pending",
-              "validation_commands": [],
-              "max_attempts": 3
-            },
-            {
-              "task_id": 3,
-              "title": "Validate",
-              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI mouse (spine/browser/agent-panel clicks + content wheel-scroll), noting any interactive-only limitation in Notes.",
-              "acceptance_criteria": [
-                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
-                "TUI mouse smoke test recorded in tasks.md Notes (incl. any interactive-only limitation)"
-              ],
-              "status": "pending",
-              "validation_commands": [
-                "cargo fmt --check",
-                "cargo clippy -- -D warnings",
-                "cargo test",
-                "cargo build --release"
-              ],
-              "max_attempts": 3
-            }
-          ]
+          "origin": null
         },
         {
           "id": "BA.13.3",
@@ -668,7 +585,7 @@
         {
           "id": "BA.15.0",
           "title": "Cargo workspace skeleton",
-          "status": "open",
+          "status": "closed",
           "depends_on": [],
           "wave": 200,
           "origin": null
@@ -893,19 +810,6 @@
     }
   ],
   "carryover": [
-    {
-      "slug": "engine-fmt-red",
-      "scope": {
-        "repo": "bastion",
-        "tier": null,
-        "cross_repo": null
-      },
-      "kind": "known_issue",
-      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) \u2014 not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
-      "related": [],
-      "clears_when": null,
-      "created": "2026-07-02"
-    },
     {
       "slug": "sdlc-flow-task-heading-format",
       "scope": {

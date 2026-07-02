@@ -5,7 +5,7 @@ description: Decompose BA.13.1 into disjoint-ownership tasks adding an always-vi
 doc_id: 13-1-persistent-agent-panel-tasks
 layer: [console]
 project: bastion
-status: active
+status: archived
 keywords: [agent-panel, session-urgency, fleet-status, unified-console, agentstate, sessions-tui]
 related: [bastion-master-plan, 13-0-spine-primary-navigation-tasks, 14-0-config-driven-theme-tasks]
 ---

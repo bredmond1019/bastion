@@ -5,7 +5,7 @@ description: "A pure, config-driven agent-state detection engine reimplemented c
 doc_id: 11-c0-agent-state-detection
 layer: [console, surface]
 project: bastion
-status: active
+status: archived
 keywords: [agent-state detection, manifest engine, TOML, gate matcher, region selector, agent-agnostic, detect]
 related: [master-plan, serve-api, sessions]
 phase: 11

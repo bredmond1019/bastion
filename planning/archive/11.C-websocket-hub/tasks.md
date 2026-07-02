@@ -5,7 +5,7 @@ description: "Adapt the rag-engine-rs ChatServer/ChatSession actors into src/ser
 doc_id: 11-c-websocket-hub
 layer: [console, surface]
 project: bastion
-status: active
+status: archived
 keywords: [websocket, actix actor, topic subscription, watch channel, live pane, needs-input, serve-api v0.2]
 related: [11-c0-agent-state-detection, serve-api, master-plan, sessions]
 phase: 11

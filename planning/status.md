@@ -5,7 +5,7 @@ description: Rollup status for Bastion sub-brain.
 doc_id: bastion-status
 layer: [meta]
 status: active
-timestamp: 2026-07-02T22:08:46Z
+timestamp: 2026-07-02T22:46:57Z
 related: [context, master-plan, planning-index]
 now: "BA.15.0 (spec 15.0-cargo-workspace-skeleton) done — /sdlc-flow ran all 4 tasks to PASS, review PASS, docs patched. Status: Done."
 next: "Pick the next Phase 15 block (bastion-product packaging plan, BA.15.1+) which is now unblocked by the workspace skeleton, or resume Phase 13/14 blocks per focus.next. See planning/handoff.md."
