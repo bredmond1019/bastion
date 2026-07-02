@@ -21,3 +21,6 @@ Validated: gating checks (fast tripwire)
 What: Task 4 (Validate) ran the full harness (fmt/clippy/test/build --release, all green, 1022 tests passed) and smoke-tested the TUI live via tmux, confirming no top tab bar, pinned selectable Mission Control, selectable tier headers, working tier-overview routing (core), and no standalone brain leaf — recorded the results in the spec's Notes section.
 Decisions: Left the pre-existing unstaged formatting diffs in src/engine/mod.rs, src/engine/youtube.rs, and src/main.rs untouched — they are outside Task 4's scope (spec Task 4 owns only running/recording validation) and cargo fmt --check already passes with them present, so they don't block the gate.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/sessions.md
