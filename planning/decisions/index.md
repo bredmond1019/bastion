@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [decisions, ADR, registry, console, serve, detection]
-related: [planning-index, D11-herdr-reference-only, D12-toml-manifest-detection, D13-unified-console-target]
+related: [planning-index, D11-herdr-reference-only, D12-toml-manifest-detection, D13-unified-console-target, D14-bella-engine-dependency-contract]
 ---
 
 # Decisions Registry
@@ -26,6 +26,10 @@ append-only — never edit a settled decision; supersede it with a new one and l
 - [D13: Unified operator console](./D13-unified-console-target.md) — `monitor`, `sessions`, and
   costs/momentum converge into one ratatui shell (`BA.12.A`): sidebar of live-state entities + tabbed/paned
   main + mouse + compute-then-render over one event loop and the `serve` transport. Mouse follows Bella, not Herdr.
+- [D14: bella-engine dependency discipline](./D14-bella-engine-dependency-contract.md) — bastion
+  depends on `bella-engine` as an unpinned path dependency; treat its public surface as a cross-repo
+  contract; don't exclude the `images` feature; `Theme::bastion()` renamed to `Theme::mission_control()`.
+  Mirrors bella's own D3.
 
 ## Retired (history)
 

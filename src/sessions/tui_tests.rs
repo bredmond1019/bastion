@@ -1,24 +1,78 @@
 // sessions/tui_tests.rs — integration smoke tests for the unified console TUI.
 //
-// Uses `ratatui::backend::TestBackend` to render each tab at a fixed terminal
+// Uses `ratatui::backend::TestBackend` to render the main area at a fixed terminal
 // size and asserts no panic occurs and the output buffer contains expected
 // content markers.
 //
 // The planning root path is injected directly into `draw_for_test` so no
 // process-environment mutation is needed — these tests are safe to run in
 // parallel.
+//
+// NOTE: navigation is keyed off `selected_spine` / `selected_node()` (the spine
+// model — BA.13.0), not the old tab machinery. `tab_bar_contains_all_tab_names`
+// is gone with the top tab bar; `sidebar_shows_pinned_mission_control_and_selectable_headers`
+// below (BA.13.0.3) is its replacement — it asserts `◆ Mission Control` renders
+// first, tier/HQ headers are shown, no top tab bar renders, and no standalone
+// `brain` leaf appears.
 
 #[cfg(test)]
 mod tests {
-    use crate::sessions::app::{AppState, TabState};
+    use crate::brain::spaces::SpaceEntry;
+    use crate::sessions::app::AppState;
     use ratatui::{Terminal, backend::TestBackend};
     use std::path::Path;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// Create a fresh `AppState` with no sessions (DB-free, tmux-free).
+    /// Create a fresh `AppState` with no sessions (DB-free, tmux-free) and an
+    /// empty space tree — `selected_spine = 0` routes to Mission Control (pinned
+    /// first row) in this configuration.
     fn empty_app() -> AppState {
         AppState::new(vec![], crate::brain::spaces::SpaceTree::default())
+    }
+
+    /// Build an `AppState` whose spine is `[MissionControl, Hq, Space(learn-ai), Tier(core)]`.
+    fn app_with_hq_and_tier() -> AppState {
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push((
+            "_root".to_string(),
+            vec![SpaceEntry {
+                slug: "learn-ai".to_string(),
+                tier: "_root".to_string(),
+                repo_path: std::path::PathBuf::from("learn-ai"),
+                heading: None,
+            }],
+        ));
+        tree.tiers.push(("core".to_string(), vec![]));
+        AppState::new(vec![], tree)
+    }
+
+    /// Build an `AppState` covering every spine row kind: `Hq` (with a collapsed
+    /// `brain` leaf + `learn-ai` child) and all four non-`Hq` tiers
+    /// (`core`/`side`/`client`/`portfolio`).
+    fn app_with_all_tiers() -> AppState {
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push((
+            "_root".to_string(),
+            vec![
+                SpaceEntry {
+                    slug: "brain".to_string(),
+                    tier: "_root".to_string(),
+                    repo_path: std::path::PathBuf::from("."),
+                    heading: None,
+                },
+                SpaceEntry {
+                    slug: "learn-ai".to_string(),
+                    tier: "_root".to_string(),
+                    repo_path: std::path::PathBuf::from("learn-ai"),
+                    heading: None,
+                },
+            ],
+        ));
+        for tier in ["core", "side", "client", "portfolio"] {
+            tree.tiers.push((tier.to_string(), vec![]));
+        }
+        AppState::new(vec![], tree)
     }
 
     /// Extract all cell text from the terminal buffer as a single flat string.
@@ -73,21 +127,21 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
-    // ── SpaceOverview tab ─────────────────────────────────────────────────────
+    // ── Mission Control (pinned first spine row) ────────────────────────────────
 
-    /// SpaceOverview tab renders without panic at 80×24 when status.md exists.
+    /// Mission Control renders (no active run) without panic at 80x24.
     #[test]
-    fn space_overview_renders_without_panic_80x24() {
+    fn mission_control_renders_without_panic_80x24() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
-        let app = empty_app(); // active_tab_index = 0 = SpaceOverview
+        let app = empty_app(); // selected_spine = 0 = Mission Control
         render_frame(&app, dir.path(), 80, 24);
     }
 
-    /// SpaceOverview tab renders at 120×40 (wider layout).
+    /// Mission Control renders at 120x40 (wider layout).
     #[test]
-    fn space_overview_renders_without_panic_120x40() {
+    fn mission_control_renders_without_panic_120x40() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
@@ -95,13 +149,29 @@ mod tests {
         render_frame(&app, dir.path(), 120, 40);
     }
 
-    /// SpaceOverview degrade: missing status.md shows fallback text, no panic.
+    // ── Hq / Space overview ──────────────────────────────────────────────────────
+
+    /// Selecting the `Hq` spine row renders the Space Overview pane without panic.
+    #[test]
+    fn hq_space_overview_renders_without_panic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_planning_fixtures(dir.path());
+
+        let mut app = app_with_hq_and_tier();
+        app.selected_spine = 1; // [MissionControl, Hq, Space(learn-ai), Tier(core)]
+        assert_eq!(app.selected_node(), crate::brain::spaces::SelectedNode::Hq);
+
+        render_frame(&app, dir.path(), 80, 24);
+    }
+
+    /// Space Overview degrade: missing status.md shows fallback text, no panic.
     #[test]
     fn space_overview_missing_status_md_shows_fallback() {
         // Point at an empty directory — no files at all.
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let app = empty_app();
+        let mut app = app_with_hq_and_tier();
+        app.selected_spine = 1; // Hq
         let buf = render_frame(&app, dir.path(), 80, 24);
         let text = buf_to_string(&buf);
         assert!(
@@ -110,115 +180,90 @@ mod tests {
         );
     }
 
-    // ── Kanban tab ────────────────────────────────────────────────────────────
+    // ── Tier header (empty-state degrade) ───────────────────────────────────────
 
-    /// Kanban tab renders valid state.json without panic.
+    /// Selecting a tier header renders without panic even when the tier has no
+    /// spaces and no `planning/status.md` (graceful empty-state degrade).
     #[test]
-    fn kanban_renders_valid_state_json() {
+    fn tier_header_renders_without_panic() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_planning_fixtures(dir.path());
 
-        let mut app = empty_app();
-        app.active_tab_index = 1; // Kanban is tab 1
-        assert_eq!(app.tabs[1], TabState::Kanban);
+        let mut app = app_with_hq_and_tier();
+        app.selected_spine = 3; // [MissionControl, Hq, Space(learn-ai), Tier(core)]
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Tier("core".to_string())
+        );
 
         render_frame(&app, dir.path(), 80, 24);
     }
 
-    /// Kanban degrade: missing state.json shows fallback text, no panic.
+    // ── Sidebar (spine primary navigation) ────────────────────────────────────
+
+    /// The sidebar renders `◆ Mission Control` first (before `HQ`), shows every
+    /// selectable tier/`HQ` header, no longer renders a top tab bar (the old
+    /// `Space Overview` / `Kanban Board` tab labels), and no longer shows a
+    /// standalone `brain` leaf.
     #[test]
-    fn kanban_missing_state_json_shows_fallback() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // Only status.md present; no state.json.
-        std::fs::write(dir.path().join("status.md"), "# Status\n").unwrap();
-
-        let mut app = empty_app();
-        app.active_tab_index = 1;
-
-        let buf = render_frame(&app, dir.path(), 80, 24);
-        let text = buf_to_string(&buf);
-        assert!(
-            text.contains("No planning"),
-            "fallback must appear for missing state.json; frame:\n{text}"
-        );
-    }
-
-    /// Kanban degrade: malformed state.json shows parse-error fallback, no panic.
-    #[test]
-    fn kanban_malformed_state_json_shows_parse_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("state.json"), "{ not valid json !!!").unwrap();
-
-        let mut app = empty_app();
-        app.active_tab_index = 1;
-
-        let buf = render_frame(&app, dir.path(), 80, 24);
-        let text = buf_to_string(&buf);
-        assert!(
-            text.contains("Failed"),
-            "parse-error fallback must appear for malformed state.json; frame:\n{text}"
-        );
-    }
-
-    // ── MissionControl tab ────────────────────────────────────────────────────
-
-    /// MissionControl tab renders (no active run) without panic.
-    #[test]
-    fn mission_control_renders_without_panic() {
+    fn sidebar_shows_pinned_mission_control_and_selectable_headers() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
-        let mut app = empty_app();
-        app.active_tab_index = 2; // MissionControl is tab 2
-        assert_eq!(app.tabs[2], TabState::MissionControl);
+        let app = app_with_all_tiers();
+        let buf = render_frame(&app, dir.path(), 100, 40);
+        let text = buf_to_string(&buf);
 
-        render_frame(&app, dir.path(), 80, 24);
+        let mc_idx = text
+            .find("Mission Control")
+            .expect("Mission Control must render");
+        let hq_idx = text.find("HQ").expect("HQ header must render");
+        assert!(
+            mc_idx < hq_idx,
+            "Mission Control must render before HQ; frame:\n{text}"
+        );
+
+        for tier in ["core", "side", "client", "portfolio"] {
+            assert!(
+                text.contains(tier),
+                "sidebar must show selectable tier header '{tier}'; frame:\n{text}"
+            );
+        }
+
+        // The old top tab bar rendered "Space Overview" / "Kanban Board" labels —
+        // neither should appear anywhere in the frame now that the spine is the
+        // single primary navigator.
+        assert!(
+            !text.contains("Space Overview") && !text.contains("Kanban Board"),
+            "no top tab bar must render; frame:\n{text}"
+        );
+
+        assert!(
+            !text.contains("brain"),
+            "no standalone 'brain' leaf must render (collapsed into HQ); frame:\n{text}"
+        );
     }
 
     // ── Layout invariants ─────────────────────────────────────────────────────
 
-    /// At 80×24, the top-left corner must always be occupied (border or content)
-    /// regardless of which tab is active.
+    /// At 80x24, the top-left corner must always be occupied (border or content)
+    /// regardless of which spine row is selected.
     #[test]
     fn frame_top_left_is_always_occupied() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
-        for tab_index in 0..3usize {
-            let mut app = empty_app();
-            app.active_tab_index = tab_index;
+        let mut app = app_with_hq_and_tier();
+        let row_count = app.spine_rows().len();
+        for spine_index in 0..row_count {
+            app.selected_spine = spine_index;
 
             let buf = render_frame(&app, dir.path(), 80, 24);
             let cell = buf.cell((0, 0)).expect("cell(0,0) must exist");
             assert!(
                 !cell.symbol().is_empty(),
-                "top-left cell must not be empty for tab {tab_index}"
+                "top-left cell must not be empty for spine row {spine_index}"
             );
         }
-    }
-
-    /// Tab bar must appear in the rendered output (contains all three tab titles).
-    #[test]
-    fn tab_bar_contains_all_tab_names() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_planning_fixtures(dir.path());
-
-        let app = empty_app();
-        let buf = render_frame(&app, dir.path(), 120, 30);
-        let text = buf_to_string(&buf);
-
-        assert!(
-            text.contains("Space Overview"),
-            "Space Overview tab must appear; frame:\n{text}"
-        );
-        assert!(
-            text.contains("Kanban"),
-            "Kanban tab must appear; frame:\n{text}"
-        );
-        assert!(
-            text.contains("Mission Control"),
-            "Mission Control tab must appear; frame:\n{text}"
-        );
     }
 
     // ── planning_root pure-function sanity check ──────────────────────────────

@@ -1,0 +1,284 @@
+{
+  "spec_slug": "13.0-spine-primary-navigation",
+  "branch": "13.0-spine-primary-navigation-flow-2",
+  "started_at": "2026-07-02T09:02:58Z",
+  "updated_at": "2026-07-02T09:40:23Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.0-spine-primary-navigation-flow-2",
+  "status": "done",
+  "current_task": 4,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "src/brain/spaces.rs now exposes SpineRow/SelectedNode plus spine_rows(), a presentation layer that pins Mission Control first, renames the _root tier to Hq while collapsing the brain leaf into it, and orders learn-ai/base-template beneath Hq followed by the remaining tiers.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "SpineRow and SelectedNode mirror the same shape (MissionControl/Hq/Tier(String)/Space(SpaceEntry)) per the spec's literal wording, with SpineRow::as_selected_node() as a convenience mapper for the downstream app.rs/ui.rs tasks",
+        "Hq row carries no SpaceEntry payload; its data source (brain root '.') is documented in doc comments as an implicit convention rather than embedded data, since the spec text lists 'Hq' as a bare variant",
+        "The Hq row is only emitted when a '_root' tier exists in the tree (covers the empty/degenerate-tree test case) rather than being unconditionally synthesized",
+        "Fixed a pre-existing clippy::collapsible_if lint in load_space_tree (same file) using an edition-2024 let-chain, since it blocked the Task 1 clippy gate",
+        "Created local-only symlinks (core/bastion/portfolio -> ../../portfolio, core/bastion/trees/bella -> ../../bella) to work around a worktree path-dependency depth bug in Cargo.toml; not committed, left in place to help downstream tasks in this pipeline build/test"
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.0-spine-primary-navigation-flow-2/src/brain/spaces.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 2,
+      "summary": "Task 2's src/sessions/app.rs spine-selection rewrite was already correct and complete; fixed the resulting crate-wide compile failure by adapting src/sessions/ui.rs and src/sessions/tui_tests.rs (consumers of the old tab API, owned by Task 3) to the new selected_spine/selected_node()/SelectedNode API so the full validation suite (fmt, clippy -D warnings, test, build --release) passes.",
+      "issues": [
+        "clippy",
+        "test",
+        "build"
+      ],
+      "fixes": [
+        "First attempt failure with a clear, bounded fix: UI layer (sessions/ui.rs) was written ahead of/inconsistent with AppState in app.rs — add the missing TabState import, tabs/active_tab_index/selected_space fields, SelectTab Action variant, and on_mouse() method to bring app.rs in line with what the UI layer expects; this is normal implementation-gap territory for a first pass, not a missing external dependency."
+      ],
+      "decisions": [
+        "Kept TabState's markdown-overlay semantics conceptually but removed the enum entirely per the task's 'remove tab machinery' instruction, replacing TabState::MarkdownDocument push with a new `markdown_overlay: Option<PathBuf>` field on AppState.",
+        "reinit_browser()/current_space_planning_root() now special-case SelectedNode::Hq to browse the brain repo root '.' (per spaces.rs's documented Hq data source), matching the collapsed-brain-leaf design from Task 1.",
+        "Removed on_mouse() and Action::SelectTab outright rather than stubbing them, since mouse support (BA.13.2) is explicitly out of scope and the only prior use was tab-bar clicks (now gone); ui.rs's call site will be fixed in Task 3.",
+        "selected_session_for_actions()/on_key's is_space_overview gating now key off selected_node() (Hq|Space vs MissionControl) instead of the removed tabs[active_tab_index], preserving the original Space-Overview-vs-Mission-Control key routing behavior.",
+        "Left three unrelated pre-existing uncommitted formatting diffs (src/engine/mod.rs, src/engine/youtube.rs, src/main.rs) untouched and unstaged since they predate this task and are out of scope.",
+        "Task 2's own file (src/sessions/app.rs) was already fully correct per spec — no changes needed there; the reported compile failure was entirely caused by src/sessions/ui.rs (Task 3's file, not yet rewritten) still referencing the removed TabState/tabs/active_tab_index/SelectTab/on_mouse API.",
+        "Since the spec's Validation Commands require a full cargo build/test pass and this is a sequential single-worktree flow, made minimal compile-fixing adaptations to ui.rs: dropped the top tab-bar rendering block entirely, routed the main area on app.selected_node() (MissionControl -> monitor render, Hq/Space -> existing Space Overview pane, Tier -> a placeholder content_block), dropped the now-dead Kanban rendering path (no SelectedNode::Kanban variant exists in the new model), and dropped the mouse-click handler (mouse support is explicitly out of scope for this whole block per the spec's 'Out of scope' list).",
+        "Left the full BA.13.0.3 sidebar rewrite (build_sidebar_items via spine_rows(), tier-overview reading <tier>/planning/status.md with real empty-state degrade, and the draw_for_test sidebar assertions) for Task 3 — the ui.rs changes here are a minimal adapter, not the task-3 implementation.",
+        "Rewrote src/sessions/tui_tests.rs (also owned by Task 3, but blocking cargo test) to build AppState fixtures via selected_spine/selected_node() instead of the removed tabs/active_tab_index/TabState API; removed the obsolete Kanban-tab tests and the tab-bar-titles test (no top tab bar exists anymore), keeping equivalent coverage: Mission Control render, Hq/Space Overview render + missing-status.md fallback, a new tier-header render smoke test, and the top-left-occupied layout invariant across all spine rows.",
+        "Left src/engine/mod.rs, src/engine/youtube.rs, src/main.rs unstaged/uncommitted — they were already dirty in the worktree before this task started and are unrelated to Task 2's scope."
+      ],
+      "files_changed": [
+        "src/sessions/app.rs",
+        "src/sessions/ui.rs",
+        "src/sessions/tui_tests.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "src/sessions/ui.rs now renders the spine-only sidebar (Mission Control pinned, HQ/tier headers, space rows) from spine_rows() and routes the main area's Tier selection to a <tier>/planning/status.md overview with graceful empty-state degrade.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Removed the old \"no spaces\" empty-state sidebar branch since Mission Control is always the first spine row regardless of space_tree contents",
+        "Tier overview root resolved via crate::config::load_brain_toml_path().parent() (same convention already used by ui.rs's run()) rather than modifying app.rs's current_space_planning_root() (kept app.rs untouched per task ownership boundary)",
+        "Added tier_status_path(brain_root, tier) as a small pure/testable helper for the otherwise I/O-heavy tier routing arm",
+        "Fixed a pre-existing clippy::bool_assert_comparison failure in src/brain/spaces.rs (left over from Task 1) since it blocked the crate-wide `cargo clippy -D warnings` gate required by this task's validation",
+        "Updated footer_hint's key-legend text to drop the stale \"Tab/Shift+Tab switch tab\" reference now that tab machinery is gone (task 2), and updated its test accordingly"
+      ],
+      "files_changed": [
+        "src/sessions/ui.rs",
+        "src/sessions/tui_tests.rs",
+        "src/brain/spaces.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "4": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Task 4 (Validate) ran the full harness (fmt/clippy/test/build --release, all green, 1022 tests passed) and smoke-tested the TUI live via tmux, confirming no top tab bar, pinned selectable Mission Control, selectable tier headers, working tier-overview routing (core), and no standalone brain leaf — recorded the results in the spec's Notes section.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Left the pre-existing unstaged formatting diffs in src/engine/mod.rs, src/engine/youtube.rs, and src/main.rs untouched — they are outside Task 4's scope (spec Task 4 owns only running/recording validation) and cargo fmt --check already passes with them present, so they don't block the gate."
+      ],
+      "files_changed": [
+        "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.0-spine-primary-navigation-flow-2/planning/13.0-spine-primary-navigation/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": "PASS",
+    "findings": [],
+    "attempts": 1
+  },
+  "docs": {
+    "changed": [
+      "docs/sessions.md"
+    ],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 790,
+        "filesReadKb": null,
+        "inTokEst": 790,
+        "outTok": 4501
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 240,
+        "filesReadKb": null,
+        "inTokEst": 240,
+        "outTok": 1009
+      },
+      {
+        "label": "update-task-1",
+        "model": "haiku",
+        "promptTokEst": 269,
+        "filesReadKb": null,
+        "inTokEst": 269,
+        "outTok": 1180
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 930,
+        "filesReadKb": null,
+        "inTokEst": 930,
+        "outTok": 21553
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 602,
+        "filesReadKb": null,
+        "inTokEst": 602,
+        "outTok": 2044
+      },
+      {
+        "label": "update-task-2",
+        "model": "haiku",
+        "promptTokEst": 269,
+        "filesReadKb": null,
+        "inTokEst": 269,
+        "outTok": 1040
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 930,
+        "filesReadKb": null,
+        "inTokEst": 930,
+        "outTok": 40383
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 602,
+        "filesReadKb": null,
+        "inTokEst": 602,
+        "outTok": 2310
+      },
+      {
+        "label": "triage:task 2 test:1",
+        "model": "sonnet",
+        "promptTokEst": 380,
+        "filesReadKb": null,
+        "inTokEst": 380,
+        "outTok": 652
+      },
+      {
+        "label": "fix-2-2",
+        "model": "sonnet",
+        "promptTokEst": 1031,
+        "filesReadKb": null,
+        "inTokEst": 1031,
+        "outTok": 25404
+      },
+      {
+        "label": "test-2-2",
+        "model": "haiku",
+        "promptTokEst": 602,
+        "filesReadKb": null,
+        "inTokEst": 602,
+        "outTok": 2678
+      },
+      {
+        "label": "update-task-3",
+        "model": "haiku",
+        "promptTokEst": 269,
+        "filesReadKb": null,
+        "inTokEst": 269,
+        "outTok": 892
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 930,
+        "filesReadKb": null,
+        "inTokEst": 930,
+        "outTok": 26673
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 602,
+        "filesReadKb": null,
+        "inTokEst": 602,
+        "outTok": 2271
+      },
+      {
+        "label": "update-task-4",
+        "model": "haiku",
+        "promptTokEst": 269,
+        "filesReadKb": null,
+        "inTokEst": 269,
+        "outTok": 1537
+      },
+      {
+        "label": "implement-4-1",
+        "model": "sonnet",
+        "promptTokEst": 930,
+        "filesReadKb": null,
+        "inTokEst": 930,
+        "outTok": 7218
+      },
+      {
+        "label": "test-4-1",
+        "model": "haiku",
+        "promptTokEst": 602,
+        "filesReadKb": null,
+        "inTokEst": 602,
+        "outTok": 2502
+      },
+      {
+        "label": "review-1",
+        "model": "sonnet",
+        "promptTokEst": 1027,
+        "filesReadKb": null,
+        "inTokEst": 1027,
+        "outTok": 4035
+      },
+      {
+        "label": "docs",
+        "model": "sonnet",
+        "promptTokEst": 835,
+        "filesReadKb": null,
+        "inTokEst": 835,
+        "outTok": 8894
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 869,
+        "filesReadKb": null,
+        "inTokEst": 869,
+        "outTok": 6250
+      }
+    ],
+    "total": {
+      "promptTokEst": 12978,
+      "filesReadKb": 0,
+      "inTokEst": 12978,
+      "outTok": 163026
+    }
+  }
+}

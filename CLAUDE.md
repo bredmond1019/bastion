@@ -33,6 +33,14 @@ Personal Rust CLI — unified control panel for monitoring, validating, and oper
    - **The thin I/O shell that can't be unit-tested is manually smoke-tested**, and the result is
      recorded in the task spec's `## Notes`. An untested execution fn is acceptable only when it is
      a trivial wrapper over already-tested pure functions.
+7. **`bella-engine` is an unpinned cross-repo dependency — expect and coordinate breaks from
+   `../bella`.** `Cargo.toml` pins it as a path dependency with no version lock and no cross-repo CI
+   (see `planning/decisions/D14-bella-engine-dependency-contract.md`, and bella's own
+   `D3-bella-engine-shared-with-bastion.md`). If `cargo build` breaks on a `bella_engine::*` symbol,
+   that's a signal to check what changed upstream in `../bella/crates/bella-engine`, not necessarily
+   a bastion regression. Do not add `default-features = false` to the `bella-engine` dependency —
+   bastion deliberately stays open to features bella adds (e.g. images) rather than excluded by a
+   bella-only default.
 
 ## Known bugs
 
