@@ -69,7 +69,7 @@ node id (`grep "\td20"`).
 
 ## Corpus Discovery and Graph Construction
 
-`run()` in `src/brain/mod.rs`:
+`run()` in `crates/bastion/src/brain/mod.rs`:
 
 1. **Resolves** the effective corpus root via `config::resolve_workspace_root` —
    pure, DB-free, using the workspace registry loaded from the config file.
@@ -99,16 +99,16 @@ any known node.
 
 | Module | File | Responsibility |
 |---|---|---|
-| `brain` (entry) | `src/brain/mod.rs` | `BrainQuery` enum, `query_label`, `query_node_id`, `format_result_line`, `run()` I/O shell |
-| `brain::okf` | `src/brain/okf.rs` | Pure OKF parser: `BrainNode`, `BrainEdge`, `build_node_edge_lists` |
-| `brain::graph` | `src/brain/graph.rs` | `BrainGraph` petgraph wrapper: `build`, `predecessors`, `reachable_forward`, `reachable_reverse`, `shortest_path`, `toposort`, `has_path` |
-| `brain::query` | `src/brain/query.rs` | Semantic query wrappers: `dependents`, `blast_radius`, `lineage` |
-| `brain::code` | `src/brain/code.rs` | Pure tree-sitter extraction: `SymbolKind`, `CodeSymbol`, `CodeRef`, `extract_symbols`, `extract_refs` (Rust grammar only; no I/O) |
-| `brain::code_graph` | `src/brain/code_graph.rs` | Code-as-graph layer: `CodeQuery`, `build_code_node_edge_lists`, `find_definition`, `find_references`, format helpers, `find_rust_files`, `run_code` I/O shell |
+| `brain` (entry) | `crates/bastion/src/brain/mod.rs` | `BrainQuery` enum, `query_label`, `query_node_id`, `format_result_line`, `run()` I/O shell |
+| `brain::okf` | `crates/bastion/src/brain/okf.rs` | Pure OKF parser: `BrainNode`, `BrainEdge`, `build_node_edge_lists` |
+| `brain::graph` | `crates/bastion/src/brain/graph.rs` | `BrainGraph` petgraph wrapper: `build`, `predecessors`, `reachable_forward`, `reachable_reverse`, `shortest_path`, `toposort`, `has_path` |
+| `brain::query` | `crates/bastion/src/brain/query.rs` | Semantic query wrappers: `dependents`, `blast_radius`, `lineage` |
+| `brain::code` | `crates/bastion/src/brain/code.rs` | Pure tree-sitter extraction: `SymbolKind`, `CodeSymbol`, `CodeRef`, `extract_symbols`, `extract_refs` (Rust grammar only; no I/O) |
+| `brain::code_graph` | `crates/bastion/src/brain/code_graph.rs` | Code-as-graph layer: `CodeQuery`, `build_code_node_edge_lists`, `find_definition`, `find_references`, format helpers, `find_rust_files`, `run_code` I/O shell |
 
 ## Public API Summary
 
-### `src/brain/mod.rs`
+### `crates/bastion/src/brain/mod.rs`
 
 | Item | Kind | Description |
 |---|---|---|
@@ -118,7 +118,7 @@ any known node.
 | `format_result_line(label, node)` | `fn` | Formats one result as `"<label>: <id>\t<path>"`. |
 | `run(query, explicit_root, workspace, registry)` | `fn` | Thin I/O shell — resolves corpus root via workspace registry, discovers corpus, builds graph, runs query, prints report. Returns `Err` on unknown workspace name, empty corpus, or unknown node id. |
 
-### `src/brain/okf.rs`
+### `crates/bastion/src/brain/okf.rs`
 
 | Item | Kind | Description |
 |---|---|---|
@@ -126,7 +126,7 @@ any known node.
 | `BrainEdge` | struct | `from: String`, `to: String` — a directed `[[link]]` edge. |
 | `build_node_edge_lists` | `fn` | Pure: parses `(path, content)` pairs into `(Vec<BrainNode>, Vec<BrainEdge>)`. |
 
-### `src/brain/graph.rs`
+### `crates/bastion/src/brain/graph.rs`
 
 | Item | Kind | Description |
 |---|---|---|
@@ -140,7 +140,7 @@ any known node.
 | `BrainGraph::toposort` | `fn` | Topological ordering; errors on cycles. |
 | `BrainGraph::has_path` | `fn` | Boolean reachability check. |
 
-### `src/brain/query.rs`
+### `crates/bastion/src/brain/query.rs`
 
 | Function | Description |
 |---|---|
@@ -148,7 +148,7 @@ any known node.
 | `blast_radius(g, id)` | Thin wrapper over `BrainGraph::reachable_reverse`. |
 | `lineage(g, id)` | Thin wrapper over `BrainGraph::reachable_forward`. |
 
-### `src/brain/code.rs`
+### `crates/bastion/src/brain/code.rs`
 
 | Item | Kind | Description |
 |---|---|---|
@@ -158,7 +158,7 @@ any known node.
 | `extract_symbols(source, path)` | `fn` | Pure: returns all symbol definitions in `source` via tree-sitter-rust. Recovers from partial/malformed source without panicking. |
 | `extract_refs(source, path)` | `fn` | Pure: returns all call sites and `use` import references in `source`. Refs to extern/std symbols are included; the graph layer drops unresolved refs. |
 
-### `src/brain/code_graph.rs`
+### `crates/bastion/src/brain/code_graph.rs`
 
 | Item | Kind | Description |
 |---|---|---|
@@ -182,11 +182,11 @@ any known node.
 | `[[link]]` target not in corpus | Edge silently dropped at graph-build time. |
 | Node id not found in graph | Prints message on stderr; exits non-zero. |
 
-## Test Fixtures (`src/brain/fixtures/`)
+## Test Fixtures (`crates/bastion/src/brain/fixtures/`)
 
 Two fixture corpora are embedded at compile time for unit and integration tests.
 
-### Decision-graph corpus (`src/brain/fixtures/`)
+### Decision-graph corpus (`crates/bastion/src/brain/fixtures/`)
 
 Five files mirror a realistic decisions corpus:
 
@@ -199,7 +199,7 @@ Five files mirror a realistic decisions corpus:
 | `d4.md` | Leaf — no outgoing links |
 | `unlinked.md` | Isolated node — no links in or out |
 
-### Portable corpus (`src/brain/fixtures/portable/`)
+### Portable corpus (`crates/bastion/src/brain/fixtures/portable/`)
 
 A second, domain-independent corpus (client/project knowledge) used to verify
 that `build_node_edge_lists` is corpus-agnostic and not hardwired to the
@@ -225,17 +225,17 @@ targets in source files for edges to be created.
 ### Smoke-Test Results (Task 4)
 
 ```
-$ cargo run -- brain --lineage d3 --root src/brain/fixtures
-lineage: d20    src/brain/fixtures/d20.md
-lineage: d21    src/brain/fixtures/d21.md
-lineage: d4     src/brain/fixtures/d4.md
+$ cargo run -- brain --lineage d3 --root crates/bastion/src/brain/fixtures
+lineage: d20    crates/bastion/src/brain/fixtures/d20.md
+lineage: d21    crates/bastion/src/brain/fixtures/d21.md
+lineage: d4     crates/bastion/src/brain/fixtures/d4.md
 
-$ cargo run -- brain --dependents d4 --root src/brain/fixtures
-dependent: d20  src/brain/fixtures/d20.md
-dependent: d21  src/brain/fixtures/d21.md
+$ cargo run -- brain --dependents d4 --root crates/bastion/src/brain/fixtures
+dependent: d20  crates/bastion/src/brain/fixtures/d20.md
+dependent: d21  crates/bastion/src/brain/fixtures/d21.md
 
-$ cargo run -- brain --blast-radius d21 --root src/brain/fixtures
-blast-radius: d3    src/brain/fixtures/d3.md
-blast-radius: d20   src/brain/fixtures/d20.md
-blast-radius: index src/brain/fixtures/index.md
+$ cargo run -- brain --blast-radius d21 --root crates/bastion/src/brain/fixtures
+blast-radius: d3    crates/bastion/src/brain/fixtures/d3.md
+blast-radius: d20   crates/bastion/src/brain/fixtures/d20.md
+blast-radius: index crates/bastion/src/brain/fixtures/index.md
 ```

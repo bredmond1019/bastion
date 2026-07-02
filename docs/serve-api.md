@@ -13,7 +13,7 @@ related: [config, observ]
 # serve-api — v0.3 Contract
 
 **Version:** v0.3  
-**Produced by:** `bastion` (this repo, `src/serve/`)  
+**Produced by:** `bastion` (this repo, `crates/bastion/src/serve/`)  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28)
 
 This document is the pinned contract between `bastion serve` and the Flutter
@@ -52,7 +52,7 @@ Authorization: Bearer <token>
 ```
 
 `<token>` is the value of `BASTION_SERVE_TOKEN` (set on the server).  The
-token is checked inside the pure `token_matches` helper (`src/serve/auth.rs`).
+token is checked inside the pure `token_matches` helper (`crates/bastion/src/serve/auth.rs`).
 The scheme prefix `Bearer ` is matched case-sensitively.
 
 ### 2.2 Failure response
@@ -311,7 +311,7 @@ Pushed when a significant event is detected.
 | Event | Since | Trigger condition |
 |---|---|---|
 | `"needs_input"` | v0.2 | Session pane is on a permission/approval prompt (`Blocked` state with `visible_blocker`, per `detect::detect()` over the Claude manifest).  Emitted once per rising edge (Blocked→not-Blocked→Blocked emits again; continuous Blocked does not repeat). |
-| `"workflow_done"` | v0.3 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` (e.g. `"running"`) to a terminal one (`"done"` or `"blocked"`), per `FlowWatcher::observe()` (`src/serve/poll.rs`).  Carries `repo`, `spec_slug`, and `status` fields alongside the `event` field (see Section 11.5). |
+| `"workflow_done"` | v0.3 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` (e.g. `"running"`) to a terminal one (`"done"` or `"blocked"`), per `FlowWatcher::observe()` (`crates/bastion/src/serve/poll.rs`).  Carries `repo`, `spec_slug`, and `status` fields alongside the `event` field (see Section 11.5). |
 
 ### 7.8 `"error"` payload (server → client)
 
@@ -349,7 +349,7 @@ and can respond via a `send` or `send_key` frame to unblock the agent.
 
 ### 8.2 `event{workflow_done}` (v0.3)
 
-[`FlowWatcher`](../src/serve/poll.rs) tracks the last-known `status` for every
+[`FlowWatcher`](../crates/bastion/src/serve/poll.rs) tracks the last-known `status` for every
 `(repo, spec_slug)` pair it has observed from parsed `sdlc-flow-state.json`
 files (Section 11.4).  `FlowWatcher::observe()` emits a `workflow_done` payload
 when:
@@ -662,7 +662,7 @@ error body using the `ErrorPayload` shape:
 | Other tmux exit error | `500 Internal Server Error` | `C010` |
 | Unexpected server error | `500 Internal Server Error` | `C010` |
 
-Error codes are from the C0xx taxonomy defined in `src/observ/errors.rs`.
+Error codes are from the C0xx taxonomy defined in `crates/bastion/src/observ/errors.rs`.
 
 **Example 503 body:**
 
@@ -685,7 +685,7 @@ Four read-only routes projecting per-workspace `planning/status.md`,
 live under the bearer-protected `/api` scope and return
 `Content-Type: application/json`.  Workspace roots are resolved from the
 `[workspaces]` registry loaded at server startup (`load_workspace_registry()`,
-`src/config.rs`) — the same registry the CLI's `--workspace` flag uses.
+`crates/bastion/src/config.rs`) — the same registry the CLI's `--workspace` flag uses.
 
 This surface is **read-only**: no route under `/api/repos` writes or mutates
 any file.
@@ -852,7 +852,7 @@ whatever parses.
 ### 11.5 `event{workflow_done}` — pushed over `/ws`
 
 Not a REST response — pushed asynchronously over the `/ws` hub connection (an
-`"event"` frame per Section 7.7) when [`FlowWatcher::observe()`](../src/serve/poll.rs)
+`"event"` frame per Section 7.7) when [`FlowWatcher::observe()`](../crates/bastion/src/serve/poll.rs)
 detects a `running`→terminal transition while polling the same
 `sdlc-flow-state.json` files this section's routes read. See Section 8.2 for
 the full transition semantics.
@@ -876,7 +876,7 @@ the full transition semantics.
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | `host:port` to bind |
 | `BASTION_SERVE_TOKEN` | **Yes** | — | Bearer token for protected routes; absent token is a typed error at startup |
 
-`bastion serve` loads config via `load_serve_config()` (`src/config.rs`), which
+`bastion serve` loads config via `load_serve_config()` (`crates/bastion/src/config.rs`), which
 is DB-free and does **not** require `DATABASE_URL`. The `[workspaces]`
 registry consumed by Section 11's routes is loaded separately via
 `load_workspace_registry()` — also DB-free — once at server startup.

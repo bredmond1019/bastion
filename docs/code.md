@@ -82,7 +82,7 @@ symbol name (`grep "\trun_code"`).
 
 ## Extraction and Graph Construction
 
-`run_code()` in `src/brain/code_graph.rs`:
+`run_code()` in `crates/bastion/src/brain/code_graph.rs`:
 
 1. **Resolves** the effective scan root via `config::resolve_workspace_root` —
    pure, DB-free, using the workspace registry loaded from the config file.
@@ -130,8 +130,8 @@ dropped. Duplicate `(from, to)` pairs are deduplicated.
 
 | Module | File | Responsibility |
 |---|---|---|
-| `brain::code` | `src/brain/code.rs` | Pure tree-sitter extraction: `SymbolKind`, `CodeSymbol`, `CodeRef`, `extract_symbols`, `extract_refs` |
-| `brain::code_graph` | `src/brain/code_graph.rs` | Graph layer and I/O shell: `CodeQuery`, `build_code_node_edge_lists`, query helpers, `find_rust_files`, `run_code` |
+| `brain::code` | `crates/bastion/src/brain/code.rs` | Pure tree-sitter extraction: `SymbolKind`, `CodeSymbol`, `CodeRef`, `extract_symbols`, `extract_refs` |
+| `brain::code_graph` | `crates/bastion/src/brain/code_graph.rs` | Graph layer and I/O shell: `CodeQuery`, `build_code_node_edge_lists`, query helpers, `find_rust_files`, `run_code` |
 
 The code graph reuses `BrainNode` / `BrainEdge` (from `brain::okf`) and
 `BrainGraph` (from `brain::graph`) — the same types and algorithms that power
@@ -148,7 +148,7 @@ The code graph reuses `BrainNode` / `BrainEdge` (from `brain::okf`) and
 | Reference with no enclosing symbol in its file | Edge silently dropped (from-id cannot resolve). |
 | Symbol name not found in graph | Prints `# no <mode> results for '<SYMBOL>'`; exits zero. |
 
-## Test Fixtures (`src/brain/fixtures/code/`)
+## Test Fixtures (`crates/bastion/src/brain/fixtures/code/`)
 
 Three `.rs.fixture` files (renamed from `.rs` to prevent `cargo fmt` from
 touching them) define a small multi-file Rust fixture used in unit tests:
@@ -168,16 +168,16 @@ Tests assert exact symbol counts, kinds, line numbers, and edge topology
 
 ```
 $ bastion code --def run_code --root src
-def: run_code	src/brain/code_graph.rs:224
+def: run_code	crates/bastion/src/brain/code_graph.rs:224
 
 $ bastion code --refs build_code_node_edge_lists --root src
-ref: build_code_node_edge_lists	src/brain/code_graph.rs:266
-ref: build_code_node_edge_lists	src/brain/code_graph.rs:376
+ref: build_code_node_edge_lists	crates/bastion/src/brain/code_graph.rs:266
+ref: build_code_node_edge_lists	crates/bastion/src/brain/code_graph.rs:376
 ... (16 call/use sites total)
 
 $ bastion code --dependents build_code_node_edge_lists --root src
-dependent: reachable_reverse_render_includes_main_consumer	src/brain/code_graph.rs
-dependent: run_code	src/brain/code_graph.rs
+dependent: reachable_reverse_render_includes_main_consumer	crates/bastion/src/brain/code_graph.rs
+dependent: run_code	crates/bastion/src/brain/code_graph.rs
 ... (16 dependent symbols total)
 ```
 

@@ -12,7 +12,7 @@ related: [bastion-cli-docs-index]
 
 # bastion detect — Agent State Detection Engine
 
-The `detect` module (`src/detect/`) classifies a captured tmux pane as one of four
+The `detect` module (`crates/bastion/src/detect/`) classifies a captured tmux pane as one of four
 agent states by evaluating a priority-ordered rule list loaded from a per-agent TOML
 manifest. The entire evaluation path is pure (no I/O, no process spawns).
 
@@ -56,7 +56,7 @@ first matching rule's `AgentDetection`, or `AgentDetection::unknown()` on no mat
 
 ## Manifest schema (TOML)
 
-Each agent has one TOML manifest file under `src/detect/manifests/`. Bundled manifests:
+Each agent has one TOML manifest file under `crates/bastion/src/detect/manifests/`. Bundled manifests:
 `claude.toml`, `pi.toml`.
 
 ### Top-level fields
@@ -144,9 +144,9 @@ gate = { line_regex = "^> " }
 
 ## Golden test fixtures
 
-Test fixtures live in `src/detect/fixtures/` and are loaded via `include_str!` (zero I/O at
+Test fixtures live in `crates/bastion/src/detect/fixtures/` and are loaded via `include_str!` (zero I/O at
 test time). Each `.txt` file is a captured pane snapshot. Golden tests in
-`src/detect/golden_tests.rs` assert expected `AgentState` and flag values for both the
+`crates/bastion/src/detect/golden_tests.rs` assert expected `AgentState` and flag values for both the
 `claude` and `pi` manifests, including a cross-agent isolation case.
 
 | Fixture | Expected state |
