@@ -32,7 +32,7 @@ Add an always-visible bottom "agents · priority" strip listing every tmux sessi
 - **Preserve the `build_mission_items` signature** (`build_mission_items(sessions: &[Session], runs: &[WorkflowRun]) -> Vec<MissionItem>`) — it is shared by `monitor/events.rs`. This is a refactor with no behaviour change to Mission Control's output.
 - **Tests (Rule 6):** unit-test `session_urgency` for all four `AgentState` values (Working/Blocked/Idle/Unknown) **plus Running**, asserting Blocked sorts above Working above Idle; add/keep a regression assertion that `build_mission_items` ordering is unchanged.
 
-### 2. BA.13.1.2 Pure `agent_panel_rows` builder in `src/sessions/agent_panel.rs`
+### 2. BA.13.1.2 Pure `agent_panel_rows` builder in `src/sessions/agent_panel.rs` (done)
 - **Owns:** new `src/sessions/agent_panel.rs` + `mod` declaration line in `src/sessions/mod.rs`. **Depends on:** BA.13.1.1 (`session_urgency`).
 - Add an `AgentPanelRow` model (session label + detected `AgentState` + whatever the render needs) and a pure `agent_panel_rows(&[Session]) -> Vec<AgentPanelRow>` that maps every session and sorts by `session_urgency` (Blocked/needs-input first). No I/O, no theme access in this pure builder — rows carry state, colors are applied at render time.
 - Register the module with `pub mod agent_panel;` in `src/sessions/mod.rs`.

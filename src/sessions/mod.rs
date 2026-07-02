@@ -2,6 +2,7 @@
 // Decision D4: this surface is DB-free. It shells out to tmux via
 // std::process::Command and never opens a Postgres pool or calls Config::load().
 
+pub mod agent_panel;
 pub mod app;
 pub mod ask;
 pub mod claude_state;
