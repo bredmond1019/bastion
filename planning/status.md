@@ -5,7 +5,7 @@ description: Rollup status for Bastion sub-brain.
 doc_id: bastion-status
 layer: [meta]
 status: active
-updated: 2026-07-01T18:45:33-03:00
+updated: 2026-07-02T01:21:27-03:00
 now: "BA.12.G Space Overview file browsing implemented."
 next: "Phase 12 Unified Console Follow-up Cleanup complete."
 blocked: []

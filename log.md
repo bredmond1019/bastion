@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-01T21:35:00Z
+timestamp: 2026-07-02T04:21:27Z
 ---
 
 # Log — bastion
@@ -11,7 +11,15 @@ timestamp: 2026-07-01T21:35:00Z
 
 ---
 
-## [2026-07-01]
+## [2026-07-02]
+
+### Bastion Product packaging plan authored + OKF write path prototyped
+
+- **What:** Authored `planning/bastion-product/plan.md` — the bastion **Phase 15** roadmap (BA.15.0–BA.15.11) to package bastion as a self-contained open-source "agent OS" (`bastion init`/`assess` now, `adopt` deferred), consolidating `mev`, `bella-engine`, `workflow-engine-rs`, and `base-template` into one cargo workspace behind a unified `bastion` binary. The plan bakes in the `tasks.json` companion convention (BA.15.5) and the `PREFIX.PHASE.BLOCK[.TASK]` naming engine (BA.15.6). Added `src/okf/mod.rs` (new module, wired via `mod okf;` in `src/main.rs`): the `OkfFrontmatter` model + `serialize_frontmatter()` — the net-new OKF frontmatter **write** path (nothing in the stack could emit OKF frontmatter before; `mev` only validated). 18 unit tests, all green (`cargo test okf::` → 44 passed); rustfmt clean; 0 clippy findings — a head start on BA.15.1 (okf-core). Added 2 `carryover[]` entries to `state.json` (`engine-fmt-red` known_issue; `bastion-product-blocks-untracked` deferred) and wrote `planning/handoff.md`.
+- **Why:** To capture the product-packaging direction as a sequenced, canonical block roadmap before implementation, and to de-risk BA.15.1 by prototyping the OKF write path in-repo now — the one net-new capability the workspace consolidation depends on. Next agent picks up the workspace consolidation (BA.15.0) or continues in-repo prototyping toward `bastion init` (BA.15.8).
+- **Refs:** `planning/bastion-product/plan.md`, `src/okf/mod.rs`, `planning/handoff.md`
+
+---
 
 ### BA.12.G Space Overview file browsing implemented
 

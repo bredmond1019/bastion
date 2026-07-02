@@ -509,5 +509,21 @@
       "notes": null
     }
   ],
-  "carryover": []
+  "carryover": [
+    {
+      "slug": "engine-fmt-red",
+      "scope": { "repo": "bastion" },
+      "kind": "known_issue",
+      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) — not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
+      "created": "2026-07-02"
+    },
+    {
+      "slug": "bastion-product-blocks-untracked",
+      "scope": { "repo": "bastion" },
+      "kind": "deferred",
+      "text": "Phase 15 (BA.15.0-BA.15.11) is authored in planning/bastion-product/plan.md but NOT yet injected into state.json tracks[]. Add the Phase 15 track (with depends_on waves) when execution starts, then `mev emit-state --write`.",
+      "clears_when": "Phase 15 track added to state.json tracks[]",
+      "created": "2026-07-02"
+    }
+  ]
 }
