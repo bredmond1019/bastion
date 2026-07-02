@@ -6,8 +6,8 @@ doc_id: config
 layer: [console]
 project: bastion
 status: active
-keywords: [configuration, environment variables, config file, workspace registry, precedence, TOML]
-related: [observ, serve-api, brain]
+keywords: [configuration, environment variables, config file, workspace registry, precedence, TOML, theme]
+related: [observ, serve-api, brain, sessions]
 ---
 
 # Configuration
@@ -69,6 +69,20 @@ client-a = "/Users/alice/clients/client-a/notes"
 
 All keys are optional. Unknown keys are ignored (forward-compatible).
 
+### `[theme]` section
+
+Selects a named UI theme preset for the TUI console (`bastion tui`), applied to both the chrome
+and the `bella-engine` markdown view.
+
+```toml
+[theme]
+name = "bastion"
+```
+
+`name` is optional; an absent `[theme]` section, an absent `name`, or an unrecognized name all
+fall back to the built-in `bastion` preset — never a parse error or panic. Currently `bastion` is
+the only implemented preset.
+
 ## Workspace registry
 
 The `[workspaces]` table and `default_workspace` key support named corpus roots for
@@ -120,6 +134,23 @@ Struct that mirrors the config-file keys. All fields are optional; constructed b
 | `poll_interval` | `Option<u64>` | Monitor poll cadence (seconds). |
 | `workspaces` | `Option<HashMap<String, PathBuf>>` | Named corpus root paths. |
 | `default_workspace` | `Option<String>` | Default workspace name. |
+| `theme` | `Option<ThemeConfig>` | Optional `[theme]` section — see [`[theme]` section](#theme-section) above. |
+
+### `ThemeConfig`
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `Option<String>` | Theme preset name, resolved via `ui_theme::theme_by_name`. |
+
+### `resolve_theme`
+
+```rust
+pub fn resolve_theme(file: &FileConfig) -> crate::ui_theme::Theme
+```
+
+Pure function (no I/O). Resolves the active theme from a parsed `FileConfig`: an absent
+`[theme]` section or `name`, or an unrecognized name, all fall back to the `bastion` default
+via `ui_theme::theme_by_name`. Never panics.
 
 ### `resolve_workspace_root`
 
