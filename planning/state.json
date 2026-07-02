@@ -321,7 +321,7 @@
   },
   "tracks": [
     {
-      "title": "Phase 11 — BastionUI serve API",
+      "title": "Phase 11 \u2014 BastionUI serve API",
       "blocks": [
         {
           "id": "BA.11.C0",
@@ -379,7 +379,7 @@
       ]
     },
     {
-      "title": "Phase 12 — Unified Console Cleanup",
+      "title": "Phase 12 \u2014 Unified Console Cleanup",
       "blocks": [
         {
           "id": "BA.12.C",
@@ -438,7 +438,7 @@
       ]
     },
     {
-      "title": "Phase 7 — Costs",
+      "title": "Phase 7 \u2014 Costs",
       "blocks": [
         {
           "id": "BA.7.B",
@@ -466,7 +466,7 @@
       ]
     },
     {
-      "title": "Phase 13 — Unified Console Structural Restructure",
+      "title": "Phase 13 \u2014 Unified Console Structural Restructure",
       "blocks": [
         {
           "id": "BA.13.0",
@@ -495,7 +495,68 @@
             }
           ],
           "wave": 140,
-          "origin": null
+          "origin": null,
+          "tasks": [
+            {
+              "task_id": 1,
+              "title": "Extract pure session_urgency in src/monitor/app.rs",
+              "description": "Extract the urgency ordering inline in build_mission_items into a pure session_urgency(&Session)->u8 (Blocked/needs-input first) and reuse it there; preserve build_mission_items signature (shared by monitor/events.rs). Unit-test all AgentState values + Running and assert build_mission_items ordering unchanged.",
+              "acceptance_criteria": [
+                "session_urgency(&Session)->u8 extracted, reused in build_mission_items",
+                "build_mission_items signature preserved (shared by monitor/events.rs)",
+                "session_urgency unit-tested for Working/Blocked/Idle/Unknown + Running with Blocked>Working>Idle ordering",
+                "build_mission_items ordering regression asserted unchanged"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 2,
+              "title": "Pure agent_panel_rows builder in src/sessions/agent_panel.rs",
+              "description": "Add AgentPanelRow model + pure agent_panel_rows(&[Session])->Vec<AgentPanelRow> mapping every session and sorting by session_urgency; no I/O or theme access in the pure builder. Register pub mod agent_panel in src/sessions/mod.rs. Unit-test one row per session, urgency sort, and empty slice.",
+              "acceptance_criteria": [
+                "new src/sessions/agent_panel.rs with AgentPanelRow + pure agent_panel_rows",
+                "module registered via pub mod agent_panel in src/sessions/mod.rs",
+                "rows sorted by session_urgency (Blocked before Working before Idle)",
+                "unit tests cover one-row-per-session, sort order, empty slice"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 3,
+              "title": "Reserve + render the bottom strip in src/sessions/ui.rs",
+              "description": "Reserve an always-on bottom strip in the top-level vertical split so it renders under every SelectedNode with a min-height fallback; render agent_panel_rows with themed state dots/colors from ui_theme::current_theme() (never literals). draw_for_test asserts strip under >=2 SelectedNodes, urgency order, and min-height no-panic.",
+              "acceptance_criteria": [
+                "always-on bottom strip reserved in top-level vertical split, renders under every SelectedNode",
+                "rows rendered with runtime-theme colors, no literals",
+                "min-height fallback renders without panic",
+                "draw_for_test asserts strip under >=2 SelectedNodes and urgency order"
+              ],
+              "status": "pending",
+              "validation_commands": [],
+              "max_attempts": 3
+            },
+            {
+              "task_id": 4,
+              "title": "Validate",
+              "description": "Run all gated validation commands and confirm pass; manually smoke-test the TUI via tmux capture-pane (multiple sessions, differing states) and record the result in Notes.",
+              "acceptance_criteria": [
+                "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass",
+                "TUI smoke test (strip visible under Mission Control/tier/space, Blocked first, themed colors) recorded in tasks.md Notes"
+              ],
+              "status": "pending",
+              "validation_commands": [
+                "cargo fmt --check",
+                "cargo clippy -- -D warnings",
+                "cargo test",
+                "cargo build --release"
+              ],
+              "max_attempts": 3
+            }
+          ]
         },
         {
           "id": "BA.13.2",
@@ -559,7 +620,7 @@
       ]
     },
     {
-      "title": "Phase 14 — Unified Console Polish & Theming",
+      "title": "Phase 14 \u2014 Unified Console Polish & Theming",
       "blocks": [
         {
           "id": "BA.14.0",
@@ -624,7 +685,7 @@
       ]
     },
     {
-      "title": "Phase 15 — Bastion Product Packaging",
+      "title": "Phase 15 \u2014 Bastion Product Packaging",
       "blocks": [
         {
           "id": "BA.15.0",
@@ -862,7 +923,7 @@
         "cross_repo": null
       },
       "kind": "known_issue",
-      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) — not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
+      "text": "`cargo fmt --check` fails on PRE-EXISTING committed code in src/engine/{mod.rs,youtube.rs} (trailing whitespace + brace style) \u2014 not from new work. Run `cargo fmt` on src/engine/ before trusting the repo-wide fmt gate.",
       "related": [],
       "clears_when": null,
       "created": "2026-07-02"
@@ -875,7 +936,7 @@
         "cross_repo": null
       },
       "kind": "constraint",
-      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all — it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape — dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
+      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all \u2014 it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape \u2014 dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
       "related": [],
       "clears_when": "BA.15.5 and BA.15.6 land (tasks.json companion + naming-convention engine)",
       "created": "2026-07-02"
