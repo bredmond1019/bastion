@@ -70,8 +70,8 @@
         "blocked_by": []
       },
       {
-        "id": "BA.15.1",
-        "title": "Extract okf-core",
+        "id": "BA.15.2",
+        "title": "Unify the CLI (bastion-side): fold mev + bella into bastion",
         "status": null,
         "note": null,
         "repo": null,
@@ -88,6 +88,14 @@
       {
         "id": "BA.15.4",
         "title": "Vendor + embed the template pack",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.15.6",
+        "title": "Naming-convention engine",
         "status": null,
         "note": null,
         "repo": null,
@@ -142,21 +150,6 @@
         ]
       },
       {
-        "id": "BA.15.2",
-        "title": "Unify the CLI; mev to library",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.1",
-            "what": null
-          }
-        ]
-      },
-      {
         "id": "BA.15.5",
         "title": "tasks.json emission + state.json block sync",
         "status": null,
@@ -167,27 +160,6 @@
             "type": "block",
             "repo": "bastion",
             "id": "BA.15.4",
-            "what": null
-          },
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.1",
-            "what": "state schema"
-          }
-        ]
-      },
-      {
-        "id": "BA.15.6",
-        "title": "Naming-convention engine",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.1",
             "what": null
           }
         ]
@@ -229,12 +201,6 @@
           {
             "type": "block",
             "repo": "bastion",
-            "id": "BA.15.1",
-            "what": null
-          },
-          {
-            "type": "block",
-            "repo": "bastion",
             "id": "BA.15.6",
             "what": null
           }
@@ -247,12 +213,6 @@
         "note": null,
         "repo": null,
         "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.1",
-            "what": null
-          },
           {
             "type": "block",
             "repo": "bastion",
@@ -272,12 +232,27 @@
             "what": null
           }
         ]
+      },
+      {
+        "id": "BA.15.12",
+        "title": "mev/okf-core format convergence (deferred, not scoped)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": [
+          {
+            "type": "block",
+            "repo": "bastion",
+            "id": "BA.15.2",
+            "what": null
+          }
+        ]
       }
     ]
   },
   "tracks": [
     {
-      "title": "Phase 11 \u2014 BastionUI serve API",
+      "title": "Phase 11 — BastionUI serve API",
       "blocks": [
         {
           "id": "BA.11.C0",
@@ -335,7 +310,7 @@
       ]
     },
     {
-      "title": "Phase 12 \u2014 Unified Console Cleanup",
+      "title": "Phase 12 — Unified Console Cleanup",
       "blocks": [
         {
           "id": "BA.12.C",
@@ -394,7 +369,7 @@
       ]
     },
     {
-      "title": "Phase 7 \u2014 Costs",
+      "title": "Phase 7 — Costs",
       "blocks": [
         {
           "id": "BA.7.B",
@@ -422,7 +397,7 @@
       ]
     },
     {
-      "title": "Phase 13 \u2014 Unified Console Structural Restructure",
+      "title": "Phase 13 — Unified Console Structural Restructure",
       "blocks": [
         {
           "id": "BA.13.0",
@@ -515,7 +490,7 @@
       ]
     },
     {
-      "title": "Phase 14 \u2014 Unified Console Polish & Theming",
+      "title": "Phase 14 — Unified Console Polish & Theming",
       "blocks": [
         {
           "id": "BA.14.0",
@@ -580,7 +555,7 @@
       ]
     },
     {
-      "title": "Phase 15 \u2014 Bastion Product Packaging",
+      "title": "Phase 15 — Bastion Product Packaging",
       "blocks": [
         {
           "id": "BA.15.0",
@@ -593,7 +568,7 @@
         {
           "id": "BA.15.1",
           "title": "Extract okf-core",
-          "status": "open",
+          "status": "closed",
           "depends_on": [
             {
               "type": "block",
@@ -607,7 +582,7 @@
         },
         {
           "id": "BA.15.2",
-          "title": "Unify the CLI; mev to library",
+          "title": "Unify the CLI (bastion-side): fold mev + bella into bastion",
           "status": "open",
           "depends_on": [
             {
@@ -789,6 +764,27 @@
           "depends_on": [],
           "wave": 230,
           "origin": null
+        },
+        {
+          "id": "BA.15.12",
+          "title": "mev/okf-core format convergence (deferred, not scoped)",
+          "status": "open",
+          "depends_on": [
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.1",
+              "what": null
+            },
+            {
+              "type": "block",
+              "repo": "bastion",
+              "id": "BA.15.2",
+              "what": null
+            }
+          ],
+          "wave": 230,
+          "origin": null
         }
       ]
     }
@@ -818,7 +814,7 @@
         "cross_repo": null
       },
       "kind": "constraint",
-      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all \u2014 it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape \u2014 dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
+      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all — it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape — dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
       "related": [],
       "clears_when": "BA.15.5 and BA.15.6 land (tasks.json companion + naming-convention engine)",
       "created": "2026-07-02"

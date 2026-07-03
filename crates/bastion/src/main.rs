@@ -4,11 +4,13 @@
 
 mod api;
 mod brain;
+mod brainval;
 mod cli;
 mod config;
 mod costs;
 mod db;
 mod detect;
+mod docview;
 mod engine;
 mod inspect;
 mod man;
@@ -53,8 +55,14 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Ask { .. } => "ask",
         Commands::Man { .. } => "man",
         Commands::Brain { .. } => "brain",
+        Commands::ValidateBrain { .. } => "validate-brain",
+        Commands::Manifest { .. } => "manifest",
+        Commands::Graph { .. } => "graph",
+        Commands::EmitState { .. } => "emit-state",
         Commands::Code { .. } => "code",
         Commands::Serve { .. } => "serve",
+        Commands::View { .. } => "view",
+        Commands::Edit { .. } => "edit",
     }
 }
 
@@ -216,6 +224,22 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 )?;
                 brain::run(query, root, workspace, &registry)
             }
+            // ValidateBrain is DB-free (D4) and synchronous — thin pass-through to the `mev`
+            // path-dep library (D15 / BA.15.2). No mev/bella source is touched.
+            Commands::ValidateBrain {
+                path,
+                sync,
+                graph,
+                state,
+                links,
+                structure,
+                json,
+            } => brainval::run(path, sync, graph, state, links, structure, json),
+            // Manifest / Graph / EmitState are DB-free (D4) and synchronous — thin
+            // pass-throughs to the `mev` path-dep library (D15 / BA.15.2).
+            Commands::Manifest { path, pretty } => brainval::run_manifest(path, pretty),
+            Commands::Graph { path } => brainval::run_graph(path),
+            Commands::EmitState { path, write } => brainval::run_emit_state(path, write),
             // Serve is DB-free — does NOT call Config::load() or require DATABASE_URL.
             // The actix System runs on a dedicated OS thread (runtime-spike outcome, Task 1).
             Commands::Serve { addr, token } => {
@@ -250,6 +274,10 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 )?;
                 brain::code_graph::run_code(query, root, workspace, &registry)
             }
+            // View/Edit are DB-free (D4) and synchronous — thin pass-throughs to the
+            // `bella` terminal markdown viewer/editor over bella-engine (D14/BA.15.2).
+            Commands::View { path } => docview::view(path),
+            Commands::Edit { path } => docview::edit(path),
         },
     }
 }
@@ -462,6 +490,54 @@ mod tests {
     }
 
     #[test]
+    fn command_name_validate_brain() {
+        assert_eq!(
+            command_name(&Commands::ValidateBrain {
+                path: PathBuf::from("."),
+                sync: false,
+                graph: false,
+                state: false,
+                links: false,
+                structure: false,
+                json: false,
+            }),
+            "validate-brain"
+        );
+    }
+
+    #[test]
+    fn command_name_manifest() {
+        assert_eq!(
+            command_name(&Commands::Manifest {
+                path: PathBuf::from("."),
+                pretty: false,
+            }),
+            "manifest"
+        );
+    }
+
+    #[test]
+    fn command_name_graph() {
+        assert_eq!(
+            command_name(&Commands::Graph {
+                path: PathBuf::from("."),
+            }),
+            "graph"
+        );
+    }
+
+    #[test]
+    fn command_name_emit_state() {
+        assert_eq!(
+            command_name(&Commands::EmitState {
+                path: PathBuf::from("."),
+                write: false,
+            }),
+            "emit-state"
+        );
+    }
+
+    #[test]
     fn command_name_serve() {
         assert_eq!(
             command_name(&Commands::Serve {
@@ -483,6 +559,26 @@ mod tests {
                 workspace: None,
             }),
             "code"
+        );
+    }
+
+    #[test]
+    fn command_name_view() {
+        assert_eq!(
+            command_name(&Commands::View {
+                path: PathBuf::from("doc.md"),
+            }),
+            "view"
+        );
+    }
+
+    #[test]
+    fn command_name_edit() {
+        assert_eq!(
+            command_name(&Commands::Edit {
+                path: PathBuf::from("doc.md"),
+            }),
+            "edit"
         );
     }
 

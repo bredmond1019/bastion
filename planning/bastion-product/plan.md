@@ -85,12 +85,14 @@ path). ✅ **Head start:** the model + `serialize_frontmatter` + 18 tests are al
 `brain/okf.rs` + `validate/frontmatter.rs` and mev at `okf-core`.
 Depends on: BA.15.0.
 
-**BA.15.2 — Unify the CLI; mev→library.** Convert `mev` to `mev-core` (public `validate_brain`,
-`emit_state`, `manifest_brain`, `visualize_brain`), drop its `pub(crate)` dupes for `okf-core`. Add
-`bastion` subcommands `validate-brain` / `emit-state` / `manifest` / `graph` (call `mev-core`) and
-`bastion view` / `edit` (call `bella-engine`), following the declare→name→dispatch + DB-free pattern.
-Optional `bin-shims/` re-dispatch for standalone `mev`/`bella`. Behaviour identical to old CLIs.
-Depends on: BA.15.1.
+**BA.15.2 — Unify the CLI (bastion-side); mev stays a path-dep repo.** *(Split from the original
+BA.15.2 per [D15](../decisions/D15-mev-integration-cross-repo-path-dep.md); the mev-side dedup is now the
+deferred BA.15.12.)* mev is **already** a library (`validate_brain`, `emit_state`, `manifest_brain`,
+`graph_brain`, `visualize_brain`). Add `bastion` subcommands `validate-brain` / `emit-state` / `manifest`
+/ `graph` that call **mev via a cross-repo path dep** (`mev = { path = "../mev" }`) and `bastion view` /
+`edit` over `bella-engine`, following the declare→name→dispatch + DB-free pattern. **No `mev`/`bella`
+source changes; no `bin-shims`** (they keep their own standalone binaries). Behaviour identical to the
+`mev`/`bella` CLIs. Depends on: BA.15.1.
 
 **BA.15.3 — Licensing + front-door README.** Root `LICENSE` (MIT OR Apache-2.0 dual), per-crate
 `license` fields, top-level README framing the OS + install + `init` quickstart.
@@ -152,6 +154,12 @@ skill enriches `layer`/`keywords`/`related` as a reviewable pass). Depends on BA
 **BA.15.11 — Engine packaging.** `bastion run` bundling the `workflow-engine-rs` runtime + optional
 Python `orchestrator` extension. Its own plan once the workspace lands.
 
+**BA.15.12 — mev/okf-core format convergence.** *(Split from BA.15.2 per D15 — the risky half.)* Extract
+a `state.json` serde schema + reconciled `OkfFrontmatter` into `okf-core`, then repoint mev's
+`brain/okf.rs` + `brain/state.rs` at `okf-core` and delete mev's dupes. Deferred: mev's graph/state
+validation is proven and load-bearing; the CLI value already shipped in BA.15.2. Executed partly in mev's
+own repo. Depends on BA.15.1/15.2.
+
 ---
 
 ## Critical files (by block)
@@ -160,7 +168,8 @@ Python `orchestrator` extension. Its own plan once the workspace lands.
 |---|---|
 | BA.15.0 | root `Cargo.toml`; move `src/` → `crates/bastion/src/`; member `Cargo.toml`s |
 | BA.15.1 | `crates/okf-core/` (lift from `crates/bastion/src/okf/`); repoint `brain/okf.rs`, `validate/frontmatter.rs`, mev |
-| BA.15.2 | `crates/mev-core/`, `crates/bastion/src/cli.rs` + `main.rs` (declare→name→dispatch), `bin-shims/` |
+| BA.15.2 | `crates/bastion/Cargo.toml` (`mev = { path = "../mev" }`), `crates/bastion/src/cli.rs` + `main.rs` (declare→name→dispatch over mev + bella-engine) — no mev/bella changes, no `bin-shims` (D15) |
+| BA.15.12 *(deferred)* | `crates/okf-core/` (add state schema + reconciled OKF model); mev `brain/okf.rs` + `brain/state.rs` (mev's own repo) |
 | BA.15.4 | `templates/`, `crates/bastion/src/init/templates.rs` |
 | BA.15.5 | `.claude/commands/generate-tasks*`, workflow engines, `okf-core` state schema |
 | BA.15.6 | `crates/okf-core/` (ID parser), `mev-core` validate path |
