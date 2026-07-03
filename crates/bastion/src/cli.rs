@@ -214,6 +214,40 @@ pub enum Commands {
         token: Option<String>,
     },
 
+    /// Validate the company-brain repo for OKF frontmatter compliance (mev pass-through)
+    ///
+    /// Thin pass-through to `mev::validate_brain*` — resolves `brain.toml` by walking up
+    /// from --path, then dispatches to the matching mev validation function. Dispatch
+    /// precedence when multiple flags are given: --links > --structure > --state > --graph
+    /// > --sync > (base OKF pass, no flags).
+    ///
+    /// With --json, emits mev's machine-readable `JsonReport` envelope to stdout instead of
+    /// the human summary. Exit code is 1 when the report has any error-severity diagnostic,
+    /// 0 otherwise.
+    ValidateBrain {
+        /// Path to search from when locating brain.toml (walks up to find it)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Also run the cross-repo sync watermark check (E_SYNC_DRIFT on mismatch)
+        #[arg(long)]
+        sync: bool,
+        /// Also run the global scope:doc_id knowledge-graph integrity check
+        #[arg(long)]
+        graph: bool,
+        /// Also run the state.json schema + cross-repo block-dependency graph check
+        #[arg(long)]
+        state: bool,
+        /// Also run the link-integrity pass (dead markdown/file:// links, dangling wikilinks)
+        #[arg(long)]
+        links: bool,
+        /// Also run the bidirectional index.md <-> directory structural coverage check
+        #[arg(long)]
+        structure: bool,
+        /// Emit the machine-readable JSON envelope instead of a human summary
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Query the code-as-graph surface for symbol definitions, references, and dependents
     ///
     /// Builds a directed symbol graph from `.rs` source files under --root (or the workspace
@@ -595,6 +629,78 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    // ── ValidateBrain subcommand ──────────────────────────────────────────────
+
+    #[test]
+    fn validate_brain_defaults_parse() {
+        let cli = Cli::try_parse_from(["bastion", "validate-brain"]).unwrap();
+        match cli.command {
+            Some(Commands::ValidateBrain {
+                path,
+                sync,
+                graph,
+                state,
+                links,
+                structure,
+                json,
+            }) => {
+                assert_eq!(path, PathBuf::from("."));
+                assert!(!sync);
+                assert!(!graph);
+                assert!(!state);
+                assert!(!links);
+                assert!(!structure);
+                assert!(!json);
+            }
+            other => panic!("expected ValidateBrain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_brain_path_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "validate-brain", "/some/root"]).unwrap();
+        match cli.command {
+            Some(Commands::ValidateBrain { path, .. }) => {
+                assert_eq!(path, PathBuf::from("/some/root"));
+            }
+            other => panic!("expected ValidateBrain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_brain_all_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "validate-brain",
+            "--sync",
+            "--graph",
+            "--state",
+            "--links",
+            "--structure",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::ValidateBrain {
+                sync,
+                graph,
+                state,
+                links,
+                structure,
+                json,
+                ..
+            }) => {
+                assert!(sync);
+                assert!(graph);
+                assert!(state);
+                assert!(links);
+                assert!(structure);
+                assert!(json);
+            }
+            other => panic!("expected ValidateBrain, got {other:?}"),
+        }
     }
 
     // ── Code subcommand ───────────────────────────────────────────────────────

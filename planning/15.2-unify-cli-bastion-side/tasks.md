@@ -99,6 +99,34 @@ cargo build --release
 ## Notes
 <filled in as work happens — record the mev/bella I/O smoke tests and the resolved bella view/edit entrypoint here>
 
+### Task 1 — mev path dep + `validate-brain`
+
+- `crates/bastion/Cargo.toml` adds `mev = { path = "../../../mev" }` (same 3-up shape as the
+  existing `bella-engine` dep). `crates/bastion/src/brainval/mod.rs` holds the pure
+  `select_validate_brain_mode` (flag precedence), `report_to_exit_code`, `render_human`, and
+  `render_json` helpers plus the thin `run()` I/O shell; `cli.rs` gained
+  `Commands::ValidateBrain`; `main.rs` registered `mod brainval;` + the name-mapper/dispatch arm.
+- **Worktree-only build fixup (environment, not code):** building `mev` as a cross-repo path dep
+  from inside an SDLC worktree (`core/bastion/trees/<name>/...`) hits a Cargo workspace-detection
+  bug: `mev`'s own `Cargo.toml` has no `[workspace]` table (unlike `bella`'s, which does), so
+  Cargo's ancestor walk from the worktree-shared `trees/mev` shim symlink doesn't stop there and
+  instead climbs to `core/bastion/Cargo.toml` (the *main*, non-worktree checkout's own workspace),
+  misattributing `mev` to the wrong workspace and breaking `workflow-engine-core`'s
+  `edition.workspace = true` inheritance. Fixed **without touching `../mev`** by making the
+  gitignored `core/bastion/trees/mev/` a real directory containing a small wrapper
+  `Cargo.toml` (mev's own `[package]`/`[dependencies]` copied verbatim, `[lib]`/`[bin]` `path`
+  overridden to the real `../mev/src/{lib,main}.rs`, plus an empty `[workspace]` table to stop the
+  ancestor walk) — this is a local, machine-specific dev-environment fixup (like the existing
+  `trees/bella` and `core/bastion/portfolio` shims), not part of this commit's tracked diff.
+  Verified the two other in-flight sibling worktrees (`13.2-mouse-interactivity-flow-2`,
+  `phase3-blockb-task3`) have an unrelated, pre-existing "believes it's in a workspace when it's
+  not" error identical before and after this fixup — confirmed not a regression I introduced.
+- **Parity smoke test** (brain root `/Users/brandon/Dev/agentic-portfolio`):
+  `cargo run -- validate-brain <root> --json` vs `mev validate-brain <root> --json` — `diff`
+  confirms byte-identical output (0 errors, 1 pre-existing keywords warning). Human-mode
+  (`bastion validate-brain <root>`) prints one line per diagnostic + a summary line and exits 0
+  for warnings-only, matching mev's own shape.
+
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
 _No amendments yet._

@@ -4,6 +4,7 @@
 
 mod api;
 mod brain;
+mod brainval;
 mod cli;
 mod config;
 mod costs;
@@ -53,6 +54,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Ask { .. } => "ask",
         Commands::Man { .. } => "man",
         Commands::Brain { .. } => "brain",
+        Commands::ValidateBrain { .. } => "validate-brain",
         Commands::Code { .. } => "code",
         Commands::Serve { .. } => "serve",
     }
@@ -216,6 +218,17 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 )?;
                 brain::run(query, root, workspace, &registry)
             }
+            // ValidateBrain is DB-free (D4) and synchronous — thin pass-through to the `mev`
+            // path-dep library (D15 / BA.15.2). No mev/bella source is touched.
+            Commands::ValidateBrain {
+                path,
+                sync,
+                graph,
+                state,
+                links,
+                structure,
+                json,
+            } => brainval::run(path, sync, graph, state, links, structure, json),
             // Serve is DB-free — does NOT call Config::load() or require DATABASE_URL.
             // The actix System runs on a dedicated OS thread (runtime-spike outcome, Task 1).
             Commands::Serve { addr, token } => {
@@ -458,6 +471,22 @@ mod tests {
                 workspace: None,
             }),
             "brain"
+        );
+    }
+
+    #[test]
+    fn command_name_validate_brain() {
+        assert_eq!(
+            command_name(&Commands::ValidateBrain {
+                path: PathBuf::from("."),
+                sync: false,
+                graph: false,
+                state: false,
+                links: false,
+                structure: false,
+                json: false,
+            }),
+            "validate-brain"
         );
     }
 
