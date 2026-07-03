@@ -9,3 +9,8 @@ Validated: gating checks (fast tripwire)
 What: OkfFrontmatter now carries a synced_from: Option<String> field (mev parity) that deserializes/round-trips but is never emitted by serialize_frontmatter, keeping existing serializer output byte-identical.
 Decisions: Confirmed (per breakdown.md) that layer/keywords/related do not need reshaping to Option<Vec<String>> since #[serde(default)] on Vec<String> already tolerates an absent field — only synced_from needed adding.; synced_from is deliberately excluded from serialize_frontmatter's output since it's a read-side watermark, not part of the authored block.
 Validated: gating checks (fast tripwire)
+
+## Task 3 — PASSED (1 attempt)
+What: okf-core now exposes a shared graph/edge-resolution model (Node, Edge, EdgeKind, Graph, GraphArtifact, EdgeResolution, resolve_edge) plus a GraphExport v2 emitter (ExportedEdge, build_graph_export), mirroring mev's graph.rs/graph_emit.rs field shapes and serde naming.
+Decisions: Extracted only the pure model + resolve_edge/build_graph_export primitives, not mev's build_graph/check_graph — those depend on mev-only types (Corpus, BrainConfig, Diagnostic) that don't belong in okf-core per the task's 'pure model layer only' scope note.; Added a local artifact_from()/node() test helper in okf-core's tests to construct GraphArtifact directly (no Corpus walker available here), rather than duplicating mev's corpus-fixture test harness.
+Validated: gating checks (fast tripwire)

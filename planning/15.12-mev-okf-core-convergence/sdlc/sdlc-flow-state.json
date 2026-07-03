@@ -2,10 +2,10 @@
   "spec_slug": "15.12-mev-okf-core-convergence",
   "branch": "15.12-mev-okf-core-convergence-flow",
   "started_at": "2026-07-03T15:54:23Z",
-  "updated_at": "2026-07-03T15:57:10Z",
+  "updated_at": "2026-07-03T16:02:04Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.12-mev-okf-core-convergence-flow",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -39,6 +39,24 @@
       ],
       "files_changed": [
         "crates/okf-core/src/frontmatter.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "okf-core now exposes a shared graph/edge-resolution model (Node, Edge, EdgeKind, Graph, GraphArtifact, EdgeResolution, resolve_edge) plus a GraphExport v2 emitter (ExportedEdge, build_graph_export), mirroring mev's graph.rs/graph_emit.rs field shapes and serde naming.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Extracted only the pure model + resolve_edge/build_graph_export primitives, not mev's build_graph/check_graph — those depend on mev-only types (Corpus, BrainConfig, Diagnostic) that don't belong in okf-core per the task's 'pure model layer only' scope note.",
+        "Added a local artifact_from()/node() test helper in okf-core's tests to construct GraphArtifact directly (no Corpus walker available here), rather than duplicating mev's corpus-fixture test harness."
+      ],
+      "files_changed": [
+        "crates/okf-core/src/graph.rs",
+        "crates/okf-core/src/graph_emit.rs",
+        "crates/okf-core/src/lib.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -107,13 +125,29 @@
         "filesReadKb": null,
         "inTokEst": 600,
         "outTok": 1938
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 1020,
+        "filesReadKb": null,
+        "inTokEst": 1020,
+        "outTok": 14333
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 600,
+        "filesReadKb": null,
+        "inTokEst": 600,
+        "outTok": 2597
       }
     ],
     "total": {
-      "promptTokEst": 4292,
+      "promptTokEst": 5912,
       "filesReadKb": 0,
-      "inTokEst": 4292,
-      "outTok": 32398
+      "inTokEst": 5912,
+      "outTok": 49328
     }
   }
 }
