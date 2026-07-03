@@ -237,7 +237,7 @@
   },
   "tracks": [
     {
-      "title": "Phase 11 — BastionUI serve API",
+      "title": "Phase 11 \u2014 BastionUI serve API",
       "blocks": [
         {
           "id": "BA.11.C0",
@@ -295,7 +295,7 @@
       ]
     },
     {
-      "title": "Phase 12 — Unified Console Cleanup",
+      "title": "Phase 12 \u2014 Unified Console Cleanup",
       "blocks": [
         {
           "id": "BA.12.C",
@@ -354,7 +354,7 @@
       ]
     },
     {
-      "title": "Phase 7 — Costs",
+      "title": "Phase 7 \u2014 Costs",
       "blocks": [
         {
           "id": "BA.7.B",
@@ -382,7 +382,7 @@
       ]
     },
     {
-      "title": "Phase 13 — Unified Console Structural Restructure",
+      "title": "Phase 13 \u2014 Unified Console Structural Restructure",
       "blocks": [
         {
           "id": "BA.13.0",
@@ -475,7 +475,7 @@
       ]
     },
     {
-      "title": "Phase 14 — Unified Console Polish & Theming",
+      "title": "Phase 14 \u2014 Unified Console Polish & Theming",
       "blocks": [
         {
           "id": "BA.14.0",
@@ -540,7 +540,7 @@
       ]
     },
     {
-      "title": "Phase 15 — Bastion Product Packaging",
+      "title": "Phase 15 \u2014 Bastion Product Packaging",
       "blocks": [
         {
           "id": "BA.15.0",
@@ -799,10 +799,27 @@
         "cross_repo": null
       },
       "kind": "constraint",
-      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all — it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape — dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
+      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all \u2014 it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape \u2014 dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
       "related": [],
       "clears_when": "BA.15.5 and BA.15.6 land (tasks.json companion + naming-convention engine)",
       "created": "2026-07-02"
+    },
+    {
+      "slug": "ba15-12-mev-context-seed",
+      "scope": {
+        "cross_repo": true
+      },
+      "kind": "constraint",
+      "text": "BA.15.12 (mev/okf-core format convergence) is cross-repo: the mev-side dedup (delete brain/okf.rs + brain/state.rs duplicates, repoint at okf-core) happens in mev's own repo as its own SDLC run. mev's planning docs currently have zero awareness of this work (no D15 mirror, no state.json/status.md mention) -- /generate-tasks for BA.15.12 must seed context into mev's repo (a decision doc mirroring D15's shape + a status/plan entry) before or while writing the mev-side task spec, not just author a bastion-side spec.",
+      "related": [
+        {
+          "type": "block",
+          "repo": "bastion",
+          "id": "BA.15.12"
+        }
+      ],
+      "clears_when": "BA.15.12's task spec(s) exist in both bastion and mev repos with mev-side context seeded",
+      "created": "2026-07-03"
     }
   ]
 }

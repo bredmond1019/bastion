@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-03T00:23:14Z
+timestamp: 2026-07-03T15:45:00Z
 ---
 
 # Log — bastion
@@ -50,6 +50,25 @@ eb8fc6d feat: implement 15.2-unify-cli-bastion-side-task4
 7455f3a chore: flow state — task 1 passed
 5da83c0 feat: implement 15.2-unify-cli-bastion-side-task1
 ```
+
+Follow-up scoping/verification session for BA.15.12, no code changes. Confirmed BA.15.12 is
+correctly tracked and unblocked (`state.json` `focus.next`, D15, `master-plan.md`). Ran a full
+diff accounting of BA.15.2's actual merge (commit range `08f9201..b5c75c7`) to confirm zero
+mev/bella source was touched — 23 files changed, all under `core/bastion/`. Sized the BA.15.12
+dedup for real: `mev/src/brain/okf.rs` is 899 lines and `mev/src/brain/state.rs` is 5,383 lines,
+against 612 lines in `okf-core` today — roughly 6,282 duplicate lines, confirming this is genuine
+design/merge work, not a mechanical file move. Confirmed no dependency-cycle risk: `bastion->mev`
+and `bastion->okf-core` already exist, and adding `mev->okf-core` stays acyclic per D15. Also
+discovered mev's own planning docs (`CLAUDE.md`, `planning/status.md`, `planning/decisions/`) have
+zero awareness of BA.15.12 — no D15 mirror, no status mention anywhere in that repo. Added a
+`carryover[]` entry (`ba15-12-mev-context-seed`, kind constraint, cross-repo scope) to
+`state.json` requiring the next `/generate-tasks` pass for BA.15.12 to seed context into mev's
+own repo (a decision doc mirroring D15's shape, plus a status/plan entry) before or while writing
+the mev-side task spec, not just author a bastion-side spec. Rewrote `planning/handoff.md` to
+carry this forward. A visual dependency-graph artifact was also produced during the session
+(conversational only, not committed). No decision doc recorded — D15 already covers the dedup
+shape; this session only verified and sized it. Next: run `/generate-tasks` for BA.15.12 with the
+mev-context-seed carryover in hand, or resume Phase 13/14 blocks per `state.json`'s `focus.next`.
 
 ---
 

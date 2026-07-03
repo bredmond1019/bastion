@@ -5,10 +5,10 @@ description: Rollup status for Bastion sub-brain.
 doc_id: bastion-status
 layer: [meta]
 status: active
-timestamp: 2026-07-03T01:27:49Z
+timestamp: 2026-07-03T15:45:00Z
 related: [context, master-plan, planning-index]
 now: "BA.15.2 (spec 15.2-unify-cli-bastion-side) done — /sdlc-flow ran all 4 tasks to PASS, review PASS, docs patched. Status: Done."
-next: "Pick the next Phase 15 block (BA.15.12 — mev-side dedup, deferred out of 15.2 per D15) or resume Phase 13/14 blocks per focus.next. See planning/handoff.md."
+next: "Run /generate-tasks for BA.15.12 (mev-side dedup, deferred out of 15.2 per D15) — must first seed context into mev's own repo (D15-mirror decision + status/plan entry), not just author a bastion-side spec; see carryover ba15-12-mev-context-seed. Or resume Phase 13/14 blocks per focus.next. See planning/handoff.md."
 blocked: []
 ---
 
@@ -33,9 +33,16 @@ blocked: []
   Docs patched: `docs/index.md`; created `docs/brainval.md`, `docs/docview.md`. Per D15, the
   bastion-side half only — mev's own OKF/state.json dedup onto `okf-core` stays deferred as
   BA.15.12.
-- **next** — Pick up **BA.15.12** (mev-side dedup: drop mev's OKF/`state.json` dupes for
-  `okf-core`, deferred out of 15.2 per D15) or resume Phase 13/14 blocks per `state.json`'s
-  regenerated `focus.next` ordering. See `planning/handoff.md`.
+- **next** — Run `/generate-tasks` for **BA.15.12** (mev-side dedup: drop mev's OKF/`state.json`
+  dupes for `okf-core`, deferred out of 15.2 per D15). A follow-up scoping session (2026-07-03,
+  no code changes) confirmed the block is correctly tracked/unblocked, sized the dedup at
+  roughly 6,282 duplicate lines (`mev/src/brain/okf.rs` 899 + `state.rs` 5,383 lines vs 612 in
+  `okf-core`), and confirmed no dependency-cycle risk for `mev->okf-core`. It also found mev's
+  own planning docs have zero awareness of BA.15.12 — no D15 mirror, no status mention — so the
+  next `/generate-tasks` pass must seed context into mev's repo (a D15-mirror decision doc + a
+  status/plan entry) before or while writing the mev-side task spec, not just author a
+  bastion-side spec (carryover `ba15-12-mev-context-seed`). Or resume Phase 13/14 blocks per
+  `state.json`'s regenerated `focus.next` ordering. See `planning/handoff.md`.
 - **blocked** — nothing blocked
 - **improve** — `blank_code_spans` handles single-backtick inline spans only (fenced triple-backtick blocks out of scope); confirm `bastion validate` skips `trees/` if worktrees accumulate `.md` files; `status` config-file API URL not loaded when `DATABASE_URL` absent
 - **recurring** — none yet
