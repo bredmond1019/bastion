@@ -22,3 +22,6 @@ Validated: gating checks (fast tripwire)
 
 ## Docs
 Patched: docs/okf.md
+
+## Wrap-up — PASS
+Next: Hand off to ../mev's own repo: ../mev/planning/ticket-ba15-12-okf-core-convergence/ was blocked waiting on this spec's okf-core state/graph models — unblock it and run the mev-side SDLC pass (delete mev's okf.rs/state.rs/graph.rs/graph_emit.rs dupes, add the okf-core path dep, repoint callers, re-assert bastion validate-brain/bastion graph byte-identical parity end-to-end). This closes the ba15-12-mev-context-seed carryover. Otherwise resume Phase 13/14 blocks per state.json's focus.next.
