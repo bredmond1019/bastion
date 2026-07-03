@@ -2,9 +2,9 @@
   "spec_slug": "15.1-extract-okf-core",
   "branch": "15.1-extract-okf-core-flow",
   "started_at": "2026-07-02T23:56:36Z",
-  "updated_at": "2026-07-03T00:05:49Z",
+  "updated_at": "2026-07-03T00:09:25Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.1-extract-okf-core-flow",
-  "status": "running",
+  "status": "docs",
   "current_task": 4,
   "tasks": {
     "1": {
@@ -74,12 +74,15 @@
     }
   },
   "review": {
-    "verdict": null,
+    "verdict": "PASS",
     "findings": [],
-    "attempts": 0
+    "attempts": 1
   },
   "docs": {
-    "changed": [],
+    "changed": [
+      "docs/okf.md",
+      "docs/index.md"
+    ],
     "created": []
   },
   "bail_reason": null,
@@ -168,13 +171,29 @@
         "filesReadKb": null,
         "inTokEst": 582,
         "outTok": 3238
+      },
+      {
+        "label": "review-1",
+        "model": "sonnet",
+        "promptTokEst": 994,
+        "filesReadKb": null,
+        "inTokEst": 994,
+        "outTok": 3014
+      },
+      {
+        "label": "docs",
+        "model": "sonnet",
+        "promptTokEst": 808,
+        "filesReadKb": null,
+        "inTokEst": 808,
+        "outTok": 9400
       }
     ],
     "total": {
-      "promptTokEst": 7289,
+      "promptTokEst": 9091,
       "filesReadKb": 0,
-      "inTokEst": 7289,
-      "outTok": 43697
+      "inTokEst": 9091,
+      "outTok": 56111
     }
   }
 }

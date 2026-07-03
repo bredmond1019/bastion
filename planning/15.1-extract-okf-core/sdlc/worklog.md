@@ -17,3 +17,6 @@ Validated: gating checks (fast tripwire)
 ## Task 4 — PASSED (1 attempt)
 What: Ran and confirmed all four workspace validation commands (fmt --check, clippy -D warnings, test, build --release) pass with 1056 total tests (1029 bastion + 27 okf-core), no regressions after the okf-core extraction.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/okf.md, docs/index.md
