@@ -1,0 +1,42 @@
+[
+  {
+    "task_id": 1,
+    "title": "okf-core: state.json serde schema + block-dependency graph model",
+    "description": "Add a new `state` module to okf-core mirroring the pure serde schema of ../mev/src/brain/state.rs (reference only, do not edit mev): the data types StateFile, Block, Track, TrackBlock, Focus, Carryover, CarryoverScope, RepoRollup, Endpoint, CrossRepoEdge, TierEntry, Origin, Backlog, BlockedBy, plus StateLoadError and load_state(path). Also add the block-dependency graph model: StateNode, StateEdge, StateEdgeKind, StateGraph, and build_state_graph(). Extract the pure model + primitives only — leave mev's check_*/derive_* validation and derivation logic in mev (it will consume these types). Every type must serde-round-trip byte-faithfully against planning/state-schema.md; keep the same serde attrs/renames mev uses. Wire `mod state;` + `pub use` into crates/okf-core/src/lib.rs. Unit-test round-trip on real brain state.json fixtures, build_state_graph on a multi-block fixture, and the StateLoadError variants (missing file, malformed JSON).",
+    "acceptance_criteria": [],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["crates/okf-core/src/state.rs", "crates/okf-core/src/lib.rs"],
+    "dependsOn": []
+  },
+  {
+    "task_id": 2,
+    "title": "okf-core: reconcile OkfFrontmatter with mev's model",
+    "description": "Reconcile crates/okf-core/src/frontmatter.rs OkfFrontmatter with ../mev/src/brain/okf.rs:35 (reference only): make `layer`/`keywords`/`related` tolerate both a present list and an absent field (mev uses Option<Vec<String>>; okf-core uses Vec<String>) via serde defaults or Option, and add the `synced_from: Option<String>` field mev carries. Preserve serialize_frontmatter output for inputs that do not set the new field (no regression for current bastion callers) and keep the `type`->`type_` rename. Keep all edits inside frontmatter.rs — OkfFrontmatter is already exported from lib.rs, so no lib.rs change is needed; do not touch lib.rs (task 1/3 own it). Unit-test: absent-field parse, present-list parse, synced_from present/absent, and a serialize round-trip proving existing output is unchanged.",
+    "acceptance_criteria": [],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["crates/okf-core/src/frontmatter.rs"],
+    "dependsOn": []
+  },
+  {
+    "task_id": 3,
+    "title": "okf-core: graph/edge-resolution model + GraphExport v2 emitter",
+    "description": "Add graph + graph_emit modules to okf-core mirroring ../mev/src/brain/graph.rs and graph_emit.rs (reference only): Edge, EdgeKind, Node, Graph, GraphArtifact, EdgeResolution, and resolve_edge(artifact, edge) -> EdgeResolution in a new crates/okf-core/src/graph.rs; and GraphExport (serialized `version: \"2\"`), ExportedEdge, build_graph_export(root, artifact) in a new crates/okf-core/src/graph_emit.rs. Match mev's field shapes and serde naming so the emitted JSON is structurally identical, including the GraphExport version \"2\" fields. Wire `mod graph;` + `mod graph_emit;` + `pub use` into crates/okf-core/src/lib.rs (append after task 1's additions). Depends on task 1 to serialize the shared lib.rs edit. Unit-test resolve_edge across every EdgeResolution branch (resolved / unresolved / ambiguous as applicable) and assert the serialized GraphExport carries version \"2\" and the expected edge fields.",
+    "acceptance_criteria": [],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["crates/okf-core/src/graph.rs", "crates/okf-core/src/graph_emit.rs", "crates/okf-core/src/lib.rs"],
+    "dependsOn": [1]
+  },
+  {
+    "task_id": 4,
+    "title": "Validate",
+    "description": "Run the Validation Commands listed in tasks.md and confirm all pass. Confirm combined test count is not lower than before, that all new pure functions have direct unit tests (including error/absent-field paths), and that no ../mev source files were edited by this spec.",
+    "acceptance_criteria": [],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": [],
+    "dependsOn": [1, 2, 3]
+  }
+]
