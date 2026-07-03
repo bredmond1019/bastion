@@ -70,14 +70,6 @@
         "blocked_by": []
       },
       {
-        "id": "BA.15.2",
-        "title": "Unify the CLI (bastion-side): fold mev + bella into bastion",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": []
-      },
-      {
         "id": "BA.15.3",
         "title": "Licensing + front-door README",
         "status": null,
@@ -112,6 +104,14 @@
       {
         "id": "BA.15.11",
         "title": "Engine packaging (deferred, not scoped)",
+        "status": null,
+        "note": null,
+        "repo": null,
+        "blocked_by": []
+      },
+      {
+        "id": "BA.15.12",
+        "title": "mev/okf-core format convergence (deferred, not scoped)",
         "status": null,
         "note": null,
         "repo": null,
@@ -229,21 +229,6 @@
             "type": "block",
             "repo": "bastion",
             "id": "BA.15.7",
-            "what": null
-          }
-        ]
-      },
-      {
-        "id": "BA.15.12",
-        "title": "mev/okf-core format convergence (deferred, not scoped)",
-        "status": null,
-        "note": null,
-        "repo": null,
-        "blocked_by": [
-          {
-            "type": "block",
-            "repo": "bastion",
-            "id": "BA.15.2",
             "what": null
           }
         ]
@@ -583,7 +568,7 @@
         {
           "id": "BA.15.2",
           "title": "Unify the CLI (bastion-side): fold mev + bella into bastion",
-          "status": "open",
+          "status": "closed",
           "depends_on": [
             {
               "type": "block",
