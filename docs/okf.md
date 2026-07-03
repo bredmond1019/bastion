@@ -40,7 +40,7 @@ frontmatter is what makes the corpus queryable as a graph (see [brain.md](brain.
 
 ```rust
 pub fn extract_frontmatter(content: &str) -> ParseResult
-pub fn parse_frontmatter(content: &str) -> ParseResult   // alias used by call sites
+pub fn parse_frontmatter(content: &str) -> Option<Frontmatter>   // Ok(fm) variant, used by call sites
 ```
 
 `ParseResult` is `Ok(Frontmatter) | UnterminatedFence { open_line } | MalformedLine { source_line } |
@@ -120,7 +120,7 @@ value ever serialized in a form the parser couldn't recover, these tests would f
 | `Frontmatter` | struct | `okf-core` (re-exported by `bastion::validate::frontmatter`) | parsed field map + fence line numbers |
 | `ParseResult` | enum | `okf-core` (re-exported by `bastion::validate::frontmatter`) | parse outcome (`Ok`/`UnterminatedFence`/`MalformedLine`/`NoFrontmatter`) |
 | `extract_frontmatter(&str) -> ParseResult` | fn | `okf-core` (re-exported by `bastion::validate::frontmatter`) | parse the leading `---` block |
-| `parse_frontmatter(&str) -> ParseResult` | fn | `okf-core` (re-exported by `bastion::validate::frontmatter`) | alias for `extract_frontmatter` used by call sites |
+| `parse_frontmatter(&str) -> Option<Frontmatter>` | fn | `okf-core` (re-exported by `bastion::validate::frontmatter`) | `extract_frontmatter`'s `Ok(fm)` case as an `Option`, used by call sites |
 | `validate_frontmatter(&str, &Path) -> Vec<ValidationError>` | fn | `bastion::validate::frontmatter` | required/empty-field validation built on the `okf-core` parser |
 
 ## Status & roadmap
