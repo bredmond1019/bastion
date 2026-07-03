@@ -145,6 +145,50 @@ cargo build --release
   - `bastion emit-state .` (dry-run default) vs `mev emit-state .` (dry-run default) — `diff`
     confirms byte-identical (same planned-action lines + summary line), both exit 0.
 
+### Task 3 — `view` / `edit` over bella-engine
+
+- **Resolved bella entrypoint (the block's flagged uncertainty):** `bella-engine`'s public API
+  (`bella_engine::markdown::render_with_edit`) returns a one-shot `Rendered` layout, not an
+  interactive loop, and the `bella` app crate (`../../../bella` crate `bella`) builds a **binary
+  only** — no `[lib]` target — so its `app`/`events`/`ui` modules (the actual Reader/Browser
+  event loop) are private and cannot be imported from bastion without editing bella's
+  `Cargo.toml` (out of scope). Further, inspecting `crates/bella/src/app.rs`'s `Mode` enum shows
+  bella currently exposes only two interactive modes, `Reader` and `Browser` — **no separate
+  edit-mode CLI flag or keybinding exists yet** in bella itself, despite `render_with_edit`'s
+  naming (that API prepares an edit-aware `Rendered` buffer for internal cursor/click
+  bookkeeping, not a full text editor).
+  **Resolution:** per the task's own fallback ("mirror bella's own binary app loop"), `bastion
+  view`/`edit` shell out to the `bella` binary as a subprocess with `<path>` as its argument and
+  inherit the controlling terminal — the same construction-vs-execution shape as
+  `sessions/tmux.rs` (pure `view_args`/`edit_args` build the argv; `spawn_bella` is the thin I/O
+  shell). `edit` currently resolves to the identical invocation as `view` (kept as a separate
+  bastion subcommand/module so a future bella edit-mode flag has a home without another CLI
+  shape change) — recorded explicitly in `docview/mod.rs`'s module doc.
+- `crates/bastion/src/cli.rs` gains `Commands::View { path: PathBuf }` and
+  `Commands::Edit { path: PathBuf }` (both required positional path args — clap rejects the
+  command with no path). `crates/bastion/src/docview/mod.rs` holds the pure `validate_path`
+  (typed `DocViewError::NotFound`/`IsDirectory`), pure `view_args`/`edit_args` (argv
+  construction), and the thin `spawn_bella` I/O shell (maps `ErrorKind::NotFound` on the child
+  spawn to a `[C001]` "bella binary not found in PATH" message, non-zero exit to `[C010]`).
+  `main.rs` registered `mod docview;`, the two name-mapper entries (`"view"`/`"edit"`), and the
+  dispatch arms.
+- **Smoke tests** (recorded per Rule 6 — `spawn_bella` itself replaces the terminal so isn't
+  unit-tested):
+  - `bastion view /nonexistent/doc.md` → degrades cleanly without spawning any process: prints
+    `Error: file not found: /nonexistent/doc.md`, exits 1, `error_code=C006`.
+  - `bastion view <real file>` with no `bella` binary on `PATH` → degrades cleanly: prints
+    `Error: [C001] bella binary not found in PATH — is \`../bella\` built?`, exits 1.
+  - `bastion view <real file>` with `../bella`'s debug binary built and put on `PATH`, run with
+    stdin redirected from `/dev/null` (no real TTY in this harness) → `bella` binary is located
+    and spawned with the correct path argument (confirmed via bella's own
+    `enable raw mode`/`Device not configured (os error 6)` failure, which is bella's own
+    terminal-setup code executing — proof the subprocess handoff and argv are correct); bastion
+    propagates the non-zero exit as `[C010] bella exited with a non-zero status: 1`. A true
+    interactive-TTY run (verifying the viewer actually renders and can be quit with `q`) was not
+    performed in this non-interactive agent environment; the subprocess wiring, path-arg
+    passthrough, and exit-code propagation are confirmed as above.
+- No file under `../../../bella` was modified.
+
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
 _No amendments yet._

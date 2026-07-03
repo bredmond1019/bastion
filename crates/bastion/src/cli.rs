@@ -325,6 +325,28 @@ pub enum Commands {
         #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
         workspace: Option<String>,
     },
+
+    /// Open a markdown document in bella's terminal viewer (bella-engine pass-through)
+    ///
+    /// Thin pass-through to the `bella` terminal markdown viewer (D14/BA.15.2) — spawns the
+    /// `bella` binary against `<path>` and inherits the terminal. No bella source is touched;
+    /// bastion is DB-free (D4) for this command.
+    View {
+        /// Markdown file to view
+        path: PathBuf,
+    },
+
+    /// Open a markdown document in bella's editor (bella-engine pass-through)
+    ///
+    /// Thin pass-through to the `bella` terminal markdown viewer/editor (D14/BA.15.2). As of
+    /// this block bella itself exposes only a single Reader/Browser interactive surface (no
+    /// distinct edit-mode CLI flag — see tasks.md §Notes), so `edit` currently launches the
+    /// same `bella <path>` invocation as `view`; the two subcommands are kept separate so a
+    /// future bella edit-mode flag has a bastion-side home without a CLI-shape change.
+    Edit {
+        /// Markdown file to edit
+        path: PathBuf,
+    },
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1065,5 +1087,41 @@ mod tests {
             }
             other => panic!("expected Serve, got {other:?}"),
         }
+    }
+
+    // ── View / Edit subcommands ────────────────────────────────────────────────
+
+    #[test]
+    fn view_requires_path_arg() {
+        let cli = Cli::try_parse_from(["bastion", "view", "notes.md"]).unwrap();
+        match cli.command {
+            Some(Commands::View { path }) => {
+                assert_eq!(path, PathBuf::from("notes.md"));
+            }
+            other => panic!("expected View, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn view_missing_path_arg_fails_to_parse() {
+        let result = Cli::try_parse_from(["bastion", "view"]);
+        assert!(result.is_err(), "view without a path should fail to parse");
+    }
+
+    #[test]
+    fn edit_requires_path_arg() {
+        let cli = Cli::try_parse_from(["bastion", "edit", "planning/status.md"]).unwrap();
+        match cli.command {
+            Some(Commands::Edit { path }) => {
+                assert_eq!(path, PathBuf::from("planning/status.md"));
+            }
+            other => panic!("expected Edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_missing_path_arg_fails_to_parse() {
+        let result = Cli::try_parse_from(["bastion", "edit"]);
+        assert!(result.is_err(), "edit without a path should fail to parse");
     }
 }

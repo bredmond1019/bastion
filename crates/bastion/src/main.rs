@@ -10,6 +10,7 @@ mod config;
 mod costs;
 mod db;
 mod detect;
+mod docview;
 mod engine;
 mod inspect;
 mod man;
@@ -60,6 +61,8 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::EmitState { .. } => "emit-state",
         Commands::Code { .. } => "code",
         Commands::Serve { .. } => "serve",
+        Commands::View { .. } => "view",
+        Commands::Edit { .. } => "edit",
     }
 }
 
@@ -271,6 +274,10 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 )?;
                 brain::code_graph::run_code(query, root, workspace, &registry)
             }
+            // View/Edit are DB-free (D4) and synchronous — thin pass-throughs to the
+            // `bella` terminal markdown viewer/editor over bella-engine (D14/BA.15.2).
+            Commands::View { path } => docview::view(path),
+            Commands::Edit { path } => docview::edit(path),
         },
     }
 }
@@ -552,6 +559,26 @@ mod tests {
                 workspace: None,
             }),
             "code"
+        );
+    }
+
+    #[test]
+    fn command_name_view() {
+        assert_eq!(
+            command_name(&Commands::View {
+                path: PathBuf::from("doc.md"),
+            }),
+            "view"
+        );
+    }
+
+    #[test]
+    fn command_name_edit() {
+        assert_eq!(
+            command_name(&Commands::Edit {
+                path: PathBuf::from("doc.md"),
+            }),
+            "edit"
         );
     }
 
