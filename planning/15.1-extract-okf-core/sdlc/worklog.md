@@ -23,3 +23,6 @@ Patched: docs/okf.md, docs/index.md
 
 ## Wrap-up — PASS
 Next: Pick up BA.15.2 (mev -> mev-core, drop its dupes for okf-core), now unblocked by this extraction, or resume Phase 13/14 blocks per state.json's focus.next.
+
+## PR
+https://github.com/bredmond1019/bastion/pull/14
