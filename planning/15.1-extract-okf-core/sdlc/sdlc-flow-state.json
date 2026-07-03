@@ -2,10 +2,10 @@
   "spec_slug": "15.1-extract-okf-core",
   "branch": "15.1-extract-okf-core-flow",
   "started_at": "2026-07-02T23:56:36Z",
-  "updated_at": "2026-07-02T23:56:36Z",
+  "updated_at": "2026-07-03T00:00:02Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.1-extract-okf-core-flow",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -20,6 +20,24 @@
         "crates/bastion/Cargo.toml",
         "crates/okf-core/Cargo.toml",
         "crates/okf-core/src/lib.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Moved the OKF frontmatter parser (Frontmatter, ParseResult, extract_frontmatter, parse_frontmatter) into okf-core as pub items with their tests, repointed brain/okf.rs to call okf_core::parse_frontmatter directly, and made bastion's validate/frontmatter.rs re-export the parser from okf-core while keeping validate_frontmatter and its tests unchanged.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Added #[allow(unused_imports)] on the pub use re-export in validate/frontmatter.rs since Frontmatter is not named directly in that file (only used via type inference), avoiding a clippy -D warnings failure while still satisfying the spec's required re-export surface."
+      ],
+      "files_changed": [
+        "crates/okf-core/src/parse.rs",
+        "crates/okf-core/src/lib.rs",
+        "crates/bastion/src/validate/frontmatter.rs",
+        "crates/bastion/src/brain/okf.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -72,13 +90,29 @@
         "filesReadKb": null,
         "inTokEst": 582,
         "outTok": 1817
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 984,
+        "filesReadKb": null,
+        "inTokEst": 984,
+        "outTok": 11987
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 582,
+        "filesReadKb": null,
+        "inTokEst": 582,
+        "outTok": 2766
       }
     ],
     "total": {
-      "promptTokEst": 2591,
+      "promptTokEst": 4157,
       "filesReadKb": 0,
-      "inTokEst": 2591,
-      "outTok": 10404
+      "inTokEst": 4157,
+      "outTok": 25157
     }
   }
 }
