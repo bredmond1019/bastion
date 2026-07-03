@@ -189,6 +189,23 @@ cargo build --release
     passthrough, and exit-code propagation are confirmed as above.
 - No file under `../../../bella` was modified.
 
+### Task 4 — Validate + parity smoke-test
+
+- Workspace-root gates all pass: `cargo fmt --check` (clean), `cargo clippy -- -D warnings`
+  (clean), `cargo test` (`bastion` crate: 1084 passed / 0 failed / 3 ignored; `okf_core`: 27
+  passed / 0 failed — combined 1111, not lower than the pre-block baseline), `cargo build
+  --release` (clean).
+- **Parity smoke tests re-run from the brain root** (`/Users/brandon/Dev/agentic-portfolio`),
+  comparing this worktree's release `bastion` binary against the installed `mev` binary
+  (`~/.local/bin/mev`):
+  - `bastion validate-brain --json .` vs `mev validate-brain --json .` — `diff` confirms
+    byte-identical; both exit 0.
+  - `bastion manifest .` vs `mev manifest .` — `diff` confirms byte-identical.
+  - `bastion graph .` vs `mev emit-graph .` — `diff` confirms byte-identical.
+  - `bastion emit-state .` (dry-run default) vs `mev emit-state .` (dry-run default) — `diff`
+    confirms byte-identical (same planned-action lines + summary line), both exit 0.
+- No source changes were required for this task — it is validation-only.
+
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
 _No amendments yet._
