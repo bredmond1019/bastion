@@ -6,7 +6,7 @@ doc_id: D15-mev-integration-cross-repo-path-dep
 layer: [console]
 project: bastion
 status: active
-keywords: [mev, mev-core, cross-repo dependency, path dependency, okf-core, BA.15.2, block split, workspace]
+keywords: [mev, mev-core, cross-repo dependency, path dependency, okf-core, BA.15.2, block split]
 related: [D14-bella-engine-dependency-contract, master-plan, bastion-product-plan]
 ---
 
