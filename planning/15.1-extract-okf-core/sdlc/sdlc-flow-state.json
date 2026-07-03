@@ -2,9 +2,9 @@
   "spec_slug": "15.1-extract-okf-core",
   "branch": "15.1-extract-okf-core-flow",
   "started_at": "2026-07-02T23:56:36Z",
-  "updated_at": "2026-07-03T00:09:25Z",
+  "updated_at": "2026-07-03T00:12:10Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.1-extract-okf-core-flow",
-  "status": "docs",
+  "status": "done",
   "current_task": 4,
   "tasks": {
     "1": {
@@ -187,13 +187,21 @@
         "filesReadKb": null,
         "inTokEst": 808,
         "outTok": 9400
+      },
+      {
+        "label": "wrap-up",
+        "model": "sonnet",
+        "promptTokEst": 828,
+        "filesReadKb": null,
+        "inTokEst": 828,
+        "outTok": 10878
       }
     ],
     "total": {
-      "promptTokEst": 9091,
+      "promptTokEst": 9919,
       "filesReadKb": 0,
-      "inTokEst": 9091,
-      "outTok": 56111
+      "inTokEst": 9919,
+      "outTok": 66989
     }
   }
 }
