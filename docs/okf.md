@@ -65,6 +65,7 @@ calls `okf_core::parse_frontmatter` directly to pull `doc_id`/`title` for the gr
 | `status` | `Option<String>` | optional scalar |
 | `keywords` | `Vec<String>` | optional list |
 | `related` | `Vec<String>` | optional list |
+| `synced_from` | `Option<String>` | read-side watermark (mev parity); deserializes/round-trips but is **never emitted** by `serialize_frontmatter` — not part of the authored block |
 
 Required fields are `Option<String>` (not bare `String`) so a **partially-filled stamp** is
 representable — e.g. `adopt`'s backfill can emit a block with the required keys present but empty, which
@@ -111,6 +112,27 @@ This is the proxy for the end-to-end **contract check** in the plan: a repo scaf
 must survive `bastion validate-brain`, and both now share the exact same parser/model via `okf-core`. If a
 value ever serialized in a form the parser couldn't recover, these tests would fail first.
 
+## The state schema — `state.rs`
+
+`crates/okf-core/src/state.rs` ports (pure model + primitives only, verbatim in shape) mev's
+`brain/state.rs`: the `serde` structs mirroring `planning/state-schema.md` — `StateFile`, `Block`,
+`Track`, `TrackBlock`, `Carryover`, `CarryoverScope`, `Backlog`, `Focus`, `Origin`, `Endpoint`,
+`BlockedBy`, `RepoRollup`, `TierEntry`, `CrossRepoEdge` — plus `load_state(&Path) ->
+Result<StateFile, StateLoadError>` and a block-dependency graph builder (`StateNode`, `StateEdge`,
+`StateEdgeKind`, `StateGraph`, `build_state_graph`). mev's validation/derivation logic
+(`check_*`/`derive_*`, `discover_state_files`) depends on mev's `Corpus`/`BrainConfig`/`Diagnostic`
+types and stays in mev — it consumes these shared types rather than duplicating them.
+
+## The graph model — `graph.rs` / `graph_emit.rs`
+
+`crates/okf-core/src/graph.rs` and `graph_emit.rs` port the pure graph/edge-resolution model shared
+with mev's `brain::graph` and `brain::graph_emit` (Phase 3 / 3B, Blocks J and R): `Node`, `Edge`,
+`EdgeKind`, `Graph`, `GraphArtifact`, `EdgeResolution`, `resolve_edge`, and the `GraphExport` v2
+emitter (`ExportedEdge`, `build_graph_export`). Only the pure model + `resolve_edge`/
+`build_graph_export` primitives are extracted — mev's corpus-walking `build_graph` and
+diagnostic-producing `check_graph` stay in mev, since they depend on mev-only types (`Corpus`,
+`BrainConfig`, `Diagnostic`) that don't belong in this shared crate.
+
 ## API surface
 
 | Item | Kind | Crate location | Purpose |
@@ -122,6 +144,11 @@ value ever serialized in a form the parser couldn't recover, these tests would f
 | `extract_frontmatter(&str) -> ParseResult` | fn | `okf-core` (re-exported by `bastion::validate::frontmatter`) | parse the leading `---` block |
 | `parse_frontmatter(&str) -> Option<Frontmatter>` | fn | `okf-core` (re-exported by `bastion::validate::frontmatter`) | `extract_frontmatter`'s `Ok(fm)` case as an `Option`, used by call sites |
 | `validate_frontmatter(&str, &Path) -> Vec<ValidationError>` | fn | `bastion::validate::frontmatter` | required/empty-field validation built on the `okf-core` parser |
+| `StateFile`, `Block`, `Track`, `Carryover`, `Backlog`, `Focus`, `BlockedBy`, `RepoRollup`, `TierEntry`, `CrossRepoEdge` | structs/enums | `okf-core` | `state.json` serde schema (ported from mev's `brain/state.rs`) |
+| `load_state(&Path) -> Result<StateFile, StateLoadError>` | fn | `okf-core` | load + parse a `planning/state.json` file |
+| `StateNode`, `StateEdge`, `StateEdgeKind`, `StateGraph`, `build_state_graph` | structs/enums/fn | `okf-core` | block-dependency graph model built from a `StateFile` |
+| `Node`, `Edge`, `EdgeKind`, `Graph`, `GraphArtifact`, `EdgeResolution`, `resolve_edge` | structs/enums/fn | `okf-core` | shared knowledge-graph model + edge-resolution primitive (mev `brain::graph` parity) |
+| `GraphExport`, `ExportedEdge`, `build_graph_export` | structs/fn | `okf-core` | v2 graph-export envelope emitter (mev `brain::graph_emit` parity) |
 
 ## Status & roadmap
 
@@ -129,3 +156,10 @@ Extraction complete (**BA.15.1**, after the workspace consolidation in **BA.15.0
 is now the single-sourced contract that `bastion` depends on as a workspace crate. `mev` and the
 scaffolder are expected to depend on it next, so `bastion init` can never write frontmatter that
 `bastion validate-brain` would reject. See the [Bastion Product plan](../planning/bastion-product/plan.md).
+
+**BA.15.12 (mev/okf-core convergence, this pass):** `okf-core` now also carries the `state.json`
+schema/graph model (`state.rs`) and the shared knowledge-graph model + v2 export emitter
+(`graph.rs`/`graph_emit.rs`), ported verbatim in shape from mev's `brain/state.rs` and
+`brain/graph.rs`/`graph_emit.rs`, plus a `synced_from` watermark field on `OkfFrontmatter`. These
+are pure-model additions only — no bastion or mev call site consumes them yet; wiring `mev` and
+`bastion` onto these shared types is expected in a follow-on block.
