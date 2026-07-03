@@ -6,6 +6,8 @@
 //! the frontmatter contract has exactly one source of truth across the
 //! workspace.
 
+mod frontmatter;
 mod parse;
 
+pub use frontmatter::{OkfFrontmatter, serialize_frontmatter};
 pub use parse::{Frontmatter, ParseResult, extract_frontmatter, parse_frontmatter};

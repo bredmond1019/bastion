@@ -1,9 +1,8 @@
 // OKF frontmatter model + serializer — the write path.
 //
-// This module is the in-repo prototype of the future `okf-core` crate. It is pure
-// (no I/O) and dependency-light: the serializer is hand-rolled to match the
-// house-style hand-rolled parser in `crate::validate::frontmatter` rather than pull
-// in `serde_yaml`.
+// This module is pure (no I/O) and dependency-light: the serializer is hand-rolled
+// to match the house-style hand-rolled parser in `crate::parse` rather than pull in
+// `serde_yaml`.
 //
 // The OKF contract (brain D27): three REQUIRED fields — `type`, `title`,
 // `description` — plus six OPTIONAL structured fields — `doc_id`, `layer`,
@@ -19,7 +18,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Required scalars are `Option<String>` so a partially-filled stamp (e.g. from
 /// `adopt`'s backfill) is representable; `serialize_frontmatter` still emits the
-/// required keys even when unset, so `validate_frontmatter` flags them as empty.
+/// required keys even when unset, so a validator can flag them as empty.
 /// List fields use `Vec<String>` where empty means "absent".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OkfFrontmatter {
@@ -49,10 +48,10 @@ pub struct OkfFrontmatter {
 ///
 /// Field order is fixed: `type`, `title`, `description`, `doc_id`, `layer`,
 /// `project`, `status`, `keywords`, `related`. The three REQUIRED scalars are
-/// always emitted (as a bare `key:` when unset, which `validate_frontmatter` reports
-/// as an empty field — the intended "needs filling" signal for backfill). Optional
-/// fields are emitted only when present/non-empty. Lists render inline: `[a, b, c]`.
-/// The returned string includes both fences and a trailing newline.
+/// always emitted (as a bare `key:` when unset, which a downstream validator can
+/// report as an empty field — the intended "needs filling" signal for backfill).
+/// Optional fields are emitted only when present/non-empty. Lists render inline:
+/// `[a, b, c]`. The returned string includes both fences and a trailing newline.
 pub fn serialize_frontmatter(fm: &OkfFrontmatter) -> String {
     let mut out = String::from("---\n");
 
@@ -177,8 +176,7 @@ fn needs_quote(v: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validate::frontmatter::{parse_frontmatter, validate_frontmatter};
-    use std::path::PathBuf;
+    use crate::parse::parse_frontmatter;
 
     fn full() -> OkfFrontmatter {
         OkfFrontmatter {
@@ -348,35 +346,33 @@ related: [okf-core]
         assert!(serialize_frontmatter(&fm).contains("keywords: [plain, \"has: colon\"]\n"));
     }
 
-    // ── Round-trip against the house parser / validator ───────────────────────
+    // ── Round-trip against the house parser (parse-level only; no bastion
+    //    dependency — okf-core does not depend on bastion's validate_frontmatter) ──
 
     #[test]
-    fn roundtrip_full_parses_and_validates_clean() {
+    fn roundtrip_full_parses_with_expected_values() {
         let out = serialize_frontmatter(&full());
-        let path = PathBuf::from("generated.md");
 
-        // The hand-rolled parser recovers all three required scalars.
+        // The hand-rolled parser recovers all three required scalars plus doc_id.
         let fm = parse_frontmatter(&out).expect("serialized block must parse");
         assert_eq!(fm.fields["type"].0, "Guideline");
         assert_eq!(fm.fields["title"].0, "My Title");
         assert_eq!(fm.fields["description"].0, "A one-line summary.");
         assert_eq!(fm.fields["doc_id"].0, "my-title");
-
-        // And the OKF validator finds no required-field errors.
-        assert!(
-            validate_frontmatter(&out, &path).is_empty(),
-            "serialized frontmatter must pass required-field validation"
-        );
     }
 
     #[test]
-    fn roundtrip_default_flags_all_required_empty() {
-        // A bare stamp (all required unset) must serialize, parse, and then fail
-        // validation with exactly the three empty-field errors — the backfill signal.
+    fn roundtrip_default_parses_with_required_fields_empty() {
+        // A bare stamp (all required unset) must serialize and parse, with each
+        // required field present but empty — the backfill signal.
         let out = serialize_frontmatter(&OkfFrontmatter::default());
-        assert!(parse_frontmatter(&out).is_some());
-        let errs = validate_frontmatter(&out, &PathBuf::from("stamp.md"));
-        assert_eq!(errs.len(), 3, "expected type/title/description flagged");
+        let fm = parse_frontmatter(&out).expect("serialized block must parse");
+        for key in ["type", "title", "description"] {
+            assert_eq!(
+                fm.fields[key].0, "",
+                "expected {key} to be present but empty"
+            );
+        }
     }
 
     #[test]
@@ -390,7 +386,10 @@ related: [okf-core]
             ..Default::default()
         };
         let doc = format!("{}\n# Body\n", serialize_frontmatter(&fm));
-        assert!(parse_frontmatter(&doc).is_some());
-        assert!(validate_frontmatter(&doc, &PathBuf::from("d.md")).is_empty());
+        let parsed = parse_frontmatter(&doc).expect("serialized block must parse");
+        // The hand-rolled parser does not strip quotes; it just recovers the raw
+        // value, which is non-empty and still recognizably the quoted title.
+        assert!(!parsed.fields["title"].0.is_empty());
+        assert!(parsed.fields["title"].0.contains("Ratio 3:1 explained"));
     }
 }
