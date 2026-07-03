@@ -1,0 +1,61 @@
+[
+  {
+    "task_id": 1,
+    "title": "Add the mev path dep + `bastion validate-brain` (6-way flag dispatch)",
+    "description": "- `crates/bastion/Cargo.toml`: add `mev = { path = \"../mev\" }` to [dependencies]. Confirm the workspace builds with mev pulled in (do NOT modify anything under ../mev).\n- New module `crates/bastion/src/brainval/mod.rs` with PURE helpers: `report_to_exit_code(&mev::Report) -> u8` (1 when `report.is_failure()`, else 0), `render_human(&mev::Report) -> String` (a summary line + one line per diagnostic: severity, file, locator, message), and a `--json` path that serializes `mev::JsonReport::new(\"brain\", root, &report).to_json()`. Register `mod brainval;` in `main.rs`.\n- `crates/bastion/src/cli.rs`: declare `Commands::ValidateBrain { path: PathBuf (default \".\"), sync: bool, graph: bool, state: bool, links: bool, structure: bool }`, mirroring mev's clap args/help.\n- `crates/bastion/src/main.rs`: add the name-mapper entry (`ValidateBrain { .. } => \"validate-brain\"`) and a dispatch arm that selects the mev fn by mev's precedence `--links > --structure > --state > --graph > --sync > base` — calling `mev::validate_brain_links` / `_structure` / `_state` / `_graph` / `_sync` / `mev::validate_brain` respectively — then renders via brainval (human or `--json`) and sets the process exit code from `report_to_exit_code`.\n- Unit-test the pure selection + exit-code + `--json` rendering (flag combo → chosen fn label; `Report` with an error → exit 1; empty `Report` → exit 0). Smoke-test `bastion validate-brain` against the brain corpus; record in Notes.",
+    "acceptance_criteria": [
+      "Cargo.toml declares mev = { path = \"../mev\" } and the workspace builds; nothing under ../mev changed",
+      "bastion validate-brain honors mev's flag precedence and calls the matching mev::validate_brain* fn",
+      "--json output is byte-identical to `mev validate-brain … --json`; exit code is 1 on failure else 0",
+      "flag→fn selection and exit-code logic are unit-tested"
+    ],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["crates/bastion/Cargo.toml", "crates/bastion/src/cli.rs", "crates/bastion/src/main.rs", "crates/bastion/src/brainval/mod.rs"],
+    "dependsOn": []
+  },
+  {
+    "task_id": 2,
+    "title": "Add `bastion manifest`, `graph`, and `emit-state` (mev pass-throughs)",
+    "description": "- `crates/bastion/src/cli.rs`: declare `Commands::Manifest { path (default \".\"), pretty: bool }`, `Commands::Graph { path (default \".\") }`, and `Commands::EmitState { path (default \".\"), write: bool }`, mirroring mev's clap args/help.\n- `crates/bastion/src/brainval/mod.rs`: add handlers calling `mev::manifest_brain(root)` (serialize `Manifest` to stdout — compact by default, pretty with `--pretty`, matching mev's manifest output), `mev::graph_brain(root)` (serialize `GraphExport` to stdout), and `mev::emit_state(root, write)` (render the returned `Report` via the existing brainval helpers; dry-run is the default, `--write` applies).\n- `crates/bastion/src/main.rs`: add name-mapper entries + dispatch arms for the three commands.\n- Unit-test the pure output selection (pretty vs compact manifest serialization; emit-state exit code from its `Report`). Smoke-test each against the brain corpus vs the equivalent `mev` subcommand; record in Notes.",
+    "acceptance_criteria": [
+      "bastion manifest [--pretty] output matches `mev manifest [--pretty]` on the brain corpus",
+      "bastion graph output matches `mev`'s graph export JSON",
+      "bastion emit-state defaults to dry-run and reports the same planned actions as `mev emit-state`; --write applies",
+      "pretty/compact selection + emit-state exit code are unit-tested"
+    ],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["crates/bastion/src/cli.rs", "crates/bastion/src/main.rs", "crates/bastion/src/brainval/mod.rs"],
+    "dependsOn": [1]
+  },
+  {
+    "task_id": 3,
+    "title": "Add `bastion view` / `edit` over bella-engine",
+    "description": "- `crates/bastion/src/cli.rs`: declare `Commands::View { path: PathBuf }` and `Commands::Edit { path: PathBuf }`.\n- New module `crates/bastion/src/docview/mod.rs`: `view(path)` opens the file through bella-engine's document viewer; `edit(path)` opens it in bella's editor. FIRST confirm the correct entrypoint: `bella_engine::markdown::render`/`render_with_edit` return a `Rendered` buffer (not an interactive loop) — check whether bella-engine exposes a higher-level interactive `run`/`app` open; if not, mirror bella's own binary (`../../../bella` crate `bella`, its `main.rs`) app loop. Keep DB-free (D4). Record the resolved entrypoint in tasks.md §Notes.\n- `crates/bastion/src/main.rs`: name-mapper entries + dispatch arms for `View`/`Edit`.\n- Unit-test whatever pure logic exists (e.g. path validation / not-found handling); smoke-test the interactive open and record in Notes. Do NOT modify any bella source.",
+    "acceptance_criteria": [
+      "bastion view <file> renders a markdown document via bella-engine",
+      "bastion edit <file> opens the document in bella's editor via bella-engine",
+      "no file under ../../../bella is modified; the resolved bella entrypoint is recorded in Notes",
+      "path handling (e.g. missing file) is covered and degrades cleanly"
+    ],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["crates/bastion/src/cli.rs", "crates/bastion/src/main.rs", "crates/bastion/src/docview/mod.rs"],
+    "dependsOn": [2]
+  },
+  {
+    "task_id": 4,
+    "title": "Validate + parity smoke-test",
+    "description": "Run the Validation Commands from the workspace root: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`. Then run the parity smoke-tests from the brain root and record results in tasks.md §Notes: `bastion validate-brain --json` vs `mev validate-brain --json` (byte-identical); `bastion manifest` vs `mev manifest`; `bastion graph` vs `mev`'s graph export; `bastion emit-state` (dry-run) vs `mev emit-state` (same planned actions). Confirm combined test count is not lower than before the block.",
+    "acceptance_criteria": [
+      "cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release all pass at the workspace root",
+      "bastion's brain subcommands produce output matching the equivalent mev subcommand (json byte-identical), recorded in Notes",
+      "combined workspace test count is not lower than before the block"
+    ],
+    "validation_commands": ["cargo fmt --check", "cargo clippy -- -D warnings", "cargo test", "cargo build --release"],
+    "max_attempts": 3,
+    "files": [],
+    "dependsOn": [1, 2, 3]
+  }
+]

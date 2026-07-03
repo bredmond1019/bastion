@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [decisions, ADR, registry, console, serve, detection]
-related: [planning-index, D11-herdr-reference-only, D12-toml-manifest-detection, D13-unified-console-target, D14-bella-engine-dependency-contract]
+related: [planning-index, D11-herdr-reference-only, D12-toml-manifest-detection, D13-unified-console-target, D14-bella-engine-dependency-contract, D15-mev-integration-cross-repo-path-dep]
 ---
 
 # Decisions Registry
@@ -30,6 +30,12 @@ append-only — never edit a settled decision; supersede it with a new one and l
   depends on `bella-engine` as an unpinned path dependency; treat its public surface as a cross-repo
   contract; don't exclude the `images` feature; `Theme::bastion()` renamed to `Theme::mission_control()`.
   Mirrors bella's own D3.
+- [D15: mev integration + BA.15.2 split](./D15-mev-integration-cross-repo-path-dep.md) — mev is a
+  cross-repo Cargo path dep (like bella-engine), **not** absorbed or vendored; its internals are not
+  refactored. BA.15.2 splits into a bastion-side CLI-unification block (scoped now — call mev's existing
+  public API + bella `view`/`edit`; no `bin-shims`) and a deferred **BA.15.12** mev/okf-core format
+  convergence (drop mev's OKF/state dupes; needs okf-core state schema + OKF reconciliation first).
+  Builds on D14.
 
 ## Cross-Repo (brain-level)
 

@@ -1433,26 +1433,36 @@ Forward-looking — refine Files when each becomes next.
 - **Acceptance criteria:** both consumers compile against `okf-core`; no duplicated OKF/state.json
   struct definitions remain; gated checks pass.
 
-### Block BA.15.2 — Unify the CLI; mev becomes `mev-core`
-- **What:** Convert `mev` into `mev-core` (public `validate_brain`, `emit_state`, `manifest_brain`,
-  `visualize_brain`), dropping its `pub(crate)` OKF/state dupes in favor of `okf-core`. Add bastion
-  subcommands `validate-brain` / `emit-state` / `manifest` / `graph` (calling `mev-core`) and
-  `bastion view` / `edit` (calling `bella-engine`), following the existing declare→name→dispatch,
-  DB-free pattern. Optional `bin-shims/` re-dispatch keeps standalone `mev`/`bella` binaries working.
-- **Why:** The duplicate-implementation inventory is the named drift engine (cross-repo plan, Phase
-  1). After this block there is exactly one implementation of each format, and bastion's structural
-  queries get the full graph engine for free.
-- **Files:** *New* `crates/mev-core/`; *Modified* `crates/bastion/src/cli.rs` + `main.rs`; *New*
-  `bin-shims/` (optional).
-- **Interfaces / shared surface:** `mev-core`'s public API becomes the format contract for every Rust
-  consumer; `mev manifest`/`emit-state` CLIs stay behaviorally unchanged for orchestrator/brain
-  callers.
-- **Out of scope:** the Cortex rename flip (D38, sequenced separately in mev's own plan);
-  `brain.toml` serializer round-trip (BA.15.7); template pack vendoring (BA.15.4).
+### Block BA.15.2 — Unify the CLI (bastion-side): fold `mev` + `bella` into `bastion`
+> **Split from the original BA.15.2 per [D15](decisions/D15-mev-integration-cross-repo-path-dep.md).**
+> mev is consumed as a **cross-repo Cargo path dep** (like `bella-engine`), not absorbed or vendored,
+> and **mev's internals are not touched** — this block calls mev's *existing* public API. The risky
+> mev-side dedup (drop mev's OKF/state dupes for `okf-core`) is deferred to **BA.15.12**.
+- **What:** Add `bastion` subcommands `validate-brain` / `emit-state` / `manifest` / `graph` that call
+  **mev** (already a library exporting `validate_brain`, `emit_state`, `manifest_brain`, `graph_brain`,
+  `visualize_brain`) via a new `mev = { path = "../mev" }` dependency, plus `bastion view` / `edit` over
+  `bella-engine`, following the existing declare→name→dispatch, DB-free pattern. No `mev`/`bella` source
+  changes; no `bin-shims` (mev/bella keep their own standalone binaries in their own repos).
+- **Why:** One `bastion` binary that drives brain validation, state emission, manifest, and graph — the
+  operator's primary workflow — landed immediately and cheaply, with **zero risk to mev's proven graph +
+  `state.json` engines** (which we lean on daily). The "single implementation of each format" north-star
+  is BA.15.12's job, not this block's.
+- **Files:** *Modified* `crates/bastion/src/cli.rs` (declare the new subcommands) + `main.rs`
+  (name + dispatch) + `crates/bastion/Cargo.toml` (add `mev` path dep); *New*
+  `crates/bastion/src/{brainval,edit}/` (thin dispatch modules over `mev` / `bella-engine`, or fold into
+  existing `validate`/`brain` module homes).
+- **Interfaces / shared surface:** consumes mev's public API and `bella-engine`'s `render_with_edit`
+  surface as **cross-repo contracts** (D14/D15) — unchanged, unpinned path deps. Standalone `mev`/`bella`
+  CLIs stay behaviorally identical (untouched).
+- **Out of scope:** any change to mev or bella source (→ their own repos); dropping mev's OKF/state dupes
+  or wiring mev to `okf-core` (→ **BA.15.12**, deferred); the Cortex rename flip (D38); `brain.toml`
+  serializer round-trip (BA.15.7); template pack vendoring (BA.15.4).
 - **Depends on:** Block BA.15.0, Block BA.15.1.
-- **Acceptance criteria:** the four duplicate implementations deleted; `bastion validate-brain` output
-  parity with mev on the whole brain corpus; combined test count not lower; gated checks pass in both
-  repos.
+- **Acceptance criteria:** `bastion validate-brain` / `emit-state` / `manifest` / `graph` produce output
+  identical to the equivalent `mev` subcommand on the brain corpus (bastion is a thin pass-through);
+  `bastion view <file>` / `edit <file>` open a document via `bella-engine`; the `mev` path dep builds in
+  the workspace; combined test count not lower; gated checks pass (`cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`).
 
 ### Block BA.15.3 — Licensing + front-door README
 - **What:** Root `LICENSE` (MIT OR Apache-2.0 dual), per-crate `license` fields, a top-level README
@@ -1575,6 +1585,30 @@ Forward-looking — refine Files when each becomes next.
 - **Depends on:** nothing local yet — gated on the cross-repo `WF.1` decision.
 - **Acceptance criteria:** deferred — will be written when the block is scoped.
 
+### Block BA.15.12 — mev/okf-core format convergence *(deferred, not scoped)*
+> **Split from the original BA.15.2 per [D15](decisions/D15-mev-integration-cross-repo-path-dep.md).**
+> This is the *risky* half — it touches mev's working internals — and is only undertaken when there is
+> appetite to do so. The bastion-side CLI unification (BA.15.2) does **not** wait on it.
+- **What:** Achieve one implementation of each shared format: extract a `state.json` serde schema + a
+  reconciled `OkfFrontmatter` model into `okf-core` (the prerequisite BA.15.1 deferred), then repoint
+  **mev**'s `brain/okf.rs` + `brain/state.rs` at `okf-core` (`mev = { path }` gains
+  `okf-core = { path = "../bastion/crates/okf-core" }`), deleting mev's `pub(crate)` OKF/state dupes.
+- **Why:** Kills the named self-knowledge-drift risk (four parsers of the same three formats). Deferred
+  because mev's graph + state validation is proven and load-bearing (D15): the parity risk on the whole
+  brain corpus is real, and the CLI value already shipped in BA.15.2 without it.
+- **Files:** *Modified* `crates/okf-core/` (add state schema + reconciled OKF model); *Modified* mev
+  `brain/okf.rs` + `brain/state.rs` (their own repo — a separate SDLC run) + mev `Cargo.toml`.
+- **Interfaces / shared surface:** `okf-core` becomes the single OKF + `state.json` schema contract for
+  every Rust consumer; must match `../planning/state-schema.md`. Requires reconciling mev's list-`layer`,
+  `serde_yaml`-based model with `okf-core`'s hand-rolled one.
+- **Out of scope:** the bastion-side CLI (BA.15.2, already shipped); any workspace-absorb of mev (D15 —
+  it stays a path-dep repo).
+- **Depends on:** Block BA.15.1 (okf-core exists), Block BA.15.2 (bastion CLI already consumes mev).
+  **Cross-repo:** executed partly in mev's own repo.
+- **Acceptance criteria:** deferred — the original BA.15.2 AC migrates here (mev's OKF/state dupes
+  deleted; `bastion validate-brain` output parity with `mev` on the whole brain corpus; combined test
+  count not lower; gated checks pass in both repos).
+
 ---
 
 ## Quick Reference Sequence Table
@@ -1631,7 +1665,7 @@ Forward-looking — refine Files when each becomes next.
 | 14 | 3 | Color pass (more greens/cyans) | Modern terminal feel on the purple/black base | Final aesthetic |
 | 15 | 0 | Cargo workspace skeleton | Physical container for every convergence | Foundation of the whole packaging program |
 | 15 | 1 | Extract `okf-core` | One shared OKF/state.json contract (head start already prototyped) | Ends struct-definition drift by construction |
-| 15 | 2 | mev → `mev-core`; kill duplicate parsers | Delete the named drift engine — four parsers become one | Structural queries get the full graph engine free |
+| 15 | 2 | Unify the CLI (bastion-side): fold `mev` + `bella` into `bastion` *(split, D15)* | One `bastion` binary calls mev's existing API (path dep); zero mev changes | Primary workflow in one binary, no risk to mev's engines |
 | 15 | 3 | Licensing + front-door README | D40: open source is a real destination, not a hedge | Makes the release usable by a stranger |
 | 15 | 4 | Vendor + embed the template pack | `init` must work standalone, no `base-template` clone | Portable scaffolding |
 | 15 | 5 | `tasks.json` emission + state.json sync | Machine-parsable specs; fixes the recurring heading-format carryover (with 15.6) | Tooling gets a real source of truth |
@@ -1641,6 +1675,7 @@ Forward-looking — refine Files when each becomes next.
 | 15 | 9 | `bastion assess` (read-only diagnostic) | Safe on-ramp to `adopt`; consulting-practice artifact | Proves the OSS posture works on unseen repos |
 | 15 | 10 | `bastion adopt` *(deferred)* | Non-destructive migration + frontmatter backfill | Full drop-in-adoption promise |
 | 15 | 11 | Engine packaging *(deferred)* | Bundle `workflow-engine-rs` (+ optional orchestrator) | Gated on cross-repo `WF.1` decision |
+| 15 | 12 | mev/okf-core format convergence *(deferred, split from 15.2, D15)* | Drop mev's OKF/state dupes for `okf-core`; needs okf-core state schema + OKF reconciliation | Kills the four-parser drift — the risky half, done on appetite |
 
 > Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
 > Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any
