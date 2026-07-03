@@ -24,3 +24,5 @@
 .dolt/
 *.db
 .beads-credential-key
+# Worktree path-dep shim symlink (bridges ../../portfolio for SDLC worktrees) — never tracked
+/portfolio

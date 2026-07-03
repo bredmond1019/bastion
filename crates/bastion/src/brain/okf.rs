@@ -47,7 +47,7 @@ pub struct BrainEdge {
 pub fn parse_okf_node(content: &str, path: &Path) -> Option<BrainNode> {
     let stem = path.file_stem()?.to_string_lossy().to_string();
 
-    let fm = crate::validate::frontmatter::parse_frontmatter(content);
+    let fm = okf_core::parse_frontmatter(content);
 
     let id = fm
         .as_ref()
