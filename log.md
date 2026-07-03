@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-02T22:46:57Z
+timestamp: 2026-07-03T00:23:14Z
 ---
 
 # Log — bastion
@@ -50,6 +50,24 @@ eb8fc6d feat: implement 15.2-unify-cli-bastion-side-task4
 7455f3a chore: flow state — task 1 passed
 5da83c0 feat: implement 15.2-unify-cli-bastion-side-task1
 ```
+
+---
+
+## [run: 2026-07-03]
+
+Shipped BA.15.1 (Extract okf-core) via `/sdlc-flow` — merged as PR #14 (squash-merged to main
+as `08f9201`). Ran a light `/code-review low` afterward and fixed one doc-accuracy finding
+(`docs/okf.md` showed `parse_frontmatter` returning `ParseResult` instead of the actual
+`Option<Frontmatter>`). Merged, rebased local `main` onto `origin/main` to reconcile two
+unrelated pre-existing local commits (resolved a trivial timestamp conflict in
+`planning/status.md` and an add/add conflict in `planning/15.1-extract-okf-core/tasks.md`,
+keeping the completed PR version since it was a strict superset), cleaned up the worktree and
+branch (local + remote), closed BA.15.1 in `state.json` `tracks[]`, and regenerated focus via
+`mev emit-state --write` (0 errors). Wrote `planning/handoff.md` for the next agent,
+recommending BA.15.2 (mev unification) as the next pick. Why: this was completing/shipping the
+BA.15.1 spec block per the master-plan sequence, plus routine quality/hygiene follow-up (doc
+accuracy fix, worktree/branch hygiene, state closure). Refs: `planning/15.1-extract-okf-core/`
+(task spec), PR #14, `planning/handoff.md`.
 
 ---
 
