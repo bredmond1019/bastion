@@ -2,10 +2,10 @@
   "spec_slug": "15.1-extract-okf-core",
   "branch": "15.1-extract-okf-core-flow",
   "started_at": "2026-07-02T23:56:36Z",
-  "updated_at": "2026-07-03T00:00:02Z",
+  "updated_at": "2026-07-03T00:03:46Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.1-extract-okf-core-flow",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -38,6 +38,25 @@
         "crates/okf-core/src/lib.rs",
         "crates/bastion/src/validate/frontmatter.rs",
         "crates/bastion/src/brain/okf.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "okf-core now owns OkfFrontmatter + serialize_frontmatter (with all 18 serializer tests, self-contained without depending on bastion's validate_frontmatter); bastion's prototype crates/bastion/src/okf/ module is deleted and mod okf; removed from main.rs.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Two round-trip tests that originally asserted via bastion's validate_frontmatter were rewritten to assert directly on parse_frontmatter output (required fields present-but-empty, and full round-trip field values) so okf-core has zero bastion dependency, per the task's explicit instruction.",
+        "The quoted-colon round-trip test was adjusted to assert the parsed raw value is non-empty and contains the original text (rather than exact-matching the unquoted string), since the hand-rolled parser intentionally does not strip YAML quoting — the original test only verified via validate_frontmatter that no validation errors occurred, not the exact string content."
+      ],
+      "files_changed": [
+        "crates/okf-core/src/frontmatter.rs",
+        "crates/okf-core/src/lib.rs",
+        "crates/bastion/src/okf/mod.rs (deleted)",
+        "crates/bastion/src/main.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -106,13 +125,29 @@
         "filesReadKb": null,
         "inTokEst": 582,
         "outTok": 2766
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 984,
+        "filesReadKb": null,
+        "inTokEst": 984,
+        "outTok": 10684
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 582,
+        "filesReadKb": null,
+        "inTokEst": 582,
+        "outTok": 3069
       }
     ],
     "total": {
-      "promptTokEst": 4157,
+      "promptTokEst": 5723,
       "filesReadKb": 0,
-      "inTokEst": 4157,
-      "outTok": 25157
+      "inTokEst": 5723,
+      "outTok": 38910
     }
   }
 }
