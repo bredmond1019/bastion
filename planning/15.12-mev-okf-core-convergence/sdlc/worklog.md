@@ -19,3 +19,6 @@ Validated: gating checks (fast tripwire)
 What: Validated okf-core state/graph/graph_emit/frontmatter modules from tasks 1-3: fmt, clippy -D warnings, cargo test (1084+51 passing, 0 failed), and release build all pass; ../mev is outside this repo tree so it cannot have been edited.
 Decisions: Task 4 is a pure validation checkpoint with no files list in tasks.json and no code changes required; since all gates already pass from tasks 1-3's work, no commit was made (working tree was clean before and after).
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/okf.md
