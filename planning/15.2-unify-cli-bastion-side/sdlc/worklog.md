@@ -19,3 +19,6 @@ Validated: gating checks (fast tripwire)
 What: Task 4 (validation-only): confirmed cargo fmt/clippy/test/build all pass at workspace root (1111 combined tests, no regressions) and re-verified byte-identical parity between bastion's validate-brain/manifest/graph/emit-state subcommands and the equivalent mev binary invocations on the brain corpus; recorded results in tasks.md Notes.
 Decisions: No source changes needed for Task 4 — it is purely a validation/parity-smoke-test task per its description; only tasks.md Notes were updated.; Left the tasks.md top-of-file Status/Last-run line untouched since no prior task (1-3) touched it either; assumed that's owned by a later documentation/review pipeline stage.
 Validated: gating checks (fast tripwire)
+
+## Docs
+Patched: docs/index.md | Created: docs/brainval.md, docs/docview.md
