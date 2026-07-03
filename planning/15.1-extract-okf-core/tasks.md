@@ -12,7 +12,7 @@ related: [master-plan, bastion-product-plan]
 
 # Task Spec — Phase 15, Block BA.15.1: Extract `okf-core`
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-07-03 (`/sdlc-flow`, all 4 tasks PASS, review PASS)
 
 ## Goal
 Single-source the OKF frontmatter contract into a new `okf-core` workspace crate — the model,
@@ -104,4 +104,11 @@ cargo build --release
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-07-03 [task 3] Two parser round-trip tests moved into `okf-core` were rewritten rather
+  than moved verbatim: the two tests that originally asserted via bastion's `validate_frontmatter`
+  now assert directly on `parse_frontmatter` output, and the quoted-colon round-trip test now
+  checks the parsed value is non-empty and contains the original text instead of exact-matching an
+  unquoted string — needed so `okf-core` has zero dependency on bastion's `validate_frontmatter`,
+  per the task's explicit self-containment instruction; the hand-rolled parser intentionally does
+  not strip YAML quoting, so the original exact-match assertion no longer applied outside
+  `validate_frontmatter`'s context.
