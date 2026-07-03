@@ -12,7 +12,7 @@ related: [master-plan, bastion-product-plan, D15-mev-integration-cross-repo-path
 
 # Task Spec — Phase 15, Block BA.15.2: Unify the CLI (bastion-side)
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-07-03 (4/4 tasks PASS, review PASS)
 
 ## Goal
 Fold mev's brain-ops commands and bella's document viewer into the `bastion` binary as thin
@@ -208,4 +208,15 @@ cargo build --release
 
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-07-03 [task 1] Used `mev = { path = "../../../mev" }` (3 ups) instead of the spec's
+  literal `mev = { path = "../mev" }`, to match the depth bastion's `Cargo.toml` sits at relative
+  to the sibling `mev` repo (same shape as the existing `bella-engine` path dep) — no change in
+  intent, just the correct relative depth.
+- 2026-07-03 [task 3] `bastion view`/`edit` shell out to the standalone `bella` binary as a
+  subprocess, rather than pass through `bella-engine`'s library API as the Goal's phrasing
+  suggests, because bella-engine only exposes a one-shot `render_with_edit` (a `Rendered`
+  buffer, not an interactive loop) and the `bella` app crate builds a binary only with no `[lib]`
+  target to import the Reader/Browser event loop from. This was flagged in the spec itself as
+  the one implementation-uncertainty to confirm against bella's own binary; resolved by mirroring
+  the `sessions/tmux.rs` construction-vs-execution split (subprocess I/O shell over pure,
+  unit-tested arg-construction functions) instead of vendoring bella's TUI into bastion.
