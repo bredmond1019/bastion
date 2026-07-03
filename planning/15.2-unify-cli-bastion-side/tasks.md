@@ -127,6 +127,24 @@ cargo build --release
   (`bastion validate-brain <root>`) prints one line per diagnostic + a summary line and exits 0
   for warnings-only, matching mev's own shape.
 
+### Task 2 — `manifest` / `graph` / `emit-state`
+
+- `crates/bastion/src/cli.rs` gains `Commands::Manifest { path, pretty }`,
+  `Commands::Graph { path }` (no `--pretty`, per the task's own description — mev's `emit-graph`
+  defaults to compact and bastion's `graph` mirrors only the default, compact shape), and
+  `Commands::EmitState { path, write }`. `crates/bastion/src/brainval/mod.rs` gains the pure
+  `render_manifest_json(&Manifest, pretty) -> Result<String>` and
+  `render_graph_json(&GraphExport) -> Result<String>` helpers plus the thin I/O shells
+  `run_manifest`, `run_graph`, `run_emit_state` (the latter reuses the same
+  diagnostic-line + summary-line human rendering shape as mev's own `EmitState` command).
+  `main.rs` registered the three name-mapper entries + dispatch arms.
+- **Parity smoke tests** (brain root `/Users/brandon/Dev/agentic-portfolio`, both binaries built
+  in debug):
+  - `bastion manifest .` vs `mev manifest .` — `diff` confirms byte-identical (311,611 bytes).
+  - `bastion graph .` vs `mev emit-graph .` — `diff` confirms byte-identical.
+  - `bastion emit-state .` (dry-run default) vs `mev emit-state .` (dry-run default) — `diff`
+    confirms byte-identical (same planned-action lines + summary line), both exit 0.
+
 ## Amendment Log
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
 _No amendments yet._

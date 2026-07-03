@@ -248,6 +248,44 @@ pub enum Commands {
         json: bool,
     },
 
+    /// Emit a JSON manifest of every file in the Brain corpus (mev pass-through)
+    ///
+    /// Thin pass-through to `mev::manifest_brain` — resolves `brain.toml` by walking up from
+    /// --path, crawls the corpus, and prints the resulting manifest as JSON. Output is compact
+    /// by default; pass --pretty for indented output.
+    Manifest {
+        /// Path to search from when locating brain.toml (walks up to find it)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Emit pretty-printed (indented) JSON instead of compact JSON
+        #[arg(long)]
+        pretty: bool,
+    },
+
+    /// Emit the scope:doc_id knowledge graph as a JSON artifact (mev pass-through)
+    ///
+    /// Thin pass-through to `mev::graph_brain` — resolves `brain.toml`, crawls the corpus,
+    /// builds the knowledge graph, and prints the graph-export envelope as compact JSON.
+    Graph {
+        /// Path to search from when locating brain.toml (walks up to find it)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+
+    /// Derive and (optionally) write generated state artifacts (mev pass-through)
+    ///
+    /// Thin pass-through to `mev::emit_state` — resolves `brain.toml`, discovers and loads
+    /// every planning/state.json, plans the derived writes, and reports the planned (or
+    /// applied) actions. Defaults to a dry-run; pass --write to apply.
+    EmitState {
+        /// Path to search from when locating brain.toml (walks up to find it)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Apply the derived writes instead of dry-run reporting them
+        #[arg(long)]
+        write: bool,
+    },
+
     /// Query the code-as-graph surface for symbol definitions, references, and dependents
     ///
     /// Builds a directed symbol graph from `.rs` source files under --root (or the workspace
@@ -700,6 +738,82 @@ mod tests {
                 assert!(json);
             }
             other => panic!("expected ValidateBrain, got {other:?}"),
+        }
+    }
+
+    // ── Manifest subcommand ───────────────────────────────────────────────────
+
+    #[test]
+    fn manifest_defaults_parse() {
+        let cli = Cli::try_parse_from(["bastion", "manifest"]).unwrap();
+        match cli.command {
+            Some(Commands::Manifest { path, pretty }) => {
+                assert_eq!(path, PathBuf::from("."));
+                assert!(!pretty);
+            }
+            other => panic!("expected Manifest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn manifest_pretty_and_path_parse() {
+        let cli = Cli::try_parse_from(["bastion", "manifest", "/some/root", "--pretty"]).unwrap();
+        match cli.command {
+            Some(Commands::Manifest { path, pretty }) => {
+                assert_eq!(path, PathBuf::from("/some/root"));
+                assert!(pretty);
+            }
+            other => panic!("expected Manifest, got {other:?}"),
+        }
+    }
+
+    // ── Graph subcommand ──────────────────────────────────────────────────────
+
+    #[test]
+    fn graph_defaults_parse() {
+        let cli = Cli::try_parse_from(["bastion", "graph"]).unwrap();
+        match cli.command {
+            Some(Commands::Graph { path }) => {
+                assert_eq!(path, PathBuf::from("."));
+            }
+            other => panic!("expected Graph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn graph_path_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "graph", "/some/root"]).unwrap();
+        match cli.command {
+            Some(Commands::Graph { path }) => {
+                assert_eq!(path, PathBuf::from("/some/root"));
+            }
+            other => panic!("expected Graph, got {other:?}"),
+        }
+    }
+
+    // ── EmitState subcommand ──────────────────────────────────────────────────
+
+    #[test]
+    fn emit_state_defaults_parse() {
+        let cli = Cli::try_parse_from(["bastion", "emit-state"]).unwrap();
+        match cli.command {
+            Some(Commands::EmitState { path, write }) => {
+                assert_eq!(path, PathBuf::from("."));
+                assert!(!write);
+            }
+            other => panic!("expected EmitState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_state_write_and_path_parse() {
+        let cli = Cli::try_parse_from(["bastion", "emit-state", "/some/root", "--write"]).unwrap();
+        match cli.command {
+            Some(Commands::EmitState { path, write }) => {
+                assert_eq!(path, PathBuf::from("/some/root"));
+                assert!(write);
+            }
+            other => panic!("expected EmitState, got {other:?}"),
         }
     }
 

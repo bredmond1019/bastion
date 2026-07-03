@@ -142,6 +142,77 @@ pub fn run(
     Ok(())
 }
 
+/// Pure serialization of a `mev::Manifest` to JSON — compact by default, pretty when
+/// `pretty` is set. Mirrors mev's own `main.rs` `Manifest` command output exactly.
+pub fn render_manifest_json(manifest: &mev::Manifest, pretty: bool) -> Result<String> {
+    let json = if pretty {
+        serde_json::to_string_pretty(manifest)?
+    } else {
+        serde_json::to_string(manifest)?
+    };
+    Ok(json)
+}
+
+/// Handler for `bastion manifest [--pretty]`. Thin pass-through to `mev::manifest_brain`.
+pub fn run_manifest(path: std::path::PathBuf, pretty: bool) -> Result<()> {
+    let root = mev::brain::config::find_brain_root(&path)
+        .map_err(|e| anyhow::anyhow!("error resolving brain root: {e}"))?;
+    let manifest = mev::manifest_brain(&root)?;
+    println!("{}", render_manifest_json(&manifest, pretty)?);
+    Ok(())
+}
+
+/// Pure serialization of a `mev::GraphExport` to compact JSON. Mirrors mev's own `main.rs`
+/// `EmitGraph` command's default (non-pretty) output exactly.
+pub fn render_graph_json(export: &mev::GraphExport) -> Result<String> {
+    Ok(serde_json::to_string(export)?)
+}
+
+/// Handler for `bastion graph`. Thin pass-through to `mev::graph_brain`.
+pub fn run_graph(path: std::path::PathBuf) -> Result<()> {
+    let root = mev::brain::config::find_brain_root(&path)
+        .map_err(|e| anyhow::anyhow!("error resolving brain root: {e}"))?;
+    let export = mev::graph_brain(&root)?;
+    println!("{}", render_graph_json(&export)?);
+    Ok(())
+}
+
+/// Handler for `bastion emit-state [--write]`. Thin pass-through to `mev::emit_state` —
+/// dry-run by default, reports planned (or applied) actions via the same human summary
+/// shape used by mev's own `EmitState` command.
+pub fn run_emit_state(path: std::path::PathBuf, write: bool) -> Result<()> {
+    let root = mev::brain::config::find_brain_root(&path)
+        .map_err(|e| anyhow::anyhow!("error resolving brain root: {e}"))?;
+    let report = mev::emit_state(&root, write)?;
+
+    for d in &report.diagnostics {
+        println!(
+            "{} [{}] {} — {}",
+            d.severity,
+            d.locator,
+            d.file.display(),
+            d.message
+        );
+    }
+    let mode = if write { "write" } else { "dry-run" };
+    println!(
+        "emit-state {} {}: {} error(s), {} warning(s)",
+        mode,
+        root.display(),
+        report.error_count(),
+        report.warning_count()
+    );
+
+    if report.is_failure() {
+        anyhow::bail!(
+            "emit-state ({}) found {} error(s)",
+            mode,
+            report.error_count()
+        );
+    }
+    Ok(())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -315,6 +386,65 @@ mod tests {
         assert_eq!(parsed["diagnostics"].as_array().unwrap().len(), 1);
     }
 
+    // ── render_manifest_json ───────────────────────────────────────────────────
+
+    fn sample_manifest() -> mev::Manifest {
+        mev::Manifest {
+            version: "1".to_string(),
+            root: "/brain".to_string(),
+            entries: vec![mev::ManifestEntry {
+                rel: "docs/a.md".to_string(),
+                scope: "brain".to_string(),
+                doc_id: Some("a".to_string()),
+                doc_type: Some("Guideline".to_string()),
+                title: Some("A".to_string()),
+                description: Some("desc".to_string()),
+                layer: None,
+                project: None,
+                status: None,
+                keywords: None,
+                related: None,
+                synced_from: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn render_manifest_json_compact_has_no_indentation() {
+        let manifest = sample_manifest();
+        let json = render_manifest_json(&manifest, false).unwrap();
+        assert!(!json.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["root"], "/brain");
+        assert_eq!(parsed["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn render_manifest_json_pretty_is_indented() {
+        let manifest = sample_manifest();
+        let json = render_manifest_json(&manifest, true).unwrap();
+        assert!(json.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["root"], "/brain");
+    }
+
+    // ── render_graph_json ──────────────────────────────────────────────────────
+
+    #[test]
+    fn render_graph_json_round_trips() {
+        let export = mev::GraphExport {
+            version: "1".to_string(),
+            root: "/brain".to_string(),
+            nodes: vec![],
+            edges: vec![],
+            leaves: vec!["brain:x".to_string()],
+        };
+        let json = render_graph_json(&export).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["root"], "/brain");
+        assert_eq!(parsed["leaves"].as_array().unwrap().len(), 1);
+    }
+
     // ── run — I/O shell smoke coverage (missing brain.toml degrades to a diagnostic) ──
 
     #[test]
@@ -331,6 +461,66 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let result = run(dir.clone(), false, false, false, false, false, false);
+        assert!(
+            result.is_err(),
+            "expected an error when brain.toml is unresolvable"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_manifest_on_path_without_brain_toml_errors_cleanly() {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-brainval-manifest-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = run_manifest(dir.clone(), false);
+        assert!(
+            result.is_err(),
+            "expected an error when brain.toml is unresolvable"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_graph_on_path_without_brain_toml_errors_cleanly() {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-brainval-graph-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = run_graph(dir.clone());
+        assert!(
+            result.is_err(),
+            "expected an error when brain.toml is unresolvable"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_emit_state_on_path_without_brain_toml_reports_config_error() {
+        // run_emit_state resolves the root via find_brain_root first (same as the other
+        // handlers) — a path with no brain.toml anywhere up its ancestry surfaces as an
+        // anyhow error there, before mev::emit_state is ever called.
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-brainval-emit-state-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = run_emit_state(dir.clone(), false);
         assert!(
             result.is_err(),
             "expected an error when brain.toml is unresolvable"
