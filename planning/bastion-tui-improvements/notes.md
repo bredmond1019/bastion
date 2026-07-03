@@ -7,7 +7,7 @@ layer: [console, surface]
 project: bastion
 status: draft
 keywords: [tui, layout, herdr, bella, kanban, workspace, BA.12]
-related: [context, core:bastion-tui-update-notes, core:bastion-workspace-kanban-tui, core:herdr-bella-console-research]
+related: [context]
 ---
 
 # Bastion TUI Improvements — Consolidated Plan
