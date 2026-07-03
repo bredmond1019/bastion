@@ -2,10 +2,10 @@
   "spec_slug": "15.12-mev-okf-core-convergence",
   "branch": "15.12-mev-okf-core-convergence-flow",
   "started_at": "2026-07-03T15:54:23Z",
-  "updated_at": "2026-07-03T15:54:23Z",
+  "updated_at": "2026-07-03T15:57:10Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.12-mev-okf-core-convergence-flow",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -23,6 +23,22 @@
         "crates/okf-core/src/lib.rs",
         "crates/okf-core/src/state.rs",
         "Cargo.lock"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "OkfFrontmatter now carries a synced_from: Option<String> field (mev parity) that deserializes/round-trips but is never emitted by serialize_frontmatter, keeping existing serializer output byte-identical.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Confirmed (per breakdown.md) that layer/keywords/related do not need reshaping to Option<Vec<String>> since #[serde(default)] on Vec<String> already tolerates an absent field — only synced_from needed adding.",
+        "synced_from is deliberately excluded from serialize_frontmatter's output since it's a read-side watermark, not part of the authored block."
+      ],
+      "files_changed": [
+        "crates/okf-core/src/frontmatter.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -75,13 +91,29 @@
         "filesReadKb": null,
         "inTokEst": 600,
         "outTok": 2162
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 1020,
+        "filesReadKb": null,
+        "inTokEst": 1020,
+        "outTok": 4458
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 600,
+        "filesReadKb": null,
+        "inTokEst": 600,
+        "outTok": 1938
       }
     ],
     "total": {
-      "promptTokEst": 2672,
+      "promptTokEst": 4292,
       "filesReadKb": 0,
-      "inTokEst": 2672,
-      "outTok": 26002
+      "inTokEst": 4292,
+      "outTok": 32398
     }
   }
 }
