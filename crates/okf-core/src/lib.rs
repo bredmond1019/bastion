@@ -8,6 +8,12 @@
 
 mod frontmatter;
 mod parse;
+mod state;
 
 pub use frontmatter::{OkfFrontmatter, serialize_frontmatter};
 pub use parse::{Frontmatter, ParseResult, extract_frontmatter, parse_frontmatter};
+pub use state::{
+    Backlog, Block, BlockedBy, Carryover, CarryoverScope, CrossRepoEdge, Endpoint, Focus, Origin,
+    RepoRollup, StateEdge, StateEdgeKind, StateFile, StateGraph, StateLoadError, StateNode,
+    StateSource, TierEntry, Track, TrackBlock, build_state_graph, load_state,
+};
