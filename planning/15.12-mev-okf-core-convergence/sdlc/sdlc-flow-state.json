@@ -1,0 +1,87 @@
+{
+  "spec_slug": "15.12-mev-okf-core-convergence",
+  "branch": "15.12-mev-okf-core-convergence-flow",
+  "started_at": "2026-07-03T15:54:23Z",
+  "updated_at": "2026-07-03T15:54:23Z",
+  "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.12-mev-okf-core-convergence-flow",
+  "status": "running",
+  "current_task": 1,
+  "tasks": {
+    "1": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "okf-core now exposes a state.json serde schema (StateFile, Block, Track, Carryover, etc.) plus a block-dependency graph model (StateGraph/StateNode/StateEdge/build_state_graph) ported verbatim in shape from mev/src/brain/state.rs, with load_state() and 9 new unit tests covering round-trip, error paths, and graph construction.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Added serde_json, thiserror deps and a tempfile dev-dep to crates/okf-core/Cargo.toml, matching the breakdown's Step 1.1 guidance (no serde_yaml/petgraph).",
+        "Kept lib.rs wiring append-only (mod state; + pub use state::{...};) after the existing frontmatter/parse lines, per the breakdown's disjoint-file-ownership note for tasks 1 and 3.",
+        "state.rs is the only new file; frontmatter.rs and graph.rs/graph_emit.rs are intentionally untouched — those are tasks 2 and 3."
+      ],
+      "files_changed": [
+        "crates/okf-core/Cargo.toml",
+        "crates/okf-core/src/lib.rs",
+        "crates/okf-core/src/state.rs",
+        "Cargo.lock"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    }
+  },
+  "review": {
+    "verdict": null,
+    "findings": [],
+    "attempts": 0
+  },
+  "docs": {
+    "changed": [],
+    "created": []
+  },
+  "bail_reason": null,
+  "pr": {
+    "url": null,
+    "number": null
+  },
+  "tokens": {
+    "stages": [
+      {
+        "label": "worktree-setup",
+        "model": "haiku",
+        "promptTokEst": 792,
+        "filesReadKb": null,
+        "inTokEst": 792,
+        "outTok": 6903
+      },
+      {
+        "label": "enumerate",
+        "model": "haiku",
+        "promptTokEst": 260,
+        "filesReadKb": null,
+        "inTokEst": 260,
+        "outTok": 778
+      },
+      {
+        "label": "implement-1-1",
+        "model": "sonnet",
+        "promptTokEst": 1020,
+        "filesReadKb": null,
+        "inTokEst": 1020,
+        "outTok": 16159
+      },
+      {
+        "label": "test-1-1",
+        "model": "haiku",
+        "promptTokEst": 600,
+        "filesReadKb": null,
+        "inTokEst": 600,
+        "outTok": 2162
+      }
+    ],
+    "total": {
+      "promptTokEst": 2672,
+      "filesReadKb": 0,
+      "inTokEst": 2672,
+      "outTok": 26002
+    }
+  }
+}
