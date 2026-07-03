@@ -13,6 +13,50 @@ timestamp: 2026-07-03T15:45:00Z
 
 ## [run: 2026-07-03]
 
+Completed BA.15.12 (spec `15.12-mev-okf-core-convergence`) via `/sdlc-flow`, extracting into
+`crates/okf-core/` the three shared-format models mev still owned privately — the bastion-side
+half of D15/D16's mev/okf-core convergence. Task 1 added a `state` module: a `state.json` serde
+schema (`StateFile`, `Block`, `Track`, `Carryover`, `RepoRollup`, `Endpoint`, `CrossRepoEdge`,
+etc.) plus a block-dependency graph model (`StateGraph`/`StateNode`/`StateEdge`/
+`build_state_graph`) ported verbatim in shape from `mev/src/brain/state.rs`, with `load_state()`
+and 9 new unit tests covering round-trip, error paths, and graph construction. Task 2 reconciled
+`OkfFrontmatter` with mev's shape by adding a `synced_from: Option<String>` field that
+deserializes/round-trips but is never emitted by `serialize_frontmatter`, keeping existing
+serializer output byte-identical (confirmed `#[serde(default)]` on `Vec<String>` already
+tolerates absent `layer`/`keywords`/`related`, so only `synced_from` needed adding). Task 3 added
+a shared graph/edge-resolution model (`Node`, `Edge`, `EdgeKind`, `Graph`, `GraphArtifact`,
+`EdgeResolution`, `resolve_edge`) plus a `GraphExport` v2 emitter (`ExportedEdge`,
+`build_graph_export`) mirroring mev's `graph.rs`/`graph_emit.rs` field shapes and serde naming —
+deliberately extracting only the pure model + `resolve_edge`/`build_graph_export` primitives, not
+mev's `build_graph`/`check_graph` (those depend on mev-only types like `Corpus`/`BrainConfig`/
+`Diagnostic`), keeping `okf-core` a pure model layer per the task's scope note. Task 4 was
+validation-only: confirmed fmt, clippy `-D warnings`, `cargo test` (1084+51 passing, 0 failed),
+and release build all green; `../mev` is outside this repo's worktree so it could not have been
+edited, and no commit was needed since the tree was already clean. End review verdict: **PASS**
+(0 findings, 1 attempt). Docs patched: `docs/okf.md`. Notable decisions: kept `lib.rs` wiring
+append-only across all three tasks per the breakdown's disjoint-file-ownership note; no
+context-seed task was needed here since the mev-side mirror decision
+(`../mev/planning/decisions/D9-ba15-12-okf-core-convergence-mirror.md`) was already seeded in a
+prior session. Next: hand off to `../mev`'s own repo — `../mev/planning/
+ticket-ba15-12-okf-core-convergence/` was blocked waiting on these `okf-core` models and can now
+be unblocked and run as its own SDLC pass (delete mev's dupes, add the `okf-core` path dep,
+repoint callers, re-assert end-to-end parity).
+
+```
+864fc9f chore: flow state — docs
+006cb67 docs: update docs for 15.12-mev-okf-core-convergence
+798dffe chore: flow state — task 4 passed
+7112306 chore: flow state — task 3 passed
+0d2e014 feat: implement 15.12-mev-okf-core-convergence-task3
+13e7a39 chore: flow state — task 2 passed
+3c1113c feat: implement 15.12-mev-okf-core-convergence-task2
+827d028 chore: flow state — task 1 passed
+```
+
+---
+
+## [run: 2026-07-03]
+
 Completed BA.15.2 (spec `15.2-unify-cli-bastion-side`) via `/sdlc-flow`, folding mev's brain-ops
 commands and bella's document viewer into the `bastion` binary as thin pass-throughs, per the
 bastion-side split of D15. Task 1 added `mev` as a cross-repo path dependency (`mev = { path =
