@@ -14,3 +14,8 @@ Validated: gating checks (fast tripwire)
 What: okf-core now exposes a shared graph/edge-resolution model (Node, Edge, EdgeKind, Graph, GraphArtifact, EdgeResolution, resolve_edge) plus a GraphExport v2 emitter (ExportedEdge, build_graph_export), mirroring mev's graph.rs/graph_emit.rs field shapes and serde naming.
 Decisions: Extracted only the pure model + resolve_edge/build_graph_export primitives, not mev's build_graph/check_graph — those depend on mev-only types (Corpus, BrainConfig, Diagnostic) that don't belong in okf-core per the task's 'pure model layer only' scope note.; Added a local artifact_from()/node() test helper in okf-core's tests to construct GraphArtifact directly (no Corpus walker available here), rather than duplicating mev's corpus-fixture test harness.
 Validated: gating checks (fast tripwire)
+
+## Task 4 — PASSED (1 attempt)
+What: Validated okf-core state/graph/graph_emit/frontmatter modules from tasks 1-3: fmt, clippy -D warnings, cargo test (1084+51 passing, 0 failed), and release build all pass; ../mev is outside this repo tree so it cannot have been edited.
+Decisions: Task 4 is a pure validation checkpoint with no files list in tasks.json and no code changes required; since all gates already pass from tasks 1-3's work, no commit was made (working tree was clean before and after).
+Validated: gating checks (fast tripwire)
