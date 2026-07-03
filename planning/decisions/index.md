@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [decisions, ADR, registry, console, serve, detection]
-related: [planning-index, D11-herdr-reference-only, D12-toml-manifest-detection, D13-unified-console-target, D14-bella-engine-dependency-contract, D15-mev-integration-cross-repo-path-dep]
+related: [planning-index, D11-herdr-reference-only, D12-toml-manifest-detection, D13-unified-console-target, D14-bella-engine-dependency-contract, D15-mev-integration-cross-repo-path-dep, D16-ba15-12-scope-widened-graph-resolution]
 ---
 
 # Decisions Registry
@@ -36,6 +36,10 @@ append-only — never edit a settled decision; supersede it with a new one and l
   public API + bella `view`/`edit`; no `bin-shims`) and a deferred **BA.15.12** mev/okf-core format
   convergence (drop mev's OKF/state dupes; needs okf-core state schema + OKF reconciliation first).
   Builds on D14.
+- [D16: BA.15.12 scope widened](./D16-ba15-12-scope-widened-graph-resolution.md) — mev shipped
+  `MV.3B.V` (a `resolve_edge`/`ExportedEdge` graph-resolution module in `brain/graph.rs` +
+  `graph_emit.rs`) after D15 was written; that module has zero `okf-core` counterpart. BA.15.12 now
+  covers `graph.rs`/`graph_emit.rs` alongside `okf.rs`/`state.rs`. Amends D15's BA.15.12 scope only.
 
 ## Cross-Repo (brain-level)
 

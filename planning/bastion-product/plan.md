@@ -25,11 +25,13 @@ Turn `bastion` from a personal CLI hardwired to Brandon's brain into a **self-co
 - **`bastion assess`** — read-only readiness diagnostic for any repo (OKF coverage, graph, state).
 - **`bastion adopt`** *(deferred)* — non-destructive migration of an existing repo, incl. frontmatter backfill.
 
-The sibling projects (`mev`, `bella-engine`, `workflow-engine-rs`, `base-template`, optional Python
-`orchestrator`) consolidate into **one cargo workspace** so shared logic becomes ordinary workspace
-crates, and the three CLIs collapse into **one `bastion` binary** (sub-tools become libraries; optional
-thin `mev`/`bella` shims preserved). Rust-first engine (`workflow-engine-rs`), Python orchestrator as an
-optional extension.
+The sibling projects (`mev`, `bella-engine`, `base-template`, optional Python `orchestrator`)
+consolidate into **one cargo workspace** so shared logic becomes ordinary workspace crates, and the
+three CLIs collapse into **one `bastion` binary** (sub-tools become libraries; optional thin
+`mev`/`bella` shims preserved). Rust-first engine = **`engine-rs`** (brain D42 — greenfield, embeds
+in `bastion serve`); Python orchestrator as an optional extension. *(Updated 2026-07-03: originally
+named `workflow-engine-rs` as the engine; brain D41 rejected adopting it — read-only harvest source
+only.)*
 
 "Ready" means: `cargo install bastion` → `cd my-repo && bastion init` → a working brain, and
 `bastion validate-brain` on that fresh repo returns zero errors (the contract holds end-to-end).
@@ -39,7 +41,9 @@ optional extension.
 1. **Plan boundary:** consolidate into a workspace, then build `init`/`assess` on top — one sequenced plan.
 2. **Distribution:** installable binary with **embedded** templates (`init` works standalone in any repo).
 3. **Feature scope now:** `init` + `assess`; **`adopt` deferred** to a follow-on wave.
-4. **Engine story:** Rust-first (`workflow-engine-rs`); Python `orchestrator` optional extension.
+4. **Engine story:** Rust-first — **`engine-rs`** (brain D41/D42 superseded the original
+   `workflow-engine-rs` choice; that repo is a read-only harvest source); Python `orchestrator`
+   optional extension until data-contract parity.
 5. **Unified CLI:** one `bastion` binary; `mev`'s commands fold into `bastion validate-brain` /
    `emit-state` / `manifest` / `graph`; `bella` → `bastion view` / `edit`.
 
@@ -151,14 +155,19 @@ Depends on: BA.15.1, BA.15.6.
 `serialize_frontmatter` inferring `type`/`title`/`description` from path + first heading; a Claude Code
 skill enriches `layer`/`keywords`/`related` as a reviewable pass). Depends on BA.15.1/4/6/7.
 
-**BA.15.11 — Engine packaging.** `bastion run` bundling the `workflow-engine-rs` runtime + optional
-Python `orchestrator` extension. Its own plan once the workspace lands.
+**BA.15.11 — Engine packaging.** `bastion run` bundling the **`engine-rs`** runtime (D41/D42) +
+optional Python `orchestrator` extension. Its own plan once engine-rs's first milestone (EN.3.B
+SDLC parity) lands.
 
-**BA.15.12 — mev/okf-core format convergence.** *(Split from BA.15.2 per D15 — the risky half.)* Extract
-a `state.json` serde schema + reconciled `OkfFrontmatter` into `okf-core`, then repoint mev's
-`brain/okf.rs` + `brain/state.rs` at `okf-core` and delete mev's dupes. Deferred: mev's graph/state
-validation is proven and load-bearing; the CLI value already shipped in BA.15.2. Executed partly in mev's
-own repo. Depends on BA.15.1/15.2.
+**BA.15.12 — mev/okf-core format convergence.** *(Split from BA.15.2 per D15 — the risky half.
+**Promoted to up-next 2026-07-03** — the "one parser" payload of the consolidated program's Phase 1;
+see brain `core/planning/master-plan.md`. **Scope widened 2026-07-03 per D16:** mev shipped `MV.3B.V`
+(a `resolve_edge`/`ExportedEdge` graph-resolution module in `brain/graph.rs` + `graph_emit.rs`) after
+D15 was written — that module is now in scope alongside `okf.rs`/`state.rs`.)* Extract
+a `state.json` serde schema + reconciled `OkfFrontmatter` model + a graph/edge-resolution model into
+`okf-core`, then repoint mev's `brain/okf.rs` + `brain/state.rs` + `brain/graph.rs` + `brain/graph_emit.rs`
+at `okf-core` and delete mev's dupes. Deferred: mev's graph/state validation is proven and load-bearing;
+the CLI value already shipped in BA.15.2. Executed partly in mev's own repo. Depends on BA.15.1/15.2.
 
 ---
 
@@ -169,7 +178,7 @@ own repo. Depends on BA.15.1/15.2.
 | BA.15.0 | root `Cargo.toml`; move `src/` → `crates/bastion/src/`; member `Cargo.toml`s |
 | BA.15.1 | `crates/okf-core/` (lift from `crates/bastion/src/okf/`); repoint `brain/okf.rs`, `validate/frontmatter.rs`, mev |
 | BA.15.2 | `crates/bastion/Cargo.toml` (`mev = { path = "../mev" }`), `crates/bastion/src/cli.rs` + `main.rs` (declare→name→dispatch over mev + bella-engine) — no mev/bella changes, no `bin-shims` (D15) |
-| BA.15.12 *(deferred)* | `crates/okf-core/` (add state schema + reconciled OKF model); mev `brain/okf.rs` + `brain/state.rs` (mev's own repo) |
+| BA.15.12 *(deferred, scope widened D16)* | `crates/okf-core/` (add state schema + reconciled OKF model + graph/edge-resolution model); mev `brain/okf.rs` + `brain/state.rs` + `brain/graph.rs` + `brain/graph_emit.rs` (mev's own repo) |
 | BA.15.4 | `templates/`, `crates/bastion/src/init/templates.rs` |
 | BA.15.5 | `.claude/commands/generate-tasks*`, workflow engines, `okf-core` state schema |
 | BA.15.6 | `crates/okf-core/` (ID parser), `mev-core` validate path |

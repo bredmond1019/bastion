@@ -111,7 +111,7 @@
       },
       {
         "id": "BA.15.12",
-        "title": "mev/okf-core format convergence (deferred, not scoped)",
+        "title": "mev/okf-core format convergence, incl. graph.rs/graph_emit.rs resolve-edge surface (deferred, not scoped; scope widened D16)",
         "status": null,
         "note": null,
         "repo": null,
@@ -237,7 +237,7 @@
   },
   "tracks": [
     {
-      "title": "Phase 11 \u2014 BastionUI serve API",
+      "title": "Phase 11 — BastionUI serve API",
       "blocks": [
         {
           "id": "BA.11.C0",
@@ -295,7 +295,7 @@
       ]
     },
     {
-      "title": "Phase 12 \u2014 Unified Console Cleanup",
+      "title": "Phase 12 — Unified Console Cleanup",
       "blocks": [
         {
           "id": "BA.12.C",
@@ -354,7 +354,7 @@
       ]
     },
     {
-      "title": "Phase 7 \u2014 Costs",
+      "title": "Phase 7 — Costs",
       "blocks": [
         {
           "id": "BA.7.B",
@@ -382,7 +382,7 @@
       ]
     },
     {
-      "title": "Phase 13 \u2014 Unified Console Structural Restructure",
+      "title": "Phase 13 — Unified Console Structural Restructure",
       "blocks": [
         {
           "id": "BA.13.0",
@@ -475,7 +475,7 @@
       ]
     },
     {
-      "title": "Phase 14 \u2014 Unified Console Polish & Theming",
+      "title": "Phase 14 — Unified Console Polish & Theming",
       "blocks": [
         {
           "id": "BA.14.0",
@@ -540,7 +540,7 @@
       ]
     },
     {
-      "title": "Phase 15 \u2014 Bastion Product Packaging",
+      "title": "Phase 15 — Bastion Product Packaging",
       "blocks": [
         {
           "id": "BA.15.0",
@@ -752,7 +752,7 @@
         },
         {
           "id": "BA.15.12",
-          "title": "mev/okf-core format convergence (deferred, not scoped)",
+          "title": "mev/okf-core format convergence, incl. graph.rs/graph_emit.rs resolve-edge surface (deferred, not scoped; scope widened D16)",
           "status": "open",
           "depends_on": [
             {
@@ -799,7 +799,7 @@
         "cross_repo": null
       },
       "kind": "constraint",
-      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all \u2014 it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape \u2014 dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
+      "text": "Confirmed no engine/doc mismatch today: generate-tasks.md and the D16 lint (sdlc-flow.js/sdlc-task.js, regex ^### [0-9]+\\.) both require plain `### N. <title>` tasks.md headings; `### BA.13.0.1 <title>` fails D16. Checked against the orchestrator's native SDLC_FLOW workflow (core/orchestrator/docs/sdlc-flow-workflow.md, app/schemas/sdlc_schema.py) as the forward-looking target: it does NOT parse markdown headings at all — it consumes a structured tasks.json (SDLCTask.task_id: int) plus separate SDLCState.phase_id/block_id string fields. This independently confirms bastion's own Phase 15 plan (BA.15.5: tasks.json companion emitted alongside tasks.md; BA.15.6: PREFIX.PHASE.BLOCK[.TASK] naming-convention engine) is the right target shape — dotted block/task IDs belong in a JSON companion file, not in the tasks.md heading regex. Do not edit the D16 regex or generate-tasks' ### N. heading instructions; land BA.15.5/BA.15.6 instead when Phase 15 resumes.",
       "related": [],
       "clears_when": "BA.15.5 and BA.15.6 land (tasks.json companion + naming-convention engine)",
       "created": "2026-07-02"
@@ -807,35 +807,21 @@
     {
       "slug": "ba15-12-mev-context-seed",
       "scope": {
+        "repo": null,
+        "tier": null,
         "cross_repo": true
       },
       "kind": "constraint",
-      "text": "BA.15.12 (mev/okf-core format convergence) is cross-repo: the mev-side dedup (delete brain/okf.rs + brain/state.rs duplicates, repoint at okf-core) happens in mev's own repo as its own SDLC run. mev's planning docs currently have zero awareness of this work (no D15 mirror, no state.json/status.md mention) -- /generate-tasks for BA.15.12 must seed context into mev's repo (a decision doc mirroring D15's shape + a status/plan entry) before or while writing the mev-side task spec, not just author a bastion-side spec.",
+      "text": "BA.15.12 (mev/okf-core format convergence, scope widened by D16 to include brain/graph.rs + brain/graph_emit.rs alongside brain/okf.rs + brain/state.rs) is cross-repo: the mev-side dedup (delete the four duplicate modules, repoint at okf-core) happens in mev's own repo as its own SDLC run. mev's planning docs currently have zero awareness of this work (no D15/D16 mirror, no state.json/status.md mention) -- /generate-tasks for BA.15.12 must seed context into mev's repo (a decision doc mirroring D15+D16's shape + a status/plan entry) before or while writing the mev-side task spec, not just author a bastion-side spec.",
       "related": [
         {
           "type": "block",
           "repo": "bastion",
-          "id": "BA.15.12"
+          "id": "BA.15.12",
+          "what": null
         }
       ],
       "clears_when": "BA.15.12's task spec(s) exist in both bastion and mev repos with mev-side context seeded",
-      "created": "2026-07-03"
-    },
-    {
-      "slug": "mv3bv-graph-resolution-surface",
-      "scope": {
-        "cross_repo": true
-      },
-      "kind": "known_issue",
-      "text": "mev shipped MV.3B.V (2026-07-03): a pure resolve_edge(artifact, edge) -> EdgeResolution helper in mev/src/brain/graph.rs (807 lines), consumed by both check_graph and graph_emit.rs's (282 lines) now-versioned GraphExport (version \"1\" -> \"2\", ExportedEdge gained nullable target_node_id/target_doc_id). Confirmed no bastion break: bastion's mev dependency is an unpinned path dep (crates/bastion/Cargo.toml -> ../../../mev), so `bastion graph`/brainval already builds and tests green (cargo test -p bastion brainval, 24/24) against the new mev without any bastion-side edit. Load-bearing gap for okf-core (crates/okf-core, D15's designated BA.15.12 reconciliation target): okf-core today only has frontmatter.rs + parse.rs (605 lines) -- no state.rs or graph.rs equivalent at all. D15 already scoped BA.15.12 as requiring okf-core to grow a state schema before mev's okf.rs/state.rs (~6,282 lines) can be dropped; graph.rs/graph_emit.rs (1,089 lines, growing -- MV.3B.V just added to it) is a further, currently-unscoped chunk of mev's brain/ module with zero okf-core counterpart, so okf-core's eventual reconciliation target is larger than D15's original two-file framing. Also note: orchestrator/scripts/load_brain_edges.py still re-derives target_node_id/target_doc_id itself in Python rather than consuming mev's new resolved fields -- a simplification opportunity mev's own status.md already flags, not a break.",
-      "related": [
-        {
-          "type": "block",
-          "repo": "bastion",
-          "id": "BA.15.12"
-        }
-      ],
-      "clears_when": "The full mev port (graph.rs/graph_emit.rs resolve-edge logic included) is scoped into a block, or explicitly deferred with its own tracked follow-on",
       "created": "2026-07-03"
     }
   ]

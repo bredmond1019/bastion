@@ -1578,36 +1578,50 @@ Forward-looking — refine Files when each becomes next.
 - **Acceptance criteria:** deferred — will be written when the block is scoped.
 
 ### Block BA.15.11 — Engine packaging *(deferred, not scoped)*
-- **What:** `bastion run` bundling the `workflow-engine-rs` runtime plus an optional Python
-  `orchestrator` extension.
-- **Why:** Its own plan once the workspace (BA.15.0) has landed and WF.1's D24-revisit gate (cross-repo
-  plan, Phase 6) opens.
-- **Depends on:** nothing local yet — gated on the cross-repo `WF.1` decision.
+- **What:** `bastion run` bundling the **`engine-rs`** runtime (brain D42 — the greenfield native
+  Rust engine that embeds in `bastion serve`) plus an optional Python `orchestrator` extension.
+  *(Updated 2026-07-03: originally worded around `workflow-engine-rs`; brain D41 rejected adopting
+  that repo — it is a read-only harvest source only.)*
+- **Why:** Its own plan once engine-rs's first milestone (EN.0.A→EN.3.B, SDLC parity) lands
+  (cross-repo plan, Program Phase 6).
+- **Depends on:** nothing local yet — gated on the engine-rs first milestone (brain D42).
 - **Acceptance criteria:** deferred — will be written when the block is scoped.
 
-### Block BA.15.12 — mev/okf-core format convergence *(deferred, not scoped)*
+### Block BA.15.12 — mev/okf-core format convergence *(up next — promoted 2026-07-03; scope widened 2026-07-03)*
 > **Split from the original BA.15.2 per [D15](decisions/D15-mev-integration-cross-repo-path-dep.md).**
-> This is the *risky* half — it touches mev's working internals — and is only undertaken when there is
-> appetite to do so. The bastion-side CLI unification (BA.15.2) does **not** wait on it.
-- **What:** Achieve one implementation of each shared format: extract a `state.json` serde schema + a
-  reconciled `OkfFrontmatter` model into `okf-core` (the prerequisite BA.15.1 deferred), then repoint
-  **mev**'s `brain/okf.rs` + `brain/state.rs` at `okf-core` (`mev = { path }` gains
-  `okf-core = { path = "../bastion/crates/okf-core" }`), deleting mev's `pub(crate)` OKF/state dupes.
-- **Why:** Kills the named self-knowledge-drift risk (four parsers of the same three formats). Deferred
-  because mev's graph + state validation is proven and load-bearing (D15): the parity risk on the whole
-  brain corpus is real, and the CLI value already shipped in BA.15.2 without it.
-- **Files:** *Modified* `crates/okf-core/` (add state schema + reconciled OKF model); *Modified* mev
-  `brain/okf.rs` + `brain/state.rs` (their own repo — a separate SDLC run) + mev `Cargo.toml`.
-- **Interfaces / shared surface:** `okf-core` becomes the single OKF + `state.json` schema contract for
-  every Rust consumer; must match `../planning/state-schema.md`. Requires reconciling mev's list-`layer`,
-  `serde_yaml`-based model with `okf-core`'s hand-rolled one.
+> This is the *risky* half — it touches mev's working internals. **Promoted from deferred 2026-07-03:**
+> the operator scoped it as the next block — it is the real "one parser" payload of the consolidated
+> program's Phase 1 (brain `core/planning/master-plan.md`). The bastion-side CLI unification (BA.15.2,
+> shipped PR #15) did **not** wait on it. **Scope widened 2026-07-03 per
+> [D16](decisions/D16-ba15-12-scope-widened-graph-resolution.md):** mev shipped `MV.3B.V` (a
+> `resolve_edge`/`ExportedEdge` graph-resolution module in `brain/graph.rs` + `graph_emit.rs`) after
+> D15 was written; that module has zero `okf-core` counterpart and is now in scope alongside
+> `okf.rs`/`state.rs`.
+- **What:** Achieve one implementation of each shared format: extract a `state.json` serde schema, a
+  reconciled `OkfFrontmatter` model, **and a graph/edge-resolution model** (`resolve_edge` /
+  `EdgeResolution` / `ExportedEdge`) into `okf-core` (the prerequisite BA.15.1 deferred), then repoint
+  **mev**'s `brain/okf.rs` + `brain/state.rs` + `brain/graph.rs` + `brain/graph_emit.rs` at `okf-core`
+  (`mev = { path }` gains `okf-core = { path = "../bastion/crates/okf-core" }`), deleting mev's
+  `pub(crate)` OKF/state/graph-resolution dupes.
+- **Why:** Kills the named self-knowledge-drift risk (now five parsers of the same four formats, not
+  four of three — `MV.3B.V` added a fifth). Deferred because mev's graph + state validation is proven
+  and load-bearing (D15): the parity risk on the whole brain corpus is real, and the CLI value already
+  shipped in BA.15.2 without it.
+- **Files:** *Modified* `crates/okf-core/` (add state schema, reconciled OKF model, graph/edge-resolution
+  model); *Modified* mev `brain/okf.rs` + `brain/state.rs` + `brain/graph.rs` + `brain/graph_emit.rs`
+  (their own repo — a separate SDLC run) + mev `Cargo.toml`.
+- **Interfaces / shared surface:** `okf-core` becomes the single OKF + `state.json` + graph-resolution
+  schema contract for every Rust consumer; must match `../planning/state-schema.md`. Requires
+  reconciling mev's list-`layer`, `serde_yaml`-based model with `okf-core`'s hand-rolled one, plus
+  mev's `resolve_edge`/`ExportedEdge` (`GraphExport` version "2") shape.
 - **Out of scope:** the bastion-side CLI (BA.15.2, already shipped); any workspace-absorb of mev (D15 —
   it stays a path-dep repo).
 - **Depends on:** Block BA.15.1 (okf-core exists), Block BA.15.2 (bastion CLI already consumes mev).
   **Cross-repo:** executed partly in mev's own repo.
-- **Acceptance criteria:** deferred — the original BA.15.2 AC migrates here (mev's OKF/state dupes
-  deleted; `bastion validate-brain` output parity with `mev` on the whole brain corpus; combined test
-  count not lower; gated checks pass in both repos).
+- **Acceptance criteria:** deferred — the original BA.15.2 AC migrates here (mev's OKF/state/graph-
+  resolution dupes deleted; `bastion validate-brain`/`bastion graph` output parity with `mev` on the
+  whole brain corpus, including `GraphExport` version "2" fields; combined test count not lower; gated
+  checks pass in both repos).
 
 ---
 
@@ -1674,7 +1688,7 @@ Forward-looking — refine Files when each becomes next.
 | 15 | 8 | `bastion init` (greenfield scaffold) | The easy half of drop-in adoption | First thing a stranger runs after cloning |
 | 15 | 9 | `bastion assess` (read-only diagnostic) | Safe on-ramp to `adopt`; consulting-practice artifact | Proves the OSS posture works on unseen repos |
 | 15 | 10 | `bastion adopt` *(deferred)* | Non-destructive migration + frontmatter backfill | Full drop-in-adoption promise |
-| 15 | 11 | Engine packaging *(deferred)* | Bundle `workflow-engine-rs` (+ optional orchestrator) | Gated on cross-repo `WF.1` decision |
+| 15 | 11 | Engine packaging *(deferred)* | Bundle `engine-rs` (+ optional orchestrator) — D41/D42 | Gated on engine-rs first milestone (EN.3.B parity) |
 | 15 | 12 | mev/okf-core format convergence *(deferred, split from 15.2, D15)* | Drop mev's OKF/state dupes for `okf-core`; needs okf-core state schema + OKF reconciliation | Kills the four-parser drift — the risky half, done on appetite |
 
 > Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
