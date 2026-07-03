@@ -2,9 +2,9 @@
   "spec_slug": "15.2-unify-cli-bastion-side",
   "branch": "15.2-unify-cli-bastion-side-flow",
   "started_at": "2026-07-03T01:05:22Z",
-  "updated_at": "2026-07-03T01:27:49Z",
+  "updated_at": "2026-07-03T01:31:16Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.2-unify-cli-bastion-side-flow",
-  "status": "docs",
+  "status": "done",
   "current_task": 4,
   "tasks": {
     "1": {
@@ -205,10 +205,10 @@
       }
     ],
     "total": {
-      "promptTokEst": 9291,
+      "promptTokEst": 10146,
       "filesReadKb": 0,
-      "inTokEst": 9291,
-      "outTok": 163172
+      "inTokEst": 10146,
+      "outTok": 171847
     }
   }
 }

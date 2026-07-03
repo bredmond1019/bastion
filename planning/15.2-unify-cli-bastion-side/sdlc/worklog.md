@@ -22,3 +22,6 @@ Validated: gating checks (fast tripwire)
 
 ## Docs
 Patched: docs/index.md | Created: docs/brainval.md, docs/docview.md
+
+## Wrap-up — PASS
+Next: Pick up BA.15.12 (mev-side dedup: drop mev's OKF/state.json dupes for okf-core, deferred out of 15.2 per D15) or resume Phase 13/14 blocks per state.json's regenerated focus.next.
