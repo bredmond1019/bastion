@@ -2,10 +2,10 @@
   "spec_slug": "15.2-unify-cli-bastion-side",
   "branch": "15.2-unify-cli-bastion-side-flow",
   "started_at": "2026-07-03T01:05:22Z",
-  "updated_at": "2026-07-03T01:11:31Z",
+  "updated_at": "2026-07-03T01:19:02Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.2-unify-cli-bastion-side-flow",
   "status": "running",
-  "current_task": 2,
+  "current_task": 3,
   "tasks": {
     "1": {
       "status": "passed",
@@ -45,6 +45,26 @@
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.2-unify-cli-bastion-side-flow/crates/bastion/src/main.rs",
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.2-unify-cli-bastion-side-flow/crates/bastion/src/brainval/mod.rs",
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/15.2-unify-cli-bastion-side-flow/planning/15.2-unify-cli-bastion-side/tasks.md"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "3": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "Added bastion view/edit subcommands as thin subprocess pass-throughs to the bella binary (bella-engine's app loop is private/binary-only), with pure validate_path/view_args/edit_args unit-tested and the spawn shell smoke-tested.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "bella-engine exposes only a one-shot Rendered layout (render_with_edit), not an interactive loop, and the bella app crate builds a binary only (no [lib] target) so its Reader/Browser event loop can't be imported without touching bella's Cargo.toml; resolved by shelling out to the `bella` binary as a subprocess (mirrors sessions/tmux.rs's construction-vs-execution split) instead of reimplementing bella's TUI inside bastion.",
+        "bella itself currently has no distinct edit-mode CLI flag/keybinding (only Reader/Browser modes), so `bastion edit` invokes the identical `bella <path>` command as `bastion view` today; kept as a separate cli.rs/docview entrypoint so a future bella edit-mode flag has a home without another CLI shape change.",
+        "validate_path runs before any process spawn so a missing file or a directory path degrades cleanly (typed DocViewError) without ever touching bella; a bella-not-on-PATH failure is mapped to a C001-style message and a non-zero bella exit to C010, reusing the existing observ error-code conventions."
+      ],
+      "files_changed": [
+        "crates/bastion/src/cli.rs",
+        "crates/bastion/src/main.rs",
+        "crates/bastion/src/docview/mod.rs",
+        "planning/15.2-unify-cli-bastion-side/tasks.md"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -113,13 +133,29 @@
         "filesReadKb": null,
         "inTokEst": 594,
         "outTok": 2153
+      },
+      {
+        "label": "implement-3-1",
+        "model": "sonnet",
+        "promptTokEst": 1008,
+        "filesReadKb": null,
+        "inTokEst": 1008,
+        "outTok": 23568
+      },
+      {
+        "label": "test-3-1",
+        "model": "haiku",
+        "promptTokEst": 594,
+        "filesReadKb": null,
+        "inTokEst": 594,
+        "outTok": 2071
       }
     ],
     "total": {
-      "promptTokEst": 4247,
+      "promptTokEst": 5849,
       "filesReadKb": 0,
-      "inTokEst": 4247,
-      "outTok": 115839
+      "inTokEst": 5849,
+      "outTok": 141478
     }
   }
 }
