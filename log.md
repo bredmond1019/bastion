@@ -2,12 +2,35 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-03T15:45:00Z
+timestamp: 2026-07-03T16:23:40Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-07-03]
+
+### PR #16 merged, BA.15.12 closed, handoff to mev-side dedup
+
+- **What:** Ran `/code-review low` on the `15.12-mev-okf-core-convergence` diff (0 findings), then
+  reviewed and merged PR #16 (squash) into `main` on GitHub. Ran `/clean-worktree
+  15.12-mev-okf-core-convergence-flow`: removed the worktree, deleted the branch, and rebased one
+  unrelated pre-existing local commit (an HTML dependency-graph artifact — a no-op after rebase
+  since its content was already upstream). Closed out `state.json` (BA.15.12 → `closed`, title
+  updated to drop "deferred, not scoped" and note the mev-side split; cleared the now-satisfied
+  `ba15-12-mev-context-seed` carryover). `mev emit-state --write` had already been run (0 errors)
+  and `mev validate-brain --state` already run (0 state-graph errors; 2 unrelated pre-existing
+  frontmatter errors on brain-repo docs outside bastion, not introduced this session). Wrote
+  `planning/handoff.md` pointing the next agent at the mev-side dedup as the next action.
+- **Why:** Closes out the bastion-side half of BA.15.12 per the sequenced master-plan now that
+  `/sdlc-flow` and code review both passed clean, and hands off the mev-side portion of the D15/D16
+  split to `../mev`'s own repo, where the mirror decision and ticket already exist.
+- **Refs:** PR #16; `planning/master-plan.md` BA.15.12; `planning/handoff.md`;
+  `../mev/planning/ticket-ba15-12-okf-core-convergence/`;
+  `../mev/planning/decisions/D9-ba15-12-okf-core-convergence-mirror.md`.
 
 ---
 
