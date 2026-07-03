@@ -1383,6 +1383,200 @@ Forward-looking — refine Files when each becomes next.
 
 ---
 
+## Phase 15 — Bastion Product Packaging *(independent track; the cross-repo BA.15 program)*
+
+> **The convergence program.** Bastion, mev, and bella currently maintain four separate Rust parsers
+> of the same three file formats (OKF frontmatter, `state.json`, `brain.toml`) — the named
+> self-knowledge-drift risk in the cross-repo consolidation plan
+> (`core/planning/bastion-master-plan.md`, Phase 1: "One Parser, One Workspace"). Phase 15 converges
+> them into one Cargo workspace, then builds `bastion init`/`assess`/`adopt` on top so the same
+> convergence pays for a scaffolder. **Posture: demand-first for the operator's own use, and released
+> open source** — see **D40** (resolves the cross-repo plan's `HQ.D1` gate); BA.15.3
+> (licensing/README) is in scope, not a hedge. The full executable roadmap — waves, critical-files
+> table, and verification steps — lives in
+> [`planning/bastion-product/plan.md`](bastion-product/plan.md); this section registers it as a
+> proper phase here per the block contract (every block must exist in the local plan/state graph, not
+> only in `state.json`). Status authority for individual blocks remains `state.json`/`status.md`, not
+> this narrative. **DB-free (D4).** Local wave order: **Wave 1** (BA.15.0 → BA.15.1 → BA.15.2, BA.15.3
+> parallel after BA.15.0) is the foundation everything else stands on; **Wave 2** (BA.15.4 →
+> BA.15.5/BA.15.6) and **Wave 3** (BA.15.7 → BA.15.8/BA.15.9) build the scaffolder; BA.15.10/BA.15.11
+> are deferred, not scoped.
+
+### Block BA.15.0 — Cargo workspace skeleton
+- **What:** Add a root `[workspace]` to `Cargo.toml`; move today's `bastion` sources under
+  `crates/bastion/`; pull sibling crates in as workspace members (`git subtree add` where history
+  matters — bastion already path-depends on `bella-engine` and `workflow-engine-*`, so consolidation
+  is partly underway). Repoint each member's `Cargo.toml` to workspace-relative deps.
+- **Why:** The physical container every later convergence (`okf-core`, `mev-core`, template
+  embedding) needs to exist inside.
+- **Files:** *Modified* root `Cargo.toml` (add `[workspace]`); *Moved* `src/` → `crates/bastion/src/`;
+  *New* member `Cargo.toml`s.
+- **Out of scope:** moving any behavior into the new crates — this block only builds the container.
+- **Depends on:** nothing — foundational.
+- **Acceptance criteria:** workspace builds; existing bastion binary + full test suite unchanged and
+  green; gated checks pass.
+
+### Block BA.15.1 — Extract `okf-core`
+- **What:** Single-source the OKF frontmatter contract into an `okf-core` crate: the
+  `OkfFrontmatter` model, `extract_frontmatter`/parse, closed-vocab validators (layer/project/status,
+  kebab-case `doc_id`), the `state.rs` serde schema, and `serialize_frontmatter` (the write path).
+  **Head start:** the model + `serialize_frontmatter` + 18 tests are already prototyped in
+  `src/okf/mod.rs` (396 lines) — lift them into the crate, then repoint `brain/okf.rs` and
+  `validate/frontmatter.rs` (and mev) at `okf-core`.
+- **Why:** The common vocabulary both `mev-core` and bastion consume; prerequisite for BA.15.2.
+- **Files:** *New* `crates/okf-core/` (lifted from `crates/bastion/src/okf/`); *Modified*
+  `brain/okf.rs`, `validate/frontmatter.rs`.
+- **Interfaces / shared surface:** the crate both `mev-core` (BA.15.2) and bastion depend on; must
+  match `planning/state-schema.md`.
+- **Out of scope:** behavior changes to validation.
+- **Depends on:** Block BA.15.0.
+- **Acceptance criteria:** both consumers compile against `okf-core`; no duplicated OKF/state.json
+  struct definitions remain; gated checks pass.
+
+### Block BA.15.2 — Unify the CLI; mev becomes `mev-core`
+- **What:** Convert `mev` into `mev-core` (public `validate_brain`, `emit_state`, `manifest_brain`,
+  `visualize_brain`), dropping its `pub(crate)` OKF/state dupes in favor of `okf-core`. Add bastion
+  subcommands `validate-brain` / `emit-state` / `manifest` / `graph` (calling `mev-core`) and
+  `bastion view` / `edit` (calling `bella-engine`), following the existing declare→name→dispatch,
+  DB-free pattern. Optional `bin-shims/` re-dispatch keeps standalone `mev`/`bella` binaries working.
+- **Why:** The duplicate-implementation inventory is the named drift engine (cross-repo plan, Phase
+  1). After this block there is exactly one implementation of each format, and bastion's structural
+  queries get the full graph engine for free.
+- **Files:** *New* `crates/mev-core/`; *Modified* `crates/bastion/src/cli.rs` + `main.rs`; *New*
+  `bin-shims/` (optional).
+- **Interfaces / shared surface:** `mev-core`'s public API becomes the format contract for every Rust
+  consumer; `mev manifest`/`emit-state` CLIs stay behaviorally unchanged for orchestrator/brain
+  callers.
+- **Out of scope:** the Cortex rename flip (D38, sequenced separately in mev's own plan);
+  `brain.toml` serializer round-trip (BA.15.7); template pack vendoring (BA.15.4).
+- **Depends on:** Block BA.15.0, Block BA.15.1.
+- **Acceptance criteria:** the four duplicate implementations deleted; `bastion validate-brain` output
+  parity with mev on the whole brain corpus; combined test count not lower; gated checks pass in both
+  repos.
+
+### Block BA.15.3 — Licensing + front-door README
+- **What:** Root `LICENSE` (MIT OR Apache-2.0 dual), per-crate `license` fields, a top-level README
+  framing the system + install instructions + `bastion init` quickstart.
+- **Why:** **D40** resolves this as in-scope, not a hedge — the plan is to actually release this open
+  source, not merely converge parsers privately.
+- **Files:** *New* root `LICENSE`(s); *Modified* per-crate `Cargo.toml` `license` fields; *Modified*
+  root `README.md`.
+- **Out of scope:** a public issue tracker/support process — D40 is explicit that open source here
+  means "publish the source," not "take on a product roadmap."
+- **Depends on:** Block BA.15.0.
+- **Acceptance criteria:** license files present and consistent across crates; README walks a
+  stranger through install → `bastion init` → first `bastion validate-brain`; gated checks pass.
+
+### Block BA.15.4 — Vendor + embed the template pack
+- **What:** Copy `base-template/scaffold/` (the tokenized D30 file pack) and the harness
+  (`.claude/commands` + `.claude/workflows` engines + `harness.schema.json` + `harness.examples.md`)
+  into `templates/`; embed at compile time (`rust-embed`/`include_dir!`) in
+  `crates/bastion/src/init/templates.rs`. Expose `iter_template_files()` + `render(path, &TokenMap)`.
+  Token set: `{{PROJECT_NAME}}` `{{SLUG}}` `{{DESCRIPTION}}` `{{PROJECT_TYPE}}` `{{DATE}}`
+  `{{PREFIX}}` `{{STACK}}` `{{VERIFIED_HANDLES}}`.
+- **Why:** `bastion init` (BA.15.8) needs to work standalone in any repo — no separate clone of
+  `base-template` — which is also what makes the open-source distribution (D40) actually usable.
+- **Files:** *New* `templates/`; *New* `crates/bastion/src/init/templates.rs`.
+- **Out of scope:** the `init` command itself (BA.15.8).
+- **Depends on:** Block BA.15.0.
+- **Acceptance criteria:** `iter_template_files()`/`render()` unit-tested against the embedded pack;
+  no unsubstituted `{{...}}` tokens after a render; gated checks pass.
+
+### Block BA.15.5 — `tasks.json` emission + `state.json` block sync
+- **What:** Extend `/generate-tasks` (and siblings that write `tasks.md`) to also emit a
+  machine-parsable `tasks.json` in the same concept folder and merge it into the block's `tasks[]`
+  entry in `state.json`. Reconcile two template drifts found in exploration: scaffold `status.md`'s
+  `timestamp:` field naming, and a seeded minimal `planning/state.json` (`kind:"project"`, empty
+  `focus`/`tracks`, stamped `updated`) so a freshly-inited repo's Kanban/overview + `emit-state` have
+  day-one input.
+- **Why:** `tasks.md` stays human-facing; `tasks.json` becomes the source of truth for tooling
+  (Kanban, `emit-state`, the naming validator, BA.15.6). This is also the structural fix for the
+  recurring `sdlc-flow-task-heading-format` carryover (D16 lint vs dotted block IDs) — see
+  `planning/state.json`'s `carryover[]`.
+- **Files:** *Modified* `.claude/commands/generate-tasks.md` (+ sibling task-writing commands);
+  *Modified* `.claude/workflows/*.js` engines; *Modified* `okf-core` state schema.
+- **Out of scope:** the naming-convention engine itself (BA.15.6).
+- **Depends on:** Block BA.15.4 (template pack), Block BA.15.1 (state schema).
+- **Acceptance criteria:** a generated spec produces both `tasks.md` and `tasks.json`; `state.json`'s
+  block `tasks[]` reflects the emitted JSON; the carryover's `clears_when` condition is satisfied
+  jointly with BA.15.6; gated checks pass.
+
+### Block BA.15.6 — Naming-convention engine
+- **What:** A pure ID parser/validator for `PREFIX.PHASE.BLOCK[.TASK]`: derive `PREFIX` from
+  `brain.toml`, validate format, and check global uniqueness across a repo's `state.json`/`tasks.json`.
+  Surfaced through `bastion validate-brain` (errors on malformed/duplicate IDs) and reused by
+  `init`/`assess`.
+- **Why:** Closes the other half of the recurring heading-format carryover, and is the prerequisite
+  every Phase-7 (drop-in adoption) block needs to keep a foreign repo's IDs sane.
+- **Files:** *New* ID parser/validator in `crates/okf-core/`; *Modified* `mev-core` validate path.
+- **Out of scope:** retrofitting existing bastion block IDs — this validates going forward.
+- **Depends on:** Block BA.15.1.
+- **Acceptance criteria:** malformed and duplicate IDs are rejected with file + ID in the error;
+  well-formed IDs across the whole brain corpus pass; gated checks pass.
+
+### Block BA.15.7 — `brain.toml` serializer + full `SpaceEntry` round-trip
+- **What:** Enable the `toml` crate's serialize/`display` feature (currently pinned `parse`-only in
+  `Cargo.toml`). Extend `spaces::SpaceEntry`/`BrainToml` to round-trip the full schema (`slug, prefix,
+  tier, repo_path, status_file, cache_doc, heading`) plus the top-level `[vocab]` (layer/status) and
+  `[crawl] skip_dirs` tables.
+- **Why:** `bastion init` (BA.15.8) needs to *write* a `brain.toml`, not just read one.
+- **Files:** *Modified* `Cargo.toml` (`toml` feature: add `display`); *Modified*
+  `crates/bastion/src/brain/spaces.rs`.
+- **Out of scope:** any change to `parse_space_tree`'s read behavior.
+- **Depends on:** Block BA.15.0.
+- **Acceptance criteria:** a pure serialize↔`parse_space_tree` round-trip test pair passes for the
+  full schema including `[vocab]`/`[crawl]`; gated checks pass.
+
+### Block BA.15.8 — `bastion init` (greenfield scaffold)
+- **What:** New `Init { path, name, prefix, stack, tier, yes }` subcommand. Resolve target (default
+  `.`); refuse if `brain.toml` already exists (point at the future `adopt`); prompt or take flags;
+  build a `TokenMap`; render + write the embedded templates (BA.15.4); emit `brain.toml` (BA.15.7)
+  with a self-referential `[[repos]]`; stamp `planning/.template-version`; print a `man.rs`-style
+  summary. Pure render/token/serialize core, thin write shell (repo rule #6).
+- **Why:** The easy half of drop-in adoption — greenfield first — and the first capability a stranger
+  actually uses after cloning the open-source release (D40).
+- **Files:** *New* `crates/bastion/src/init/mod.rs`; *Modified* `cli.rs`, `main.rs`.
+- **Out of scope:** existing-repo analysis (BA.15.9) or migration (BA.15.10, deferred).
+- **Depends on:** Block BA.15.4, Block BA.15.6, Block BA.15.7.
+- **Acceptance criteria:** an inited repo passes `bastion validate-brain` + `mev manifest` cleanly on
+  first commit; `bastion init` where `brain.toml` already exists exits cleanly pointing at `adopt`,
+  writing nothing; gated checks pass.
+
+### Block BA.15.9 — `bastion assess` (read-only diagnostic)
+- **What:** New `Assess { path, json }`. Locate `brain.toml`/planning via `config::walk_up_for`;
+  discover markdown via `validate::find_markdown_files`; compute OKF coverage (missing/invalid fields
+  via `okf-core`), graph readiness (node count + dangling `[[links]]`), state readiness
+  (focus/tracks presence), and ID-convention violations (BA.15.6). Human summary or `--json` envelope
+  (mev convention).
+- **Why:** The safe on-ramp to `adopt`, and a demo-able artifact for the consulting practice — also
+  the block that proves the open-source posture (D40) works against a repo bastion has never seen.
+- **Files:** *New* `crates/bastion/src/assess/mod.rs`; *Modified* `cli.rs`, `main.rs`.
+- **Out of scope:** any filesystem writes (that's BA.15.10).
+- **Depends on:** Block BA.15.1, Block BA.15.6.
+- **Acceptance criteria:** a useful report on a repo bastion has never seen; a repo with a bare `.md`
+  reports the gap; zero filesystem writes; gated checks pass.
+
+### Block BA.15.10 — `bastion adopt` *(deferred, not scoped)*
+- **What:** Non-destructive migration of an existing repo: `--dry-run` proposal + `--apply`, with
+  hybrid frontmatter backfill (bastion mechanically stamps required fields via
+  `serialize_frontmatter`, inferring `type`/`title`/`description` from path + first heading; a Claude
+  Code skill enriches `layer`/`keywords`/`related` as a reviewable pass).
+- **Why:** The full drop-in-adoption promise — but the cross-repo plan gates it behind Phase 5
+  (Living Brain routines) landing first; not scoped until then.
+- **Depends on:** Block BA.15.1, Block BA.15.4, Block BA.15.6, Block BA.15.7 (bastion-local); `HQ.R1`,
+  `HQ.R2` (cross-repo plan, Phase 5).
+- **Acceptance criteria:** deferred — will be written when the block is scoped.
+
+### Block BA.15.11 — Engine packaging *(deferred, not scoped)*
+- **What:** `bastion run` bundling the `workflow-engine-rs` runtime plus an optional Python
+  `orchestrator` extension.
+- **Why:** Its own plan once the workspace (BA.15.0) has landed and WF.1's D24-revisit gate (cross-repo
+  plan, Phase 6) opens.
+- **Depends on:** nothing local yet — gated on the cross-repo `WF.1` decision.
+- **Acceptance criteria:** deferred — will be written when the block is scoped.
+
+---
+
 ## Quick Reference Sequence Table
 
 | Phase | Block | What | Why | Role in destination |
@@ -1435,6 +1629,18 @@ Forward-looking — refine Files when each becomes next.
 | 14 | 1 | Layout polish (padding, collapse, truncation) | Herdr-grade spacing + collapsible spine | Modern, tidy chrome |
 | 14 | 2 | Mission Control refinement (conditional panes + indicators) | Drop Node detail for sessions; inline state | Focused operational view |
 | 14 | 3 | Color pass (more greens/cyans) | Modern terminal feel on the purple/black base | Final aesthetic |
+| 15 | 0 | Cargo workspace skeleton | Physical container for every convergence | Foundation of the whole packaging program |
+| 15 | 1 | Extract `okf-core` | One shared OKF/state.json contract (head start already prototyped) | Ends struct-definition drift by construction |
+| 15 | 2 | mev → `mev-core`; kill duplicate parsers | Delete the named drift engine — four parsers become one | Structural queries get the full graph engine free |
+| 15 | 3 | Licensing + front-door README | D40: open source is a real destination, not a hedge | Makes the release usable by a stranger |
+| 15 | 4 | Vendor + embed the template pack | `init` must work standalone, no `base-template` clone | Portable scaffolding |
+| 15 | 5 | `tasks.json` emission + state.json sync | Machine-parsable specs; fixes the recurring heading-format carryover (with 15.6) | Tooling gets a real source of truth |
+| 15 | 6 | Naming-convention engine | `PREFIX.PHASE.BLOCK[.TASK]` parser/validator | IDs stay sane in any repo, including foreign ones |
+| 15 | 7 | `brain.toml` serializer + round-trip | `init` needs to *write* a brain.toml, not just read one | Enables greenfield scaffolding |
+| 15 | 8 | `bastion init` (greenfield scaffold) | The easy half of drop-in adoption | First thing a stranger runs after cloning |
+| 15 | 9 | `bastion assess` (read-only diagnostic) | Safe on-ramp to `adopt`; consulting-practice artifact | Proves the OSS posture works on unseen repos |
+| 15 | 10 | `bastion adopt` *(deferred)* | Non-destructive migration + frontmatter backfill | Full drop-in-adoption promise |
+| 15 | 11 | Engine packaging *(deferred)* | Bundle `workflow-engine-rs` (+ optional orchestrator) | Gated on cross-repo `WF.1` decision |
 
 > Phases 0–4 (workflow observability) and Phase 5 (session control) are **independent tracks**.
 > Phase 5 has no dependency on the orchestrator and is not gated by D2 — it can be worked at any
@@ -1476,6 +1682,18 @@ Forward-looking — refine Files when each becomes next.
 > rather than retrofitted. Governed by the approved plan (session 2026-07-01,
 > `.claude/plans/`). Prerequisite noted in BA.13.0: `side`/`client`/`portfolio` tiers lack tier-level
 > `state.json`/master-plan (HQ backlog ticket filed) — the tier overview degrades gracefully until then.
+>
+> **Phase 15 (Bastion Product Packaging) is a sixth independent track** — bastion's slice of the
+> cross-repo consolidation program (`core/planning/bastion-master-plan.md`, Phase 1 "One Parser, One
+> Workspace" + Phase 7 "Drop-in Adoption"), governed by **D40** (posture: demand-first for the
+> operator's own use, released open source). Its full executable roadmap — waves, critical-files
+> table, verification steps — lives in `planning/bastion-product/plan.md`; this phase section is the
+> registration required by the block contract. Local wave order: **Wave 1** BA.15.0 →
+> (BA.15.1 → BA.15.2) ∥ BA.15.3 (both depend only on BA.15.0); **Wave 2** BA.15.4 → (BA.15.5 needs
+> BA.15.1 too) ∥ BA.15.6 (needs BA.15.1); **Wave 3** BA.15.7 → BA.15.8 (needs 15.4/15.6/15.7 too) ∥
+> BA.15.9 (needs 15.1/15.6). BA.15.10/BA.15.11 are deferred, not scoped. It touches nearly the whole
+> tree (a workspace restructure), so **do not run this track concurrently with Phases 13/14** —
+> finish or pause the Console work first to avoid merge conflicts across `src/`.
 
 ---
 

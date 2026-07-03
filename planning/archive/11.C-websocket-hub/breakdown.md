@@ -5,7 +5,7 @@ description: "Atomic sub-step decomposition of Task 4 (WebSocket hub actor + per
 doc_id: 11-c-breakdown
 layer: [console, surface]
 project: bastion
-status: active
+status: archived
 keywords: [breakdown, websocket, actix actor, hub, topic subscription, ref-count, watch, needs-input, debounce]
 related: [11-c-websocket-hub, 11-c0-agent-state-detection, master-plan]
 phase: 11

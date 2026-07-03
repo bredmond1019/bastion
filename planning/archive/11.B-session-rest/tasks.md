@@ -5,7 +5,7 @@ description: "Extend bastion serve with session REST endpoints (list/pane/send/k
 doc_id: 11-b-session-rest
 layer: [console, surface]
 project: bastion
-status: active
+status: archived
 keywords: [session REST, bastion serve, tmux, named-key, API contract, v0.1, actix-web]
 related: [serve-api, master-plan, sessions]
 phase: 11

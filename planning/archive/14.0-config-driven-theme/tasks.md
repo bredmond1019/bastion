@@ -5,7 +5,7 @@ description: Decompose BA.14.0 into disjoint-ownership tasks that make all UI co
 doc_id: 14-0-config-driven-theme-tasks
 layer: [console]
 project: bastion
-status: active
+status: archived
 keywords: [theme, config-driven, ui-theme, bella-engine, runtime-theme, toml-config]
 related: [bastion-master-plan, 13-0-spine-primary-navigation-tasks]
 ---

@@ -5,7 +5,7 @@ description: Decompose BA.13.0 into disjoint-ownership tasks that replace the th
 doc_id: 13-0-spine-primary-navigation-tasks
 layer: [console]
 project: bastion
-status: active
+status: archived
 keywords: [spine, navigation, unified-console, sessions-tui, spine-row, selected-node]
 related: [bastion-master-plan]
 ---

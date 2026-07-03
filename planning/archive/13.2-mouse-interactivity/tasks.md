@@ -5,7 +5,7 @@ description: Decompose BA.13.2 into disjoint-ownership tasks rebuilding a pure o
 doc_id: 13-2-mouse-interactivity-tasks
 layer: [console]
 project: bastion
-status: active
+status: archived
 keywords: [mouse, on-mouse, point-in, viewport-rect, sessions-tui, unified-console]
 related: [bastion-master-plan, 13-0-spine-primary-navigation-tasks, 13-1-persistent-agent-panel-tasks]
 ---

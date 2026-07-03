@@ -31,6 +31,14 @@ append-only — never edit a settled decision; supersede it with a new one and l
   contract; don't exclude the `images` feature; `Theme::bastion()` renamed to `Theme::mission_control()`.
   Mirrors bella's own D3.
 
+## Cross-Repo (brain-level)
+
+- **D40: BA.15 posture — open source, built for myself first**
+  (`../../../../docs/decisions/D40-ba15-posture-open-source-for-myself.md`) — resolves the cross-repo
+  plan's `HQ.D1` gate: BA.15 (Phase 15, Bastion Product Packaging) is demand-first for the operator's
+  own use *and* released open source; BA.15.3 (licensing + README) stays in scope, designed for a
+  stranger's repo, not just HQ's. Extends brain D26/D22.
+
 ## Retired (history)
 
 D1–D10 are settled and live under [`../archive/decisions/`](../archive/decisions/index.md) — durable

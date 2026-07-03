@@ -1,0 +1,58 @@
+[
+  {
+    "task_id": 1,
+    "title": "Scaffold the okf-core crate and wire it into the workspace",
+    "description": "- Create `crates/okf-core/Cargo.toml`: package `okf-core`, `edition = \"2024\"`, `version = \"0.1.0\"`; one dependency `serde = { version = \"1\", features = [\"derive\"] }` (the model derives Serialize/Deserialize). No other deps.\n- Create `crates/okf-core/src/lib.rs` as an initially-empty crate root (module decls added in tasks 2-3). Add a short crate-level doc comment stating this is the single-source OKF frontmatter contract (model + serializer + parser).\n- Add `\"crates/okf-core\"` to the root `Cargo.toml` `[workspace] members` list (currently only `\"crates/bastion\"`).\n- Add `okf-core = { path = \"../okf-core\" }` to `crates/bastion/Cargo.toml` `[dependencies]`.\n- Verify the workspace resolves: `cargo build` builds both members (okf-core is empty but valid).",
+    "acceptance_criteria": [
+      "cargo build succeeds with two workspace members (bastion + okf-core)",
+      "crates/bastion/Cargo.toml declares the okf-core path dependency"
+    ],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["Cargo.toml", "crates/okf-core/Cargo.toml", "crates/okf-core/src/lib.rs", "crates/bastion/Cargo.toml"],
+    "dependsOn": []
+  },
+  {
+    "task_id": 2,
+    "title": "Move the frontmatter parser into okf-core; repoint consumers via re-export",
+    "description": "- Create `crates/okf-core/src/parse.rs` and move the parser out of `crates/bastion/src/validate/frontmatter.rs`: the `Frontmatter` struct, the `ParseResult` enum, `extract_frontmatter`, and `parse_frontmatter`. Make all four `pub` (they were `pub`/`pub(crate)`/private in bastion). Move the parser's unit tests (the `extract_frontmatter` cases) with them into `parse.rs`.\n- Register the module in `crates/okf-core/src/lib.rs` (`mod parse; pub use parse::{Frontmatter, ParseResult, extract_frontmatter, parse_frontmatter};`).\n- In `crates/bastion/src/validate/frontmatter.rs`: delete the moved parser code and add `pub use okf_core::{Frontmatter, ParseResult, extract_frontmatter, parse_frontmatter};` so existing `crate::validate::frontmatter::parse_frontmatter` call sites (serve/status/handoff.rs, serve/status/repo.rs) keep compiling unchanged. Keep `validate_frontmatter` and its tests exactly as-is — it now matches on the re-exported `okf_core::ParseResult`; behavior must not change.\n- In `crates/bastion/src/brain/okf.rs:50`: change `crate::validate::frontmatter::parse_frontmatter(content)` to `okf_core::parse_frontmatter(content)` (the block names this consumer explicitly).\n- Confirm the whole workspace compiles and the parser tests now run under okf-core while `validate_frontmatter`'s tests still pass in bastion.",
+    "acceptance_criteria": [
+      "Frontmatter/ParseResult/extract_frontmatter/parse_frontmatter are defined only in okf-core and are pub",
+      "validate/frontmatter.rs re-exports them and keeps validate_frontmatter with identical behavior (its tests pass unedited)",
+      "brain/okf.rs calls okf_core::parse_frontmatter",
+      "serve/status/handoff.rs and serve/status/repo.rs compile without edits"
+    ],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["crates/okf-core/src/lib.rs", "crates/okf-core/src/parse.rs", "crates/bastion/src/validate/frontmatter.rs", "crates/bastion/src/brain/okf.rs"],
+    "dependsOn": [1]
+  },
+  {
+    "task_id": 3,
+    "title": "Move the OKF model + serializer into okf-core; delete the bastion prototype module",
+    "description": "- Create `crates/okf-core/src/frontmatter.rs` and move from `crates/bastion/src/okf/mod.rs`: the `OkfFrontmatter` struct (keep the serde derives + attributes verbatim), `serialize_frontmatter`, and the pure helpers `push_scalar`, `push_list`, `yaml_scalar`, `needs_quote`. Make `OkfFrontmatter` and `serialize_frontmatter` `pub`.\n- Move all 18 tests from `okf/mod.rs` into `frontmatter.rs`. The round-trip tests reference the parser — repoint them to okf-core's own `parse_frontmatter`/`validate`-free assertions: use `super::` / `crate::parse::parse_frontmatter` for the parse checks. NOTE: three round-trip tests currently also call bastion's `validate_frontmatter`, which does NOT move to okf-core. Replace those assertions with equivalent parse-level checks (e.g. assert the required scalars parse back with the expected values) so the tests stay self-contained within okf-core; do not add a bastion dev-dependency to okf-core.\n- Register the module in `crates/okf-core/src/lib.rs` (`mod frontmatter; pub use frontmatter::{OkfFrontmatter, serialize_frontmatter};`).\n- Delete `crates/bastion/src/okf/mod.rs` (and the now-empty `crates/bastion/src/okf/` directory) and remove `mod okf;` from `crates/bastion/src/main.rs:17`.\n- Confirm no `crate::okf` references remain in the bastion crate and the workspace builds clean.",
+    "acceptance_criteria": [
+      "OkfFrontmatter and serialize_frontmatter are defined in okf-core (pub) with all serializer tests moved and passing",
+      "The moved round-trip tests are self-contained in okf-core (no dependency on bastion's validate_frontmatter)",
+      "crates/bastion/src/okf/ is deleted and `mod okf;` removed from main.rs; no crate::okf references remain",
+      "The bastion crate contains no OkfFrontmatter/serialize_frontmatter definition"
+    ],
+    "validation_commands": [],
+    "max_attempts": 3,
+    "files": ["crates/okf-core/src/lib.rs", "crates/okf-core/src/frontmatter.rs", "crates/bastion/src/okf/mod.rs", "crates/bastion/src/main.rs"],
+    "dependsOn": [2]
+  },
+  {
+    "task_id": 4,
+    "title": "Validate",
+    "description": "Run the Validation Commands listed in tasks.md from the workspace root and confirm all pass: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build --release`. Confirm the combined test count is not lower than before the extraction (the moved serializer + parser tests still run, now under okf-core).",
+    "acceptance_criteria": [
+      "cargo fmt --check, cargo clippy -- -D warnings, cargo test, and cargo build --release all pass at the workspace root",
+      "Combined workspace test count is not lower than before the block"
+    ],
+    "validation_commands": ["cargo fmt --check", "cargo clippy -- -D warnings", "cargo test", "cargo build --release"],
+    "max_attempts": 3,
+    "files": [],
+    "dependsOn": [1, 2, 3]
+  }
+]
