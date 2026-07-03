@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [bastion, cli, operator reference, index, docs]
-related: [bastion-setup, monitor, brain, config]
+related: [bastion-setup, monitor, brain, config, brainval, docview]
 ---
 
 # bastion CLI — Docs
@@ -41,6 +41,8 @@ and `Bastion/docs/ownership.md`.
 | [code.md](code.md) | `bastion code` — tree-sitter symbol/reference/dependents lookup over Rust source |
 | [validate.md](validate.md) | `bastion validate` — Markdown/MDX content validation |
 | [okf.md](okf.md) | `crates/okf-core` — the single-sourced OKF frontmatter model, parser, and `serialize_frontmatter` |
+| [brainval.md](brainval.md) | `bastion validate-brain` / `manifest` / `graph` / `emit-state` — thin `mev` brain-ops pass-throughs |
+| [docview.md](docview.md) | `bastion view` / `edit` — thin `bella` viewer/editor pass-throughs |
 
 ## Infrastructure
 

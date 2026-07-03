@@ -13,6 +13,48 @@ timestamp: 2026-07-02T22:46:57Z
 
 ## [run: 2026-07-03]
 
+Completed BA.15.2 (spec `15.2-unify-cli-bastion-side`) via `/sdlc-flow`, folding mev's brain-ops
+commands and bella's document viewer into the `bastion` binary as thin pass-throughs, per the
+bastion-side split of D15. Task 1 added `mev` as a cross-repo path dependency (`mev = { path =
+"../../../mev" }`, same shape as `bella-engine`) and shipped `bastion validate-brain` (6-way flag
+dispatch mirroring mev's `--links > --structure > --state > --graph > --sync > base` precedence,
+plus a per-subcommand `--json`) as a pass-through over `mev`'s `validate_brain*` functions, with
+byte-identical `--json` output verified against the `mev` binary on the brain corpus. Task 2
+added `bastion manifest` / `graph` / `emit-state` as further thin `mev` pass-throughs, all
+byte-identical to their `mev` equivalents (`graph` mirrors only mev's default compact
+`emit-graph` output, no `--pretty`). Task 3 added `bastion view` / `edit` as subprocess
+pass-throughs to the `bella` binary — bella-engine exposes only a one-shot `render_with_edit`
+and the bella app crate builds a binary only, so its interactive Reader/Browser loop can't be
+imported as a library; `validate_path`/`view_args`/`edit_args` are pure and unit-tested, the
+process-spawn shell is smoke-tested. Task 4 was validation-only: confirmed fmt, clippy
+`-D warnings`, test, and release build all green with 1111 combined tests (1084 bastion + 27
+okf-core), no regressions, and re-verified byte-identical parity for all four mev-backed
+commands from the brain root. End review verdict: **PASS** (0 findings, 1 attempt). Notable
+decisions: `mev` is consumed strictly as an unpinned cross-repo path dependency with zero source
+changes (mirrors the `bella-engine` contract, D14); the mev-side dedup onto `okf-core` stays
+explicitly out of scope, deferred as BA.15.12 per D15; a local worktree-only Cargo
+workspace-detection shim (`trees/mev/` wrapper `Cargo.toml`) was needed to unblock the build in
+this SDLC worktree and is not part of the tracked diff. Docs patched: `docs/index.md`; created
+`docs/brainval.md`, `docs/docview.md`. Next: pick up BA.15.12 (mev-side OKF/`state.json` dedup
+onto `okf-core`) or resume Phase 13/14 blocks per `state.json`'s regenerated `focus.next`.
+
+```
+e5c9ff5 chore: flow state — docs
+f95a02d docs: update docs for 15.2-unify-cli-bastion-side
+063bc11 chore: flow state — task 4 passed
+eb8fc6d feat: implement 15.2-unify-cli-bastion-side-task4
+933738e chore: flow state — task 3 passed
+5be58cf feat: implement 15.2-unify-cli-bastion-side-task3
+7d183ac chore: flow state — task 2 passed
+9626982 feat: implement 15.2-unify-cli-bastion-side-task2
+7455f3a chore: flow state — task 1 passed
+5da83c0 feat: implement 15.2-unify-cli-bastion-side-task1
+```
+
+---
+
+## [run: 2026-07-03]
+
 Completed BA.15.1 (spec `15.1-extract-okf-core`) via `/sdlc-flow`, single-sourcing the OKF
 frontmatter contract into a new `okf-core` workspace crate with no behavior change. Task 1
 scaffolded `crates/okf-core/` (empty `lib.rs`, `serde` dep) and wired it into the root
