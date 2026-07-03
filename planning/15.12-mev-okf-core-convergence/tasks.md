@@ -12,7 +12,7 @@ related: [D15-mev-integration-cross-repo-path-dep, D16-ba15-12-scope-widened-gra
 
 # Task Spec — Phase 15, Block BA.15.12 (mev/okf-core format convergence)
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-07-03 (4/4 tasks PASS, review PASS)
 
 ## Goal
 Extract into `okf-core` the three shared-format models mev still owns privately — a `state.json`
