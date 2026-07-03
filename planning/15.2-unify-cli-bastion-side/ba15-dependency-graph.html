@@ -1,0 +1,506 @@
+<title>BA.15.2 / BA.15.12 — Cross-Repo Dependency Map</title>
+<style>
+  :root {
+    --bg: #12151a;
+    --surface: #191d24;
+    --surface-raised: #1f2430;
+    --border: #313846;
+    --border-soft: #262c37;
+    --text: #e8eaef;
+    --text-dim: #939bab;
+    --text-faint: #626b7c;
+
+    --teal: #56bfab;      /* bastion */
+    --teal-dim: #2c3f3b;
+    --amber: #dc9d5f;     /* mev */
+    --amber-dim: #40352a;
+    --purple: #a58cd8;    /* bella */
+    --purple-dim: #332e42;
+    --blue: #6fa3e6;      /* okf-core / shared contract */
+    --blue-dim: #26364a;
+    --good: #6fcf97;
+    --danger: #dd6b64;
+
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    margin: 0;
+    padding: 48px 24px 80px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1080px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--teal);
+    margin: 0 0 10px;
+  }
+
+  h1 {
+    font-size: 30px;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    margin: 0 0 14px;
+    text-wrap: balance;
+    font-weight: 650;
+  }
+
+  .lede {
+    max-width: 66ch;
+    font-size: 16px;
+    line-height: 1.65;
+    color: var(--text-dim);
+    margin: 0;
+  }
+
+  .answer {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--good);
+    border-radius: 6px;
+    padding: 20px 24px;
+  }
+
+  .answer .badge {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--good);
+    background: rgba(111, 207, 151, 0.12);
+    border: 1px solid rgba(111, 207, 151, 0.35);
+    border-radius: 4px;
+    padding: 4px 8px;
+    margin-top: 2px;
+  }
+
+  .answer p {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--text);
+    max-width: 68ch;
+  }
+  .answer code, p code, li code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-soft);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: var(--text);
+  }
+
+  section.panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .panel-head h2 {
+    font-size: 18px;
+    margin: 0;
+    font-weight: 650;
+    letter-spacing: -0.005em;
+  }
+
+  .panel-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 9px;
+    border-radius: 4px;
+    border: 1px solid;
+  }
+  .panel-tag.now { color: var(--good); border-color: rgba(111,207,151,.4); background: rgba(111,207,151,.08); }
+  .panel-tag.next { color: var(--amber); border-color: rgba(220,157,95,.4); background: rgba(220,157,95,.08); }
+
+  .diagram-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  .diagram-scroll svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-width: 720px;
+  }
+
+  text { font-family: var(--font-sans); }
+  .mono { font-family: var(--font-mono); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    padding: 16px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .legend .item { display: flex; align-items: center; gap: 8px; }
+  .legend svg { flex: none; }
+
+  .ac {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px 26px;
+  }
+  .ac h3 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    font-weight: 650;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ac h3 .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--amber);
+    flex: none;
+  }
+  .ac ul {
+    margin: 0;
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 14.5px;
+    line-height: 1.75;
+  }
+  .ac li strong { color: var(--text); font-weight: 600; }
+
+  footer {
+    font-size: 12.5px;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+    border-top: 1px solid var(--border-soft);
+    padding-top: 18px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .panel { transition: opacity .2s ease; }
+  }
+</style>
+
+<div class="page">
+
+  <div>
+    <p class="kicker">bastion · phase 15 · BA.15.2 → BA.15.12</p>
+    <h1>Will <code style="font-family: var(--font-mono); background: var(--surface-raised); border: 1px solid var(--border-soft); border-radius: 3px; padding: 1px 6px;">mev validate-brain</code>, <code style="font-family: var(--font-mono); background: var(--surface-raised); border: 1px solid var(--border-soft); border-radius: 3px; padding: 1px 6px;">manifest</code>, <code style="font-family: var(--font-mono); background: var(--surface-raised); border: 1px solid var(--border-soft); border-radius: 3px; padding: 1px 6px;">emit-graph</code> and <code style="font-family: var(--font-mono); background: var(--surface-raised); border: 1px solid var(--border-soft); border-radius: 3px; padding: 1px 6px;">emit-state</code> still work after the dedup?</h1>
+    <p class="lede">Yes — the standalone <span class="mono">mev</span> binary and its four commands keep their exact CLI surface and output. BA.15.12 only swaps what's <em>behind</em> them: mev's own duplicate OKF/state code gets deleted and repointed at <span class="mono">okf-core</span> as a library. Nothing about how you call <span class="mono">mev</span> today changes.</p>
+  </div>
+
+  <div class="answer">
+    <span class="badge">Answer</span>
+    <p>
+      <strong style="color: var(--text)">The mev binary is never removed or renamed.</strong>
+      BA.15.12's own acceptance criteria <em>require</em> <code>bastion validate-brain</code> to stay byte-identical
+      to <code>mev validate-brain</code> on the whole brain corpus — so mev's output is the parity bar the work has
+      to clear, not something that's allowed to drift. What moves is the ~6,300 lines of duplicate parser/schema
+      code living in <code>mev/src/brain/okf.rs</code> and <code>mev/src/brain/state.rs</code> — that gets deleted
+      and replaced with calls into <code>okf-core</code>, which mev will depend on as a new Cargo path dependency.
+      Same commands in, same diagnostics out.
+    </p>
+  </div>
+
+  <!-- ================= NOW PANEL ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Now — after BA.15.0 / .1 / .2 (shipped)</h2>
+      <span class="panel-tag now">current state</span>
+    </div>
+    <div class="diagram-scroll">
+      <svg viewBox="0 0 1040 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Current dependency graph: bastion depends on mev via Cargo path dependency and on bella via subprocess spawn; mev and bella each carry their own independent implementations.">
+        <defs>
+          <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#56bfab"/>
+          </marker>
+          <marker id="arrowPurpleDash" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#a58cd8"/>
+          </marker>
+        </defs>
+
+        <!-- mev repo box -->
+        <rect x="20" y="30" width="300" height="430" rx="10" fill="#191d24" stroke="#dc9d5f" stroke-opacity="0.55" stroke-width="1.5"/>
+        <text x="44" y="62" font-size="17" font-weight="650" fill="#e8eaef">mev</text>
+        <text x="44" y="80" font-size="11.5" fill="#939bab" class="mono">standalone repo · own git history</text>
+
+        <rect x="40" y="96" width="260" height="42" rx="6" fill="#1f2430" stroke="#313846"/>
+        <text x="54" y="122" font-size="12.5" fill="#e8eaef" class="mono">mev (binary) — clap CLI</text>
+
+        <rect x="40" y="150" width="260" height="66" rx="6" fill="#40352a" stroke="#dc9d5f" stroke-opacity="0.5"/>
+        <text x="54" y="171" font-size="12.5" fill="#e8eaef" class="mono">brain/okf.rs</text>
+        <text x="54" y="188" font-size="11" fill="#c9a679">899 lines — own OkfFrontmatter</text>
+        <text x="54" y="202" font-size="11" fill="#c9a679">(serde_yaml, list-valued layer)</text>
+
+        <rect x="40" y="228" width="260" height="66" rx="6" fill="#40352a" stroke="#dc9d5f" stroke-opacity="0.5"/>
+        <text x="54" y="249" font-size="12.5" fill="#e8eaef" class="mono">brain/state.rs</text>
+        <text x="54" y="266" font-size="11" fill="#c9a679">5,383 lines — own state.json</text>
+        <text x="54" y="280" font-size="11" fill="#c9a679">schema + block-dependency graph</text>
+
+        <text x="54" y="320" font-size="11" fill="#939bab" letter-spacing="0.06em">CLI SURFACE</text>
+        <g class="mono" font-size="11.5" fill="#e8eaef">
+          <rect x="40" y="330" width="120" height="24" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="49" y="346">validate-brain</text>
+          <rect x="166" y="330" width="90" height="24" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="175" y="346">manifest</text>
+          <rect x="40" y="360" width="100" height="24" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="49" y="376">emit-graph</text>
+          <rect x="146" y="360" width="98" height="24" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="155" y="376">emit-state</text>
+        </g>
+        <text x="44" y="410" font-size="11" fill="#626b7c">Consumed today by: this workflow's</text>
+        <text x="44" y="424" font-size="11" fill="#626b7c">brain-validation habit, direct CLI use.</text>
+
+        <!-- bastion repo box -->
+        <rect x="370" y="30" width="300" height="430" rx="10" fill="#191d24" stroke="#56bfab" stroke-opacity="0.55" stroke-width="1.5"/>
+        <text x="394" y="62" font-size="17" font-weight="650" fill="#e8eaef">bastion</text>
+        <text x="394" y="80" font-size="11.5" fill="#939bab" class="mono">this repo · crates/bastion</text>
+
+        <rect x="390" y="96" width="260" height="34" rx="6" fill="#1f2430" stroke="#313846"/>
+        <text x="404" y="118" font-size="12.5" fill="#e8eaef" class="mono">bastion (binary)</text>
+
+        <rect x="390" y="140" width="260" height="52" rx="6" fill="#1f2430" stroke="#56bfab" stroke-opacity="0.5"/>
+        <text x="404" y="159" font-size="12.5" fill="#e8eaef" class="mono">brainval/ + docview/</text>
+        <text x="404" y="175" font-size="11" fill="#8fd6c4">BA.15.2 — thin pass-throughs, added this session</text>
+
+        <rect x="390" y="202" width="260" height="58" rx="6" fill="#26364a" stroke="#6fa3e6" stroke-opacity="0.6"/>
+        <text x="404" y="222" font-size="12.5" fill="#e8eaef" class="mono">okf-core</text>
+        <text x="404" y="238" font-size="11" fill="#9dbde8">workspace crate — OKF parser</text>
+        <text x="404" y="251" font-size="11" fill="#9dbde8">+ model (BA.15.1)</text>
+
+        <text x="404" y="290" font-size="11" fill="#939bab" letter-spacing="0.06em">CLI SURFACE</text>
+        <g class="mono" font-size="11" fill="#e8eaef">
+          <rect x="390" y="300" width="112" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="398" y="315">validate-brain</text>
+          <rect x="508" y="300" width="80" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="516" y="315">manifest</text>
+          <rect x="390" y="328" width="70" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="398" y="343">graph</text>
+          <rect x="466" y="328" width="90" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="474" y="343">emit-state</text>
+          <rect x="390" y="356" width="60" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="398" y="371">view</text>
+          <rect x="456" y="356" width="60" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="464" y="371">edit</text>
+        </g>
+
+        <!-- bella repo box -->
+        <rect x="720" y="30" width="300" height="430" rx="10" fill="#191d24" stroke="#a58cd8" stroke-opacity="0.55" stroke-width="1.5"/>
+        <text x="744" y="62" font-size="17" font-weight="650" fill="#e8eaef">bella</text>
+        <text x="744" y="80" font-size="11.5" fill="#939bab" class="mono">standalone repo</text>
+
+        <rect x="740" y="96" width="260" height="52" rx="6" fill="#1f2430" stroke="#313846"/>
+        <text x="754" y="116" font-size="12.5" fill="#e8eaef" class="mono">bella (binary)</text>
+        <text x="754" y="132" font-size="11" fill="#8b93a1">Reader / Browser TUI</text>
+
+        <rect x="740" y="160" width="260" height="64" rx="6" fill="#1f2430" stroke="#a58cd8" stroke-opacity="0.5"/>
+        <text x="754" y="180" font-size="12.5" fill="#e8eaef" class="mono">bella-engine (lib)</text>
+        <text x="754" y="196" font-size="11" fill="#c3b3e6">render_with_edit — one-shot</text>
+        <text x="754" y="209" font-size="11" fill="#c3b3e6">layout, no public event loop</text>
+
+        <text x="754" y="248" font-size="11" fill="#626b7c">No CLI of its own here — the</text>
+        <text x="754" y="262" font-size="11" fill="#626b7c">interactive TUI is the only surface.</text>
+
+        <!-- edges -->
+        <line x1="390" y1="117" x2="320" y2="117" stroke="#56bfab" stroke-width="2" marker-end="url(#arrowTeal)"/>
+        <text x="326" y="107" font-size="10.5" fill="#8fd6c4" class="mono">path dep — calls mev::validate_brain*(),</text>
+        <text x="326" y="119" font-size="10.5" fill="#8fd6c4" class="mono" style="display:none"></text>
+
+        <line x1="650" y1="117" x2="720" y2="117" stroke="#a58cd8" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrowPurpleDash)"/>
+        <text x="654" y="107" font-size="10.5" fill="#c3b3e6" class="mono">Command::new("bella") — subprocess,</text>
+
+        <!-- edge captions (multi-line, placed below arrows) -->
+        <text x="326" y="145" font-size="10" fill="#626b7c" class="mono">manifest_brain(), graph_brain(), emit_state()</text>
+        <text x="654" y="145" font-size="10" fill="#626b7c" class="mono">not a Cargo dependency</text>
+
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= NEXT PANEL ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Next — BA.15.12 (deferred, not yet scoped)</h2>
+      <span class="panel-tag next">planned, not started</span>
+    </div>
+    <div class="diagram-scroll">
+      <svg viewBox="0 0 1040 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Planned dependency graph: mev deletes its own duplicate OKF and state code and adds a new Cargo path dependency on bastion's okf-core crate, while its CLI surface and output stay identical.">
+        <defs>
+          <marker id="arrowTeal2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#56bfab"/>
+          </marker>
+          <marker id="arrowPurpleDash2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#a58cd8"/>
+          </marker>
+          <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#6fa3e6"/>
+          </marker>
+        </defs>
+
+        <!-- mev repo box -->
+        <rect x="20" y="30" width="300" height="430" rx="10" fill="#191d24" stroke="#dc9d5f" stroke-opacity="0.55" stroke-width="1.5"/>
+        <text x="44" y="62" font-size="17" font-weight="650" fill="#e8eaef">mev</text>
+        <text x="44" y="80" font-size="11.5" fill="#939bab" class="mono">standalone repo · own git history</text>
+
+        <rect x="40" y="96" width="260" height="42" rx="6" fill="#1f2430" stroke="#313846"/>
+        <text x="54" y="122" font-size="12.5" fill="#e8eaef" class="mono">mev (binary) — clap CLI</text>
+
+        <rect x="40" y="150" width="260" height="52" rx="6" fill="#241f22" stroke="#dd6b64" stroke-opacity="0.55"/>
+        <text x="54" y="169" font-size="12.5" fill="#8b8f97" text-decoration="line-through" class="mono">brain/okf.rs</text>
+        <text x="54" y="186" font-size="11" fill="#dd6b64">deleted → delegates to okf-core</text>
+
+        <rect x="40" y="214" width="260" height="52" rx="6" fill="#241f22" stroke="#dd6b64" stroke-opacity="0.55"/>
+        <text x="54" y="233" font-size="12.5" fill="#8b8f97" text-decoration="line-through" class="mono">brain/state.rs</text>
+        <text x="54" y="250" font-size="11" fill="#dd6b64">deleted → delegates to okf-core</text>
+
+        <rect x="40" y="278" width="260" height="42" rx="6" fill="#26364a" stroke="#6fa3e6" stroke-opacity="0.6"/>
+        <text x="54" y="303" font-size="12.5" fill="#e8eaef" class="mono">okf-core (new path dep)</text>
+
+        <text x="54" y="342" font-size="11" fill="#939bab" letter-spacing="0.06em">CLI SURFACE — UNCHANGED</text>
+        <g class="mono" font-size="11.5" fill="#e8eaef">
+          <rect x="40" y="352" width="120" height="24" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="49" y="368">validate-brain</text>
+          <rect x="166" y="352" width="90" height="24" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="175" y="368">manifest</text>
+          <rect x="40" y="382" width="100" height="24" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="49" y="398">emit-graph</text>
+          <rect x="146" y="382" width="98" height="24" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="155" y="398">emit-state</text>
+        </g>
+        <rect x="40" y="414" width="184" height="22" rx="11" fill="rgba(111,207,151,0.12)" stroke="#6fcf97" stroke-opacity="0.5"/>
+        <text x="52" y="429" font-size="10.5" fill="#6fcf97" class="mono">byte-identical output (AC)</text>
+
+        <!-- bastion repo box -->
+        <rect x="370" y="30" width="300" height="430" rx="10" fill="#191d24" stroke="#56bfab" stroke-opacity="0.55" stroke-width="1.5"/>
+        <text x="394" y="62" font-size="17" font-weight="650" fill="#e8eaef">bastion</text>
+        <text x="394" y="80" font-size="11.5" fill="#939bab" class="mono">this repo · crates/bastion</text>
+
+        <rect x="390" y="96" width="260" height="34" rx="6" fill="#1f2430" stroke="#313846"/>
+        <text x="404" y="118" font-size="12.5" fill="#e8eaef" class="mono">bastion (binary)</text>
+
+        <rect x="390" y="140" width="260" height="42" rx="6" fill="#1f2430" stroke="#56bfab" stroke-opacity="0.5"/>
+        <text x="404" y="159" font-size="12.5" fill="#e8eaef" class="mono">brainval/ + docview/</text>
+        <text x="404" y="174" font-size="11" fill="#8fd6c4">unchanged since BA.15.2</text>
+
+        <rect x="390" y="192" width="260" height="92" rx="6" fill="#26364a" stroke="#6fa3e6" stroke-opacity="0.6"/>
+        <text x="404" y="212" font-size="12.5" fill="#e8eaef" class="mono">okf-core</text>
+        <text x="404" y="228" font-size="11" fill="#9dbde8">OKF parser + model (BA.15.1)</text>
+        <text x="404" y="244" font-size="11" fill="#f0c896">+ state.json schema (new)</text>
+        <text x="404" y="258" font-size="11" fill="#f0c896">+ reconciled OkfFrontmatter model</text>
+        <text x="404" y="272" font-size="11" fill="#f0c896">(built to satisfy mev's needs first)</text>
+
+        <text x="404" y="312" font-size="11" fill="#939bab" letter-spacing="0.06em">CLI SURFACE — UNCHANGED</text>
+        <g class="mono" font-size="11" fill="#e8eaef">
+          <rect x="390" y="322" width="112" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="398" y="337">validate-brain</text>
+          <rect x="508" y="322" width="80" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="516" y="337">manifest</text>
+          <rect x="390" y="350" width="70" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="398" y="365">graph</text>
+          <rect x="466" y="350" width="90" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="474" y="365">emit-state</text>
+          <rect x="390" y="378" width="60" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="398" y="393">view</text>
+          <rect x="456" y="378" width="60" height="22" rx="4" fill="#1f2430" stroke="#3a4149"/>
+          <text x="464" y="393">edit</text>
+        </g>
+
+        <!-- bella repo box (out of scope, unchanged) -->
+        <rect x="720" y="30" width="300" height="430" rx="10" fill="#191d24" stroke="#a58cd8" stroke-opacity="0.35" stroke-width="1.5"/>
+        <text x="744" y="62" font-size="17" font-weight="650" fill="#8b8f97">bella</text>
+        <text x="744" y="80" font-size="11.5" fill="#626b7c" class="mono">out of scope for BA.15.12</text>
+
+        <rect x="740" y="96" width="260" height="52" rx="6" fill="#1f2430" stroke="#313846"/>
+        <text x="754" y="116" font-size="12.5" fill="#8b8f97" class="mono">bella (binary)</text>
+        <text x="754" y="132" font-size="11" fill="#626b7c">Reader / Browser TUI</text>
+
+        <rect x="740" y="160" width="260" height="46" rx="6" fill="#1f2430" stroke="#3a4149"/>
+        <text x="754" y="180" font-size="12.5" fill="#8b8f97" class="mono">bella-engine (lib)</text>
+        <text x="754" y="196" font-size="11" fill="#626b7c">unaffected — no okf-core relation</text>
+
+        <!-- edges -->
+        <line x1="390" y1="113" x2="320" y2="113" stroke="#56bfab" stroke-width="2" marker-end="url(#arrowTeal2)"/>
+        <text x="326" y="103" font-size="10.5" fill="#8fd6c4" class="mono">unchanged: bastion still calls</text>
+        <text x="326" y="140" font-size="10" fill="#626b7c" class="mono">mev::validate_brain*() etc.</text>
+
+        <line x1="320" y1="298" x2="390" y2="238" stroke="#6fa3e6" stroke-width="2" marker-end="url(#arrowBlue)"/>
+        <text x="326" y="322" font-size="10.5" fill="#9dbde8" class="mono">new: mev/Cargo.toml adds</text>
+        <text x="326" y="336" font-size="10" fill="#626b7c" class="mono">okf-core = { path = "../bastion/crates/okf-core" }</text>
+
+        <line x1="650" y1="117" x2="720" y2="117" stroke="#a58cd8" stroke-width="2" stroke-dasharray="5 4" stroke-opacity="0.4" marker-end="url(#arrowPurpleDash2)"/>
+        <text x="654" y="107" font-size="10.5" fill="#8b8f97" class="mono">unaffected subprocess spawn</text>
+
+      </svg>
+    </div>
+  </section>
+
+  <!-- legend -->
+  <div class="legend">
+    <span class="item">
+      <svg width="28" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="#56bfab" stroke-width="2"/></svg>
+      Cargo path dependency (compiled in, direct function calls)
+    </span>
+    <span class="item">
+      <svg width="28" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="#6fa3e6" stroke-width="2"/></svg>
+      new Cargo path dependency (BA.15.12)
+    </span>
+    <span class="item">
+      <svg width="28" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="#a58cd8" stroke-width="2" stroke-dasharray="5 4"/></svg>
+      subprocess spawn (separate process, no shared compilation)
+    </span>
+    <span class="item">
+      <svg width="14" height="14"><rect x="0" y="0" width="14" height="14" rx="3" fill="#241f22" stroke="#dd6b64" stroke-opacity="0.6"/></svg>
+      code deleted, replaced by a shared crate
+    </span>
+  </div>
+
+  <div class="ac">
+    <h3><span class="dot"></span>Why the mev CLI is safe to keep depending on</h3>
+    <ul>
+      <li><strong>Behavior is the acceptance bar, not a hoped-for side effect.</strong> D15 and the master-plan's BA.15.12 entry both state the AC explicitly: mev's OKF/state dupes deleted, <code>bastion validate-brain</code> output parity with <code>mev</code> on the <em>whole</em> brain corpus, combined test count not lower, gated checks green in both repos.</li>
+      <li><strong>It's deferred on purpose.</strong> D15 calls this "the risky half" precisely because mev's graph + state validation is proven and load-bearing — the plan will not touch it until there's real appetite and a scoped task spec, not opportunistically.</li>
+      <li><strong>No workspace-absorb.</strong> mev stays its own repo with its own binary — BA.15.12 only adds one new path dependency (<code>okf-core</code>) to it; it does not fold mev into the bastion workspace.</li>
+      <li><strong>Not started.</strong> BA.15.12 is currently <code>status: open</code> in <code>state.json</code>, marked "deferred, not scoped" — no code has moved yet. This diagram's "Next" panel is the plan, not the present.</li>
+    </ul>
+  </div>
+
+  <footer>
+    planning/decisions/D15-mev-integration-cross-repo-path-dep.md · planning/master-plan.md §BA.15.12 · planning/state.json tracks[]
+  </footer>
+
+</div>
