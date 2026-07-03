@@ -7,7 +7,17 @@
 //! workspace.
 
 mod frontmatter;
+mod graph;
+mod graph_emit;
 mod parse;
+mod state;
 
 pub use frontmatter::{OkfFrontmatter, serialize_frontmatter};
+pub use graph::{Edge, EdgeKind, EdgeResolution, Graph, GraphArtifact, Node, resolve_edge};
+pub use graph_emit::{ExportedEdge, GraphExport, build_graph_export};
 pub use parse::{Frontmatter, ParseResult, extract_frontmatter, parse_frontmatter};
+pub use state::{
+    Backlog, Block, BlockedBy, Carryover, CarryoverScope, CrossRepoEdge, Endpoint, Focus, Origin,
+    RepoRollup, StateEdge, StateEdgeKind, StateFile, StateGraph, StateLoadError, StateNode,
+    StateSource, TierEntry, Track, TrackBlock, build_state_graph, load_state,
+};

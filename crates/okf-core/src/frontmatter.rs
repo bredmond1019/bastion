@@ -40,6 +40,11 @@ pub struct OkfFrontmatter {
     pub keywords: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<String>,
+    /// Cross-repo sync watermark: the `synced_from` date the brain cache was last synced from.
+    /// Presence-only; not format-checked here. Read-side field — never emitted by
+    /// `serialize_frontmatter` (see below), so existing serializer output stays unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_from: Option<String>,
 }
 
 // ── Serializer (the write path) ───────────────────────────────────────────────
@@ -189,6 +194,7 @@ mod tests {
             status: Some("active".into()),
             keywords: vec!["okf".into(), "frontmatter".into(), "scaffold".into()],
             related: vec!["okf-core".into()],
+            synced_from: None,
         }
     }
 
@@ -373,6 +379,54 @@ related: [okf-core]
                 "expected {key} to be present but empty"
             );
         }
+    }
+
+    // ── synced_from reconciliation (mev parity) ─────────────────────────────────
+
+    #[test]
+    fn synced_from_deserializes_when_present() {
+        let fm: OkfFrontmatter =
+            serde_json::from_str(r#"{"synced_from":"2026-07-01"}"#).expect("must deserialize");
+        assert_eq!(fm.synced_from, Some("2026-07-01".to_string()));
+    }
+
+    #[test]
+    fn synced_from_absent_defaults_to_none() {
+        let fm: OkfFrontmatter = serde_json::from_str("{}").expect("must deserialize");
+        assert_eq!(fm.synced_from, None);
+    }
+
+    #[test]
+    fn absent_lists_default_empty() {
+        let fm: OkfFrontmatter =
+            serde_json::from_str(r#"{"type":"Doc"}"#).expect("must deserialize");
+        assert!(fm.layer.is_empty());
+        assert!(fm.keywords.is_empty());
+        assert!(fm.related.is_empty());
+    }
+
+    #[test]
+    fn serialize_unchanged_with_synced_from_set() {
+        let mut fm = full();
+        fm.synced_from = Some("2026-07-01".to_string());
+        let out = serialize_frontmatter(&fm);
+        let expected = "\
+---
+type: Guideline
+title: My Title
+description: A one-line summary.
+doc_id: my-title
+layer: [brain, console]
+project: bastion
+status: active
+keywords: [okf, frontmatter, scaffold]
+related: [okf-core]
+---
+";
+        assert_eq!(
+            out, expected,
+            "synced_from must never appear in serialized output"
+        );
     }
 
     #[test]
