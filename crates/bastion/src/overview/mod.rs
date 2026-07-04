@@ -182,3 +182,111 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
     frame.render_widget(next_list, columns[1]);
     frame.render_widget(blocked_list, columns[2]);
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A representative `state.json` shape (repo/updated/focus.now/next/blocked, each
+    /// with a couple of `BlockTask` entries including an optional `repo` field) — the
+    /// shape mev's `emit_state` (MV.4.E) now generates and bastion's Kanban board
+    /// depends on.
+    const REPRESENTATIVE: &str = r#"{
+        "repo": "bastion",
+        "updated": "2026-07-01",
+        "focus": {
+            "now": [
+                { "id": "BA.16.A", "title": "State surface viewer safety", "repo": "bastion" },
+                { "id": "BA.16.B", "title": "Something else" }
+            ],
+            "next": [
+                { "id": "BA.17.A", "title": "Next block", "repo": "bastion" }
+            ],
+            "blocked": [
+                { "id": "OR.B", "title": "Blocked block", "repo": "orchestrator" }
+            ]
+        }
+    }"#;
+
+    const EMPTY_FOCUS: &str = r#"{
+        "repo": "bastion",
+        "updated": "2026-07-01",
+        "focus": { "now": [], "next": [], "blocked": [] }
+    }"#;
+
+    #[test]
+    fn state_json_deserializes_representative_fixture() {
+        let state: StateJson =
+            serde_json::from_str(REPRESENTATIVE).expect("representative fixture should parse");
+
+        assert_eq!(state.repo, "bastion");
+        assert_eq!(state.updated, "2026-07-01");
+
+        assert_eq!(state.focus.now.len(), 2);
+        assert_eq!(state.focus.now[0].id, "BA.16.A");
+        assert_eq!(state.focus.now[0].title, "State surface viewer safety");
+        assert_eq!(state.focus.now[0].repo.as_deref(), Some("bastion"));
+        assert_eq!(state.focus.now[1].id, "BA.16.B");
+        assert_eq!(state.focus.now[1].repo, None);
+
+        assert_eq!(state.focus.next.len(), 1);
+        assert_eq!(state.focus.next[0].id, "BA.17.A");
+
+        assert_eq!(state.focus.blocked.len(), 1);
+        assert_eq!(state.focus.blocked[0].id, "OR.B");
+        assert_eq!(state.focus.blocked[0].repo.as_deref(), Some("orchestrator"));
+    }
+
+    #[test]
+    fn state_json_deserializes_empty_focus_arrays_cleanly() {
+        let state: StateJson =
+            serde_json::from_str(EMPTY_FOCUS).expect("empty-focus fixture should parse");
+
+        assert!(state.focus.now.is_empty());
+        assert!(state.focus.next.is_empty());
+        assert!(state.focus.blocked.is_empty());
+    }
+
+    #[test]
+    fn render_builds_expected_item_counts_without_panicking() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let state: StateJson =
+            serde_json::from_str(REPRESENTATIVE).expect("representative fixture should parse");
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render(f, &state, area);
+            })
+            .expect("render must not panic");
+
+        // Each task renders as 3 ListItems (id line, title line, blank separator);
+        // 2 tasks in "now", 1 in "next", 1 in "blocked".
+        let build_items_len = |tasks: &[BlockTask]| tasks.len() * 3;
+        assert_eq!(build_items_len(&state.focus.now), 6);
+        assert_eq!(build_items_len(&state.focus.next), 3);
+        assert_eq!(build_items_len(&state.focus.blocked), 3);
+    }
+
+    #[test]
+    fn render_handles_empty_columns_without_panicking() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let state: StateJson =
+            serde_json::from_str(EMPTY_FOCUS).expect("empty-focus fixture should parse");
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render(f, &state, area);
+            })
+            .expect("render must not panic on empty columns");
+    }
+}

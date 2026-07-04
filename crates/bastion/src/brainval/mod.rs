@@ -506,6 +506,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Build a temp brain root containing a minimal valid `brain.toml` plus a minimal
+    /// leaf-shaped `planning/state.json`, so `find_brain_root`/`find_brain_config`
+    /// resolve successfully and the state pipeline (`discover_state_files` /
+    /// `load_state`) has something well-formed to load. Returns the directory —
+    /// callers are responsible for `remove_dir_all` teardown.
+    fn make_temp_brain_root(name_prefix: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-{}-{}-{}",
+            name_prefix,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let planning_dir = dir.join("planning");
+        std::fs::create_dir_all(&planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"[vocab]
+layer = ["console"]
+status = ["active"]
+
+[crawl]
+skip_dirs = ["target", ".git"]
+
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "."
+status_file = "planning/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "bastion"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            planning_dir.join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-04",
+  "focus": {
+    "now": [{ "id": "BA.16.A", "title": "State surface viewer safety", "status": "in_progress" }],
+    "next": [],
+    "blocked": []
+  },
+  "tracks": [
+    {
+      "title": "Phase 16",
+      "blocks": [
+        { "id": "BA.16.A", "title": "State surface viewer safety", "status": "open" }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn run_emit_state_on_valid_brain_root_succeeds() {
+        let dir = make_temp_brain_root("brainval-emit-state-ok");
+        let result = run_emit_state(dir.clone(), false);
+        assert!(
+            result.is_ok(),
+            "expected Ok(()) for a valid brain root, got: {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_brain_run_on_valid_brain_root_succeeds() {
+        let dir = make_temp_brain_root("brainval-validate-ok");
+        let mode = select_validate_brain_mode(false, false, false, false, false);
+        assert_eq!(mode, ValidateBrainMode::Base);
+
+        let result = run(dir.clone(), false, false, false, false, false, false);
+        assert!(
+            result.is_ok(),
+            "expected Ok(()) for a valid brain root (base validate-brain mode), got: {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn run_emit_state_on_path_without_brain_toml_reports_config_error() {
         // run_emit_state resolves the root via find_brain_root first (same as the other

@@ -173,6 +173,7 @@ mod tests {
     const WELL_FORMED: &str = include_str!("fixtures/status_well_formed.md");
     const MALFORMED: &str = include_str!("fixtures/status_malformed.md");
     const EMPTY_MOMENTUM: &str = include_str!("fixtures/status_empty_momentum.md");
+    const WITH_SENTINELS: &str = include_str!("fixtures/status_with_sentinels.md");
 
     #[test]
     fn parses_well_formed_status() {
@@ -210,6 +211,29 @@ mod tests {
         assert_eq!(status.momentum_recurring, "");
         // Frontmatter scalars still parse even when the body has no momentum bullets.
         assert_eq!(status.now, "Just started");
+    }
+
+    #[test]
+    fn html_sentinel_comments_do_not_alter_parsed_output() {
+        // mev's emit_state (MV.4.E) now wraps generated sections in HTML sentinel
+        // comments (e.g. `<!-- BEGIN generated:momentum -->` / `<!-- END ... -->`).
+        // parse_status must yield identical frontmatter scalars and identical
+        // parse_momentum() bullet values as the plain, sentinel-free fixture.
+        let plain = parse_status(WELL_FORMED).expect("well-formed fixture should parse");
+        let sentineled = parse_status(WITH_SENTINELS).expect("sentinel fixture should parse");
+
+        assert_eq!(sentineled.now, plain.now);
+        assert_eq!(sentineled.next, plain.next);
+        assert_eq!(sentineled.blocked, plain.blocked);
+        assert_eq!(sentineled.momentum_now, plain.momentum_now);
+        assert_eq!(sentineled.momentum_next, plain.momentum_next);
+        assert_eq!(sentineled.momentum_blocked, plain.momentum_blocked);
+        assert_eq!(sentineled.momentum_improve, plain.momentum_improve);
+        assert_eq!(sentineled.momentum_recurring, plain.momentum_recurring);
+
+        // Sanity: the sentinel comment text itself must not leak into any parsed value.
+        assert!(!sentineled.momentum_now.contains("<!--"));
+        assert!(!sentineled.momentum_recurring.contains("generated:momentum"));
     }
 
     #[test]

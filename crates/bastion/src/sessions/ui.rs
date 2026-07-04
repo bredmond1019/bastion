@@ -841,4 +841,97 @@ mod tests {
         assert_eq!(mapped.rule, live.border_dim);
         assert_eq!(mapped.status_bg, live.border_active);
     }
+
+    // ── HTML sentinel comments must not leak into the rendered TUI buffer ──────
+
+    /// Flatten a `TestBackend` buffer to plain text — local equivalent of the
+    /// `buf_to_string` helper in `sessions/tui_tests.rs`.
+    fn buf_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area;
+        (0..area.height)
+            .flat_map(|y| {
+                (0..area.width).map(move |x| {
+                    buf.cell((x, y))
+                        .map(|c| c.symbol().to_string())
+                        .unwrap_or_default()
+                })
+            })
+            .collect()
+    }
+
+    /// bella-engine's `render_with_edit` (BE.4.A) strips HTML comments — including the
+    /// sentinel comments mev's `emit_state` now wraps generated sections in — at parse
+    /// time. This test confirms that stripping is actually wired into bastion's own
+    /// `Hq`/`Space` render path (via `draw_with_root`), not just covered upstream in
+    /// bella's own test suite.
+    #[test]
+    fn hq_space_overview_render_hides_html_sentinel_comments() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-ui-sentinel-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        std::fs::write(
+            dir.join("status.md"),
+            "# Status\n\n\
+             <!-- BEGIN generated:momentum -->\n\
+             - **now** — sentinel-guarded momentum text\n\
+             <!-- END generated:momentum -->\n",
+        )
+        .expect("write status.md");
+
+        // A `"_root"`-tagged tier renders as the `Hq` spine row (mirrors the pattern
+        // in `sessions/tui_tests.rs`'s `app_with_hq_and_tier`); the local `make_app`
+        // helper above tags its tier `"core"`, which would select `Tier`, not `Hq`.
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &app, &mut list_state, &dir);
+            })
+            .expect("draw must not panic");
+
+        let buf = terminal.backend().buffer().clone();
+        let text = buf_to_string(&buf);
+
+        assert!(
+            !text.contains("<!--"),
+            "buffer must not contain '<!--': {text}"
+        );
+        assert!(
+            !text.contains("-->"),
+            "buffer must not contain '-->': {text}"
+        );
+        assert!(
+            !text.contains("generated:momentum"),
+            "buffer must not contain the sentinel's inner text: {text}"
+        );
+        // Sanity: the ordinary Momentum content around the sentinels did render
+        // (word-wrapping in the narrow content pane may split the bullet across
+        // rendered lines, so check for an unbroken word rather than the full phrase).
+        assert!(
+            text.contains("sentinel-guarded"),
+            "expected the surrounding Momentum bullet text to render: {text}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
