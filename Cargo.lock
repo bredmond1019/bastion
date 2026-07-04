@@ -2509,6 +2509,7 @@ dependencies = [
  "chrono",
  "clap",
  "colored",
+ "okf-core",
  "serde",
  "serde_json",
  "serde_yaml",
