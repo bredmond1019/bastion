@@ -11,6 +11,42 @@ timestamp: 2026-07-03T16:23:40Z
 
 ---
 
+## [2026-07-04]
+
+### BA.16.A closed — state-surface viewer safety regression coverage
+
+- **What:** Ran `/sdlc-flow` on spec `16.a-state-surface-viewer-safety` (BA.16.A) end to end:
+  implement → test → review, PASS on the first attempt. Added regression coverage across all
+  four of bastion's state-surface viewers so mev's now-shipped sentinel-generating `emit_state`
+  (MV.4.E) and bella-engine's HTML-comment stripping (BE.4.A) can't silently regress any
+  consumer. `overview/mod.rs` gained fixture-deserialization + `render()` item-count tests for
+  the Kanban board; `serve/status/repo.rs` gained a new `status_with_sentinels.md` fixture
+  proving HTML sentinel comments around `## Momentum` don't alter parsed scalars or bullets;
+  `brainval/mod.rs` gained two successful-pass-through smoke tests (`run_emit_state`,
+  `validate-brain`) against a temp brain root, complementing the existing error-path-only
+  coverage; `sessions/ui.rs` gained a TUI render test asserting the flattened buffer never
+  leaks sentinel markup. `cargo fmt --check`/`clippy -D warnings`/`cargo test` (1092 passed, 3
+  ignored)/`cargo build --release` all green. Document stage confirmed no doc content needed
+  updating (test-only spec, no public API/CLI/behavior change). No settled decisions or
+  deviations from the spec — all four tasks landed as scoped.
+- **Why:** Closes the regression-safety gap identified after mev MV.4.E and bella BE.4.A shipped,
+  ensuring bastion's `state.json`/`status.md` consumers stay correct as those two unpinned
+  cross-repo dependencies evolve.
+- **Refs:** `planning/16.a-state-surface-viewer-safety/tasks.md`;
+  `planning/16.a-state-surface-viewer-safety/sdlc/reports/{implement,test,review,document,workflow}.md`.
+
+```
+090dfb4 docs: update docs for 16.a-state-surface-viewer-safety
+378c563 feat: implement 16.a-state-surface-viewer-safety
+5884a42 Updated status
+d523349 chore: add spec for 16.a-state-surface-viewer-safety
+79129ea chore(harness): pull base-template c873305 — fix sdlc-block enumerate-blocks planFormatOk abort bug
+```
+
+Next: hand off to `../mev`'s own repo to unblock `ticket-ba15-12-okf-core-convergence`, or resume Phase 13/14 blocks per `state.json`'s `focus.next`.
+
+---
+
 ## [2026-07-03]
 
 ### PR #16 merged, BA.15.12 closed, handoff to mev-side dedup
