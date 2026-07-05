@@ -84,28 +84,30 @@ Only the observability track (`monitor`, `costs`) needs this; the session surfac
 ## Directory map
 
 ```
-bastion/
+bastion/                ← single-package crate; member of the core/ Cargo workspace (D44)
 ├── .claude/            ← Claude Code commands + SDLC workflow engines
 ├── planning/           ← context, status, master-plan, harness.json, decisions/
-├── crates/
-│   └── bastion/        ← the bastion package (workspace member)
-│       ├── Cargo.toml
-│       └── src/
-│           ├── main.rs         ← clap dispatch
-│           ├── cli.rs          ← subcommand definitions
-│           ├── config.rs       ← env/config loading
-│           ├── observ/         ← structured error taxonomy (C001–C014) + tracing helpers (Phase 7)
-│           ├── db/             ← PostgreSQL queries (workflows, costs)
-│           ├── api/            ← reqwest client for FastAPI
-│           ├── monitor/        ← live TUI graph inspector (ratatui + petgraph)
-│           ├── inspect/        ← static post-mortem graph view
-│           ├── validate/       ← markdown/MDX content validation
-│           ├── costs/          ← LLM spend summary
-│           ├── run/            ← workflow trigger + stack health check
-│           ├── sessions/       ← tmux session control (Phase 5; shells to tmux, no DB) — D4
-│           └── brain/          ← OKF corpus reader + petgraph structural queries (Phase 6)
-└── Cargo.toml          ← workspace root manifest (members = ["crates/bastion"])
+├── Cargo.toml          ← the bastion package manifest ([package], not a workspace)
+└── src/
+    ├── main.rs         ← clap dispatch
+    ├── cli.rs          ← subcommand definitions
+    ├── config.rs       ← env/config loading
+    ├── observ/         ← structured error taxonomy (C001–C014) + tracing helpers (Phase 7)
+    ├── db/             ← PostgreSQL queries (workflows, costs)
+    ├── api/            ← reqwest client for FastAPI
+    ├── monitor/        ← live TUI graph inspector (ratatui + petgraph)
+    ├── inspect/        ← static post-mortem graph view
+    ├── validate/       ← markdown/MDX content validation
+    ├── costs/          ← LLM spend summary
+    ├── run/            ← workflow trigger + stack health check
+    ├── sessions/       ← tmux session control (Phase 5; shells to tmux, no DB) — D4
+    └── brain/          ← OKF corpus reader + petgraph structural queries (Phase 6)
 ```
+
+> **Workspace note (D44):** bastion no longer nests its crates under `crates/`. The former
+> `crates/okf-core` is now the standalone `core/okf-core` repo, and the tier build graph lives in
+> `core/Cargo.toml`. `cargo` invoked from this dir resolves through the core workspace (shared
+> `core/Cargo.lock` + `core/target/`).
 
 ## What NOT to touch
 
