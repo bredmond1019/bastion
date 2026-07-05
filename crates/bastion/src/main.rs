@@ -11,7 +11,6 @@ mod costs;
 mod db;
 mod detect;
 mod docview;
-mod engine;
 mod inspect;
 mod man;
 mod monitor;
@@ -44,7 +43,6 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Validate { .. } => "validate",
         Commands::Costs { .. } => "costs",
         Commands::Run { .. } => "run",
-        Commands::RunNative { .. } => "run-native",
         Commands::Status => "status",
         Commands::Sessions => "sessions",
         Commands::Attach { .. } => "attach",
@@ -160,9 +158,6 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 args,
                 monitor,
             } => run::trigger(workflow, args, monitor).await,
-            Commands::RunNative { workflow, args } => {
-                crate::engine::run_native(workflow, args).await
-            }
             Commands::Status => run::status().await,
             // Sessions path is DB-free (D4): no Config::load(), no Postgres pool.
             // All session verbs are sync blocking (D5): no async/tokio coupling.
@@ -378,17 +373,6 @@ mod tests {
                 monitor: false,
             }),
             "run"
-        );
-    }
-
-    #[test]
-    fn command_name_run_native() {
-        assert_eq!(
-            command_name(&Commands::RunNative {
-                workflow: "wf".into(),
-                args: None,
-            }),
-            "run-native"
         );
     }
 

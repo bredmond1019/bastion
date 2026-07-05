@@ -86,14 +86,6 @@ pub enum Commands {
         #[arg(long)]
         monitor: bool,
     },
-    /// Trigger a workflow run natively via the embedded Rust workflow engine
-    RunNative {
-        /// Workflow name to trigger
-        workflow: String,
-        /// JSON args to pass to the workflow (e.g. '{"key": "value"}')
-        #[arg(long)]
-        args: Option<String>,
-    },
     /// Quick stack health check — prints orchestrator API + DB reachability (non-TUI)
     Status,
     /// List all tmux sessions with their last line of pane output
