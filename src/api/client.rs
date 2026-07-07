@@ -128,7 +128,7 @@ impl ApiClient {
     pub async fn rerun_node(&self, _run_id: &str, _node_id: &str) -> Result<()> {
         // No orchestrator re-run endpoint exists today — this is a future
         // contract ADDITION the Python side must make first (data contract §7).
-        todo!("Phase 4: requires a new orchestrator re-run endpoint")
+        anyhow::bail!("Phase 4: requires a new orchestrator re-run endpoint")
     }
 
     pub async fn health(&self) -> ApiStatus {
