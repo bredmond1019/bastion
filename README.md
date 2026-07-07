@@ -12,6 +12,9 @@ related: [context, master-plan]
 
 # bastion
 
+> **Built within the Bastion workspace.** This crate depends on sibling repos via path dependency (`../okf-core`, `../mev`, `../bella/crates/bella-engine`) and is not designed to build standalone. See the [bastion-os](https://github.com/bredmond1019/bastion-os) meta-repo for the full ecosystem.
+> Part of the **Bastion** ecosystem — see the [bastion-os](https://github.com/bredmond1019/bastion-os) front door for the full architecture.
+
 Personal Rust CLI — unified control panel for monitoring, validating, and operating the agentic
 engineering stack. Two surfaces: **workflow observability** (reads the Python orchestrator's
 PostgreSQL) and **process/session control** (shells out to tmux, no database).
