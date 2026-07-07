@@ -160,6 +160,10 @@ bastion/
 | [planning/status.md](planning/status.md) | Current progress |
 | [planning/harness.json](planning/harness.json) | SDLC validation/UI-test config (see `harness.examples.md`) |
 
+## Roadmap / Known limitations
+
+- **Error Handling:** Currently uses a hybrid approach. The `.contains()` keyword heuristic fallback for un-downcastable `anyhow` errors should be dropped in favor of full typed-error propagation.
+
 ---
 
 *Initialized 2026-06-18 from `base-template` (commit `00ad2834e232d3243a3578132b02db01a7be40ab`).*
