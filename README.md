@@ -128,7 +128,7 @@ cargo test                     # run the test suite
 ```
 
 The full validation gate (the same suite the SDLC pipeline runs — see
-[planning/harness.json](planning/harness.json)):
+`planning/harness.json`):
 
 ```bash
 cargo fmt --check              # format gate
@@ -158,10 +158,10 @@ bastion/
 | [docs/config.md](docs/config.md) | Configuration reference — env vars, config file, precedence |
 | [docs/brain.md](docs/brain.md) | OKF knowledge-graph queries — `bastion brain`: corpus discovery, `--dependents` / `--blast-radius` / `--lineage`, workspace resolution |
 | [docs/code.md](docs/code.md) | Symbol-level code graph queries — `bastion code`: tree-sitter extraction, `--def` / `--refs` / `--dependents`, degradation paths |
-| [planning/context.md](planning/context.md) | Orientation + governing principles |
-| [planning/master-plan.md](planning/master-plan.md) | Strategy + phase specifications |
-| [planning/status.md](planning/status.md) | Current progress |
-| [planning/harness.json](planning/harness.json) | SDLC validation/UI-test config (see `harness.examples.md`) |
+| `planning/context.md` | Orientation + governing principles |
+| `planning/master-plan.md` | Strategy + phase specifications |
+| `planning/status.md` | Current progress |
+| `planning/harness.json` | SDLC validation/UI-test config (see `harness.examples.md`) |
 
 ## Roadmap / Known limitations
 
