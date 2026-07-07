@@ -27,7 +27,7 @@ PostgreSQL) and **process/session control** (shells out to tmux, no database).
 
 The workflow-observability track reads the Python orchestrator's PostgreSQL. To bring up the
 orchestrator stack (Postgres + Redis + FastAPI on `:8080` + Celery worker, in a tmux session), run
-**from the `python-orchestration-system/` repo**:
+**from the `orchestrator/` repo**:
 
 ```bash
 ./scripts/dev.sh        # START — ensures Postgres + Redis are up, launches FastAPI + Celery
