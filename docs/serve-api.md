@@ -1,18 +1,18 @@
 ---
 type: Guideline
-title: "serve-api contract v0.3"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), and the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows) that bastion-ui pins against."
+title: "serve-api contract v0.4"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), and the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes) that bastion-ui pins against."
 doc_id: serve-api
 layer: [console, surface]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, bastion-ui, contract]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, bastion-ui, contract]
 related: [config, observ]
 ---
 
-# serve-api — v0.3 Contract
+# serve-api — v0.4 Contract
 
-**Version:** v0.3  
+**Version:** v0.4  
 **Produced by:** `bastion` (this repo, `src/serve/`)  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28)
 
@@ -87,6 +87,7 @@ to verify the configured token.
 | `GET /api/repos/{name}/status` | Yes — `Authorization: Bearer <token>` |
 | `GET /api/repos/{name}/handoff` | Yes — `Authorization: Bearer <token>` |
 | `GET /api/repos/{name}/workflows` | Yes — `Authorization: Bearer <token>` |
+| `POST /api/actions/command` | Yes — `Authorization: Bearer <token>` |
 
 ---
 
@@ -869,7 +870,103 @@ the full transition semantics.
 
 ---
 
-## 12. Configuration reference
+## 12. Quick-action command API (v0.4)
+
+One route projecting `ask`'s spawn/readiness mechanics
+(`src/sessions/ask.rs`) onto a single one-tap HTTP call: inject a command into
+an existing session, or spawn a fresh Claude session and send it a command
+once ready.  Lives under the bearer-protected `/api` scope.
+
+### 12.1 `POST /api/actions/command` — inject or spawn a quick-action command
+
+**Request body:** `CommandRequest`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `mode` | string | Yes | `"inject"` or `"spawn"` |
+| `session` | string | Required when `mode:"inject"` | Existing tmux session name to target. Empty string counts as missing. |
+| `name` | string | Required when `mode:"spawn"` | Name of the tmux session to create. Empty string counts as missing. |
+| `dir` | string | No | Starting directory for a spawned session; omitted from the wire object when absent. |
+| `model` | string | No | Claude model for a spawned session; one of `"opus"` \| `"sonnet"`. Defaults to `"sonnet"` when omitted. Only meaningful for `mode:"spawn"`. |
+| `command` | string | Yes | The slash command (or literal text) sent once the target session is ready. |
+
+**Inject request:**
+
+```
+POST /api/actions/command HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "mode": "inject", "session": "main", "command": "/status" }
+```
+
+**Spawn request:**
+
+```
+POST /api/actions/command HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "mode": "spawn", "name": "work", "dir": "/repo", "model": "opus", "command": "/status" }
+```
+
+**Response (200 OK):** `CommandResponse`
+
+```json
+{ "session": "work" }
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `session` | string | The target tmux session id — the existing session for `inject`, the newly created session for `spawn` |
+
+### 12.2 Dispatch behaviour
+
+- `mode:"inject"` sends `command` as literal keystrokes (tmux `send-keys -l --`,
+  followed by `Enter`) into the existing `session`.
+- `mode:"spawn"` ensures a session named `name` exists (creating it via
+  `tmux::new_session` when absent, in `dir` when given), launches
+  `claude --model <model> --permission-mode bypassPermissions`, waits for
+  readiness using `ask`'s readiness mechanics (`ensure_session_with_claude`,
+  `src/sessions/ask.rs`), then sends `command` the same way as `inject`.
+
+### 12.3 Error responses
+
+Validation failures (bad `mode`/field combination) are checked before any I/O
+and return `400` with the `ErrorPayload` shape (Section 10.4):
+
+| Condition | HTTP status | `code` |
+|---|---|---|
+| `mode:"inject"` without a non-empty `session` | `400 Bad Request` | `C006` |
+| `mode:"spawn"` without a non-empty `name` | `400 Bad Request` | `C006` |
+| `model` present but not `"opus"`/`"sonnet"` | `400 Bad Request` | `C006` |
+
+Execution-path failures (after validation passes) map as follows:
+
+| Condition | HTTP status | `code` |
+|---|---|---|
+| `inject` targets an unknown/missing tmux session | `404 Not Found` | `C002` |
+| tmux binary not installed / no tmux server running | `503 Service Unavailable` | `C001` |
+| Other tmux exit error | `500 Internal Server Error` | `C010` |
+| Spawn target directory is untrusted (Claude Code trust prompt) | `400 Bad Request` | `C006` |
+| Spawned Claude fails to reach a ready state before the readiness timeout | `504 Gateway Timeout` | `C007` |
+| Unexpected server/thread-pool error | `500 Internal Server Error` | `C010` |
+
+**Example 400 body (bad mode/field combination):**
+
+```json
+{ "code": "C006", "message": "mode:\"inject\" requires a non-empty \"session\" field" }
+```
+
+**Example 504 body (spawn readiness timeout):**
+
+```json
+{ "code": "C007", "message": "timed out waiting for claude to become ready in session \"work\" after 30s" }
+```
+
+---
+
+## 13. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
@@ -883,7 +980,7 @@ registry consumed by Section 11's routes is loaded separately via
 
 ---
 
-## 13. Versioning policy
+## 14. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -892,7 +989,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.3**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.4**.
 
 ---
 
@@ -919,3 +1016,10 @@ This document follows a simple monotonic version scheme:
   transition semantics, `WorkflowDonePayload` shape).  Updated auth policy table (Section
   2.3) to list the four new `/api/repos*` routes.  Renumbered Configuration → Section 12,
   Versioning → Section 13.  Updated frontmatter title and description.
+- **2026-07-14 — v0.3 → v0.4 (Block 11.E):** Added Section 12 (Quick-action command API —
+  `POST /api/actions/command`; `CommandRequest`/`CommandResponse` DTOs; `inject`/`spawn`
+  dispatch behaviour reusing `ask`'s spawn/readiness mechanics; validation-failure (400/`C006`)
+  and execution-failure (404/`C002`, 503/`C001`, 500/`C010`, 504/`C007`) error mapping).
+  Updated auth policy table (Section 2.3) to list the new `/api/actions/command` route.
+  Renumbered Configuration → Section 13, Versioning → Section 14.  Updated frontmatter title,
+  description, and the current-contract version note.
