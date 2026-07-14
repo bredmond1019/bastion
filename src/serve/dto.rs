@@ -9,6 +9,8 @@
 //! - [`HealthResponse`] — JSON body for `GET /health`.
 //! - [`WsFrame`] — tagged envelope for all WebSocket messages (v0 skeleton).
 //! - [`WsFrameKind`] — discriminant enum extended by later blocks.
+//! - [`CommandRequest`] / [`CommandResponse`] — `POST /actions/command` quick-action
+//!   inject/spawn request and response (BA.11.E).
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -303,6 +305,125 @@ pub struct NewSessionBody {
     /// Optional starting directory for the session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
+}
+
+// ── Quick-action command DTOs (BA.11.E) ────────────────────────────────────────
+
+/// Dispatch mode for `POST /actions/command`.
+///
+/// Serializes/deserializes as the lowercase wire string (`"inject"` / `"spawn"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandMode {
+    /// Send the command into an existing tmux session.
+    Inject,
+    /// Create a new session, launch `claude`, wait for readiness, then send the command.
+    Spawn,
+}
+
+/// `model` values accepted for `mode:"spawn"` requests (BA.11.E).
+pub const ALLOWED_COMMAND_MODELS: &[&str] = &["opus", "sonnet"];
+
+/// Request body for `POST /actions/command`.
+///
+/// Wire format (inject):
+/// ```json
+/// { "mode": "inject", "session": "main", "command": "/status" }
+/// ```
+///
+/// Wire format (spawn):
+/// ```json
+/// { "mode": "spawn", "name": "work", "dir": "/repo", "model": "sonnet", "command": "/status" }
+/// ```
+///
+/// Field requirements are mode-dependent and enforced by [`CommandRequest::validate`],
+/// not by serde: `session` is required for `inject`; `name` is required for `spawn`;
+/// `model`, when present, must be one of [`ALLOWED_COMMAND_MODELS`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandRequest {
+    /// Dispatch mode: `"inject"` or `"spawn"`.
+    pub mode: CommandMode,
+    /// Target tmux session name. Required when `mode:"inject"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// Name for the new tmux session. Required when `mode:"spawn"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Optional starting directory for a spawned session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// Optional Claude model for a spawned session; one of [`ALLOWED_COMMAND_MODELS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The slash command (or literal text) to send once the target session is ready.
+    pub command: String,
+}
+
+/// Validation failure for a [`CommandRequest`], returned by [`CommandRequest::validate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandValidationError {
+    /// `mode:"inject"` was given without a (non-empty) `session`.
+    InjectMissingSession,
+    /// `mode:"spawn"` was given without a (non-empty) `name`.
+    SpawnMissingName,
+    /// `model` was present but not one of [`ALLOWED_COMMAND_MODELS`].
+    UnknownModel(String),
+}
+
+impl std::fmt::Display for CommandValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InjectMissingSession => {
+                write!(f, "mode:\"inject\" requires a non-empty \"session\" field")
+            }
+            Self::SpawnMissingName => {
+                write!(f, "mode:\"spawn\" requires a non-empty \"name\" field")
+            }
+            Self::UnknownModel(m) => write!(
+                f,
+                "unknown model {m:?}; expected one of {ALLOWED_COMMAND_MODELS:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CommandValidationError {}
+
+impl CommandRequest {
+    /// Validate mode-dependent field requirements.
+    ///
+    /// Pure — performs no I/O. Checked in order: mode-specific required field first
+    /// (empty string counts as missing), then `model` (if present) against the
+    /// allow-list, regardless of mode.
+    pub fn validate(&self) -> Result<(), CommandValidationError> {
+        match self.mode {
+            CommandMode::Inject => {
+                if self.session.as_deref().unwrap_or("").is_empty() {
+                    return Err(CommandValidationError::InjectMissingSession);
+                }
+            }
+            CommandMode::Spawn => {
+                if self.name.as_deref().unwrap_or("").is_empty() {
+                    return Err(CommandValidationError::SpawnMissingName);
+                }
+            }
+        }
+        if let Some(model) = &self.model
+            && !ALLOWED_COMMAND_MODELS.contains(&model.as_str())
+        {
+            return Err(CommandValidationError::UnknownModel(model.clone()));
+        }
+        Ok(())
+    }
+}
+
+/// Response body for `POST /actions/command`.
+///
+/// Wire format: `{ "session": "work" }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandResponse {
+    /// The target tmux session id (existing for inject, newly created for spawn).
+    pub session: String,
 }
 
 // ── Repo / workflow status DTOs (BA.11.D) ──────────────────────────────────────
@@ -1366,5 +1487,269 @@ mod tests {
         let raw = r#"{"repo":"bastion","spec_slug":"phase11-blockD"}"#;
         let result: Result<WorkflowDonePayload, _> = serde_json::from_str(raw);
         assert!(result.is_err(), "missing status must fail to parse");
+    }
+
+    // ── CommandMode ───────────────────────────────────────────────────────
+
+    #[test]
+    fn command_mode_inject_serializes_snake_case() {
+        let v = serde_json::to_value(CommandMode::Inject).expect("serialize");
+        assert_eq!(v, json!("inject"));
+    }
+
+    #[test]
+    fn command_mode_spawn_serializes_snake_case() {
+        let v = serde_json::to_value(CommandMode::Spawn).expect("serialize");
+        assert_eq!(v, json!("spawn"));
+    }
+
+    #[test]
+    fn command_mode_round_trips() {
+        for mode in [CommandMode::Inject, CommandMode::Spawn] {
+            let json = serde_json::to_string(&mode).expect("serialize");
+            let decoded: CommandMode = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(mode, decoded, "round-trip failed for {json}");
+        }
+    }
+
+    #[test]
+    fn command_mode_unknown_variant_fails() {
+        let result: Result<CommandMode, _> = serde_json::from_str(r#""restart""#);
+        assert!(
+            result.is_err(),
+            "unrecognised mode string must fail to deserialize"
+        );
+    }
+
+    // ── CommandRequest deserialization ───────────────────────────────────
+
+    #[test]
+    fn command_request_deserializes_valid_inject_payload() {
+        let raw = r#"{"mode":"inject","session":"main","command":"/status"}"#;
+        let req: CommandRequest = serde_json::from_str(raw).expect("deserialize inject payload");
+        assert_eq!(req.mode, CommandMode::Inject);
+        assert_eq!(req.session.as_deref(), Some("main"));
+        assert_eq!(req.command, "/status");
+        assert!(req.name.is_none());
+        assert!(req.dir.is_none());
+        assert!(req.model.is_none());
+    }
+
+    #[test]
+    fn command_request_deserializes_valid_spawn_payload() {
+        let raw =
+            r#"{"mode":"spawn","name":"work","dir":"/repo","model":"sonnet","command":"/status"}"#;
+        let req: CommandRequest = serde_json::from_str(raw).expect("deserialize spawn payload");
+        assert_eq!(req.mode, CommandMode::Spawn);
+        assert_eq!(req.name.as_deref(), Some("work"));
+        assert_eq!(req.dir.as_deref(), Some("/repo"));
+        assert_eq!(req.model.as_deref(), Some("sonnet"));
+        assert_eq!(req.command, "/status");
+    }
+
+    #[test]
+    fn command_request_deserializes_spawn_payload_without_optional_fields() {
+        let raw = r#"{"mode":"spawn","name":"work","command":"/status"}"#;
+        let req: CommandRequest = serde_json::from_str(raw).expect("deserialize");
+        assert!(req.dir.is_none());
+        assert!(req.model.is_none());
+    }
+
+    #[test]
+    fn command_request_rejects_unknown_mode() {
+        let raw = r#"{"mode":"restart","session":"main","command":"/status"}"#;
+        let result: Result<CommandRequest, _> = serde_json::from_str(raw);
+        assert!(result.is_err(), "unknown mode must fail to deserialize");
+    }
+
+    #[test]
+    fn command_request_rejects_missing_mode() {
+        let raw = r#"{"session":"main","command":"/status"}"#;
+        let result: Result<CommandRequest, _> = serde_json::from_str(raw);
+        assert!(result.is_err(), "missing mode must fail to deserialize");
+    }
+
+    #[test]
+    fn command_request_rejects_missing_command() {
+        let raw = r#"{"mode":"inject","session":"main"}"#;
+        let result: Result<CommandRequest, _> = serde_json::from_str(raw);
+        assert!(result.is_err(), "missing command must fail to deserialize");
+    }
+
+    #[test]
+    fn command_request_round_trips() {
+        let req = CommandRequest {
+            mode: CommandMode::Spawn,
+            session: None,
+            name: Some("work".to_owned()),
+            dir: Some("/repo".to_owned()),
+            model: Some("opus".to_owned()),
+            command: "/status".to_owned(),
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: CommandRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn command_request_serializes_omits_absent_optional_fields() {
+        let req = CommandRequest {
+            mode: CommandMode::Inject,
+            session: Some("main".to_owned()),
+            name: None,
+            dir: None,
+            model: None,
+            command: "/status".to_owned(),
+        };
+        let v = serde_json::to_value(&req).expect("serialize");
+        assert!(v.get("name").is_none(), "name must be omitted when None");
+        assert!(v.get("dir").is_none(), "dir must be omitted when None");
+        assert!(v.get("model").is_none(), "model must be omitted when None");
+    }
+
+    // ── CommandRequest::validate ─────────────────────────────────────────
+
+    fn inject_request(session: Option<&str>) -> CommandRequest {
+        CommandRequest {
+            mode: CommandMode::Inject,
+            session: session.map(str::to_owned),
+            name: None,
+            dir: None,
+            model: None,
+            command: "/status".to_owned(),
+        }
+    }
+
+    fn spawn_request(name: Option<&str>, model: Option<&str>) -> CommandRequest {
+        CommandRequest {
+            mode: CommandMode::Spawn,
+            session: None,
+            name: name.map(str::to_owned),
+            dir: None,
+            model: model.map(str::to_owned),
+            command: "/status".to_owned(),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_inject_with_session() {
+        assert_eq!(inject_request(Some("main")).validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_inject_without_session() {
+        assert_eq!(
+            inject_request(None).validate(),
+            Err(CommandValidationError::InjectMissingSession)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_inject_with_empty_session() {
+        assert_eq!(
+            inject_request(Some("")).validate(),
+            Err(CommandValidationError::InjectMissingSession)
+        );
+    }
+
+    #[test]
+    fn validate_accepts_spawn_with_name() {
+        assert_eq!(spawn_request(Some("work"), None).validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_spawn_without_name() {
+        assert_eq!(
+            spawn_request(None, None).validate(),
+            Err(CommandValidationError::SpawnMissingName)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_spawn_with_empty_name() {
+        assert_eq!(
+            spawn_request(Some(""), None).validate(),
+            Err(CommandValidationError::SpawnMissingName)
+        );
+    }
+
+    #[test]
+    fn validate_accepts_spawn_with_opus_model() {
+        assert_eq!(spawn_request(Some("work"), Some("opus")).validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_accepts_spawn_with_sonnet_model() {
+        assert_eq!(
+            spawn_request(Some("work"), Some("sonnet")).validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_spawn_with_unknown_model() {
+        assert_eq!(
+            spawn_request(Some("work"), Some("haiku")).validate(),
+            Err(CommandValidationError::UnknownModel("haiku".to_owned()))
+        );
+    }
+
+    #[test]
+    fn validate_rejects_inject_with_unknown_model_too() {
+        // Model validation applies regardless of mode.
+        let mut req = inject_request(Some("main"));
+        req.model = Some("gpt-5".to_owned());
+        assert_eq!(
+            req.validate(),
+            Err(CommandValidationError::UnknownModel("gpt-5".to_owned()))
+        );
+    }
+
+    #[test]
+    fn command_validation_error_display_messages() {
+        assert_eq!(
+            CommandValidationError::InjectMissingSession.to_string(),
+            "mode:\"inject\" requires a non-empty \"session\" field"
+        );
+        assert_eq!(
+            CommandValidationError::SpawnMissingName.to_string(),
+            "mode:\"spawn\" requires a non-empty \"name\" field"
+        );
+        assert!(
+            CommandValidationError::UnknownModel("haiku".to_owned())
+                .to_string()
+                .contains("haiku")
+        );
+    }
+
+    // ── CommandResponse ───────────────────────────────────────────────────
+
+    #[test]
+    fn command_response_serializes_session_field() {
+        let resp = CommandResponse {
+            session: "work".to_owned(),
+        };
+        let v = serde_json::to_value(&resp).expect("serialize");
+        assert_eq!(v["session"], "work");
+    }
+
+    #[test]
+    fn command_response_round_trips() {
+        let resp = CommandResponse {
+            session: "main".to_owned(),
+        };
+        let json = serde_json::to_string(&resp).expect("serialize");
+        let decoded: CommandResponse = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn command_response_rejects_missing_session() {
+        let raw = r#"{}"#;
+        let result: Result<CommandResponse, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "CommandResponse must fail when session is missing"
+        );
     }
 }
