@@ -180,6 +180,11 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             .service(
                 web::resource("/repos/{name}/workflows")
                     .route(web::get().to(handlers::status::get_repo_workflows)),
+            )
+            // ── Quick-action command route (BA.11.E) ────────────────────────
+            // /actions/command — POST only
+            .service(
+                web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
             );
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
@@ -277,6 +282,9 @@ mod tests {
             .service(
                 web::resource("/repos/{name}/workflows")
                     .route(web::get().to(handlers::status::get_repo_workflows)),
+            )
+            .service(
+                web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
             );
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
@@ -894,5 +902,101 @@ mod tests {
 
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert_eq!(body, serde_json::json!([]));
+    }
+
+    // ── /api/actions/command — route registration (BA.11.E) ────────────────
+
+    #[actix_web::test]
+    async fn actions_command_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/actions/command")
+            .set_json(serde_json::json!({
+                "mode": "inject",
+                "session": "main",
+                "command": "/status"
+            }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "POST /api/actions/command without token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn actions_command_rejects_wrong_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/actions/command")
+            .insert_header(("authorization", "Bearer wrong-token"))
+            .set_json(serde_json::json!({
+                "mode": "inject",
+                "session": "main",
+                "command": "/status"
+            }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "POST /api/actions/command with wrong token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn actions_command_wrong_method_returns_405() {
+        // web::resource registers /actions/command with only POST — GET must
+        // return 405 (not 404), matching the surface's existing route style.
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/actions/command")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            405,
+            "GET /api/actions/command must return 405 Method Not Allowed; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn actions_command_bad_mode_returns_400_with_valid_token() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/actions/command")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .set_json(serde_json::json!({
+                "mode": "restart",
+                "session": "main",
+                "command": "/status"
+            }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        // Unknown "mode" fails JSON deserialization -> actix's default 400.
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn actions_command_inject_without_session_returns_400_c006() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/actions/command")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .set_json(serde_json::json!({
+                "mode": "inject",
+                "command": "/status"
+            }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C006");
     }
 }
