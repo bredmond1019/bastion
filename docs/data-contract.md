@@ -38,7 +38,9 @@ pins the version bastion is built against and maps each contract field to bastio
 - `db::costs::fetch_all_runs` issues `SELECT id, workflow_type, task_context FROM events` over
   **all** rows (active and completed), assembling each via `db::workflows::parse_event_row`
   (the same shared parse path as monitor/inspect — no duplicated JSON parsing).
-- No graph endpoint is used; token fields are extracted from `node_runs[*].usage`.
+- No graph endpoint is used. Token counts are **exact**, computed by `costs::tokens::count` (real
+  `tiktoken` encoding) over each node's `input`/`output` text; `node_runs[*].usage.input_tokens` /
+  `.output_tokens` are used only as a fallback when a node has no countable text or no `model`.
 - Window filtering (`7d`, `30d`, `all`) is applied in pure Rust after the full-table fetch.
 
 ---
