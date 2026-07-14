@@ -11,6 +11,50 @@ timestamp: 2026-07-03T16:23:40Z
 
 ---
 
+## [2026-07-14]
+
+### BA.7.B closed — exact bastion costs (tiktoken counter)
+
+- **What:** Ran the SDLC pipeline on spec `7.B-exact-costs-token-counter` (BA.7.B) end to end:
+  implement → test → review, PASS on the first attempt. Vendored real `tiktoken-rs`
+  (`cl100k_base` / `o200k_base`) into a new pure, I/O-free `src/costs/tokens.rs` exposing
+  `count(text, model) -> usize`, with encoders lazily built once via `OnceLock` and unknown model
+  ids falling back to the default encoder rather than panicking. Taught `aggregate` in
+  `src/costs/mod.rs` to prefer exact counts via new pure helpers `extract_text` and
+  `exact_or_reported_tokens`, falling back to the orchestrator-reported `tokens_in`/`tokens_out`
+  only when countable text or a model id is absent (D20 read path unchanged, no contract edit).
+  The USD spend summary now derives from these exact counts through the unchanged
+  `pricing::cost_usd` seam, and the rendered table header dropped the "Est." label. Added
+  exhaustive unit tests per CLAUDE.md rule 6: exact-count parity on a fixed sample under both
+  encoders, empty-text, unknown-model fallback, and all `extract_text`/`exact_or_reported_tokens`
+  presence/absence cases. `cargo fmt --check`/`clippy -D warnings`/`cargo test` (1108 passed, 3
+  ignored)/`cargo build --release` all green. Review verdict: PASS (0 findings, all acceptance
+  criteria MET on code inspection). Document stage patched `docs/costs.md` (new "Token counting"
+  section, `Est. USD` → `USD`, and corrected stale `crates/bastion/...` path references to the
+  current `src/costs/...` per D44 workspace flattening) and `docs/data-contract.md` (clarified
+  `node_runs[*].usage.*` is now a fallback, not the primary token source). No settled decisions
+  requiring a new `planning/decisions/` entry — the `estimate_usd` → `cost_usd` naming, encoder
+  caching, and unknown-model-fallback choices were already implied by the spec's acceptance
+  criteria and are recorded in the implement report's Decisions and Trade-offs section.
+- **Why:** Closes the estimation gap in `bastion costs` — spend summaries now reflect exact
+  tiktoken-counted tokens instead of estimates, and establishes `costs::tokens::count` as the
+  reusable primitive that BA.7.C (budget alerts + kill) and program Block U (cost-to-success)
+  will consume.
+- **Refs:** `planning/7.B-exact-costs-token-counter/tasks.md`;
+  `planning/7.B-exact-costs-token-counter/sdlc/reports/{implement,test,review,document,workflow}.md`.
+
+```
+3fd55cb docs: update docs for 7.B-exact-costs-token-counter
+659da02 feat: implement 7.B-exact-costs-token-counter
+35ad53d Updated claude commands and docs
+0abb3e2 chore: ignore planning symlink (planning now vaulted in brain)
+40f7768 docs: de-link planning/ references in README (internal-only, no longer tracked)
+```
+
+Next: BA.11.E — Quick-action command endpoint (inject / spawn), or resume Phase 13/14 blocks per `state.json`'s `focus.next` ordering.
+
+---
+
 ## [2026-07-04]
 
 ### BA.16.A closed — state-surface viewer safety regression coverage
