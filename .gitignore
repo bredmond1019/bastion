@@ -28,6 +28,6 @@
 /portfolio
 *.sqlite
 state.json
-planning/
+/planning
 node_modules/
 target/
