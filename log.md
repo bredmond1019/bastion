@@ -13,6 +13,46 @@ timestamp: 2026-07-03T16:23:40Z
 
 ## [2026-07-14]
 
+### BA.11.E closed — quick-action command endpoint (inject / spawn)
+
+Ran `/sdlc-flow` on spec `11.E-quick-action-command-endpoint` (BA.11.E) end to end across 5
+tasks in one shared worktree, PASS on the first attempt for every task and the end review. Task
+1 extracted `ask()`'s ensure-session-with-claude sequence into a `pub(crate)`
+`ensure_session_with_claude` helper (and made `wait_for_claude` `pub(crate)`) in
+`src/sessions/ask.rs`, reachable from `src/serve/` with `ask()`'s own behaviour and tests
+unchanged. Task 2 added `CommandRequest`/`CommandResponse` DTOs to `src/serve/dto.rs` — a flat,
+mode-tagged (`inject`/`spawn`) struct with a pure `validate()` method (not a serde-tagged enum)
+so mode-dependent field requirements and the model allow-list are enforced uniformly. Task 3
+shipped the handler itself: `POST /api/actions/command` in `src/serve/handlers/actions.rs`,
+registered inside the existing `/api` scope behind bearer auth via `web::resource()` (405 on
+wrong method, 401 unauthenticated), dispatching inject/spawn and reusing task 1's
+`ensure_session_with_claude` for spawn, with `AskError`/`CommandValidationError` mapped onto the
+existing C001–C014 HTTP error taxonomy (Launch/Timeout → 504+C007, UntrustedDir → 400+C006,
+validation failures → 400+C006). Task 4 documented the endpoint in `docs/serve-api.md` as a new
+Section 12 (pushing former 12/13 to 13/14), bumping the contract to v0.4 with the full
+request/response/error-mapping reference read back from the actual implemented types. Task 5 ran
+all four gated checks clean (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` —
+1157 passed, `cargo build --release`) and smoke-tested the spawn I/O path against a real `bastion
+serve` instance and live tmux: a `spawn` request created the session, sent the exact
+`claude --model sonnet --permission-mode bypassPermissions` launch command, and returned 200 with
+the session id, confirming the ensure-session → launch → readiness-detect → response path
+end-to-end (recorded in the spec's `## Notes`; produced no git-tracked diff since only the
+vaulted `planning/` symlink target changed). Notable decision: `wait_for_claude`'s error branches
+were tested deterministically without a live tmux server by using a never-existing session name,
+avoiding a new mocking layer. Next: resume Phase 13/14 blocks per `state.json`'s `focus.next`
+ordering, or pick up `../mev`'s open `ticket-ba15-12-okf-core-convergence` work.
+
+```
+43bf12a docs: update docs for 11.E-quick-action-command-endpoint
+8a4acc9 feat: implement 11.E-quick-action-command-endpoint-task4
+0fc2fa2 feat: implement 11.E-quick-action-command-endpoint-task3
+42d1486 feat: implement 11.E-quick-action-command-endpoint-task2
+ebbb08d feat: implement 11.E-quick-action-command-endpoint-task1
+1dd8c24 chore: init worktree 11.E-quick-action-command-endpoint-flow
+```
+
+## [2026-07-14]
+
 ### BA.7.B closed — exact bastion costs (tiktoken counter)
 
 - **What:** Ran the SDLC pipeline on spec `7.B-exact-costs-token-counter` (BA.7.B) end to end:
