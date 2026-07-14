@@ -1,13 +1,14 @@
 // `bastion costs --last <window>` — LLM spend summary from PostgreSQL.
 
 mod pricing;
+mod tokens;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
 
 use crate::config::Config;
 use crate::db::costs as db_costs;
-use crate::db::workflows::WorkflowRun;
+use crate::db::workflows::{NodeState, WorkflowRun};
 
 // ── Window ────────────────────────────────────────────────────────────────────
 
@@ -80,6 +81,32 @@ pub struct CostSummary {
     pub unpriced_models: Vec<String>,
 }
 
+/// Extract countable text from a node's `input`/`output` JSON value. String
+/// values are used directly; other JSON shapes are serialized to their text
+/// form. `None` means no countable text is present.
+fn extract_text(value: &Option<serde_json::Value>) -> Option<String> {
+    match value {
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(other) => Some(other.to_string()),
+        None => None,
+    }
+}
+
+/// Compute `(tokens_in, tokens_out)` for a node: exact tiktoken counts when
+/// countable text and a model are present, falling back to the
+/// orchestrator-reported `tokens_in`/`tokens_out` otherwise.
+fn exact_or_reported_tokens(node: &NodeState) -> (u64, u64) {
+    let tokens_in = match (&node.model, extract_text(&node.input)) {
+        (Some(model), Some(text)) => tokens::count(&text, model) as u64,
+        _ => node.tokens_in.unwrap_or(0),
+    };
+    let tokens_out = match (&node.model, extract_text(&node.output)) {
+        (Some(model), Some(text)) => tokens::count(&text, model) as u64,
+        _ => node.tokens_out.unwrap_or(0),
+    };
+    (tokens_in, tokens_out)
+}
+
 /// Aggregate `runs` into a `CostSummary`, filtered by `window` relative to `now`.
 pub fn aggregate(runs: &[WorkflowRun], window: &Window, now: DateTime<Utc>) -> CostSummary {
     use std::collections::BTreeMap;
@@ -105,8 +132,7 @@ pub fn aggregate(runs: &[WorkflowRun], window: &Window, now: DateTime<Utc>) -> C
         entry.runs += 1;
 
         for node in &run.nodes {
-            let ti = node.tokens_in.unwrap_or(0);
-            let to = node.tokens_out.unwrap_or(0);
+            let (ti, to) = exact_or_reported_tokens(node);
             entry.tokens_in += ti;
             entry.tokens_out += to;
 
@@ -114,7 +140,7 @@ pub fn aggregate(runs: &[WorkflowRun], window: &Window, now: DateTime<Utc>) -> C
                 if pricing::price_for(model).is_none() {
                     unpriced.insert(model.clone());
                 }
-                entry.usd += pricing::estimate_usd(model, ti, to);
+                entry.usd += pricing::cost_usd(model, ti, to);
             }
         }
     }
@@ -163,7 +189,7 @@ pub fn render_table(summary: &CostSummary) -> String {
         "Runs",
         "Tokens In",
         "Tokens Out",
-        "Est. USD",
+        "USD",
         COL_WORKFLOW = COL_WORKFLOW,
         COL_RUNS = COL_RUNS,
         COL_TOK_IN = COL_TOK_IN,
@@ -400,6 +426,30 @@ mod tests {
         }
     }
 
+    fn make_node_with_text(
+        name: &str,
+        model: Option<&str>,
+        input: Option<&str>,
+        output: Option<&str>,
+        tokens_in: Option<u64>,
+        tokens_out: Option<u64>,
+    ) -> NodeState {
+        NodeState {
+            id: name.to_string(),
+            name: name.to_string(),
+            status: RunStatus::Success,
+            depends_on: vec![],
+            input: input.map(|s| serde_json::Value::String(s.to_string())),
+            output: output.map(|s| serde_json::Value::String(s.to_string())),
+            error: None,
+            tokens_in,
+            tokens_out,
+            model: model.map(str::to_string),
+            started_at: None,
+            elapsed_secs: None,
+        }
+    }
+
     fn make_run(
         workflow_name: &str,
         started_at: Option<&str>,
@@ -601,6 +651,163 @@ mod tests {
         assert!((summary.totals.usd - 6.00).abs() < 1e-6);
     }
 
+    // ── exact token counts (extract_text / exact_or_reported_tokens) ───────────
+
+    #[test]
+    fn extract_text_string_value_used_directly() {
+        let v = Some(serde_json::Value::String("hello".to_string()));
+        assert_eq!(extract_text(&v), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn extract_text_non_string_serialized_to_text() {
+        let v = Some(serde_json::json!({"a": 1}));
+        assert_eq!(extract_text(&v), Some(r#"{"a":1}"#.to_string()));
+    }
+
+    #[test]
+    fn extract_text_none_is_no_countable_text() {
+        assert_eq!(extract_text(&None), None);
+    }
+
+    #[test]
+    fn exact_or_reported_tokens_uses_exact_count_when_text_and_model_present() {
+        let node = make_node_with_text(
+            "n",
+            Some("claude-haiku-4-5"),
+            Some("Hello, world!"),
+            Some("Hello, world!"),
+            Some(999), // reported counts must be ignored in favor of the exact count
+            Some(999),
+        );
+        let (ti, to) = exact_or_reported_tokens(&node);
+        let expected = tokens::count("Hello, world!", "claude-haiku-4-5") as u64;
+        assert_eq!(ti, expected);
+        assert_eq!(to, expected);
+        assert_ne!(ti, 999, "exact count must win over the reported fallback");
+    }
+
+    #[test]
+    fn exact_or_reported_tokens_falls_back_when_no_text() {
+        let node =
+            make_node_with_text("n", Some("claude-haiku-4-5"), None, None, Some(42), Some(7));
+        let (ti, to) = exact_or_reported_tokens(&node);
+        assert_eq!(ti, 42, "no input text -> reported tokens_in fallback");
+        assert_eq!(to, 7, "no output text -> reported tokens_out fallback");
+    }
+
+    #[test]
+    fn exact_or_reported_tokens_falls_back_when_no_model() {
+        let node = make_node_with_text("n", None, Some("Hello, world!"), None, Some(42), Some(7));
+        let (ti, to) = exact_or_reported_tokens(&node);
+        assert_eq!(
+            ti, 42,
+            "no model -> reported tokens_in fallback even with text"
+        );
+        assert_eq!(to, 7);
+    }
+
+    #[test]
+    fn aggregate_node_with_text_matches_exact_tiktoken_count() {
+        let run = make_run(
+            "pipeline",
+            Some("2026-06-20T00:00:00Z"),
+            vec![make_node_with_text(
+                "n",
+                Some("claude-haiku-4-5"),
+                Some("Hello, world!"),
+                Some("Hello, world!"),
+                Some(0), // deliberately wrong reported counts — must be ignored
+                Some(0),
+            )],
+        );
+        let now = fixed_now();
+        let summary = aggregate(&[run], &Window::All, now);
+
+        let expected = tokens::count("Hello, world!", "claude-haiku-4-5") as u64;
+        assert_eq!(summary.rows[0].tokens_in, expected);
+        assert_eq!(summary.rows[0].tokens_out, expected);
+    }
+
+    #[test]
+    fn aggregate_node_without_text_uses_reported_counts() {
+        let run = make_run(
+            "pipeline",
+            Some("2026-06-20T00:00:00Z"),
+            vec![make_node_with_text(
+                "n",
+                Some("claude-haiku-4-5"),
+                None,
+                None,
+                Some(500),
+                Some(50),
+            )],
+        );
+        let now = fixed_now();
+        let summary = aggregate(&[run], &Window::All, now);
+
+        assert_eq!(summary.rows[0].tokens_in, 500);
+        assert_eq!(summary.rows[0].tokens_out, 50);
+    }
+
+    #[test]
+    fn aggregate_mixed_text_and_no_text_nodes_sum_correctly() {
+        let run = make_run(
+            "pipeline",
+            Some("2026-06-20T00:00:00Z"),
+            vec![
+                make_node_with_text(
+                    "with_text",
+                    Some("claude-haiku-4-5"),
+                    Some("Hello, world!"),
+                    Some("Hello, world!"),
+                    Some(0),
+                    Some(0),
+                ),
+                make_node_with_text(
+                    "no_text",
+                    Some("claude-haiku-4-5"),
+                    None,
+                    None,
+                    Some(500),
+                    Some(50),
+                ),
+            ],
+        );
+        let now = fixed_now();
+        let summary = aggregate(&[run], &Window::All, now);
+
+        let exact = tokens::count("Hello, world!", "claude-haiku-4-5") as u64;
+        assert_eq!(summary.rows[0].tokens_in, exact + 500);
+        assert_eq!(summary.rows[0].tokens_out, exact + 50);
+    }
+
+    #[test]
+    fn aggregate_usd_computed_from_exact_counts() {
+        let run = make_run(
+            "pipeline",
+            Some("2026-06-20T00:00:00Z"),
+            vec![make_node_with_text(
+                "n",
+                Some("claude-haiku-4-5"),
+                Some("Hello, world!"),
+                Some("Hello, world!"),
+                Some(0), // deliberately wrong reported counts — must be ignored
+                Some(0),
+            )],
+        );
+        let now = fixed_now();
+        let summary = aggregate(&[run], &Window::All, now);
+
+        let exact = tokens::count("Hello, world!", "claude-haiku-4-5") as u64;
+        let expected_usd = pricing::cost_usd("claude-haiku-4-5", exact, exact);
+        assert!(
+            (summary.rows[0].usd - expected_usd).abs() < 1e-12,
+            "expected {expected_usd}, got {}",
+            summary.rows[0].usd
+        );
+    }
+
     // ── render_table ──────────────────────────────────────────────────────────
 
     #[test]
@@ -616,9 +823,10 @@ mod tests {
             output.contains("Tokens In"),
             "header must contain 'Tokens In'"
         );
+        assert!(output.contains("USD"), "header must contain 'USD'");
         assert!(
-            output.contains("Est. USD"),
-            "header must contain 'Est. USD'"
+            !output.contains("Est. USD"),
+            "header must no longer label USD as an estimate"
         );
     }
 

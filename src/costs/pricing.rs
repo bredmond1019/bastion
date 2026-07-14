@@ -42,9 +42,9 @@ pub fn price_for(model: &str) -> Option<ModelPrice> {
     })
 }
 
-/// Estimate cost in USD for the given model and token counts.
+/// Compute the exact USD cost for the given model and exact token counts.
 /// Returns `0.0` for unknown models.
-pub fn estimate_usd(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
+pub fn cost_usd(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
     match price_for(model) {
         Some(p) => {
             tokens_in as f64 / 1_000_000.0 * p.input_per_mtok
@@ -64,7 +64,7 @@ mod tests {
         // 2048 in + 256 out
         // = 2048/1e6 * 0.80 + 256/1e6 * 4.00
         // = 0.0016384 + 0.001024 = 0.0026624
-        let usd = estimate_usd("claude-3-5-haiku-20241022", 2048, 256);
+        let usd = cost_usd("claude-3-5-haiku-20241022", 2048, 256);
         assert!(
             (usd - 0.0026624).abs() < 1e-9,
             "expected 0.0026624, got {usd}"
@@ -75,8 +75,8 @@ mod tests {
     fn embedding_model_only_charges_input() {
         // text-embedding-3-small: $0.02 in / $0.00 out per MTok
         // output_per_mtok == 0 → output tokens contribute nothing
-        let usd_with_output = estimate_usd("text-embedding-3-small", 512, 1_000_000);
-        let usd_no_output = estimate_usd("text-embedding-3-small", 512, 0);
+        let usd_with_output = cost_usd("text-embedding-3-small", 512, 1_000_000);
+        let usd_no_output = cost_usd("text-embedding-3-small", 512, 0);
         assert_eq!(
             usd_with_output, usd_no_output,
             "embedding model must not charge for output tokens"
@@ -90,13 +90,13 @@ mod tests {
 
     #[test]
     fn unknown_model_returns_zero() {
-        let usd = estimate_usd("gpt-4o-mini", 1_000_000, 1_000_000);
+        let usd = cost_usd("gpt-4o-mini", 1_000_000, 1_000_000);
         assert_eq!(usd, 0.0, "unknown model must return 0.0");
     }
 
     #[test]
     fn zero_tokens_returns_zero() {
-        let usd = estimate_usd("claude-opus-4-8", 0, 0);
+        let usd = cost_usd("claude-opus-4-8", 0, 0);
         assert_eq!(usd, 0.0, "zero tokens must produce $0.00");
     }
 
