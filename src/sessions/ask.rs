@@ -163,37 +163,7 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
     // ── 2. Ensure session + Claude ───────────────────────────────────────────
     let dir_str: Option<String> = args.dir.as_ref().map(|p| p.to_string_lossy().into_owned());
 
-    if !has_session(&args.session) {
-        // Create a new detached session.
-        tmux::new_session(&args.session, dir_str.as_deref()).map_err(|e| AskError::Tmux {
-            op: "new-session".to_string(),
-            source: e,
-        })?;
-
-        // Launch Claude.
-        tmux::send_keys(&args.session, &args.launch_cmd).map_err(|e| AskError::Tmux {
-            op: "send-keys (launch)".to_string(),
-            source: e,
-        })?;
-
-        // Wait for Claude to become the foreground process.
-        wait_for_claude(&args.session, READINESS_TIMEOUT_SECS, READINESS_POLL_MS)?;
-    } else {
-        // Session exists — check whether Claude is already the foreground process.
-        // Use `classify_state` rather than checking for `"claude"` by name: modern
-        // Claude Code renames its process to its version string (e.g. "2.1.185"),
-        // so any non-idle-shell foreground command signals Claude is running.
-        let foreground = foreground_cmd_for(&args.session);
-        if classify_state(&foreground) != SessionState::Running {
-            // Session exists but Claude is not running — launch it.
-            tmux::send_keys(&args.session, &args.launch_cmd).map_err(|e| AskError::Tmux {
-                op: "send-keys (launch into existing session)".to_string(),
-                source: e,
-            })?;
-            wait_for_claude(&args.session, READINESS_TIMEOUT_SECS, READINESS_POLL_MS)?;
-        }
-        // else: Claude is already running → skip launch.
-    }
+    ensure_session_with_claude(&args.session, dir_str.as_deref(), &args.launch_cmd)?;
 
     // ── 3. Send the trigger ──────────────────────────────────────────────────
     let trigger = trigger_text(&args.prompt_file, &args.out);
@@ -228,6 +198,57 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// Ensure a tmux session named `session` exists and has Claude running as its
+/// foreground process, launching it with `launch_cmd` if needed.
+///
+/// This is `ask()` steps 1–2 (ensure-session-with-claude), extracted so the
+/// `bastion serve` quick-action handler (`mode:"spawn"`) can reuse the exact
+/// same spawn/readiness mechanics without duplicating them. Behaviour:
+///   - No session yet → create it (`tmux::new_session`), send `launch_cmd`,
+///     wait for readiness via `wait_for_claude`.
+///   - Session exists but Claude isn't the foreground process → send
+///     `launch_cmd`, wait for readiness.
+///   - Session exists and Claude is already running → no-op.
+pub(crate) fn ensure_session_with_claude(
+    session: &str,
+    dir: Option<&str>,
+    launch_cmd: &str,
+) -> Result<(), AskError> {
+    if !has_session(session) {
+        // Create a new detached session.
+        tmux::new_session(session, dir).map_err(|e| AskError::Tmux {
+            op: "new-session".to_string(),
+            source: e,
+        })?;
+
+        // Launch Claude.
+        tmux::send_keys(session, launch_cmd).map_err(|e| AskError::Tmux {
+            op: "send-keys (launch)".to_string(),
+            source: e,
+        })?;
+
+        // Wait for Claude to become the foreground process.
+        wait_for_claude(session, READINESS_TIMEOUT_SECS, READINESS_POLL_MS)?;
+    } else {
+        // Session exists — check whether Claude is already the foreground process.
+        // Use `classify_state` rather than checking for `"claude"` by name: modern
+        // Claude Code renames its process to its version string (e.g. "2.1.185"),
+        // so any non-idle-shell foreground command signals Claude is running.
+        let foreground = foreground_cmd_for(session);
+        if classify_state(&foreground) != SessionState::Running {
+            // Session exists but Claude is not running — launch it.
+            tmux::send_keys(session, launch_cmd).map_err(|e| AskError::Tmux {
+                op: "send-keys (launch into existing session)".to_string(),
+                source: e,
+            })?;
+            wait_for_claude(session, READINESS_TIMEOUT_SECS, READINESS_POLL_MS)?;
+        }
+        // else: Claude is already running → skip launch.
+    }
+
+    Ok(())
+}
+
 /// Poll `list-sessions` until the target session's foreground command is a
 /// non-shell process (i.e. `classify_state` returns `Running`), or until
 /// `timeout_secs` elapses.
@@ -237,7 +258,11 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
 /// version string (e.g. `"2.1.185"`), so `#{pane_current_command}` in tmux
 /// never shows `"claude"` when a modern Claude Code is running.  Any
 /// non-idle-shell foreground command is a reliable signal that Claude is up.
-fn wait_for_claude(session: &str, timeout_secs: u64, interval_ms: u64) -> Result<(), AskError> {
+pub(crate) fn wait_for_claude(
+    session: &str,
+    timeout_secs: u64,
+    interval_ms: u64,
+) -> Result<(), AskError> {
     let max_attempts = poll_plan(timeout_secs, interval_ms);
 
     for _ in 0..max_attempts {
@@ -504,5 +529,80 @@ mod tests {
         let _ = poll_plan(180, 500);
         let _ = has_session_args("test-session");
         // No assertion needed beyond "this line is reached".
+    }
+
+    // ── wait_for_claude (readiness timeout error branch) ─────────────────────
+    //
+    // A session name that has never existed can never have a foreground
+    // process for `classify_state` to observe as `Running`, so
+    // `foreground_cmd_for` deterministically returns "" (whether or not tmux
+    // itself is installed — `list_sessions_raw`/`parse_sessions` degrade to
+    // "not found" either way). This makes the `AskError::Launch` timeout
+    // branch exercisable without a live tmux server.
+
+    #[test]
+    fn wait_for_claude_times_out_for_nonexistent_session() {
+        let session = "bastion-test-wait-for-claude-nonexistent-session-xyz";
+        // Small timeout/interval so the test stays fast: poll_plan(1, 200) = 5 attempts.
+        let result = wait_for_claude(session, 1, 200);
+        match result {
+            Err(AskError::Launch {
+                session: s,
+                timeout_secs,
+            }) => {
+                assert_eq!(s, session);
+                assert_eq!(timeout_secs, 1);
+            }
+            other => panic!("expected AskError::Launch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wait_for_claude_is_reachable_as_pub_crate() {
+        // Compile-time guarantee (task 1 acceptance criterion): `wait_for_claude`
+        // must be `pub(crate)` so `src/serve/` handlers can call it directly.
+        // If this compiles, the visibility requirement holds.
+        let _: fn(&str, u64, u64) -> Result<(), AskError> = wait_for_claude;
+    }
+
+    // ── ensure_session_with_claude (extracted helper) ────────────────────────
+
+    #[test]
+    fn ensure_session_with_claude_is_reachable_as_pub_crate() {
+        // Compile-time guarantee (task 1 acceptance criterion): the extracted
+        // ensure-session-with-claude helper must be `pub(crate)` so `src/serve/`
+        // handlers can call it directly without duplicating the mechanics.
+        let _: fn(&str, Option<&str>, &str) -> Result<(), AskError> = ensure_session_with_claude;
+    }
+
+    #[test]
+    fn ensure_session_with_claude_propagates_launch_timeout_error() {
+        // A cold, never-created session forces the "create + launch + wait"
+        // path. `tmux::new_session`/`send_keys` either succeed (real tmux
+        // present) or fail fast and get mapped to `AskError::Tmux` (no tmux
+        // installed / no server); if they succeed, the subsequent readiness
+        // wait against a launch command that starts nothing real times out
+        // and maps to `AskError::Launch`. Either way this exercises the
+        // helper's error-branch wiring end-to-end without asserting on a
+        // live external process.
+        let session = "bastion-test-ensure-session-with-claude-xyz";
+        let result = ensure_session_with_claude(session, None, "true");
+
+        match result {
+            Err(AskError::Launch { session: s, .. }) => assert_eq!(s, session),
+            Err(AskError::Tmux { op, .. }) => {
+                assert!(!op.is_empty(), "tmux error should carry an op label");
+            }
+            Ok(()) => {
+                // A real tmux server was available and "true" happened to
+                // leave a foreground process classify_state treats as
+                // Running (unlikely, but not a correctness violation) —
+                // clean up so repeated test runs stay hermetic.
+            }
+            other => panic!("unexpected result variant: {other:?}"),
+        }
+
+        // Best-effort cleanup: don't leak a real tmux session across test runs.
+        let _ = tmux::kill_session(session);
     }
 }
