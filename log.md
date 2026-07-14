@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-03T16:23:40Z
+timestamp: 2026-07-14T19:50:10Z
 ---
 
 # Log — bastion
@@ -12,6 +12,23 @@ timestamp: 2026-07-03T16:23:40Z
 ---
 
 ## [2026-07-14]
+
+### BA.11.E close-out — validation, coverage, review, docs, handoff
+
+- **What:** Ran `/close-out --clean-worktree` on top of the already-PASSed `/sdlc-flow` run for
+  `11.E-quick-action-command-endpoint` (BA.11.E), opened as PR #17
+  (https://github.com/bredmond1019/bastion/pull/17, not yet merged). The full validation suite
+  (`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` — 1157 passed, `cargo build
+  --release`, emoji check) came back green. A coverage scan found no blocking gaps. A low-effort
+  code review found 0 findings. `/update-docs --patch` found nothing stale or missing — docs were
+  already current from the flow's own docs stage (Section 12 of `docs/serve-api.md`, contract
+  v0.4). `/handoff` wrote `planning/handoff.md`. This `/log-work` call, `/commit`, and
+  `/clean-worktree` close out the sequence: `state.json`'s `BA.11.E` block flipped from `open` to
+  `closed` in `planning/state.json` `tracks[]` ahead of this entry.
+- **Why:** Standard end-of-spec close-out gate before merging the worktree branch and retiring
+  the worktree — confirm nothing regressed and nothing was left stale before handing the block
+  off as done.
+- **Refs:** PR #17 (https://github.com/bredmond1019/bastion/pull/17); `planning/handoff.md`.
 
 ### BA.11.E closed — quick-action command endpoint (inject / spawn)
 
