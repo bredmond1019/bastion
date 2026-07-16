@@ -2,10 +2,10 @@
   "spec_slug": "13.2-mouse-interactivity",
   "branch": "13.2-mouse-interactivity-flow-3",
   "started_at": "2026-07-16T02:43:13Z",
-  "updated_at": "2026-07-16T02:43:13Z",
+  "updated_at": "2026-07-16T02:51:07Z",
   "worktree_path": "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.2-mouse-interactivity-flow-3",
   "status": "running",
-  "current_task": 1,
+  "current_task": 2,
   "tasks": {
     "1": {
       "status": "passed",
@@ -24,6 +24,24 @@
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.2-mouse-interactivity-flow-3/src/sessions/app.rs",
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.2-mouse-interactivity-flow-3/src/sessions/ui.rs",
         "/Users/brandon/Dev/agentic-portfolio/core/bastion/trees/13.2-mouse-interactivity-flow-3/src/sessions/tui_tests.rs"
+      ],
+      "commit": "",
+      "validated": "gating checks (fast tripwire)"
+    },
+    "2": {
+      "status": "passed",
+      "attempts": 1,
+      "summary": "AppState::on_mouse now purely dispatches left-clicks and wheel scroll across spine/browser/agent-panel/content panes via bella_engine::geometry::point_in against the stored pane_areas, with a shared row_index_in_pane helper handling border+scroll+clamping.",
+      "issues": [],
+      "fixes": [],
+      "decisions": [
+        "Agent-panel click matches session name to spine Space slug via linear scan of spine_rows() (v1 slug-equality rule per spec Context Pointers); no-op when no space matches.",
+        "The spine List's scroll offset isn't tracked anywhere on AppState (its ListState is local to the draw loop, not persisted), so row_index_in_pane is called with scroll=0 for the spine pane — an assumption documented inline that holds whenever the spine fits on screen; revisit if a future block needs spine scroll tracking.",
+        "Content-pane click has no row-index/border logic (Paragraph, not a List) — it just focuses OverviewPane::Content on any point_in hit, matching how the pane is actually rendered.",
+        "Kept dispatcher as sequential point_in checks in a single flat match-like if/else chain (spine -> browser -> agent_panel -> content) per the spec's requirement to leave an obvious seam for BA.13.4's future subtab arm."
+      ],
+      "files_changed": [
+        "src/sessions/app.rs"
       ],
       "commit": "",
       "validated": "gating checks (fast tripwire)"
@@ -76,13 +94,29 @@
         "filesReadKb": null,
         "inTokEst": 592,
         "outTok": 1750
+      },
+      {
+        "label": "implement-2-1",
+        "model": "sonnet",
+        "promptTokEst": 1000,
+        "filesReadKb": null,
+        "inTokEst": 1000,
+        "outTok": 19635
+      },
+      {
+        "label": "test-2-1",
+        "model": "haiku",
+        "promptTokEst": 592,
+        "filesReadKb": null,
+        "inTokEst": 592,
+        "outTok": 3337
       }
     ],
     "total": {
-      "promptTokEst": 2628,
+      "promptTokEst": 4220,
       "filesReadKb": 0,
-      "inTokEst": 2628,
-      "outTok": 36778
+      "inTokEst": 4220,
+      "outTok": 59750
     }
   }
 }
