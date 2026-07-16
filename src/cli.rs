@@ -74,6 +74,10 @@ pub enum Commands {
         /// Time window — "7d", "30d", or "all"
         #[arg(long, default_value = "7d")]
         last: String,
+        /// Live-updating spend summary, refreshing on the configured poll
+        /// interval until interrupted, instead of the one-shot summary
+        #[arg(long)]
+        watch: bool,
     },
     /// Trigger a workflow run via the FastAPI orchestrator API
     Run {
@@ -85,6 +89,22 @@ pub enum Commands {
         /// Drop into `bastion monitor` after triggering
         #[arg(long)]
         monitor: bool,
+        /// Skip the pre-dispatch budget gate and trigger even if a
+        /// configured ceiling is already breached
+        #[arg(long)]
+        force: bool,
+    },
+    /// Abort a running workflow via the Engine's `POST /events/{run_id}/abort`
+    ///
+    /// Per D25, bastion only *triggers* the abort — the Engine (`engine-serve`,
+    /// mounted by `bastion serve`) executes it. NOT `kill`: `bastion kill
+    /// <session>` already ships as the tmux session-kill and is untouched.
+    Abort {
+        /// Run ID to abort
+        run: String,
+        /// Skip the interactive confirmation prompt (for scripted use)
+        #[arg(long)]
+        yes: bool,
     },
     /// Quick stack health check — prints orchestrator API + DB reachability (non-TUI)
     Status,
@@ -1115,5 +1135,124 @@ mod tests {
     fn edit_missing_path_arg_fails_to_parse() {
         let result = Cli::try_parse_from(["bastion", "edit"]);
         assert!(result.is_err(), "edit without a path should fail to parse");
+    }
+
+    // ── Costs subcommand — --watch flag ───────────────────────────────────────
+
+    #[test]
+    fn costs_defaults_parse() {
+        let cli = Cli::try_parse_from(["bastion", "costs"]).unwrap();
+        match cli.command {
+            Some(Commands::Costs { last, watch }) => {
+                assert_eq!(last, "7d");
+                assert!(!watch, "watch should default to false");
+            }
+            other => panic!("expected Costs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn costs_watch_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "costs", "--watch"]).unwrap();
+        match cli.command {
+            Some(Commands::Costs { last, watch }) => {
+                assert_eq!(last, "7d");
+                assert!(watch);
+            }
+            other => panic!("expected Costs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn costs_last_and_watch_together_parse() {
+        let cli = Cli::try_parse_from(["bastion", "costs", "--last", "30d", "--watch"]).unwrap();
+        match cli.command {
+            Some(Commands::Costs { last, watch }) => {
+                assert_eq!(last, "30d");
+                assert!(watch);
+            }
+            other => panic!("expected Costs, got {other:?}"),
+        }
+    }
+
+    // ── Run subcommand — --force budget-gate flag ─────────────────────────────
+
+    #[test]
+    fn run_defaults_parse() {
+        let cli = Cli::try_parse_from(["bastion", "run", "my-workflow"]).unwrap();
+        match cli.command {
+            Some(Commands::Run {
+                workflow,
+                args,
+                monitor,
+                force,
+            }) => {
+                assert_eq!(workflow, "my-workflow");
+                assert!(args.is_none());
+                assert!(!monitor);
+                assert!(!force, "force should default to false");
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_force_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "run", "my-workflow", "--force"]).unwrap();
+        match cli.command {
+            Some(Commands::Run { force, .. }) => {
+                assert!(force);
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    // ── Abort subcommand ──────────────────────────────────────────────────────
+
+    #[test]
+    fn abort_requires_run_arg() {
+        let cli = Cli::try_parse_from(["bastion", "abort", "run-123"]).unwrap();
+        match cli.command {
+            Some(Commands::Abort { run, yes }) => {
+                assert_eq!(run, "run-123");
+                assert!(!yes, "yes should default to false");
+            }
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn abort_yes_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "abort", "run-123", "--yes"]).unwrap();
+        match cli.command {
+            Some(Commands::Abort { run, yes }) => {
+                assert_eq!(run, "run-123");
+                assert!(yes);
+            }
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn abort_missing_run_arg_fails_to_parse() {
+        let result = Cli::try_parse_from(["bastion", "abort"]);
+        assert!(
+            result.is_err(),
+            "abort without a run id should fail to parse"
+        );
+    }
+
+    #[test]
+    fn abort_and_kill_both_parse_distinctly() {
+        // Regression guard for the naming deviation: `abort` (run-abort, this
+        // block) and `kill` (tmux session-kill, unchanged) must coexist.
+        let abort = Cli::try_parse_from(["bastion", "abort", "r1"]).unwrap();
+        assert!(matches!(abort.command, Some(Commands::Abort { .. })));
+
+        let kill = Cli::try_parse_from(["bastion", "kill", "session-1"]).unwrap();
+        match kill.command {
+            Some(Commands::Kill { session }) => assert_eq!(session, "session-1"),
+            other => panic!("expected Kill, got {other:?}"),
+        }
     }
 }

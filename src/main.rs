@@ -43,6 +43,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Validate { .. } => "validate",
         Commands::Costs { .. } => "costs",
         Commands::Run { .. } => "run",
+        Commands::Abort { .. } => "abort",
         Commands::Status => "status",
         Commands::Sessions => "sessions",
         Commands::Attach { .. } => "attach",
@@ -152,12 +153,14 @@ async fn dispatch(cli: Cli) -> Result<()> {
             Commands::Inspect { run_id } => inspect::run(run_id).await,
             Commands::Overview => overview::run(),
             Commands::Validate { path } => validate::run(path).await,
-            Commands::Costs { last } => costs::run(last).await,
+            Commands::Costs { last, watch } => costs::run(last, watch).await,
             Commands::Run {
                 workflow,
                 args,
                 monitor,
-            } => run::trigger(workflow, args, monitor).await,
+                force,
+            } => run::trigger(workflow, args, monitor, force).await,
+            Commands::Abort { run, yes } => run::abort::run(run, yes).await,
             Commands::Status => run::status().await,
             // Sessions path is DB-free (D4): no Config::load(), no Postgres pool.
             // All session verbs are sync blocking (D5): no async/tokio coupling.
@@ -359,7 +362,10 @@ mod tests {
     #[test]
     fn command_name_costs() {
         assert_eq!(
-            command_name(&Commands::Costs { last: "7d".into() }),
+            command_name(&Commands::Costs {
+                last: "7d".into(),
+                watch: false,
+            }),
             "costs"
         );
     }
@@ -371,8 +377,20 @@ mod tests {
                 workflow: "wf".into(),
                 args: None,
                 monitor: false,
+                force: false,
             }),
             "run"
+        );
+    }
+
+    #[test]
+    fn command_name_abort() {
+        assert_eq!(
+            command_name(&Commands::Abort {
+                run: "run-1".into(),
+                yes: false,
+            }),
+            "abort"
         );
     }
 

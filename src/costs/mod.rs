@@ -1,6 +1,6 @@
 // `bastion costs --last <window>` — LLM spend summary from PostgreSQL.
 
-mod budget;
+pub(crate) mod budget;
 mod pricing;
 mod tokens;
 mod watch;
@@ -251,11 +251,19 @@ fn render_row(row: &WorkflowCost) -> String {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-/// Run `bastion costs --last <window>`.
+/// Run `bastion costs --last <window> [--watch]`.
+///
+/// `watch == true` routes to [`watch::run`] — the live-updating poll loop
+/// (task 6) — leaving this one-shot path unchanged. `watch == false` is the
+/// existing one-shot summary, byte-for-byte unchanged from before this task.
 ///
 /// Gracefully degrades when `DATABASE_URL` is missing or Postgres is unreachable —
 /// prints an actionable message and returns `Ok(())` (no panic).
-pub async fn run(window: String) -> Result<()> {
+pub async fn run(window: String, watch: bool) -> Result<()> {
+    if watch {
+        return watch::run(window).await;
+    }
+
     let window = match parse_window(&window) {
         Ok(w) => w,
         Err(e) => {

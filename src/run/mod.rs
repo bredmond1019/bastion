@@ -5,9 +5,13 @@
 pub mod abort;
 
 use anyhow::{Context, Result, anyhow};
+use chrono::Utc;
 
 use crate::api::client::{ApiClient, ApiStatus};
 use crate::config::{Config, ConfigError};
+use crate::costs::budget::{BreachReason, Budget, GateVerdict, Spend, evaluate};
+use crate::costs::{self, Window};
+use crate::db::costs as db_costs;
 use crate::db::health::{self, DbStatus};
 use crate::monitor;
 
@@ -55,9 +59,98 @@ pub fn format_trigger_success(workflow: &str, task_id: &str) -> String {
     format!("workflow: {workflow}\ntask_id: {task_id}\n")
 }
 
-pub async fn trigger(workflow: String, args: Option<String>, monitor: bool) -> Result<()> {
+// ── Pre-dispatch budget gate (task 8) ────────────────────────────────────────
+//
+// The Console-side "refuse/warn" half of the block's budget gate. The
+// server-side enforcement point is engine-rs `EN.2.B` (already done) and is
+// out of scope here — this only decides whether `bastion run` sends the
+// trigger request at all, using the same pure `costs::budget::evaluate` core
+// task 6's watch loop feeds each poll tick through.
+
+/// The three-way pre-dispatch budget-gate decision. Pure — no I/O.
+///
+/// - No cap configured on `budget` → [`GateOutcome::NoBudgetConfigured`]:
+///   the absent-tolerant case — `trigger`'s I/O shell short-circuits *before*
+///   this is even called, so no spend query is made (see `trigger` below).
+/// - A cap is configured and current `spend` is within it →
+///   [`GateOutcome::Within`] — trigger proceeds.
+/// - A cap is configured and breached → [`GateOutcome::Refuse`], carrying
+///   which cap tripped it plus the spent/limit values for the operator
+///   message.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GateOutcome {
+    NoBudgetConfigured,
+    Within,
+    Refuse(BreachReason),
+}
+
+/// Evaluate the pre-dispatch budget gate against `spend`. Pure — no I/O.
+///
+/// Delegates the actual threshold comparison to `costs::budget::evaluate`
+/// (task 3) so the boundary semantics (breach at `>=`, token cap checked
+/// before cost cap) stay identical between `run`'s gate and `costs --watch`'s
+/// alerting.
+pub fn evaluate_gate(budget: &Budget, spend: Spend) -> GateOutcome {
+    if budget.max_total_tokens.is_none() && budget.max_cost_usd.is_none() {
+        return GateOutcome::NoBudgetConfigured;
+    }
+    match evaluate(spend, budget) {
+        GateVerdict::Within => GateOutcome::Within,
+        GateVerdict::Breached(reason) => GateOutcome::Refuse(reason),
+    }
+}
+
+/// Format the refusal message for a breached budget gate — names the cap,
+/// the spent value, and the limit, per the block's acceptance criteria.
+/// Pure function — no I/O.
+pub fn format_budget_refusal(workflow: &str, reason: &BreachReason) -> String {
+    format!(
+        "bastion run: refusing to trigger '{workflow}' — budget cap '{}' already breached \
+         (spent {:.4}, limit {:.4})\n\
+         Pass --force to trigger anyway.\n",
+        reason.cap, reason.spent, reason.limit
+    )
+}
+
+pub async fn trigger(
+    workflow: String,
+    args: Option<String>,
+    monitor: bool,
+    force: bool,
+) -> Result<()> {
     let data = parse_args(args)?;
     let config = Config::load()?;
+
+    // Pre-dispatch budget gate: only query spend when a cap is actually
+    // configured (the absent-tolerant contract — "no extra query" when no
+    // budget is set) and the operator hasn't asked to bypass it with
+    // --force.
+    if !force && (config.max_total_tokens.is_some() || config.max_cost_usd.is_some()) {
+        let budget = Budget {
+            max_total_tokens: config.max_total_tokens,
+            max_cost_usd: config.max_cost_usd,
+        };
+        match db_costs::fetch_all_runs(&config.database_url).await {
+            Ok(runs) => {
+                let summary = costs::aggregate(&runs, &Window::All, Utc::now());
+                let spend = Spend::from(&summary.totals);
+                if let GateOutcome::Refuse(reason) = evaluate_gate(&budget, spend) {
+                    eprint!("{}", format_budget_refusal(&workflow, &reason));
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                // Fail open: an unreachable DB means the gate can't be
+                // evaluated, not that the operator is blocked from
+                // triggering — surfaced as a warning, not a refusal.
+                eprintln!(
+                    "bastion run: could not evaluate the budget gate (database unreachable: {e}); \
+                     triggering anyway"
+                );
+            }
+        }
+    }
+
     let client = ApiClient::new(&config.api_base_url);
     let task_id = client
         .trigger_workflow(&workflow, data)
@@ -113,6 +206,137 @@ fn render_status(db: &DbStatus, api: &ApiStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::costs::budget::Cap;
+
+    // ── evaluate_gate — the three branches ─────────────────────────────────────
+
+    #[test]
+    fn gate_no_budget_configured_is_unchanged() {
+        let budget = Budget::default();
+        let spend = Spend {
+            total_tokens: u64::MAX,
+            total_cost_usd: f64::MAX,
+        };
+        assert_eq!(
+            evaluate_gate(&budget, spend),
+            GateOutcome::NoBudgetConfigured
+        );
+    }
+
+    #[test]
+    fn gate_within_ceiling_triggers() {
+        let budget = Budget {
+            max_total_tokens: Some(1_000_000),
+            max_cost_usd: Some(50.0),
+        };
+        let spend = Spend {
+            total_tokens: 1_000,
+            total_cost_usd: 1.0,
+        };
+        assert_eq!(evaluate_gate(&budget, spend), GateOutcome::Within);
+    }
+
+    #[test]
+    fn gate_breached_refuses_naming_the_cap() {
+        let budget = Budget {
+            max_total_tokens: Some(1_000),
+            max_cost_usd: None,
+        };
+        let spend = Spend {
+            total_tokens: 1_500,
+            total_cost_usd: 0.0,
+        };
+        match evaluate_gate(&budget, spend) {
+            GateOutcome::Refuse(reason) => {
+                assert_eq!(reason.cap, Cap::MaxTotalTokens);
+                assert_eq!(reason.spent, 1_500.0);
+                assert_eq!(reason.limit, 1_000.0);
+            }
+            other => panic!("expected Refuse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_breached_cost_cap_refuses() {
+        let budget = Budget {
+            max_total_tokens: None,
+            max_cost_usd: Some(5.0),
+        };
+        let spend = Spend {
+            total_tokens: 0,
+            total_cost_usd: 7.5,
+        };
+        match evaluate_gate(&budget, spend) {
+            GateOutcome::Refuse(reason) => {
+                assert_eq!(reason.cap, Cap::MaxCostUsd);
+                assert_eq!(reason.spent, 7.5);
+                assert_eq!(reason.limit, 5.0);
+            }
+            other => panic!("expected Refuse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_exactly_at_limit_refuses() {
+        // Boundary case — mirrors costs::budget::evaluate's >= semantics.
+        let budget = Budget {
+            max_total_tokens: Some(1_000),
+            max_cost_usd: None,
+        };
+        let spend = Spend {
+            total_tokens: 1_000,
+            total_cost_usd: 0.0,
+        };
+        assert!(matches!(
+            evaluate_gate(&budget, spend),
+            GateOutcome::Refuse(_)
+        ));
+    }
+
+    #[test]
+    fn gate_only_one_cap_configured_is_absent_tolerant_for_the_other() {
+        let budget = Budget {
+            max_total_tokens: Some(1_000_000),
+            max_cost_usd: None,
+        };
+        let spend = Spend {
+            total_tokens: 10,
+            total_cost_usd: f64::MAX,
+        };
+        // Only tokens is configured, so the astronomical cost must not
+        // spuriously refuse.
+        assert_eq!(evaluate_gate(&budget, spend), GateOutcome::Within);
+    }
+
+    // ── format_budget_refusal ────────────────────────────────────────────────
+
+    #[test]
+    fn format_budget_refusal_names_cap_spent_and_limit() {
+        let reason = BreachReason {
+            cap: Cap::MaxTotalTokens,
+            spent: 1_500.0,
+            limit: 1_000.0,
+        };
+        let msg = format_budget_refusal("my-workflow", &reason);
+        assert!(msg.contains("my-workflow"), "got: {msg}");
+        assert!(msg.contains("max_total_tokens"), "got: {msg}");
+        assert!(msg.contains("1500"), "got: {msg}");
+        assert!(msg.contains("1000"), "got: {msg}");
+        assert!(msg.contains("--force"), "got: {msg}");
+    }
+
+    #[test]
+    fn format_budget_refusal_cost_cap_message() {
+        let reason = BreachReason {
+            cap: Cap::MaxCostUsd,
+            spent: 7.5,
+            limit: 5.0,
+        };
+        let msg = format_budget_refusal("wf", &reason);
+        assert!(msg.contains("max_cost_usd"), "got: {msg}");
+        assert!(msg.contains("7.5"), "got: {msg}");
+        assert!(msg.contains("5.0"), "got: {msg}");
+    }
 
     // ── parse_args ────────────────────────────────────────────────────────────
 
