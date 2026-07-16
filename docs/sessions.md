@@ -78,11 +78,36 @@ on whichever spine row is selected:
   frame is too short to spare the room, so it degrades gracefully on small terminals instead of
   crowding out the 1-line main area and footer.
 
-The Kanban board view and mouse-click tab switching described in earlier revisions of this doc
-have been removed along with the top tab bar; mouse support and a dedicated Kanban view are
-tracked separately and are out of scope here.
+The Kanban board view described in earlier revisions of this doc has been removed along with the
+top tab bar; a dedicated Kanban view is tracked separately and remains out of scope here. Mouse
+support has since returned in a different shape: click-to-select and wheel scroll now route
+through a pure per-pane dispatcher (see [Mouse support](#mouse-support) below), not the old
+tab-switching behavior.
+
+### Mouse support
+
+Mouse capture is enabled for the whole TUI session. Left-clicks and wheel scroll are routed by
+comparing the click/hover coordinate against the current frame's per-pane viewport rectangles
+(spine, file browser, content, agent-panel strip) via `bella_engine::geometry::point_in`:
+
+- **Spine:** clicking a row selects it (same effect as navigating there with `↑`/`↓`/`j`/`k`).
+- **File Browser (Space Overview):** clicking an entry selects it and moves focus to the Browser
+  pane, matching `Enter`/arrow-key navigation.
+- **Agent · priority strip:** clicking a session row jumps the spine selection to the Space whose
+  slug equals that session's name (v1 slug-equality rule); a session with no matching space is a
+  no-op.
+- **Wheel scroll:** scrolling over the Content pane scrolls `space_overview_scroll`; scrolling over
+  the Browser pane moves the file cursor; scrolling over the spine moves the selection up/down.
+- Clicks outside every known pane, or before the first frame has been drawn, are no-ops — nothing
+  panics.
+
+Sub-tab click routing (a future `SubTab` bar) is not yet implemented; the dispatcher is structured
+to add that arm later without a rewrite.
 
 ### Key bindings
+
+Keyboard and mouse drive the same underlying actions — see [Mouse support](#mouse-support) above
+for the click/scroll-to-pane mapping.
 
 **Global / Navigation:**
 | Key | Action |
