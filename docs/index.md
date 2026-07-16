@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [bastion, cli, operator reference, index, docs]
-related: [bastion-setup, monitor, brain, config, brainval, docview]
+related: [bastion-setup, monitor, brain, config, brainval, docview, workspace-contract]
 ---
 
 # bastion CLI — Docs
@@ -53,3 +53,4 @@ and `Bastion/docs/ownership.md`.
 | [observ.md](observ.md) | Structured error taxonomy (C001-C014), event tracing, logging init |
 | [serve-api.md](serve-api.md) | HTTP + WebSocket API contract for `bastion serve` (v0.4) |
 | [data-contract.md](data-contract.md) | bastion's pinned view of the orchestrator data contract |
+| [workspace-contract.md](workspace-contract.md) | bastion's pinned view of the orchestrator-owned knowledge-workspace contract (names, resolution, OKF corpus rules) |
