@@ -5,8 +5,9 @@
 // tested exhaustively without spawning any process.
 
 use crate::brain::spaces::{SelectedNode, SpaceTree, SpineRow};
+use crate::sessions::agent_panel::agent_panel_rows;
 use crate::sessions::model::Session;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
@@ -533,9 +534,121 @@ impl AppState {
         }
     }
 
-    // Mouse support (BA.13.2) is out of scope for this block. The old `on_mouse`
-    // only handled top tab-bar clicks, which no longer exist now that the spine
-    // is the single primary navigator; it is removed rather than left to bit-rot.
+    // ── Mouse→action mapping (BA.13.2) ────────────────────────────────────────
+
+    /// Map a mouse event to an `Action`, routing purely off `self.pane_areas`
+    /// (captured by the most recent draw — see `compute_pane_areas`) via
+    /// `bella_engine::geometry::point_in`. No `Frame`/terminal involved, so
+    /// this is exhaustively unit-testable with synthetic `PaneAreas`.
+    ///
+    /// Kept as a single flat match-per-pane (click dispatch delegates to
+    /// `handle_click`, scroll dispatch to `handle_scroll`) so BA.13.4 can add
+    /// a `subtab` arm later without a rewrite. Anything not a left-click or a
+    /// wheel event (moves, drags, other buttons) is a no-op.
+    pub fn on_mouse(&mut self, ev: MouseEvent) -> Action {
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_click(ev.column, ev.row);
+            }
+            MouseEventKind::ScrollUp => self.handle_scroll(ev.column, ev.row, true),
+            MouseEventKind::ScrollDown => self.handle_scroll(ev.column, ev.row, false),
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Route a left-click by hit-testing `self.pane_areas` in a fixed order
+    /// (spine → browser → agent panel → content). Panes never overlap in the
+    /// real layout, so ordering only matters for the zero-sized default case
+    /// before the first draw, where every `point_in` check fails and the
+    /// click is correctly a no-op.
+    fn handle_click(&mut self, col: u16, row: u16) {
+        if bella_engine::geometry::point_in(self.pane_areas.spine, col, row) {
+            let len = self.spine_rows().len();
+            // No independent scroll offset is tracked for the spine `List`
+            // (its `ListState` is local to the draw loop, not stored on
+            // `AppState`), so row-mapping assumes an unscrolled viewport —
+            // matching ratatui's behavior whenever the spine fits on screen.
+            if let Some(idx) = row_index_in_pane(self.pane_areas.spine, row, 0, len) {
+                self.selected_spine = idx;
+                self.reinit_browser();
+            }
+        } else if bella_engine::geometry::point_in(self.pane_areas.browser, col, row) {
+            let len = self.file_browser.entries.len();
+            let scroll = self.file_browser.scroll as usize;
+            if let Some(idx) = row_index_in_pane(self.pane_areas.browser, row, scroll, len) {
+                self.file_browser.selected = idx;
+                self.overview_pane = OverviewPane::Browser;
+            }
+        } else if bella_engine::geometry::point_in(self.pane_areas.agent_panel, col, row) {
+            let rows = agent_panel_rows(&self.sessions);
+            if let Some(idx) = row_index_in_pane(self.pane_areas.agent_panel, row, 0, rows.len()) {
+                let name = rows[idx].label.clone();
+                let target = self
+                    .spine_rows()
+                    .iter()
+                    .position(|r| matches!(r, SpineRow::Space(entry) if entry.slug == name));
+                if let Some(pos) = target {
+                    self.selected_spine = pos;
+                    self.reinit_browser();
+                }
+                // No matching space for this session name: no-op (v1 slug-equality
+                // rule; see spec Context Pointers).
+            }
+        } else if bella_engine::geometry::point_in(self.pane_areas.content, col, row) {
+            self.overview_pane = OverviewPane::Content;
+        }
+        // Click outside every stored pane (including all-zero default areas
+        // before the first draw): no-op.
+    }
+
+    /// Route a wheel event by which pane the pointer is hovering over.
+    /// Content scrolls `space_overview_scroll`; browser moves the file-browser
+    /// cursor; spine moves the primary-navigation selection. Anywhere else is
+    /// a no-op.
+    fn handle_scroll(&mut self, col: u16, row: u16, up: bool) {
+        if bella_engine::geometry::point_in(self.pane_areas.content, col, row) {
+            self.space_overview_scroll = if up {
+                self.space_overview_scroll.saturating_sub(1)
+            } else {
+                self.space_overview_scroll.saturating_add(1)
+            };
+        } else if bella_engine::geometry::point_in(self.pane_areas.browser, col, row) {
+            // Two rows of border consumed top+bottom of the browser block.
+            let viewport_h = self.pane_areas.browser.height.saturating_sub(2);
+            self.file_browser
+                .move_cursor(if up { -1 } else { 1 }, viewport_h);
+        } else if bella_engine::geometry::point_in(self.pane_areas.spine, col, row) {
+            if up {
+                self.select_prev();
+            } else {
+                self.select_next();
+            }
+        }
+    }
+}
+
+/// Map a click row to an in-list index, accounting for the enclosing block's
+/// top/bottom border (one row each) and a vertical `scroll` offset (index of
+/// the first visible entry). Returns `None` when the row lands on a border,
+/// the pane has no content rows (height <= 2), or the mapped index is out of
+/// bounds for a list of `len` entries — covering both out-of-range clicks and
+/// the "nothing to click" empty-list case.
+fn row_index_in_pane(area: Rect, row: u16, scroll: usize, len: usize) -> Option<usize> {
+    if len == 0 || area.height <= 2 {
+        return None;
+    }
+    let top = area.y + 1; // skip the top border row
+    let bottom = area.y + area.height - 1; // one-past-last content row (bottom border starts here)
+    if row < top || row >= bottom {
+        return None;
+    }
+    let local = (row - top) as usize;
+    let idx = scroll + local;
+    if idx >= len {
+        return None;
+    }
+    Some(idx)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1037,5 +1150,320 @@ mod tests {
                 agent_panel: Rect::default(),
             }
         );
+    }
+
+    // ── on_mouse (BA.13.2 task 2) ───────────────────────────────────────────────
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        }
+    }
+
+    fn left_click(column: u16, row: u16) -> MouseEvent {
+        mouse_event(MouseEventKind::Down(MouseButton::Left), column, row)
+    }
+
+    /// A full spine (`[MC, Hq, Space(learn-ai), Tier(core), Space(bastion)]`,
+    /// len 5) with `pane_areas` set as if a draw had already run: an 80x24
+    /// frame, spine 30 wide down the left, agent panel at the bottom, and (on
+    /// an `Hq`/`Space` row) a 30-wide browser + remaining content.
+    fn make_full_app_with_panes() -> AppState {
+        let mut app = make_full_app();
+        app.pane_areas = compute_pane_areas(Rect::new(0, 0, 80, 24), 7, &SelectedNode::Hq);
+        app
+    }
+
+    // -- row_index_in_pane -------------------------------------------------------
+
+    #[test]
+    fn row_index_in_pane_skips_top_and_bottom_border() {
+        let area = Rect::new(0, 0, 30, 5); // 3 content rows: y=1,2,3
+        assert_eq!(row_index_in_pane(area, 0, 0, 3), None); // top border
+        assert_eq!(row_index_in_pane(area, 4, 0, 3), None); // bottom border
+        assert_eq!(row_index_in_pane(area, 1, 0, 3), Some(0));
+        assert_eq!(row_index_in_pane(area, 3, 0, 3), Some(2));
+    }
+
+    #[test]
+    fn row_index_in_pane_applies_scroll_offset() {
+        let area = Rect::new(0, 0, 30, 5);
+        assert_eq!(row_index_in_pane(area, 1, 10, 20), Some(10));
+        assert_eq!(row_index_in_pane(area, 3, 10, 20), Some(12));
+    }
+
+    #[test]
+    fn row_index_in_pane_out_of_bounds_clamped_to_none() {
+        let area = Rect::new(0, 0, 30, 5);
+        // 3 visible rows starting at scroll=8 over a 10-entry list: only
+        // indices 8/9 exist, so the third visible row (would-be idx 10) is None.
+        assert_eq!(row_index_in_pane(area, 3, 8, 10), None);
+    }
+
+    #[test]
+    fn row_index_in_pane_empty_list_is_none() {
+        let area = Rect::new(0, 0, 30, 5);
+        assert_eq!(row_index_in_pane(area, 1, 0, 0), None);
+    }
+
+    #[test]
+    fn row_index_in_pane_too_short_for_content_is_none() {
+        let area = Rect::new(0, 0, 30, 2); // just the two border rows, no content
+        assert_eq!(row_index_in_pane(area, 0, 0, 5), None);
+        assert_eq!(row_index_in_pane(area, 1, 0, 5), None);
+    }
+
+    // -- click: spine -------------------------------------------------------------
+
+    #[test]
+    fn click_in_spine_selects_row() {
+        let mut app = make_full_app_with_panes();
+        // spine area is Rect::new(0, 0, 30, 16); row 1 is the first content row.
+        let action = app.on_mouse(left_click(5, 1));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.selected_spine, 0);
+
+        let action = app.on_mouse(left_click(5, 3));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.selected_spine, 2);
+    }
+
+    #[test]
+    fn click_in_spine_out_of_range_row_is_noop() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        // spine has only 5 rows (content rows y=1..=5); row 12 is well past the
+        // last entry but still inside the bordered pane.
+        app.on_mouse(left_click(5, 12));
+        assert_eq!(app.selected_spine, 1);
+    }
+
+    #[test]
+    fn click_on_spine_border_is_noop() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        app.on_mouse(left_click(5, 0)); // top border row of the spine block
+        assert_eq!(app.selected_spine, 1);
+    }
+
+    // -- click: browser -------------------------------------------------------------
+
+    #[test]
+    fn click_in_browser_selects_entry_and_focuses_browser_pane() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1; // Hq row -> browser/content split
+        app.reinit_browser();
+        app.file_browser.entries = vec![
+            bella_engine::browser::BrowserEntry {
+                path: std::path::PathBuf::from("a"),
+                display: "a".into(),
+                kind: bella_engine::browser::BrowserEntryKind::Dir,
+            },
+            bella_engine::browser::BrowserEntry {
+                path: std::path::PathBuf::from("b.md"),
+                display: "b.md".into(),
+                kind: bella_engine::browser::BrowserEntryKind::Markdown,
+            },
+        ];
+        app.file_browser.selected = 0;
+        app.file_browser.scroll = 0;
+        app.overview_pane = OverviewPane::Sidebar;
+
+        // browser area is Rect::new(30, 0, 30, 16); row 2 -> content row index 1.
+        let action = app.on_mouse(left_click(35, 2));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.file_browser.selected, 1);
+        assert_eq!(app.overview_pane, OverviewPane::Browser);
+    }
+
+    #[test]
+    fn click_in_browser_accounts_for_scroll_offset() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        app.reinit_browser();
+        app.file_browser.entries = (0..10)
+            .map(|i| bella_engine::browser::BrowserEntry {
+                path: std::path::PathBuf::from(format!("f{i}.md")),
+                display: format!("f{i}.md"),
+                kind: bella_engine::browser::BrowserEntryKind::Markdown,
+            })
+            .collect();
+        app.file_browser.selected = 5;
+        app.file_browser.scroll = 5;
+
+        // row 1 is the first content row; with scroll=5, that's entry index 5.
+        app.on_mouse(left_click(35, 1));
+        assert_eq!(app.file_browser.selected, 5);
+
+        // row 3 -> local row 2 -> entry index 5 + 2 = 7.
+        app.on_mouse(left_click(35, 3));
+        assert_eq!(app.file_browser.selected, 7);
+    }
+
+    #[test]
+    fn click_in_browser_out_of_range_row_is_noop() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        app.reinit_browser();
+        app.file_browser.entries = vec![bella_engine::browser::BrowserEntry {
+            path: std::path::PathBuf::from("a"),
+            display: "a".into(),
+            kind: bella_engine::browser::BrowserEntryKind::Dir,
+        }];
+        app.file_browser.selected = 0;
+        app.on_mouse(left_click(35, 10)); // well past the single entry
+        assert_eq!(app.file_browser.selected, 0);
+    }
+
+    // -- click: agent panel -------------------------------------------------------------
+
+    #[test]
+    fn click_in_agent_panel_selects_matching_space_by_slug() {
+        let mut app = make_full_app_with_panes();
+        app.sessions = make_sessions(&["bastion"]);
+        app.pane_areas.agent_panel = Rect::new(0, 16, 80, 7);
+        app.selected_spine = 0;
+
+        // agent_panel_rows sorts by urgency; with one Idle session it's row 0
+        // -> content row at y = 17 (top border at y=16).
+        let action = app.on_mouse(left_click(5, 17));
+        assert_eq!(action, Action::None);
+        match app.selected_node() {
+            SelectedNode::Space(entry) => assert_eq!(entry.slug, "bastion"),
+            other => panic!("expected Space(bastion), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn click_in_agent_panel_no_matching_space_is_noop() {
+        let mut app = make_full_app_with_panes();
+        app.sessions = make_sessions(&["no-such-space"]);
+        app.pane_areas.agent_panel = Rect::new(0, 16, 80, 7);
+        app.selected_spine = 0;
+
+        app.on_mouse(left_click(5, 17));
+        assert_eq!(app.selected_spine, 0);
+    }
+
+    // -- click: content -------------------------------------------------------------
+
+    #[test]
+    fn click_in_content_focuses_content_pane() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        app.reinit_browser();
+        app.overview_pane = OverviewPane::Sidebar;
+
+        // content area is Rect::new(60, 0, 20, 16).
+        let action = app.on_mouse(left_click(65, 2));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.overview_pane, OverviewPane::Content);
+    }
+
+    // -- click: outside every pane / before first draw -------------------------------
+
+    #[test]
+    fn click_outside_every_pane_is_noop() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        let before = app.selected_spine;
+        // Row 23 falls in the 1-line footer, outside every stored pane.
+        let action = app.on_mouse(left_click(5, 23));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.selected_spine, before);
+    }
+
+    #[test]
+    fn click_before_first_draw_default_areas_is_noop() {
+        let mut app = make_full_app();
+        assert_eq!(app.pane_areas, PaneAreas::default());
+        let action = app.on_mouse(left_click(5, 5));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.selected_spine, 0);
+        assert_eq!(app.overview_pane, OverviewPane::Sidebar);
+    }
+
+    // -- scroll -------------------------------------------------------------
+
+    #[test]
+    fn scroll_over_content_adjusts_overview_scroll_saturating() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        app.reinit_browser();
+        app.space_overview_scroll = 5;
+
+        app.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        assert_eq!(app.space_overview_scroll, 6);
+
+        app.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
+        assert_eq!(app.space_overview_scroll, 5);
+
+        app.space_overview_scroll = 0;
+        app.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
+        assert_eq!(app.space_overview_scroll, 0); // saturating, not underflowing
+    }
+
+    #[test]
+    fn scroll_over_browser_moves_cursor() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        app.reinit_browser();
+        app.file_browser.entries = (0..5)
+            .map(|i| bella_engine::browser::BrowserEntry {
+                path: std::path::PathBuf::from(format!("f{i}.md")),
+                display: format!("f{i}.md"),
+                kind: bella_engine::browser::BrowserEntryKind::Markdown,
+            })
+            .collect();
+        app.file_browser.selected = 2;
+
+        app.on_mouse(mouse_event(MouseEventKind::ScrollDown, 35, 2));
+        assert_eq!(app.file_browser.selected, 3);
+
+        app.on_mouse(mouse_event(MouseEventKind::ScrollUp, 35, 2));
+        assert_eq!(app.file_browser.selected, 2);
+    }
+
+    #[test]
+    fn scroll_over_spine_moves_selection() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+
+        app.on_mouse(mouse_event(MouseEventKind::ScrollDown, 5, 5));
+        assert_eq!(app.selected_spine, 2);
+
+        app.on_mouse(mouse_event(MouseEventKind::ScrollUp, 5, 5));
+        assert_eq!(app.selected_spine, 1);
+    }
+
+    #[test]
+    fn scroll_outside_every_pane_is_noop() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        app.on_mouse(mouse_event(MouseEventKind::ScrollDown, 5, 23)); // footer row
+        assert_eq!(app.selected_spine, 1);
+    }
+
+    // -- non-click/scroll events -------------------------------------------------------------
+
+    #[test]
+    fn mouse_move_event_is_noop() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        let action = app.on_mouse(mouse_event(MouseEventKind::Moved, 5, 1));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.selected_spine, 1);
+    }
+
+    #[test]
+    fn right_click_is_noop() {
+        let mut app = make_full_app_with_panes();
+        app.selected_spine = 1;
+        let action = app.on_mouse(mouse_event(MouseEventKind::Down(MouseButton::Right), 5, 1));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.selected_spine, 1);
     }
 }
