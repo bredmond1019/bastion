@@ -14,6 +14,8 @@ pub enum ConfigError {
     NoWorkspaceRegistry,
     #[error("BASTION_SERVE_TOKEN must be set — supply a bearer token via env or --token")]
     MissingServeToken,
+    #[error("{0} is malformed: '{1}' is not a valid {2}")]
+    MalformedBudgetValue(&'static str, String, &'static str),
 }
 
 // ── ServeConfig ───────────────────────────────────────────────────────────────
@@ -105,6 +107,17 @@ pub struct FileConfig {
     /// Optional `[theme]` section — selects a named UI theme preset (BA.14.0).
     /// Fully optional; absent entirely for existing configs, which parse unchanged.
     pub theme: Option<ThemeConfig>,
+    /// Budget cap: total token ceiling across a run's node runs (BA.7.C).
+    /// Absent by default — a run with no budget configured behaves exactly as it
+    /// did before v1.1.0 of the data contract.
+    pub max_total_tokens: Option<u64>,
+    /// Budget cap: total USD-cost ceiling across a run's node runs (BA.7.C).
+    /// Absent by default — same absent-tolerant contract as `max_total_tokens`.
+    pub max_cost_usd: Option<f64>,
+    /// `X-API-Key` secret for the engine's abort endpoint (BA.7.C). Distinct from
+    /// `ServeConfig.token` (bastion serve's own `Authorization: Bearer` gate) —
+    /// two different secrets, two different schemes, two different route groups.
+    pub engine_api_key: Option<String>,
 }
 
 /// The `[theme]` TOML table.
@@ -236,6 +249,15 @@ pub struct Config {
     // Used by Phase 1 monitor; present now to keep config loading complete.
     #[allow(dead_code)]
     pub poll_interval_secs: u64,
+    /// Budget cap: total token ceiling (BA.7.C). Absent-tolerant — `None` means
+    /// no gate/alert applies and behavior is unchanged from before v1.1.0.
+    pub max_total_tokens: Option<u64>,
+    /// Budget cap: total USD-cost ceiling (BA.7.C). Same absent-tolerant contract.
+    pub max_cost_usd: Option<f64>,
+    /// `X-API-Key` secret for the engine's abort endpoint (BA.7.C). Distinct from
+    /// `ServeConfig.token`; used by both `api::client` (sender) and the embedded
+    /// engine's `AppState.api_key` (verifier).
+    pub engine_api_key: Option<String>,
 }
 
 impl Config {
@@ -257,6 +279,9 @@ impl Config {
                 std::env::var("DATABASE_URL").ok(),
                 std::env::var("BASTION_API_URL").ok(),
                 std::env::var("BASTION_POLL_INTERVAL").ok(),
+                std::env::var("BASTION_MAX_TOTAL_TOKENS").ok(),
+                std::env::var("BASTION_MAX_COST_USD").ok(),
+                std::env::var("BASTION_ENGINE_API_KEY").ok(),
             ),
             file_config,
         )
@@ -264,11 +289,28 @@ impl Config {
 
     /// Merge env vars (highest precedence) with file config (middle) and built-in defaults
     /// (lowest). `DATABASE_URL` must be satisfied by at least one source.
+    ///
+    /// `env` is `(DATABASE_URL, BASTION_API_URL, BASTION_POLL_INTERVAL,
+    /// BASTION_MAX_TOTAL_TOKENS, BASTION_MAX_COST_USD, BASTION_ENGINE_API_KEY)`.
+    ///
+    /// The three budget/key fields are absent-tolerant: `None` from both env and file is a
+    /// valid, unchanged configuration (no gate, no alert). A present-but-unparseable
+    /// `BASTION_MAX_TOTAL_TOKENS` or `BASTION_MAX_COST_USD` is a typed
+    /// [`ConfigError::MalformedBudgetValue`], never a silent default — a value that fails to
+    /// parse must not be treated the same as "no cap configured".
+    #[allow(clippy::type_complexity)]
     pub fn from_sources(
-        env: (Option<String>, Option<String>, Option<String>),
+        env: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
         file: FileConfig,
     ) -> Result<Self, ConfigError> {
-        let (env_db, env_api, env_poll) = env;
+        let (env_db, env_api, env_poll, env_max_tokens, env_max_cost, env_engine_key) = env;
 
         let database_url = env_db
             .or(file.database_url)
@@ -283,22 +325,49 @@ impl Config {
             .or(file.poll_interval)
             .unwrap_or(2);
 
+        let max_total_tokens = match env_max_tokens {
+            Some(s) => Some(s.parse::<u64>().map_err(|_| {
+                ConfigError::MalformedBudgetValue(
+                    "BASTION_MAX_TOTAL_TOKENS",
+                    s.clone(),
+                    "u64 token count",
+                )
+            })?),
+            None => file.max_total_tokens,
+        };
+
+        let max_cost_usd = match env_max_cost {
+            Some(s) => Some(s.parse::<f64>().map_err(|_| {
+                ConfigError::MalformedBudgetValue(
+                    "BASTION_MAX_COST_USD",
+                    s.clone(),
+                    "f64 USD amount",
+                )
+            })?),
+            None => file.max_cost_usd,
+        };
+
+        let engine_api_key = env_engine_key.or(file.engine_api_key);
+
         Ok(Self {
             database_url,
             api_base_url,
             poll_interval_secs,
+            max_total_tokens,
+            max_cost_usd,
+            engine_api_key,
         })
     }
 
     /// Pure parser — no env access, so unit tests can call it directly.
-    /// Delegates to `from_sources` with an empty `FileConfig`.
+    /// Delegates to `from_sources` with an empty `FileConfig` and no budget/key values.
     pub fn from_vars(
         database_url: Option<String>,
         api_base_url: Option<String>,
         poll_interval: Option<String>,
     ) -> Result<Self, ConfigError> {
         Self::from_sources(
-            (database_url, api_base_url, poll_interval),
+            (database_url, api_base_url, poll_interval, None, None, None),
             FileConfig::default(),
         )
     }
@@ -415,6 +484,9 @@ mod tests {
                 Some("postgres://from-env/db".into()),
                 Some("http://env:8888".into()),
                 Some("3".into()),
+                None,
+                None,
+                None,
             ),
             file,
         )
@@ -432,7 +504,8 @@ mod tests {
             poll_interval: Some(15),
             ..Default::default()
         };
-        let c = Config::from_sources((None, None, None), file).expect("should parse");
+        let c =
+            Config::from_sources((None, None, None, None, None, None), file).expect("should parse");
         assert_eq!(c.database_url, "postgres://file/db");
         assert_eq!(c.api_base_url, "http://file:7777");
         assert_eq!(c.poll_interval_secs, 15);
@@ -446,7 +519,8 @@ mod tests {
             poll_interval: None,
             ..Default::default()
         };
-        let c = Config::from_sources((None, None, None), file).expect("should parse");
+        let c =
+            Config::from_sources((None, None, None, None, None, None), file).expect("should parse");
         assert_eq!(c.api_base_url, "http://localhost:8080");
         assert_eq!(c.poll_interval_secs, 2);
     }
@@ -459,13 +533,15 @@ mod tests {
             poll_interval: None,
             ..Default::default()
         };
-        let c = Config::from_sources((None, None, None), file).expect("should parse");
+        let c =
+            Config::from_sources((None, None, None, None, None, None), file).expect("should parse");
         assert_eq!(c.database_url, "postgres://file-only/db");
     }
 
     #[test]
     fn missing_database_url_from_both_sources_is_error() {
-        let err = Config::from_sources((None, None, None), FileConfig::default()).unwrap_err();
+        let err = Config::from_sources((None, None, None, None, None, None), FileConfig::default())
+            .unwrap_err();
         assert_eq!(err, ConfigError::MissingVar("DATABASE_URL"));
     }
 
@@ -919,5 +995,173 @@ brain = "/Users/alice/brain"
     fn brain_toml_path_env_val_overrides_default() {
         let root = brain_toml_path(Some("/absolute/path/brain.toml".into()));
         assert_eq!(root, PathBuf::from("/absolute/path/brain.toml"));
+    }
+
+    // ─── budget caps + engine_api_key (BA.7.C task 1) ─────────────────────────
+
+    fn budget_env(
+        max_total_tokens: Option<&str>,
+        max_cost_usd: Option<&str>,
+        engine_api_key: Option<&str>,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
+        (
+            Some("postgres://localhost/db".into()),
+            None,
+            None,
+            max_total_tokens.map(String::from),
+            max_cost_usd.map(String::from),
+            engine_api_key.map(String::from),
+        )
+    }
+
+    #[test]
+    fn budget_neither_set_is_valid_and_unchanged() {
+        // Absent-tolerant: no budget/key configured anywhere is a valid config.
+        let c = Config::from_sources(budget_env(None, None, None), FileConfig::default())
+            .expect("should parse");
+        assert_eq!(c.max_total_tokens, None);
+        assert_eq!(c.max_cost_usd, None);
+        assert_eq!(c.engine_api_key, None);
+    }
+
+    #[test]
+    fn budget_file_only_is_used() {
+        let file = FileConfig {
+            max_total_tokens: Some(100_000),
+            max_cost_usd: Some(5.5),
+            engine_api_key: Some("file-key".into()),
+            ..Default::default()
+        };
+        let c = Config::from_sources(budget_env(None, None, None), file).expect("should parse");
+        assert_eq!(c.max_total_tokens, Some(100_000));
+        assert_eq!(c.max_cost_usd, Some(5.5));
+        assert_eq!(c.engine_api_key.as_deref(), Some("file-key"));
+    }
+
+    #[test]
+    fn budget_env_wins_over_file() {
+        let file = FileConfig {
+            max_total_tokens: Some(100_000),
+            max_cost_usd: Some(5.5),
+            engine_api_key: Some("file-key".into()),
+            ..Default::default()
+        };
+        let c = Config::from_sources(
+            budget_env(Some("50000"), Some("2.25"), Some("env-key")),
+            file,
+        )
+        .expect("should parse");
+        assert_eq!(c.max_total_tokens, Some(50_000));
+        assert_eq!(c.max_cost_usd, Some(2.25));
+        assert_eq!(c.engine_api_key.as_deref(), Some("env-key"));
+    }
+
+    #[test]
+    fn budget_each_cap_set_independently_tokens_only() {
+        let c = Config::from_sources(budget_env(Some("42"), None, None), FileConfig::default())
+            .expect("should parse");
+        assert_eq!(c.max_total_tokens, Some(42));
+        assert_eq!(c.max_cost_usd, None);
+    }
+
+    #[test]
+    fn budget_each_cap_set_independently_cost_only() {
+        let c = Config::from_sources(budget_env(None, Some("1.5"), None), FileConfig::default())
+            .expect("should parse");
+        assert_eq!(c.max_total_tokens, None);
+        assert_eq!(c.max_cost_usd, Some(1.5));
+    }
+
+    #[test]
+    fn budget_malformed_max_total_tokens_is_typed_error_not_silent_default() {
+        let err = Config::from_sources(
+            budget_env(Some("not-a-number"), None, None),
+            FileConfig::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::MalformedBudgetValue(
+                "BASTION_MAX_TOTAL_TOKENS",
+                "not-a-number".into(),
+                "u64 token count"
+            )
+        );
+    }
+
+    #[test]
+    fn budget_malformed_max_cost_usd_is_typed_error_not_silent_default() {
+        let err = Config::from_sources(
+            budget_env(None, Some("not-a-float"), None),
+            FileConfig::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::MalformedBudgetValue(
+                "BASTION_MAX_COST_USD",
+                "not-a-float".into(),
+                "f64 USD amount"
+            )
+        );
+    }
+
+    #[test]
+    fn budget_malformed_negative_tokens_is_typed_error() {
+        // u64 rejects negative values — must not silently coerce or default.
+        let err = Config::from_sources(budget_env(Some("-5"), None, None), FileConfig::default())
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::MalformedBudgetValue("BASTION_MAX_TOTAL_TOKENS", _, _)
+        ));
+    }
+
+    #[test]
+    fn budget_engine_api_key_distinct_from_serve_token() {
+        // engine_api_key and ServeConfig.token are two different secrets/schemes —
+        // constructing one must never populate or influence the other.
+        let c = Config::from_sources(
+            budget_env(None, None, Some("engine-secret")),
+            FileConfig::default(),
+        )
+        .expect("should parse");
+        assert_eq!(c.engine_api_key.as_deref(), Some("engine-secret"));
+
+        let sc = build_serve_config(None, Some("serve-secret".into()), None, None).unwrap();
+        assert_eq!(sc.token, "serve-secret");
+        assert_ne!(c.engine_api_key.as_deref(), Some(sc.token.as_str()));
+    }
+
+    // ─── parse_file: budget + engine_api_key TOML keys ───────────────────────
+
+    #[test]
+    fn parse_file_budget_keys_round_trip() {
+        let toml = r#"
+database_url = "postgres://budget-test/db"
+max_total_tokens = 250000
+max_cost_usd = 12.75
+engine_api_key = "toml-engine-key"
+"#;
+        let fc = parse_file(toml).expect("valid TOML with budget keys should parse");
+        assert_eq!(fc.max_total_tokens, Some(250_000));
+        assert_eq!(fc.max_cost_usd, Some(12.75));
+        assert_eq!(fc.engine_api_key.as_deref(), Some("toml-engine-key"));
+    }
+
+    #[test]
+    fn parse_file_without_budget_keys_yields_none() {
+        let toml = r#"database_url = "postgres://no-budget/db""#;
+        let fc = parse_file(toml).expect("TOML without budget keys should parse");
+        assert!(fc.max_total_tokens.is_none());
+        assert!(fc.max_cost_usd.is_none());
+        assert!(fc.engine_api_key.is_none());
     }
 }
