@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-15T00:00:00Z
+timestamp: 2026-07-15T23:45:00-04:00
 ---
 
 # Log — bastion
@@ -49,6 +49,50 @@ e002261 feat: implement 13.2-mouse-interactivity-task3
 d5e6481 chore: flow state — task 2 passed
 8569134 feat: implement 13.2-mouse-interactivity-task2
 ```
+
+### BA.13.2 close-out — validation, coverage, review, docs, handoff
+
+- **What:** Ran `/sdlc-flow 13.2-mouse-interactivity` end to end (4/4 tasks passed on first
+  attempt each): task 1 added a pure `PaneAreas` struct + `compute_pane_areas()` mirroring
+  `draw_with_root`'s `Layout` splits, stored on `AppState.pane_areas` (`src/sessions/app.rs`);
+  task 2 rewrote `AppState::on_mouse` as a pure dispatcher routing left-clicks/wheel-scroll
+  across spine/browser/agent-panel/content panes via `bella_engine::geometry::point_in`; task 3
+  wired `Event::Mouse` into the event loop alongside `Event::Key` through the same
+  `Action`-handling path, manually smoke-tested via tmux SGR mouse-escape injection; task 4 ran
+  and confirmed all four gated checks clean. Review verdict PASS (0 findings). Docs patched:
+  `docs/sessions.md` (new Mouse support section). PR opened:
+  https://github.com/bredmond1019/bastion/pull/18.
+
+  Then ran `/close-out --clean-worktree`: Step 1 validation suite all green (`cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test` — 1187 passed / 0 failed / 3 ignored, `cargo build
+  --release`, emoji gate). Step 2 coverage scan: no blocking gaps — `src/sessions/app.rs` and
+  `ui.rs` changes are exhaustively unit-tested (30 new tests), event-loop wiring is the thin I/O
+  shell manually smoke-tested per CLAUDE.md rule 6. Step 2.5 low-effort code review: 1
+  non-blocking finding (`src/sessions/ui.rs`'s outer vertical `Layout` split computed twice —
+  once inside `compute_pane_areas`, once inline in `draw_with_root` just for the footer `Rect` —
+  not a bug today, already acknowledged as a deliberate trivial tradeoff in the task's own
+  decision log, left as-is). Step 3 `/update-docs --patch`: no STALE or MISSING items beyond what
+  the flow's own docs stage already patched. Step 4 `/handoff` wrote `planning/handoff.md`. Step
+  5 `/clean-worktree` will merge branch `13.2-mouse-interactivity-flow-3` into `main` and remove
+  the worktree.
+
+  Also worth logging: the first `/sdlc-flow` resume attempt (before this close-out) hit a harness
+  usage error — resuming via `Workflow({resumeFromRunId})` without also passing the script's own
+  `--resume` CLI flag caused the per-task loop to re-walk from task 1 (two calls missed the
+  harness's content cache and ran live: a harmless redundant `sdlc-flow-state.json` timestamp
+  commit, and a task-2 `implement` agent that made no file changes before the run was stopped).
+  No damage resulted; corrected by re-invoking with args `13.2-mouse-interactivity --resume`,
+  which completed cleanly. Worth remembering: `resumeFromRunId` (harness-level cache resume) and
+  `--resume` (the script's own state-based skip logic) are independent and should be used
+  together.
+
+  `state.json`'s `BA.13.2` block was already flipped `open` → `closed` by the `/sdlc-flow` run
+  itself (confirmed: `planning/state.json`'s `BA.13.2` block entry currently reads `status:
+  closed`).
+- **Why:** Standard end-of-spec close-out gate before merging the worktree branch and retiring
+  the worktree — confirm nothing regressed and nothing was left stale before handing the block
+  off as done, and capture the resume-flag lesson so it isn't relearned.
+- **Refs:** PR #18 (https://github.com/bredmond1019/bastion/pull/18); `planning/handoff.md`.
 
 ---
 
