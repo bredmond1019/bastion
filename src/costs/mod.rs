@@ -3,6 +3,7 @@
 mod budget;
 mod pricing;
 mod tokens;
+mod watch;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
