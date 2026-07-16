@@ -231,7 +231,7 @@ fn build_sidebar_items(app: &AppState) -> Vec<ListItem<'static>> {
 /// tempdir path without touching the process environment.
 fn draw_with_root(
     frame: &mut Frame,
-    app: &AppState,
+    app: &mut AppState,
     list_state: &mut ListState,
     planning_root: &std::path::Path,
 ) {
@@ -244,6 +244,13 @@ fn draw_with_root(
     let panel_rows = agent_panel_rows(&app.sessions);
     let strip_height = agent_panel_strip_height(panel_rows.len(), frame.area().height);
 
+    // Single source of truth for pane geometry (BA.13.2): computed once here
+    // and stored on `AppState` so the pure mouse dispatcher can hit-test
+    // against the exact same Rects this frame rendered into.
+    let selected_node = app.selected_node();
+    app.pane_areas =
+        crate::sessions::app::compute_pane_areas(frame.area(), strip_height, &selected_node);
+
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -253,7 +260,7 @@ fn draw_with_root(
         ])
         .split(frame.area());
 
-    let (sidebar_area, main_area) = app.compute_view(areas[0]);
+    let sidebar_area = app.pane_areas.spine;
 
     // ── Sidebar ───────────────────────────────────────────────────────────────
     let sidebar_block = Block::default()
@@ -275,11 +282,11 @@ fn draw_with_root(
 
     // ── Main area: content ──────────────────────────────────────────────────
     // NOTE: the top tab bar is gone (spine is now the single primary navigator);
-    // routing below keys off `selected_node()`.
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0)])
-        .split(main_area);
+    // routing below keys off `selected_node()`. Pane Rects come from
+    // `app.pane_areas` (computed once above via `compute_pane_areas`) rather
+    // than re-deriving the same `Layout` splits here.
+    let content_area = app.pane_areas.content;
+    let browser_area = app.pane_areas.browser;
 
     // Content block shared border style
     let content_block = Block::default()
@@ -288,7 +295,7 @@ fn draw_with_root(
 
     match app.selected_node() {
         SelectedNode::MissionControl => {
-            crate::monitor::ui::render(frame, &app.monitor_app, main_chunks[0]);
+            crate::monitor::ui::render(frame, &app.monitor_app, content_area);
         }
         SelectedNode::Tier(tier_name) => {
             // Rooted at `<brain_root>/<tier>/planning/status.md`; missing tier/file
@@ -307,7 +314,7 @@ fn draw_with_root(
             let rendered = bella_engine::render_with_edit(
                 &status_md,
                 None,
-                main_chunks[0].width.saturating_sub(2), // account for borders
+                content_area.width.saturating_sub(2), // account for borders
                 &theme,
                 None,
                 &tables,
@@ -317,14 +324,9 @@ fn draw_with_root(
                 crate::ui_theme::title_style(),
             ));
             let paragraph = Paragraph::new(rendered.lines).block(tier_block);
-            frame.render_widget(paragraph, main_chunks[0]);
+            frame.render_widget(paragraph, content_area);
         }
         SelectedNode::Hq | SelectedNode::Space(_) => {
-            let overview_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(30), Constraint::Min(0)])
-                .split(main_chunks[0]);
-
             // Browser Pane
             let browser_border = if app.overview_pane == crate::sessions::app::OverviewPane::Browser
             {
@@ -358,7 +360,7 @@ fn draw_with_root(
                 .highlight_style(crate::ui_theme::list_selected_style())
                 .highlight_symbol(">>");
 
-            frame.render_stateful_widget(browser_list, overview_chunks[0], &mut list_state);
+            frame.render_stateful_widget(browser_list, browser_area, &mut list_state);
 
             // Content Pane
             let content_border = if app.overview_pane == crate::sessions::app::OverviewPane::Content
@@ -386,7 +388,7 @@ fn draw_with_root(
             let rendered = bella_engine::render_with_edit(
                 &status_md,
                 None,
-                overview_chunks[1].width.saturating_sub(2), // account for borders
+                content_area.width.saturating_sub(2), // account for borders
                 &theme,
                 None,
                 &tables,
@@ -394,7 +396,7 @@ fn draw_with_root(
             let paragraph = Paragraph::new(rendered.lines)
                 .block(content_block)
                 .scroll((app.space_overview_scroll, 0));
-            frame.render_widget(paragraph, overview_chunks[1]);
+            frame.render_widget(paragraph, content_area);
         }
     }
 
@@ -410,7 +412,7 @@ fn draw_with_root(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(*th));
     let strip_list = List::new(build_agent_panel_items(&panel_rows)).block(strip_block);
-    frame.render_widget(strip_list, areas[1]);
+    frame.render_widget(strip_list, app.pane_areas.agent_panel);
 
     // ── Footer ────────────────────────────────────────────────────────────────
     let footer_text = status_line(app);
@@ -425,7 +427,7 @@ fn draw_with_root(
 
 /// Thin real-world wrapper: resolves the planning root from the environment,
 /// then delegates to `draw_with_root`.
-fn draw(frame: &mut Frame, app: &AppState, list_state: &mut ListState) {
+fn draw(frame: &mut Frame, app: &mut AppState, list_state: &mut ListState) {
     let root = app.current_space_planning_root();
     draw_with_root(frame, app, list_state, &root);
 }
@@ -590,7 +592,7 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 pub fn draw_for_test(
     frame: &mut ratatui::Frame,
-    app: &AppState,
+    app: &mut AppState,
     list_state: &mut ratatui::widgets::ListState,
     planning_root: &std::path::Path,
 ) {
@@ -792,7 +794,7 @@ mod tests {
             last_line: String::new(),
             agent_state: crate::detect::AgentState::Working,
         };
-        let app = make_app(&[session]);
+        let mut app = make_app(&[session]);
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
@@ -800,7 +802,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let mut list_state = ratatui::widgets::ListState::default();
-                draw_with_root(f, &app, &mut list_state, &dir);
+                draw_with_root(f, &mut app, &mut list_state, &dir);
             })
             .expect("draw must not panic");
         let buf = terminal.backend().buffer().clone();
@@ -905,7 +907,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let mut list_state = ratatui::widgets::ListState::default();
-                draw_with_root(f, &app, &mut list_state, &dir);
+                draw_with_root(f, &mut app, &mut list_state, &dir);
             })
             .expect("draw must not panic");
 

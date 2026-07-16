@@ -20,6 +20,79 @@ pub enum OverviewPane {
     Content,
 }
 
+/// Per-pane viewport `Rect`s captured during the most recent draw, so the pure
+/// mouse dispatcher (BA.13.2) can hit-test clicks/scrolls without a `Frame`.
+/// All-zero (`Rect::default()`) before the first draw and for panes that are
+/// not part of the current `SelectedNode`'s layout (e.g. `browser`/`content`
+/// stay separate, but a pane not rendered this frame is zeroed so `point_in`
+/// never matches it).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PaneAreas {
+    pub spine: Rect,
+    pub browser: Rect,
+    pub content: Rect,
+    pub agent_panel: Rect,
+}
+
+/// Pure layout mirror of `draw_with_root`'s `Layout` splits — computes every
+/// pane's viewport `Rect` from a frame size, the already-computed agent-strip
+/// height, and the current `SelectedNode`, without touching a `Frame`. Single
+/// source of truth for pane geometry: `draw_with_root` consumes this output
+/// directly instead of re-deriving the same splits inline.
+///
+/// - Outer vertical split: main content + the agent-panel strip + a 1-line footer.
+/// - `main_chunks`: the primary-nav sidebar (`compute_view`'s `Constraint::Length(30)`)
+///   + the remaining main area.
+/// - `overview_chunks`: only for `Hq`/`Space` (browser + content, 30-col browser);
+///   `Tier`/`MissionControl` route their content to the whole main area and have
+///   no browser pane, so `browser` is zero-sized there (`point_in` never matches).
+pub fn compute_pane_areas(
+    frame_area: Rect,
+    agent_strip_height: u16,
+    selected_node: &SelectedNode,
+) -> PaneAreas {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(agent_strip_height),
+            Constraint::Length(1),
+        ])
+        .split(frame_area);
+    let main_area_outer = outer[0];
+    let agent_panel = outer[1];
+
+    let main_chunks_outer = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(30), Constraint::Min(0)])
+        .split(main_area_outer);
+    let spine = main_chunks_outer[0];
+    let main_area = main_chunks_outer[1];
+
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0)])
+        .split(main_area);
+
+    let (browser, content) = match selected_node {
+        SelectedNode::Hq | SelectedNode::Space(_) => {
+            let overview_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(30), Constraint::Min(0)])
+                .split(main_chunks[0]);
+            (overview_chunks[0], overview_chunks[1])
+        }
+        SelectedNode::MissionControl | SelectedNode::Tier(_) => (Rect::default(), main_chunks[0]),
+    };
+
+    PaneAreas {
+        spine,
+        browser,
+        content,
+        agent_panel,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputKind {
     New,
@@ -63,6 +136,9 @@ pub struct AppState {
     /// file browser. Replaces the old tab-push behaviour; overlay rendering/close-key
     /// polish is deferred to a later block.
     pub markdown_overlay: Option<std::path::PathBuf>,
+    /// Per-pane viewport `Rect`s from the most recent draw (BA.13.2). Zeroed
+    /// (all-default) until the first draw runs.
+    pub pane_areas: PaneAreas,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -84,6 +160,7 @@ impl AppState {
             overview_pane: OverviewPane::Sidebar,
             space_overview_file: None,
             markdown_overlay: None,
+            pane_areas: PaneAreas::default(),
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.
@@ -876,5 +953,89 @@ mod tests {
         assert_eq!(sidebar.height, 50);
         assert_eq!(main.width, 70);
         assert_eq!(main.height, 50);
+    }
+
+    // ── compute_pane_areas (pure geometry, BA.13.2 task 1) ─────────────────────
+
+    #[test]
+    fn compute_pane_areas_mission_control_zeros_browser() {
+        // 80x24 frame, a typical agent-strip height (7 rows, the max).
+        let frame = Rect::new(0, 0, 80, 24);
+        let areas = compute_pane_areas(frame, 7, &SelectedNode::MissionControl);
+
+        // Outer vertical split: Min(1) main + Length(7) strip + Length(1) footer
+        // over height 24 -> main gets 24 - 7 - 1 = 16.
+        assert_eq!(areas.agent_panel, Rect::new(0, 16, 80, 7));
+
+        // Horizontal split of the 16-tall main area: Length(30) spine + Min(0) main.
+        assert_eq!(areas.spine, Rect::new(0, 0, 30, 16));
+
+        // Mission Control has no browser/content split — the whole remaining
+        // main area is content, and browser is zero-sized so `point_in` never
+        // matches it.
+        assert_eq!(areas.content, Rect::new(30, 0, 50, 16));
+        assert_eq!(areas.browser, Rect::default());
+    }
+
+    #[test]
+    fn compute_pane_areas_tier_zeros_browser() {
+        let frame = Rect::new(0, 0, 80, 24);
+        let areas = compute_pane_areas(frame, 7, &SelectedNode::Tier("core".to_string()));
+
+        assert_eq!(areas.content, Rect::new(30, 0, 50, 16));
+        assert_eq!(areas.browser, Rect::default());
+    }
+
+    #[test]
+    fn compute_pane_areas_hq_splits_browser_and_content() {
+        let frame = Rect::new(0, 0, 80, 24);
+        let areas = compute_pane_areas(frame, 7, &SelectedNode::Hq);
+
+        assert_eq!(areas.spine, Rect::new(0, 0, 30, 16));
+        // overview_chunks: Length(30) browser + Min(0) content, split from the
+        // 50-wide main area (which starts at x=30).
+        assert_eq!(areas.browser, Rect::new(30, 0, 30, 16));
+        assert_eq!(areas.content, Rect::new(60, 0, 20, 16));
+    }
+
+    #[test]
+    fn compute_pane_areas_space_splits_browser_and_content_same_as_hq() {
+        let frame = Rect::new(0, 0, 80, 24);
+        let entry = crate::brain::spaces::SpaceEntry {
+            slug: "learn-ai".to_string(),
+            tier: "_root".to_string(),
+            repo_path: std::path::PathBuf::from("learn-ai"),
+            heading: None,
+        };
+        let areas = compute_pane_areas(frame, 7, &SelectedNode::Space(entry));
+
+        assert_eq!(areas.browser, Rect::new(30, 0, 30, 16));
+        assert_eq!(areas.content, Rect::new(60, 0, 20, 16));
+    }
+
+    #[test]
+    fn compute_pane_areas_tiny_frame_agent_strip_collapses_to_zero() {
+        // A tiny frame where the caller (mirroring `agent_panel_strip_height`'s
+        // own min-height fallback) has already collapsed the strip height to 0.
+        let frame = Rect::new(0, 0, 20, 5);
+        let areas = compute_pane_areas(frame, 0, &SelectedNode::MissionControl);
+
+        assert_eq!(areas.agent_panel.height, 0);
+        // Main area still gets height - 0 - 1 (footer) = 4.
+        assert_eq!(areas.spine.height, 4);
+        assert_eq!(areas.content.height, 4);
+    }
+
+    #[test]
+    fn compute_pane_areas_default_is_all_zero() {
+        assert_eq!(
+            PaneAreas::default(),
+            PaneAreas {
+                spine: Rect::default(),
+                browser: Rect::default(),
+                content: Rect::default(),
+                agent_panel: Rect::default(),
+            }
+        );
     }
 }

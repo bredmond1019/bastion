@@ -111,7 +111,7 @@ mod tests {
     /// Render a single frame with the given app into a `TestBackend` and return
     /// the terminal so the caller can inspect the buffer.
     fn render_frame(
-        app: &AppState,
+        app: &mut AppState,
         planning_root: &Path,
         width: u16,
         height: u16,
@@ -135,8 +135,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
-        let app = empty_app(); // selected_spine = 0 = Mission Control
-        render_frame(&app, dir.path(), 80, 24);
+        let mut app = empty_app(); // selected_spine = 0 = Mission Control
+        render_frame(&mut app, dir.path(), 80, 24);
     }
 
     /// Mission Control renders at 120x40 (wider layout).
@@ -145,8 +145,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
-        let app = empty_app();
-        render_frame(&app, dir.path(), 120, 40);
+        let mut app = empty_app();
+        render_frame(&mut app, dir.path(), 120, 40);
     }
 
     // ── Hq / Space overview ──────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ mod tests {
         app.selected_spine = 1; // [MissionControl, Hq, Space(learn-ai), Tier(core)]
         assert_eq!(app.selected_node(), crate::brain::spaces::SelectedNode::Hq);
 
-        render_frame(&app, dir.path(), 80, 24);
+        render_frame(&mut app, dir.path(), 80, 24);
     }
 
     /// Space Overview degrade: missing status.md shows fallback text, no panic.
@@ -172,7 +172,7 @@ mod tests {
 
         let mut app = app_with_hq_and_tier();
         app.selected_spine = 1; // Hq
-        let buf = render_frame(&app, dir.path(), 80, 24);
+        let buf = render_frame(&mut app, dir.path(), 80, 24);
         let text = buf_to_string(&buf);
         assert!(
             text.contains("planning/status.md"),
@@ -195,7 +195,7 @@ mod tests {
             crate::brain::spaces::SelectedNode::Tier("core".to_string())
         );
 
-        render_frame(&app, dir.path(), 80, 24);
+        render_frame(&mut app, dir.path(), 80, 24);
     }
 
     // ── Sidebar (spine primary navigation) ────────────────────────────────────
@@ -209,8 +209,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
-        let app = app_with_all_tiers();
-        let buf = render_frame(&app, dir.path(), 100, 40);
+        let mut app = app_with_all_tiers();
+        let buf = render_frame(&mut app, dir.path(), 100, 40);
         let text = buf_to_string(&buf);
 
         let mc_idx = text
@@ -257,7 +257,7 @@ mod tests {
         for spine_index in 0..row_count {
             app.selected_spine = spine_index;
 
-            let buf = render_frame(&app, dir.path(), 80, 24);
+            let buf = render_frame(&mut app, dir.path(), 80, 24);
             let cell = buf.cell((0, 0)).expect("cell(0,0) must exist");
             assert!(
                 !cell.symbol().is_empty(),
@@ -333,7 +333,7 @@ mod tests {
             app.selected_node(),
             crate::brain::spaces::SelectedNode::MissionControl
         );
-        let buf_mc = render_frame(&app, dir.path(), 100, 40);
+        let buf_mc = render_frame(&mut app, dir.path(), 100, 40);
         let text_mc = buf_to_string(&buf_mc);
         assert!(
             text_mc.contains("agents"),
@@ -345,7 +345,7 @@ mod tests {
             app.selected_node(),
             crate::brain::spaces::SelectedNode::Tier("core".to_string())
         );
-        let buf_tier = render_frame(&app, dir.path(), 100, 40);
+        let buf_tier = render_frame(&mut app, dir.path(), 100, 40);
         let text_tier = buf_to_string(&buf_tier);
         assert!(
             text_tier.contains("agents"),
@@ -360,8 +360,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
-        let app = app_with_sessions(); // selected_spine = 0 = Mission Control
-        let buf = render_frame(&app, dir.path(), 100, 40);
+        let mut app = app_with_sessions(); // selected_spine = 0 = Mission Control
+        let buf = render_frame(&mut app, dir.path(), 100, 40);
         let text = buf_to_string(&buf);
 
         let blocked_idx = text
@@ -387,12 +387,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_planning_fixtures(dir.path());
 
-        let app = app_with_sessions();
+        let mut app = app_with_sessions();
         // 5 rows tall: barely enough for the 1-line footer + a sliver of main
         // content; the strip must shrink instead of panicking or overflowing.
-        render_frame(&app, dir.path(), 80, 5);
+        render_frame(&mut app, dir.path(), 80, 5);
         // Even more extreme — 1 row tall.
-        render_frame(&app, dir.path(), 80, 1);
+        render_frame(&mut app, dir.path(), 80, 1);
     }
 
     // ── planning_root pure-function sanity check ──────────────────────────────
@@ -402,5 +402,45 @@ mod tests {
     fn planning_root_pure_default() {
         let root = crate::config::planning_root(None);
         assert!(root.ends_with("planning"));
+    }
+
+    // ── Pane geometry storage (BA.13.2 task 1) ─────────────────────────────────
+
+    /// After a draw, `AppState::pane_areas` holds non-empty Rects for every pane
+    /// that is actually part of the current `SelectedNode`'s layout (spine,
+    /// content, agent panel always; browser too when the Hq/Space overview is
+    /// selected) — proving `draw_with_root` actually stores what
+    /// `compute_pane_areas` computes, not just that geometry math is right in
+    /// isolation.
+    #[test]
+    fn draw_stores_non_empty_pane_areas_for_mission_control() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_planning_fixtures(dir.path());
+
+        let mut app = empty_app(); // selected_spine = 0 = Mission Control
+        assert_eq!(app.pane_areas, crate::sessions::app::PaneAreas::default());
+
+        render_frame(&mut app, dir.path(), 80, 24);
+
+        assert!(app.pane_areas.spine.width > 0 && app.pane_areas.spine.height > 0);
+        assert!(app.pane_areas.content.width > 0 && app.pane_areas.content.height > 0);
+        assert!(app.pane_areas.agent_panel.width > 0 && app.pane_areas.agent_panel.height > 0);
+        // Mission Control has no browser pane.
+        assert_eq!(app.pane_areas.browser, ratatui::layout::Rect::default());
+    }
+
+    /// Selecting `Hq` populates the browser pane too (non-zero), unlike
+    /// Mission Control.
+    #[test]
+    fn draw_stores_non_empty_browser_area_for_hq() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_planning_fixtures(dir.path());
+
+        let mut app = app_with_hq_and_tier();
+        app.selected_spine = 1; // Hq
+        render_frame(&mut app, dir.path(), 80, 24);
+
+        assert!(app.pane_areas.browser.width > 0 && app.pane_areas.browser.height > 0);
+        assert!(app.pane_areas.content.width > 0 && app.pane_areas.content.height > 0);
     }
 }
