@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::observ::errors::ConsoleError;
+
 /// Outcome of probing the orchestrator's `/health` endpoint.
 /// Unreachable is a normal outcome (not an `Err`) so `bastion status` never fails on it.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,9 +58,73 @@ pub struct WorkflowGraph {
     pub edges: Vec<(String, String)>,
 }
 
+/// `202 { "run_id": "...", "status": "aborting" }` — the pinned success body
+/// for `POST /events/{run_id}/abort` (data contract, Abort section).
+#[derive(Debug, Deserialize)]
+struct AbortAccepted {
+    run_id: String,
+    status: String,
+}
+
+/// Outcome of a `POST /events/{run_id}/abort` call — one variant per shape
+/// the pinned contract defines for that endpoint. `NotFound` and
+/// `Unauthorized` carry the `ConsoleError` (and so the `C0xx` code)
+/// `run::abort` (task 5) renders; a connection/transport failure is not a
+/// member of this enum — [`ApiClient::abort_run`] returns that as `Err`
+/// instead, since the call never produced a pinned response to classify.
+/// `Accepted` carries no `ConsoleError`: a `C0xx` code is by construction an
+/// error/degradation signal (`src/observ/errors.rs`), and a successful abort
+/// is neither.
+#[derive(Debug)]
+pub enum AbortOutcome {
+    /// `202` — the run's cancellation token has been triggered.
+    Accepted { run_id: String, status: String },
+    /// `404` — unknown or already-finished run id.
+    NotFound(ConsoleError),
+    /// `401` — missing or bad `X-API-Key`.
+    Unauthorized(ConsoleError),
+}
+
+/// Classify a `POST /events/{run_id}/abort` HTTP response into a typed
+/// [`AbortOutcome`], per the pinned contract: `202` → accepted (with the
+/// body decoded), `404` → unknown/finished run, `401` → bad/missing key.
+/// A `202` whose body doesn't match the pinned shape, or any other status,
+/// is a decode/contract-mismatch failure (`ConsoleError::SerializationError`
+/// / `ConsoleError::Io`) rather than a normal outcome.
+///
+/// Pure — no I/O — so it is unit-testable against fixtures without a live
+/// server (Rule 6); the `reqwest` send/receive in [`ApiClient::abort_run`]
+/// is the thin shell over this.
+fn classify_abort_response(status: u16, body: &str) -> Result<AbortOutcome, ConsoleError> {
+    match status {
+        202 => serde_json::from_str::<AbortAccepted>(body)
+            .map(|accepted| AbortOutcome::Accepted {
+                run_id: accepted.run_id,
+                status: accepted.status,
+            })
+            .map_err(|e| {
+                ConsoleError::SerializationError(format!(
+                    "decoding 202 abort response body: {e} (body: {body})"
+                ))
+            }),
+        404 => Ok(AbortOutcome::NotFound(ConsoleError::SessionNotFound(
+            "run not found or already finished".to_string(),
+        ))),
+        401 => Ok(AbortOutcome::Unauthorized(ConsoleError::NotAuthenticated)),
+        other => Err(ConsoleError::Io(format!(
+            "unexpected abort response status {other} (body: {body})"
+        ))),
+    }
+}
+
 pub struct ApiClient {
     base_url: String,
     client: reqwest::Client,
+    /// The engine's `X-API-Key` secret (task 1's `engine_api_key`), used only
+    /// by [`ApiClient::abort_run`]. `None` by default so the existing
+    /// orchestrator-facing methods (`health`, `trigger_workflow`,
+    /// `workflow_graph`), which never touch the engine, are unaffected.
+    engine_api_key: Option<String>,
 }
 
 impl ApiClient {
@@ -66,7 +132,66 @@ impl ApiClient {
         Self {
             base_url: base_url.to_string(),
             client: reqwest::Client::new(),
+            engine_api_key: None,
         }
+    }
+
+    /// Attach the engine's `X-API-Key` secret for [`ApiClient::abort_run`] to
+    /// send. A separate builder (rather than a `new` parameter) so existing
+    /// `ApiClient::new(base_url)` call sites — which only ever talk to the
+    /// orchestrator health/trigger endpoints, never the engine — are
+    /// unaffected.
+    pub fn with_engine_api_key(mut self, key: Option<String>) -> Self {
+        self.engine_api_key = key;
+        self
+    }
+
+    /// Returns the abort URL for `run_id` — `POST /events/{run_id}/abort`
+    /// (data contract, Abort section), served by `engine-serve`'s route
+    /// table (embedded in `bastion serve`, task 2), never the orchestrator.
+    fn abort_url(&self, run_id: &str) -> String {
+        format!(
+            "{}/events/{run_id}/abort",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
+    /// Call `POST /events/{run_id}/abort` with no body and the `X-API-Key`
+    /// header, per the pinned wire shape. Per D25, this only triggers the
+    /// abort — bastion never cancels a run itself, writes the `events` row,
+    /// or touches Celery/Redis.
+    ///
+    /// A missing `engine_api_key` is a typed `ConfigError`, not an
+    /// unauthenticated request. A connection/transport failure is an `Io`
+    /// error. `202`/`404`/`401` classify via [`classify_abort_response`].
+    pub async fn abort_run(&self, run_id: &str) -> Result<AbortOutcome, ConsoleError> {
+        let key = self.engine_api_key.as_deref().ok_or_else(|| {
+            ConsoleError::ConfigError(
+                "engine_api_key not configured — set BASTION_ENGINE_API_KEY or config.toml's \
+                 engine_api_key"
+                    .to_string(),
+            )
+        })?;
+
+        let url = self.abort_url(run_id);
+        let resp = self
+            .client
+            .post(&url)
+            .header("X-API-Key", key)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| {
+                ConsoleError::Io(format!("connecting to engine abort endpoint at {url}: {e}"))
+            })?;
+
+        let status = resp.status().as_u16();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| ConsoleError::Io(format!("reading abort response body: {e}")))?;
+
+        classify_abort_response(status, &body)
     }
 
     /// Returns the full health URL for the configured base URL.
@@ -156,6 +281,7 @@ impl ApiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observ::errors::ErrorCode;
 
     #[test]
     fn api_status_reachable_equality() {
@@ -254,5 +380,104 @@ mod tests {
     fn trigger_url_no_trailing_slash_appended() {
         let client = ApiClient::new("http://localhost:8080");
         assert_eq!(client.trigger_url(), "http://localhost:8080/");
+    }
+
+    // ── abort_url ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn abort_url_trailing_slash_stripped() {
+        let client = ApiClient::new("http://localhost:8080/");
+        assert_eq!(
+            client.abort_url("run-123"),
+            "http://localhost:8080/events/run-123/abort"
+        );
+    }
+
+    #[test]
+    fn abort_url_no_trailing_slash() {
+        let client = ApiClient::new("http://localhost:8080");
+        assert_eq!(
+            client.abort_url("run-123"),
+            "http://localhost:8080/events/run-123/abort"
+        );
+    }
+
+    // ── classify_abort_response ─────────────────────────────────────────────────
+
+    #[test]
+    fn classify_202_accepted_decodes_run_id_and_status() {
+        let body = r#"{"run_id": "abc-123", "status": "aborting"}"#;
+        let outcome = classify_abort_response(202, body).expect("202 should classify");
+        match outcome {
+            AbortOutcome::Accepted { run_id, status } => {
+                assert_eq!(run_id, "abc-123");
+                assert_eq!(status, "aborting");
+            }
+            other => panic!("expected Accepted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_202_malformed_body_is_serialization_error() {
+        let body = r#"{"not_run_id": "abc-123"}"#;
+        let err = classify_abort_response(202, body).expect_err("malformed 202 should error");
+        assert_eq!(err.code(), ErrorCode::SerializationError);
+    }
+
+    #[test]
+    fn classify_202_non_json_body_is_serialization_error() {
+        let err =
+            classify_abort_response(202, "not json at all").expect_err("bad JSON should error");
+        assert_eq!(err.code(), ErrorCode::SerializationError);
+    }
+
+    #[test]
+    fn classify_404_is_not_found() {
+        let outcome = classify_abort_response(404, "").expect("404 should classify");
+        match outcome {
+            AbortOutcome::NotFound(err) => assert_eq!(err.code(), ErrorCode::SessionNotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_401_is_unauthorized() {
+        let outcome = classify_abort_response(401, "").expect("401 should classify");
+        match outcome {
+            AbortOutcome::Unauthorized(err) => {
+                assert_eq!(err.code(), ErrorCode::NotAuthenticated)
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_unexpected_status_is_io_error() {
+        let err = classify_abort_response(500, "boom").expect_err("500 should error");
+        assert_eq!(err.code(), ErrorCode::IoError);
+    }
+
+    // ── abort_run — missing engine_api_key ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn abort_run_without_engine_api_key_is_config_error() {
+        let client = ApiClient::new("http://localhost:1");
+        let err = client.abort_run("run-123").await.expect_err(
+            "missing engine_api_key should be a typed error, not an unauthenticated call",
+        );
+        assert_eq!(err.code(), ErrorCode::ConfigError);
+    }
+
+    #[tokio::test]
+    async fn abort_run_connection_failure_is_io_error() {
+        // Port 1 refuses connections on any dev/CI machine (no listener) —
+        // a deterministic transport failure without a live server.
+        let client =
+            ApiClient::new("http://127.0.0.1:1").with_engine_api_key(Some("key".to_string()));
+        let err = client
+            .abort_run("run-123")
+            .await
+            .expect_err("connection failure should be a typed error");
+        assert_eq!(err.code(), ErrorCode::IoError);
     }
 }

@@ -38,5 +38,18 @@ okf-core = { path = "../okf-core" }
 # regression. Do NOT add `default-features = false`.
 engine-serve = { path = "../engine-rs/crates/engine-serve" }
 
+[lib]
+name = "bastion"
+path = "src/lib.rs"
+
 [dev-dependencies]
 tempfile = "3"
+# BA.7.C task 4: tests/abort_contract.rs stands up a real in-process
+# engine-serve App (WaitNode fixture, same shape as
+# ../engine-rs/crates/engine-serve/tests/abort_integration.rs) to exercise
+# bastion's `api::client::abort_run` against the actual engine. Same unpinned
+# cross-repo path-dependency posture as engine-serve above.
+engine-core = { path = "../engine-rs/crates/engine-core" }
+engine-contract = { path = "../engine-rs/crates/engine-contract" }
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"

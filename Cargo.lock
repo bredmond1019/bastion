@@ -428,12 +428,15 @@ dependencies = [
  "actix-web",
  "actix-web-actors",
  "anyhow",
+ "async-trait",
  "bella-engine",
  "chrono",
  "clap",
  "clap_mangen",
  "crossterm",
  "dotenvy",
+ "engine-contract",
+ "engine-core",
  "engine-serve",
  "futures",
  "mev",
@@ -454,6 +457,7 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-rust",
+ "uuid",
 ]
 
 [[package]]
