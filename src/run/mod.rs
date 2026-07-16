@@ -1,5 +1,8 @@
 // `bastion run <workflow>` — trigger a workflow via FastAPI.
 // `bastion status`         — quick stack health check (non-TUI).
+// `bastion abort <run>`    — operator-facing abort switch (see `abort` module).
+
+pub mod abort;
 
 use anyhow::{Context, Result, anyhow};
 
