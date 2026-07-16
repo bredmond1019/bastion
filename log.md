@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-15T23:45:00-04:00
+timestamp: 2026-07-16T17:18:28-04:00
 ---
 
 # Log — bastion
@@ -53,6 +53,29 @@ block's scope since nothing else mounted it; all testing targets `engine-rs`, no
 orchestrator (D48). `state.json`'s `BA.7.C` block flipped `open` → `closed`.
 Next: resume Phase 13/14 per `state.json`'s regenerated `focus.next` ordering — BA.13.3 (session→
 space cwd mapping) is next in sequence.
+
+### Close-out + merge — 7.C-cost-budget-alerts-abort
+
+Ran `/close-out --merge-branch` on top of the already-PASSed BA.7.C flow. Step 1 (validation
+suite) — `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` (1299 passed, 4 of them
+in `tests/abort_contract.rs`, 0 failed, 3 ignored), `cargo build --release`, and the emoji gate —
+all PASS. Step 2 (coverage scan) found no blocking gaps across all 9 changed source files;
+`src/lib.rs` (a new `[lib]` target, 19 lines, 0 inline tests) was judged non-blocking — a thin
+re-export shim already exercised by `tests/abort_contract.rs`. Step 2.5 (low-effort code review)
+ran a full diff pass across every changed file plus a second targeted pass on the largest file
+(`costs/budget.rs`) and the biggest removed-code block (`db::workflows::derive_run_status`'s
+tuple-return refactor) — 0 findings. Step 3 (`/update-docs --patch`) found no STALE or MISSING
+items; docs were already fully patched by the flow's own task 9. Step 4 (`/handoff`) wrote
+`planning/handoff.md` pointing at BA.13.3 next, and added a new `carryover[]` entry to
+`planning/state.json`: `eventrow-id-string-vs-uuid-decode-bug` (kind: `known_issue`) —
+`db::workflows::EventRow.id` is typed `String` but the real `events.id` Postgres column is `uuid`,
+breaking every live-data query including plain `bastion costs`; discovered during BA.7.C task 10's
+live smoke test, pre-existing and unrelated to BA.7.C itself, `related` pointing at the BA.7.C
+block. Step 5b fast-forward merged branch `7.C-cost-budget-alerts-abort-flow` into `main` (no
+divergence), ran `mev emit-state --write` — the first attempt hit `E_STATE_MALFORMED_JSON` because
+the carryover entry's `related` field needs the `{type, repo, id}` block-edge shape rather than a
+bare string, fixed and re-ran clean — then deleted the merged branch. PR #19
+(https://github.com/bredmond1019/bastion/pull/19) is now merged.
 
 ```
 50ceceb feat: implement "7.C-cost-budget-alerts-abort"-task9
