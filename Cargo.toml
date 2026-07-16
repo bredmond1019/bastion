@@ -33,6 +33,10 @@ clap_mangen = "0.2"
 bella-engine = { path = "../bella/crates/bella-engine" }
 mev = { path = "../mev" }
 okf-core = { path = "../okf-core" }
+# Unpinned cross-repo path dependency (same shape as bella-engine/D14 and mev) —
+# expect and coordinate breaks from ../engine-rs rather than assuming a bastion
+# regression. Do NOT add `default-features = false`.
+engine-serve = { path = "../engine-rs/crates/engine-serve" }
 
 [dev-dependencies]
 tempfile = "3"

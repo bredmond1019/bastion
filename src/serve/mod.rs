@@ -44,7 +44,81 @@ use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
 use actix_web_actors::ws as actix_ws;
 use anyhow::Result;
 use auth::BearerAuthMiddleware;
+use engine_serve::abort::RunRegistry;
+use engine_serve::dispatch::Dispatcher;
+use engine_serve::durable::spawn_durable_writer;
+use engine_serve::http::AppState as EngineAppState;
+use engine_serve::live_state::LiveStateStore;
+use std::sync::Arc;
 use ws::server::Hub;
+
+// ── Engine embed (BA.7.C task 2) ────────────────────────────────────────────
+//
+// `bastion serve` embeds `engine-serve`'s route table (D48: the abort endpoint
+// and the rest of the engine surface are served through `bastion serve`, not
+// the Python orchestrator). See the block's *Scope growth* section in
+// `planning/7.C-cost-budget-alerts-abort/tasks.md`.
+
+/// Whether — and why — the embedded engine's route table should be mounted
+/// this boot, given the two config values it needs.
+///
+/// Pure function — no I/O, no env access — so the decision itself is directly
+/// unit-testable; only the env-var reads and the `PgPool`/`HttpServer` setup
+/// around it are the thin I/O shell (Rule 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineMountDecision {
+    /// Both `DATABASE_URL` and the engine API key are present (non-empty) —
+    /// mount the engine's route table using these values.
+    Mount {
+        database_url: String,
+        engine_api_key: String,
+    },
+    /// At least one required value is absent (or empty) — leave the engine
+    /// routes unmounted this boot; `reason` names what was missing.
+    Skip { reason: String },
+}
+
+/// Decide whether to mount the embedded engine's route table, given the two
+/// values it needs: `DATABASE_URL` (for the durable writer's `PgPool`) and
+/// the engine's `X-API-Key` secret. Both are absent-tolerant: `bastion serve`
+/// must still boot its existing session/status surface with the engine
+/// routes unmounted (and say so) rather than fail to boot or mount a route
+/// that would 500 on every request.
+///
+/// A present-but-empty-string value is treated the same as absent — an
+/// empty `X-API-Key` would accept every request (see `check_api_key`'s
+/// exact-match semantics), which is never the intended configuration.
+pub fn decide_engine_mount(
+    database_url: Option<&str>,
+    engine_api_key: Option<&str>,
+) -> EngineMountDecision {
+    let database_url = database_url.filter(|s| !s.is_empty());
+    let engine_api_key = engine_api_key.filter(|s| !s.is_empty());
+
+    match (database_url, engine_api_key) {
+        (Some(database_url), Some(engine_api_key)) => EngineMountDecision::Mount {
+            database_url: database_url.to_string(),
+            engine_api_key: engine_api_key.to_string(),
+        },
+        (database_url, engine_api_key) => {
+            let mut missing = Vec::new();
+            if database_url.is_none() {
+                missing.push("DATABASE_URL");
+            }
+            if engine_api_key.is_none() {
+                missing.push("BASTION_ENGINE_API_KEY (engine_api_key)");
+            }
+            EngineMountDecision::Skip {
+                reason: format!(
+                    "engine routes not mounted (POST /events/, GET /workflows, \
+                     POST /events/{{run_id}}/abort, etc. are unavailable this boot) — \
+                     missing: {}",
+                    missing.join(", ")
+                ),
+            }
+        }
+    }
+}
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -124,9 +198,69 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     .unwrap_or_default();
     let registry = web::Data::new(registry);
 
+    // ── Engine embed (BA.7.C task 2) ────────────────────────────────────────
+    //
+    // Decide once at boot whether to mount `engine-serve`'s route table.
+    // Absent-tolerant: with `DATABASE_URL` or the engine API key missing,
+    // `bastion serve` still starts its existing session/status surface —
+    // the engine routes are simply left unmounted, and we say so on stderr
+    // plus an `observ` event rather than failing to boot or mounting a route
+    // that would 500 on every request.
+    let engine_data: Option<web::Data<EngineAppState>> = match decide_engine_mount(
+        std::env::var("DATABASE_URL").ok().as_deref(),
+        std::env::var("BASTION_ENGINE_API_KEY").ok().as_deref(),
+    ) {
+        EngineMountDecision::Mount {
+            database_url,
+            engine_api_key,
+        } => {
+            // One shared sqlx/PgPool — engine-rs is aligned on sqlx 0.9 with
+            // bastion (see the spec's *Dependency alignment* section), so no
+            // two-pool `engine_store::connect` workaround is needed here.
+            match sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&database_url)
+                .await
+            {
+                Ok(pool) => {
+                    tracing::info!(
+                        target: "bastion::serve",
+                        "engine routes mounted (DATABASE_URL + engine_api_key present)"
+                    );
+                    let state = EngineAppState {
+                        dispatcher: Arc::new(Dispatcher::new()),
+                        live: LiveStateStore::new(),
+                        durable: spawn_durable_writer(Some(pool)),
+                        runs: RunRegistry::new(),
+                        api_key: engine_api_key,
+                    };
+                    Some(web::Data::new(state))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        target: "bastion::serve",
+                        error = %e,
+                        "engine routes not mounted — failed to connect to DATABASE_URL"
+                    );
+                    eprintln!(
+                        "bastion serve: engine routes not mounted — could not connect to \
+                         DATABASE_URL: {e}"
+                    );
+                    None
+                }
+            }
+        }
+        EngineMountDecision::Skip { reason } => {
+            tracing::warn!(target: "bastion::serve", %reason);
+            eprintln!("bastion serve: {reason}");
+            None
+        }
+    };
+
     HttpServer::new(move || {
         let hub_data = web::Data::new(hub.clone());
         let registry_data = registry.clone();
+        let engine_data = engine_data.clone();
 
         // Protected scope — bearer auth enforced on all children.
         //
@@ -194,18 +328,43 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             .app_data(hub_data.clone())
             .route("", web::get().to(hub_ws_handler));
 
-        App::new()
+        let mut app = App::new()
             // Shared hub data — accessible to hub_ws_handler via web::Data<Addr<Hub>>.
             .app_data(hub_data)
             // Shared workspace registry — accessible to status handlers via
             // web::Data<FileConfig> (BA.11.D).
             .app_data(registry_data)
             // Public liveness endpoint.
+            //
+            // `/health` collision (BA.7.C task 2): `engine_serve::http::configure`
+            // (mounted below when the engine is present) registers its own
+            // `GET /health`. actix-web resolves duplicate exact-path resources by
+            // first-registration-wins (verified empirically — the second
+            // registration is simply unreachable, not a panic), so registering
+            // bastion's own `/health` *before* `.configure(engine_serve::http::configure)`
+            // deliberately keeps bastion's own liveness contract
+            // (`docs/serve-api.md`) unchanged for existing consumers: the whole
+            // process's `/health` always answers, engine-mounted or not.
             .service(web::resource("/health").route(web::get().to(health)))
             // Protected REST scope (extended by later blocks).
             .service(protected)
             // Protected WS upgrade route.
-            .service(ws_scope)
+            .service(ws_scope);
+
+        // Mount the embedded engine's route table when config allows it
+        // (BA.7.C task 2). These routes are NOT wrapped in bastion's own
+        // `Bearer` middleware — they carry their own `X-API-Key` gate
+        // (`engine_serve::http::check_api_key`), and double-gating them would
+        // break the pinned contract's 401 semantics (a caller supplying only
+        // `X-API-Key` would otherwise be rejected by bastion's Bearer layer
+        // before ever reaching the engine handler).
+        if let Some(engine_data) = engine_data {
+            app = app
+                .app_data(engine_data)
+                .configure(engine_serve::http::configure);
+        }
+
+        app
     })
     .bind(&addr)
     .map_err(anyhow::Error::from)?
@@ -215,6 +374,89 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+// ── decide_engine_mount tests (BA.7.C task 2) ───────────────────────────────
+//
+// Kept in a dedicated module (rather than inside `mod tests` below) because
+// that module does `use actix_web::{App, test};`, which brings `actix_web`'s
+// `#[test]` attribute macro into scope under the bare name `test` and shadows
+// the built-in `#[test]` attribute — a plain `#[test] fn ...` (sync) in that
+// module resolves to actix's async-only test macro and fails to compile.
+#[cfg(test)]
+mod engine_mount_tests {
+    use super::*;
+
+    #[test]
+    fn decide_engine_mount_mounts_when_both_present() {
+        let decision =
+            decide_engine_mount(Some("postgres://localhost/db"), Some("engine-secret-key"));
+        assert_eq!(
+            decision,
+            EngineMountDecision::Mount {
+                database_url: "postgres://localhost/db".to_string(),
+                engine_api_key: "engine-secret-key".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn decide_engine_mount_skips_when_database_url_absent() {
+        let decision = decide_engine_mount(None, Some("engine-secret-key"));
+        match decision {
+            EngineMountDecision::Skip { reason } => {
+                assert!(reason.contains("DATABASE_URL"));
+                assert!(!reason.contains("BASTION_ENGINE_API_KEY"));
+            }
+            other => panic!("expected Skip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_engine_mount_skips_when_engine_api_key_absent() {
+        let decision = decide_engine_mount(Some("postgres://localhost/db"), None);
+        match decision {
+            EngineMountDecision::Skip { reason } => {
+                assert!(reason.contains("BASTION_ENGINE_API_KEY"));
+                assert!(!reason.contains("missing: DATABASE_URL"));
+            }
+            other => panic!("expected Skip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_engine_mount_skips_when_both_absent() {
+        let decision = decide_engine_mount(None, None);
+        match decision {
+            EngineMountDecision::Skip { reason } => {
+                assert!(reason.contains("DATABASE_URL"));
+                assert!(reason.contains("BASTION_ENGINE_API_KEY"));
+            }
+            other => panic!("expected Skip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_engine_mount_treats_empty_database_url_as_absent() {
+        let decision = decide_engine_mount(Some(""), Some("engine-secret-key"));
+        match decision {
+            EngineMountDecision::Skip { reason } => {
+                assert!(reason.contains("DATABASE_URL"));
+            }
+            other => panic!("expected Skip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_engine_mount_treats_empty_engine_api_key_as_absent() {
+        let decision = decide_engine_mount(Some("postgres://localhost/db"), Some(""));
+        match decision {
+            EngineMountDecision::Skip { reason } => {
+                assert!(reason.contains("BASTION_ENGINE_API_KEY"));
+            }
+            other => panic!("expected Skip, got {other:?}"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
