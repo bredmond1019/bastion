@@ -192,6 +192,7 @@ mod tests {
             id: "run-1".to_string(),
             workflow_name: "pipeline".to_string(),
             status: RunStatus::Success,
+            budget_halt: None,
             nodes: vec![NodeState {
                 id: "n".to_string(),
                 name: "n".to_string(),
@@ -357,6 +358,7 @@ mod tests {
             id: "run-2".to_string(),
             workflow_name: "pipeline".to_string(),
             status: RunStatus::Success,
+            budget_halt: None,
             nodes: vec![NodeState {
                 id: "n".to_string(),
                 name: "n".to_string(),

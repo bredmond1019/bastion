@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "budget": {
+      "halted": true,
+      "reason": {
+        "cap": "max_total_tokens",
+        "spent": 100000,
+        "limit": 100000
+      }
+    }
+  },
+  "node_runs": {
+    "DataIngestionNode": {
+      "status": "success",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": "2026-07-16T11:00:00Z"
+    },
+    "EmbeddingNode": {
+      "status": "success",
+      "error": null,
+      "input": null,
+      "usage": {
+        "input_tokens": 90000,
+        "output_tokens": 10000,
+        "model": "text-embedding-3-small"
+      },
+      "started_at": "2026-07-16T11:00:05Z"
+    },
+    "LLMSummaryNode": {
+      "status": "pending",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": null
+    }
+  },
+  "nodes": {
+    "DataIngestionNode": {
+      "output": {
+        "documents_loaded": 3
+      }
+    },
+    "EmbeddingNode": {
+      "output": {
+        "embedding_dim": 1536
+      }
+    },
+    "LLMSummaryNode": {
+      "output": null
+    }
+  }
+}

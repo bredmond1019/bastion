@@ -211,6 +211,7 @@ mod tests {
             id: id.to_string(),
             workflow_name: "test_workflow".to_string(),
             status: RunStatus::Running,
+            budget_halt: None,
             nodes: node_names.iter().map(|n| make_node(n)).collect(),
             started_at: None,
             elapsed_secs: None,

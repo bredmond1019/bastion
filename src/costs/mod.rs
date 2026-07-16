@@ -461,6 +461,7 @@ mod tests {
             id: format!("run-{}", workflow_name),
             workflow_name: workflow_name.to_string(),
             status: RunStatus::Success,
+            budget_halt: None,
             nodes,
             started_at: started_at.map(str::to_string),
             elapsed_secs: None,

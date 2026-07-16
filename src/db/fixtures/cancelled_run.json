@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "cancellation": {
+      "cancelled": true,
+      "at": "2026-07-16T10:05:00Z"
+    }
+  },
+  "node_runs": {
+    "DataIngestionNode": {
+      "status": "success",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": "2026-07-16T10:00:00Z"
+    },
+    "EmbeddingNode": {
+      "status": "running",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": "2026-07-16T10:00:05Z"
+    },
+    "LLMSummaryNode": {
+      "status": "pending",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": null
+    }
+  },
+  "nodes": {
+    "DataIngestionNode": {
+      "output": {
+        "documents_loaded": 3
+      }
+    },
+    "EmbeddingNode": {
+      "output": null
+    },
+    "LLMSummaryNode": {
+      "output": null
+    }
+  }
+}

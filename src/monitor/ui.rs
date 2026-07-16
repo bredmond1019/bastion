@@ -24,6 +24,11 @@ pub fn status_color(status: &RunStatus) -> Color {
         RunStatus::Success => Color::Green,
         RunStatus::Failed => Color::Red,
         RunStatus::Pending => Color::DarkGray,
+        // Run-level-only states (v1.1.0 metadata annotations, BA.7.C) never
+        // appear on an individual `NodeState`, but this fn is generic over
+        // `RunStatus` so the match must stay exhaustive.
+        RunStatus::Cancelled => Color::Magenta,
+        RunStatus::BudgetHalted => Color::Red,
     }
 }
 
@@ -34,6 +39,8 @@ pub fn status_symbol(status: &RunStatus) -> &'static str {
         RunStatus::Success => "+",
         RunStatus::Failed => "!",
         RunStatus::Pending => ".",
+        RunStatus::Cancelled => "x",
+        RunStatus::BudgetHalted => "$",
     }
 }
 
@@ -633,6 +640,7 @@ mod tests {
             id: "r1".into(),
             workflow_name: "wf".into(),
             status: RunStatus::Pending,
+            budget_halt: None,
             nodes: vec![],
             started_at: None,
             elapsed_secs: None,
@@ -667,6 +675,7 @@ mod tests {
             id: "r1".into(),
             workflow_name: "wf".into(),
             status: RunStatus::Running,
+            budget_halt: None,
             nodes: nodes_state,
             started_at: None,
             elapsed_secs: None,

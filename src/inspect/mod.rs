@@ -153,6 +153,7 @@ mod tests {
             id: id.to_string(),
             workflow_name: "test_wf".to_string(),
             status: RunStatus::Success,
+            budget_halt: None,
             nodes: node_names.iter().map(|n| make_node(n)).collect(),
             started_at: None,
             elapsed_secs: None,

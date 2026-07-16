@@ -1,0 +1,34 @@
+{
+  "metadata": {
+    "budget": {
+      "halted": true
+    },
+    "cancellation": "not-an-object"
+  },
+  "node_runs": {
+    "DataIngestionNode": {
+      "status": "success",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": "2026-07-16T13:00:00Z"
+    },
+    "LLMSummaryNode": {
+      "status": "running",
+      "error": null,
+      "input": null,
+      "usage": null,
+      "started_at": "2026-07-16T13:00:05Z"
+    }
+  },
+  "nodes": {
+    "DataIngestionNode": {
+      "output": {
+        "documents_loaded": 3
+      }
+    },
+    "LLMSummaryNode": {
+      "output": null
+    }
+  }
+}

@@ -251,6 +251,7 @@ mod tests {
             id: id.to_string(),
             workflow_name: "wf".to_string(),
             status: RunStatus::Running,
+            budget_halt: None,
             nodes,
             started_at: None,
             elapsed_secs: None,
