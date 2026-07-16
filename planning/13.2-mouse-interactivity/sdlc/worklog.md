@@ -14,3 +14,8 @@ Validated: gating checks (fast tripwire)
 What: Event loop now matches Event::Mouse(m) => app.on_mouse(m) alongside Event::Key, feeding both through the same Action-handling path; mouse capture enable/disable remains symmetric; manual smoke test recorded in spec Notes.
 Decisions: Task 3 was already implemented and committed on this branch (commit e002261) prior to this attempt; this attempt verified the working tree is clean and re-ran full validation (fmt, clippy -D warnings, test, build --release) rather than re-doing the work.
 Validated: gating checks (fast tripwire)
+
+## Task 4 — PASSED (1 attempt)
+What: Ran and confirmed all Validation Commands (cargo fmt --check, cargo clippy -- -D warnings, cargo test, cargo build --release) pass cleanly for 13.2-mouse-interactivity.
+Decisions: Task 4 is a pure validation gate with no files to change; since the working tree was already clean and all four commands passed, no commit was made.
+Validated: gating checks (fast tripwire)
