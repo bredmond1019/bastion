@@ -11,6 +11,62 @@ timestamp: 2026-07-15T23:45:00-04:00
 
 ---
 
+## [2026-07-16]
+
+### BA.7.C closed — cost as a budgeted resource: budget alerts + abort
+
+Ran `/sdlc-flow` on spec `7.C-cost-budget-alerts-abort` (BA.7.C) end to end across 10 tasks on
+branch `7.C-cost-budget-alerts-abort-flow`, PASS on the first attempt for every task and the end
+review. Task 1 added optional budget caps (`max_total_tokens`, `max_cost_usd`) and
+`engine_api_key` to `Config`, wired through env-over-file precedence with a new
+`ConfigError::MalformedBudgetValue`. Task 2 embedded `engine-serve`'s route table
+(`POST /events/{run_id}/abort` et al.) into `bastion serve`, gated by a pure mount-decision
+requiring both `DATABASE_URL` and a non-empty engine API key, with bastion's own `/health`
+resolved first (first-registration-wins). Task 3 shipped `src/costs/budget.rs`, a pure
+Budget/Spend/GateVerdict/Crossing evaluation core mirroring engine-rs's shape without taking a
+crate dependency on it (D24). Task 4 added `ApiClient::abort_run` with typed outcome
+classification (accepted/not-found/unauthorized/unreachable), proven end-to-end by an in-process
+integration test that spins up a real `engine-serve` `HttpServer` (`tests/abort_contract.rs`).
+Task 5 shipped `bastion abort <run> [--yes]` as the operator-facing confirmation-and-outcome
+switch. Task 6 shipped `src/costs/watch.rs` — a pure tick/alert core plus a poll/sleep I/O shell
+for `costs --watch`'s live render and once-per-crossing threshold alerts, degrading gracefully on
+DB failure. Task 7 taught `WorkflowRun.status` to read contract v1.1.0's
+`metadata.cancellation`/`metadata.budget` to surface `Cancelled`/`BudgetHalted` runs, falling back
+to node-aggregate derivation when metadata is absent or malformed. Task 8 wired the CLI:
+`costs --watch`, `bastion abort`, and a pre-dispatch budget gate on `bastion run` that refuses
+(unless `--force`) when accumulated spend exceeds a configured cap, failing open on DB errors.
+Task 9 re-pinned `docs/data-contract.md`'s abort/metadata sections, documented the `serve-api.md`
+engine embed as a new §13 (bumped to v0.5), added `docs/abort.md`, updated `costs.md`/`run.md`,
+and corrected `CLAUDE.md`'s Environment section for D48's dual `DATABASE_URL` source paths. Task
+10 confirmed all gated checks green and recorded two manual smoke tests: the `bastion serve`
+embed's 401/404 legs verified live end-to-end through the real CLI → HTTP → engine path (the 202
+"live run" leg has no way to register a real `CancellationToken` outside the automated
+integration test, since workflow dispatch through the engine's own endpoint is out of this
+block's scope — `bastion run` still triggers via the orchestrator), and `costs --watch`'s
+degrade-don't-panic behavior confirmed live against real Postgres, blocked from observing an
+actual alert crossing by a newly-discovered pre-existing bug unrelated to this block
+(`db::workflows::EventRow.id` typed `String` against the real `events.id` column's `uuid`),
+filed as a known defect rather than fixed in this pass. Review verdict: **PASS** (0 findings).
+Notable decisions: `bastion abort` (not the master-plan's `bastion kill`, since `bastion kill
+<session>` already means tmux session-kill); the engine-serve embed was absorbed into this
+block's scope since nothing else mounted it; all testing targets `engine-rs`, not the Python
+orchestrator (D48). `state.json`'s `BA.7.C` block flipped `open` → `closed`.
+Next: resume Phase 13/14 per `state.json`'s regenerated `focus.next` ordering — BA.13.3 (session→
+space cwd mapping) is next in sequence.
+
+```
+50ceceb feat: implement "7.C-cost-budget-alerts-abort"-task9
+21afb36 feat: implement "7.C-cost-budget-alerts-abort"-task8
+655bc66 feat: implement "7.C-cost-budget-alerts-abort"-task7
+9ca50d1 feat: implement "7.C-cost-budget-alerts-abort"-task6
+37eb082 feat: implement "7.C-cost-budget-alerts-abort"-task5
+e729e4d feat: implement "7.C-cost-budget-alerts-abort"-task4
+56e9ec9 feat: implement "7.C-cost-budget-alerts-abort"-task3
+95f5f8f feat: implement "7.C-cost-budget-alerts-abort"-task2
+f2c0007 feat: implement "7.C-cost-budget-alerts-abort"-task1
+5b189a1 docs: re-pin data contract 1.0.0 -> 1.1.0 (resolve known drift)
+```
+
 ## [2026-07-15]
 
 ### BA.13.2 closed — mouse interactivity
