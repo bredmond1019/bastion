@@ -71,16 +71,34 @@ BASTION_API_URL=http://localhost:8080
 BASTION_POLL_INTERVAL=2
 ```
 
-`DATABASE_URL` must point to the **Python orchestrator's PostgreSQL** instance. `bastion` reads from it directly (no changes to the Python side required).
+`DATABASE_URL` must point to whichever Postgres holds the `events` contract `bastion` reads
+directly and read-only (D2) — the observability track (`monitor`, `costs`) and the `BA.7.C`
+budget-gate/abort paths all read the same `events` table shape. **Which stack populates that
+table depends on how the run was triggered — this is no longer always the Python orchestrator
+(re-checked 2026-07-16 against D48):**
 
-To bring that instance up, run the orchestrator's dev stack **from the `python-orchestration-system/` repo** (starts Postgres + Redis + FastAPI on `:8080` + Celery in a tmux session):
+- Runs triggered through the orchestrator's own FastAPI/Celery stack are still written by the
+  orchestrator. Bring that stack up **from the `python-orchestration-system/` repo** (starts
+  Postgres + Redis + FastAPI on `:8080` + Celery in a tmux session):
 
-```bash
-./scripts/dev.sh        # START
-./scripts/dev.sh stop   # STOP
-```
+  ```bash
+  ./scripts/dev.sh        # START
+  ./scripts/dev.sh stop   # STOP
+  ```
 
-Only the observability track (`monitor`, `costs`) needs this; the session surface runs DB-free (D4).
+- Runs triggered through the embedded Engine (`engine-serve`, mounted by `bastion serve` per
+  D48 — see `docs/serve-api.md` §13) are written by `engine-store`'s durable writer instead.
+  **Do not use the orchestrator's `./scripts/dev.sh` for this path** — D48 supersedes `OR.I`,
+  the Python orchestrator has no abort endpoint and never will, and its dev stack is not what
+  wrote those rows. Stand up Postgres following `../engine-rs`'s own setup instead (see
+  `planning/7.C-cost-budget-alerts-abort/tasks.md`'s Notes section for the worked case: the
+  `bastion serve` embed + `bastion abort` smoke test).
+
+`BASTION_ENGINE_API_KEY` (the engine routes' `X-API-Key` secret) and the optional
+`BASTION_MAX_TOTAL_TOKENS` / `BASTION_MAX_COST_USD` budget caps are documented in
+`.env.example` and `docs/config.md`.
+
+The session surface runs DB-free (D4); it needs neither Postgres.
 
 ## Directory map
 

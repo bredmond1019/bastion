@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [bastion, cli, operator reference, index, docs]
-related: [bastion-setup, monitor, brain, config, brainval, docview, workspace-contract]
+related: [bastion-setup, monitor, brain, config, brainval, docview, workspace-contract, abort]
 ---
 
 # bastion CLI — Docs
@@ -28,7 +28,8 @@ and `Bastion/docs/ownership.md`.
 |---|---|
 | [monitor.md](monitor.md) | Live two-pane TUI graph view of workflow execution |
 | [inspect.md](inspect.md) | Static post-mortem TUI graph view of a completed run |
-| [run.md](run.md) | Trigger a workflow via the FastAPI generic dispatcher |
+| [run.md](run.md) | Trigger a workflow via the FastAPI generic dispatcher, gated by the pre-dispatch budget check |
+| [abort.md](abort.md) | `bastion abort <run>` — stop a running workflow via the Engine's authenticated abort endpoint |
 | [sessions.md](sessions.md) | Unified Console (TUI Dashboard) and tmux session-control verbs |
 | [detect.md](detect.md) | Pure agent-state detection engine — TOML manifest schema, gate types, `detect()` API |
 | [claude-code-workflow.md](claude-code-workflow.md) | Hands-on walkthrough: spin up a tmux session, launch Claude Code, drive it |

@@ -86,17 +86,30 @@ There is no indexed status column in v1.0.0 — scan + parse.
 contract's lowercase status strings. `usage` is **null** for non-LLM nodes → `tokens_*` / `model`
 are `Option`. `input` is null unless the node is an LLM node.
 
-### Run-level `metadata` annotations (new in v1.1.0, not yet consumed)
+### Run-level `metadata` annotations → `db::workflows::WorkflowRun`
 
 The canonical contract's v1.1.0 §5 adds two structured `task_context.metadata` keys — a cancelled
 run (`metadata.cancellation`) and a budget-halted run (`metadata.budget`), both spelled in
 `metadata` rather than as new `NodeRunStatus` values (see the canonical doc for the full shape).
-**No bastion Rust type reads these yet** — `WorkflowRun.status: RunStatus` is currently derived
-only from `node_runs`' aggregate, so a cancelled or budget-halted run today still reads through
-bastion's existing status derivation (most likely as `running`, since not-yet-run nodes stay
-`pending` and no node itself failed). Wiring `metadata.cancellation` / `metadata.budget` into
-`WorkflowRun.status` (or a new field alongside it) is `BA.7.C`'s job, not this re-pin's — this pin
-only registers that the field exists on the wire as of 1.1.0.
+`BA.7.C` wires both into `db::workflows::derive_run_status`, which is now the sole source of
+`WorkflowRun.status: RunStatus` (never inferred from `node_runs` alone once `metadata` is
+present):
+
+| Contract (`task_context.metadata`) | bastion |
+|---|---|
+| `metadata.budget.halted == true` (+ `.reason`) | `WorkflowRun.status == RunStatus::BudgetHalted`, detail on `WorkflowRun.budget_halt: Option<BudgetHalt>` |
+| `metadata.budget.reason.cap` (`"max_total_tokens"` \| `"max_cost_usd"`) | `BudgetHalt::TotalTokens { .. }` \| `BudgetHalt::CostUsd { .. }` |
+| `metadata.budget.reason.spent` / `.limit` | `BudgetHalt`'s `spent` / `limit` fields |
+| `metadata.cancellation.cancelled == true` | `WorkflowRun.status == RunStatus::Cancelled` |
+
+`RunStatus` gained the two run-level-only variants `Cancelled` and `BudgetHalted` alongside the
+existing per-node-derived `Pending`/`Running`/`Success`/`Failed`. `derive_run_status` (`src/db/
+workflows.rs`) checks `metadata.budget` before `metadata.cancellation` — a run can only be
+budget-halted by the pre-dispatch gate before the operator gets a chance to cancel it, so on the
+rare run carrying both markers the budget halt wins. Both reads are absent-tolerant: a run
+written before v1.1.0 (no `metadata` key), or a `metadata.cancellation`/`metadata.budget` that
+isn't well-formed, falls back to the pre-v1.1.0 node-based derivation unchanged — reading these
+keys never turns a previously-valid run into a parse failure.
 
 ### Graph endpoint → edges
 
@@ -108,12 +121,28 @@ only registers that the field exists on the wire as of 1.1.0.
 
 `POST /` with `{ "workflow_type": str, "data": object }` → `202 { "task_id": str, "message": str }`.
 
-### Abort → not yet implemented (new in v1.1.0)
+### Abort → `api::client::abort_run`
 
 `POST /events/{run_id}/abort` (no body) → `401` (bad/missing `X-API-Key`) \| `404` (unknown or
-finished run) \| `202 { "run_id": str, "status": "aborting" }`. **No `api::client` function calls
-this yet** — `bastion kill` (`BA.7.C`, currently blocked) is the consumer that will add one.
-Registered here so the wire shape is pinned before that work starts.
+finished run) \| `202 { "run_id": str, "status": "aborting" }`. Consumed by
+`api::client::ApiClient::abort_run`, the thin I/O shell behind the shipped `bastion abort <run>`
+subcommand (**not** `bastion kill` — see the naming deviation in `planning/7.C-cost-budget-alerts-
+abort/tasks.md` — `kill` stays the tmux session-kill verb). The endpoint itself is served by
+`engine-serve`'s route table embedded into `bastion serve` (D48) — never by the Python
+orchestrator, which has no abort endpoint and never will (D48 supersedes `OR.I`).
+
+`api::client::classify_abort_response` maps each pinned response to a typed `AbortOutcome`:
+
+| Response | `AbortOutcome` variant | `bastion abort` reports |
+|---|---|---|
+| `202 { run_id, status }` | `Accepted { run_id, status }` | `abort accepted: run <id> is now '<status>'` |
+| `404` | `NotFound(ConsoleError::SessionNotFound)` | `abort failed: run '<id>' not found or already finished` (`C002`) |
+| `401` | `Unauthorized(ConsoleError::NotAuthenticated)` | `abort failed: engine rejected the request` (`C012`) |
+| connection failure / missing `engine_api_key` | `Err(ConsoleError::Io \| ConfigError)` | `abort failed: could not reach the engine` (`C009`/`C005`), pointing at `bastion serve` |
+
+Every branch is unit-tested element-by-element in `src/run/abort.rs` (`render_outcome`) and
+`src/api/client.rs` (`classify_abort_response`); the end-to-end path (real HTTP against a real
+`engine-serve` `App`) is covered by the in-process integration test `tests/abort_contract.rs`.
 
 ---
 
@@ -132,3 +161,4 @@ Registered here so the wire shape is pinned before that work starts.
 |---|---|---|
 | 1.0.0 | 2026-06-20 | Initial pin against canonical 1.0.0. |
 | 1.1.0 | 2026-07-16 | Re-pin from 1.0.0 straight to 1.1.0, resolving known drift against the canonical 1.0.1 patch (no bastion-visible shape change in 1.0.1 — `POST /events/` auth only, and bastion never calls that endpoint). Registers the canonical's v1.1.0 additions: `POST /events/{run_id}/abort` (§ above) and the `metadata.cancellation` / `metadata.budget` run-level annotations (§ above) — both unconsumed by bastion Rust types today; wiring them up is `BA.7.C`'s job. |
+| 1.1.0 | 2026-07-16 | Mapping change against the same pinned version (`BA.7.C`, no canonical bump) — the two v1.1.0 additions registered above are now consumed: the abort endpoint by `api::client::abort_run` / `bastion abort <run>`, served by `engine-serve` embedded in `bastion serve` (D48); the `metadata.cancellation` / `metadata.budget` annotations by `db::workflows::derive_run_status` into `WorkflowRun.status`/`budget_halt`. |

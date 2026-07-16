@@ -3,18 +3,20 @@ type: Guideline
 title: "serve-api contract v0.4"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), and the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes) that bastion-ui pins against."
 doc_id: serve-api
-layer: [console, surface]
+layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, bastion-ui, contract]
-related: [config, observ]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, bastion-ui, contract, engine-serve, abort, X-API-Key]
+related: [config, observ, data-contract, abort]
 ---
 
-# serve-api — v0.4 Contract
+# serve-api — v0.5 Contract
 
-**Version:** v0.4  
-**Produced by:** `bastion` (this repo, `src/serve/`)  
-**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28)
+**Version:** v0.5  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–12, 14, 15 — plus, when mounted,
+`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 13.  
+**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–12, 14, 15; `bastion abort`
+(`src/run/abort.rs`, this repo) for Section 13's abort route.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -40,8 +42,21 @@ transport security on the tailnet.
 
 ## 2. Authentication
 
-All routes **except** `GET /health` are protected by mandatory bearer-token
-authentication.
+All routes **except** `GET /health` under bastion's own `/api` and `/ws` scopes are protected by
+mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 13,
+mounted only when config allows) are a **separate, unmounted-at-`/api` surface with their own
+`X-API-Key` gate** — the two auth schemes coexist side by side and are never double-applied to the
+same request:
+
+| Route family | Scheme | Header |
+|---|---|---|
+| `/health`, `/api/*`, `/ws` (Sections 3–12) | Bearer | `Authorization: Bearer <BASTION_SERVE_TOKEN>` |
+| Engine routes (Section 13): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
+| Engine routes (Section 13): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
+
+The engine's own `GET /health` is shadowed by bastion's `/health` handler (first-registration-wins
+for duplicate exact-path routes — verified empirically, not a panic), so the process's `/health`
+contract (Section 3) is unchanged regardless of whether the engine is mounted.
 
 ### 2.1 Scheme
 
@@ -966,21 +981,69 @@ Execution-path failures (after validation passes) map as follows:
 
 ---
 
-## 13. Configuration reference
+## 13. Embedded engine route table (v0.5, BA.7.C)
+
+`bastion serve` embeds `engine-serve`'s route table (`engine_serve::http::configure`) at the
+**server root** — not under `/api` — per D48 ("the abort endpoint and the rest of the engine
+surface are served through `bastion serve`, embedding the Engine per D42") and the block's scope
+growth (`planning/7.C-cost-budget-alerts-abort/tasks.md`, *Scope growth* section). This is the
+same `engine-serve` surface engine-rs's own `EN.1.C`/`EN.2.B` shipped as an embeddable library —
+`bastion serve` is the first (and, as of this writing, only) process that actually mounts it.
+
+### 13.1 Mount decision
+
+The engine routes are mounted only when **both** `DATABASE_URL` and `BASTION_ENGINE_API_KEY` are
+set (non-empty) at boot — decided once, pure, by `serve::decide_engine_mount` (`src/serve/
+mod.rs`). Absent-tolerant: with either value missing, `bastion serve` still boots its existing
+`/api`/`/ws` surface (Sections 1–12) with the engine routes simply left unmounted; it prints why on
+stderr and emits a `tracing::warn!` `observ` event rather than failing to boot or mounting a route
+that would 500 on every request. A `DATABASE_URL` present but unreachable (connection failure at
+boot) also leaves the engine routes unmounted, logged the same way.
+
+### 13.2 Routes
+
+| Route | Method | Auth | Description |
+|---|---|---|---|
+| `/health` | `GET` | None | Shadowed by bastion's own `/health` (Section 3) — always answers, engine-mounted or not. |
+| `/workflows` | `GET` | None | Registered workflow types (sorted). |
+| `/workflows/{workflow_type}/graph` | `GET` | None | The DAG schema for a registered type; `404` for an unknown one. |
+| `/events/` | `POST` | `X-API-Key` | Trigger dispatch — resolves `workflow_type`, runs the workflow, mints a `run_id` and a `CancellationToken`. |
+| `/events/{run_id}/abort` | `POST` | `X-API-Key` | The abort endpoint this block's `bastion abort <run>` calls — see [abort.md](abort.md) and [data-contract.md](data-contract.md)'s Abort section for the full 401/404/202 contract. |
+
+`X-API-Key` is checked by `engine_serve::http::check_api_key` against `BASTION_ENGINE_API_KEY` —
+an exact string match, entirely separate from bastion's own `BASTION_SERVE_TOKEN` Bearer check
+(Section 2). Neither scheme is layered on the other's routes.
+
+### 13.3 Testing
+
+Covered by the in-process integration test `tests/abort_contract.rs`, which builds a real
+`engine-serve` `App` (via `AppState`) and asserts the 401 / 404 / 202 paths against it — the
+worked reference is `../engine-rs/crates/engine-serve/tests/abort_integration.rs`. The mount
+decision itself (`decide_engine_mount`) is unit-tested element-by-element in `src/serve/mod.rs`
+against all four presence/absence combinations of `DATABASE_URL` / `BASTION_ENGINE_API_KEY`,
+including the empty-string-counts-as-absent case.
+
+---
+
+## 14. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | `host:port` to bind |
 | `BASTION_SERVE_TOKEN` | **Yes** | — | Bearer token for protected routes; absent token is a typed error at startup |
+| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 13 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
+| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 13) check. Absent leaves those routes unmounted. |
 
 `bastion serve` loads config via `load_serve_config()` (`src/config.rs`), which
-is DB-free and does **not** require `DATABASE_URL`. The `[workspaces]`
-registry consumed by Section 11's routes is loaded separately via
-`load_workspace_registry()` — also DB-free — once at server startup.
+is DB-free and does **not** require `DATABASE_URL` for its own `/api`/`/ws` surface. The
+`[workspaces]` registry consumed by Section 11's routes is loaded separately via
+`load_workspace_registry()` — also DB-free — once at server startup. `DATABASE_URL` and
+`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 13.1), not
+through `load_serve_config()`.
 
 ---
 
-## 14. Versioning policy
+## 15. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -989,7 +1052,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.4**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.5**.
 
 ---
 
@@ -1023,3 +1086,13 @@ This document follows a simple monotonic version scheme:
   Updated auth policy table (Section 2.3) to list the new `/api/actions/command` route.
   Renumbered Configuration → Section 13, Versioning → Section 14.  Updated frontmatter title,
   description, and the current-contract version note.
+- **2026-07-16 — v0.4 → v0.5 (BA.7.C task 2):** Added Section 13 (Embedded engine route table) —
+  `bastion serve` now mounts `engine-serve`'s route table (`GET /health`, `GET /workflows`,
+  `GET /workflows/{type}/graph`, `POST /events/`, `POST /events/{run_id}/abort`) at server root,
+  gated by its own `X-API-Key` scheme (`BASTION_ENGINE_API_KEY`) entirely separate from bastion's
+  `Bearer` scheme, mounted only when `DATABASE_URL` + `BASTION_ENGINE_API_KEY` are both present
+  (`serve::decide_engine_mount`).  Rewrote Section 2 to document the two auth schemes side by
+  side.  Added `DATABASE_URL` / `BASTION_ENGINE_API_KEY` to the Configuration reference (now
+  Section 14).  Renumbered Configuration → Section 14, Versioning → Section 15.  Updated
+  frontmatter title, description, `layer`, `keywords`, `related`, and the current-contract
+  version note.
