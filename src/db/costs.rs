@@ -17,10 +17,11 @@ pub async fn fetch_all_runs(db_url: &str) -> Result<Vec<WorkflowRun>> {
         .await
         .context("failed to connect to PostgreSQL")?;
 
-    let rows = sqlx::query_as::<_, EventRow>("SELECT id, workflow_type, task_context FROM events")
-        .fetch_all(&pool)
-        .await
-        .context("failed to query events table")?;
+    let rows =
+        sqlx::query_as::<_, EventRow>("SELECT id::text, workflow_type, task_context FROM events")
+            .fetch_all(&pool)
+            .await
+            .context("failed to query events table")?;
 
     let mut runs = Vec::with_capacity(rows.len());
     for row in rows {
