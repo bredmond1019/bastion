@@ -1,5 +1,6 @@
 // `bastion costs --last <window>` — LLM spend summary from PostgreSQL.
 
+mod budget;
 mod pricing;
 mod tokens;
 
