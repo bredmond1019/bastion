@@ -497,12 +497,16 @@ fn run_inner(
         terminal.draw(|f| draw(f, app, &mut list_state))?;
 
         if event::poll(Duration::from_millis(REFRESH_MS))? {
-            // Mouse handling (click-to-select on the tab bar) is out of scope for
-            // this block (BA.13.2 — the top tab bar itself is gone) and deferred; only
-            // key events are handled here.
-            if let Event::Key(k) = event::read()? {
-                let action = app.on_key(k.code);
+            // Click-to-select and wheel-scroll routing (BA.13.2) share the same
+            // action-handling path as key events below; sub-tab-bar click
+            // routing is deferred to BA.13.4.
+            let action = match event::read()? {
+                Event::Key(k) => Some(app.on_key(k.code)),
+                Event::Mouse(m) => Some(app.on_mouse(m)),
+                _ => None,
+            };
 
+            if let Some(action) = action {
                 if let Action::Attach(ref name) = action {
                     // Suspend the TUI, hand the terminal to tmux, then restore.
                     let name = name.clone();

@@ -58,7 +58,37 @@ cargo build --release
 
 ## Notes
 
-_None yet — filled in as work happens._
+- **Task 3 — event-loop wiring:** `run_inner`'s event read (`src/sessions/ui.rs`) now matches
+  `Event::Key`/`Event::Mouse`/other, feeding both `app.on_key`/`app.on_mouse` results through the
+  same `Action` handling path (the `Attach` suspend/resume branch, then `execute_action`) — no
+  duplicated action plumbing. Mouse capture enable/disable remains symmetric: enabled at
+  `run()` entry (ui.rs `EnterAlternateScreen, event::EnableMouseCapture`) and the `Attach`
+  suspend/resume pair, disabled at the `Attach` suspend point and at `run()`'s always-run teardown
+  — unchanged by this task, verified by re-reading both call sites.
+- **Manual smoke test (tmux SGR mouse injection):** launched `./target/release/bastion tui` (release
+  build) inside a scratch tmux session (`bastion-mouse-smoke`, ~100x30) alongside four other live
+  tmux sessions (`orchestration`, `Core`, `smoke-a`, `smoke-b`, and later `mev`). Sent raw SGR mouse
+  escape sequences (`\x1b[<Cb;Cx;CyM`/`m`) via `tmux load-buffer`/`paste-buffer` and inspected the
+  result with `tmux capture-pane`:
+  - **Spine click:** clicked the "core" tier row — file browser and content pane updated to the
+    "core" tier's files/status (spine selection changed).
+  - **File-browser click:** clicked a specific entry ("docs") — the `>>` cursor moved to that row.
+  - **Browser wheel scroll:** `ScrollDown` over the browser pane moved the `>>` cursor down one
+    entry (from `..` to `_planning`), confirming `move_cursor` routing.
+  - **Agent-panel click, no match:** clicked the "bastion-mouse-smoke" row (no space with that
+    slug) — correctly a no-op for spine selection (only the legacy in-view session detail panel,
+    driven by a separate pre-existing field, showed that session — unrelated to this block's
+    dispatcher).
+  - **Agent-panel click, match:** clicked the "mev" row (a session name matching the `mev` project
+    slug in the spine tree) — spine navigated to the `mev` space and content pane rendered `mev`'s
+    `status.md`, confirming the slug-equality jump.
+  - **Content wheel scroll:** sent `ScrollDown` over the content pane; no visible change because
+    the rendered content was shorter than the viewport (saturating scroll had nothing to reveal) —
+    inconclusive by observation alone, but the underlying `space_overview_scroll` arithmetic is
+    exhaustively unit-tested in task 2.
+  - Key events (`q` to quit) continued to work interleaved with mouse events, confirming the merged
+    match arm didn't regress key handling.
+  All scratch tmux sessions were torn down after the test.
 
 ## Amendment Log
 
