@@ -12,7 +12,7 @@ related: [master-plan, planning-index]
 
 # Task Spec — Phase 13, Block 2 (BA.13.2)
 
-**Status:** Not started · **Last run:** never
+**Status:** Done · **Last run:** 2026-07-15 (PASS)
 
 ## Goal
 
@@ -93,4 +93,7 @@ cargo build --release
 ## Amendment Log
 
 <!-- Append-only. Pipeline stages append one dated line here when they deviate from the spec. -->
-_No amendments yet._
+- 2026-07-15 [task 3] Event-loop `Event::Mouse` wiring was found already implemented and
+  committed on this branch (commit `e002261`) prior to the flow's task-3 attempt; rather than
+  redoing the work, the attempt verified the clean working tree and re-ran full validation
+  against it.

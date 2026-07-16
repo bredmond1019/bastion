@@ -2,12 +2,53 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-14T19:50:10Z
+timestamp: 2026-07-15T00:00:00Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-07-15]
+
+### BA.13.2 closed — mouse interactivity
+
+Ran `/sdlc-flow` on spec `13.2-mouse-interactivity` (BA.13.2) end to end across 4 tasks in one
+shared worktree, PASS on the first attempt for every task and the end review. Task 1 added a pure
+`PaneAreas` struct + `compute_pane_areas()` mirroring `draw_with_root`'s `Layout` splits in
+`src/sessions/app.rs`, storing the result on `AppState.pane_areas` during draw and refactoring
+`draw_with_root` to consume it as the single source of truth (eliminating duplicated
+`main_chunks`/`overview_chunks` `Layout` math); `draw`/`draw_for_test` signatures moved from
+`&AppState` to `&mut AppState` across `src/sessions/ui.rs` and `src/sessions/tui_tests.rs`. Task 2
+rewrote `AppState::on_mouse` as a pure dispatcher routing left-clicks and wheel scroll across
+spine/browser/agent-panel/content panes via `bella_engine::geometry::point_in` against the stored
+`pane_areas`, with a shared `row_index_in_pane` helper handling border+scroll+clamping; agent-panel
+clicks match session name to spine Space slug by linear scan (v1 slug-equality rule, no-op on no
+match) per the spec's explicit scoping ahead of BA.13.3/BA.13.4. Task 3 wired `Event::Mouse` into
+the event loop (`src/sessions/ui.rs`) alongside `Event::Key`, feeding both through the same
+`Action`-handling path — already implemented/committed on the branch (commit `e002261`) prior to
+this attempt, so this attempt just re-verified the clean working tree and re-ran full validation.
+Task 4 ran and confirmed all four gated checks (`cargo fmt --check`, `cargo clippy -- -D warnings`,
+`cargo test`, `cargo build --release`) clean. Review verdict: **PASS** (0 findings). A manual smoke
+test via tmux SGR mouse-escape injection confirmed spine click, file-browser click, browser wheel
+scroll, agent-panel click (match + no-match cases), and interleaved key events all behave
+correctly (content-pane scroll was inconclusive by observation but is exhaustively unit-tested).
+Docs updated: `docs/sessions.md`. `state.json`'s `BA.13.2` block flipped `open` → `closed`.
+Next: resume Phase 13/14 per `state.json`'s regenerated `focus.next` ordering — BA.13.3 (session→
+space cwd mapping) is next in sequence.
+
+```
+fb0ed01 chore: flow state — docs
+0b7bb76 docs: update docs for 13.2-mouse-interactivity
+e555d1d chore: flow state — task 4 passed
+bb31b2d chore: flow state — task 3 passed
+91d5fd0 chore: flow state — task 1 passed
+e002261 feat: implement 13.2-mouse-interactivity-task3
+d5e6481 chore: flow state — task 2 passed
+8569134 feat: implement 13.2-mouse-interactivity-task2
+```
 
 ---
 
