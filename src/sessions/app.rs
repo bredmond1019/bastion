@@ -668,6 +668,7 @@ mod tests {
                 foreground_cmd: String::new(),
                 last_line: String::new(),
                 agent_state: crate::detect::AgentState::Unknown,
+                cwd: String::new(),
             })
             .collect()
     }

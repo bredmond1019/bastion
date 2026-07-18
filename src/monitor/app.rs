@@ -186,6 +186,7 @@ mod tests {
             foreground_cmd: String::new(),
             last_line: String::new(),
             agent_state,
+            cwd: String::new(),
         }
     }
 

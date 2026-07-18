@@ -59,6 +59,9 @@ pub struct Session {
     pub last_line: String,
     /// Live agent state detected from pane content.
     pub agent_state: crate::detect::AgentState,
+    /// Working directory of the session's first pane, from `#{pane_current_path}`.
+    /// Empty string when absent (e.g. older/shorter list-sessions output).
+    pub cwd: String,
 }
 
 /// Lightweight pane capture: the raw text from `capture-pane -p -t <session>`.
@@ -127,14 +130,16 @@ impl Pane {
 ///   3. session_windows
 ///   4. session_activity (epoch secs)
 ///   5. pane_current_command — the source of truth for Running vs Idle
+///   6. pane_current_path — cwd of the first pane, used for session → space mapping
 ///
 /// Returns `Err` for malformed lines so callers can choose to skip or propagate.
 /// A line with fewer than 5 fields is accepted as long as ≥3 fields are present;
 /// the missing 5th field defaults to empty (→ Idle), so older/shorter lines still parse.
+/// The 6th field (cwd) defaults to empty when absent.
 pub fn parse_session_line(line: &str) -> Result<Session> {
     let _ = LIST_SESSIONS_FORMAT; // Suppress unused-import lint; used in doc / test.
 
-    let parts: Vec<&str> = line.splitn(5, FIELD_SEP).collect();
+    let parts: Vec<&str> = line.splitn(6, FIELD_SEP).collect();
     if parts.len() < 3 {
         bail!(
             "malformed list-sessions line (expected ≥3 tab-separated fields): {:?}",
@@ -159,6 +164,12 @@ pub fn parse_session_line(line: &str) -> Result<Session> {
         .unwrap_or_default();
     let state = classify_state(&foreground_cmd);
 
+    // Field 6 (index 5) is pane_current_path (cwd); absent → empty.
+    let cwd = parts
+        .get(5)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
     Ok(Session {
         name,
         state,
@@ -166,6 +177,7 @@ pub fn parse_session_line(line: &str) -> Result<Session> {
         foreground_cmd,
         last_line: String::new(), // filled in by commands.rs after capture-pane
         agent_state: crate::detect::AgentState::Unknown,
+        cwd,
     })
 }
 
@@ -304,6 +316,21 @@ background\t0\t1\t1718000100\tzsh\n";
         let s = parse_session_line("old\t0\t1\t1718000000").unwrap();
         assert_eq!(s.state, SessionState::Idle);
         assert_eq!(s.foreground_cmd, "");
+    }
+
+    #[test]
+    fn parses_6_field_line_with_cwd() {
+        let s = parse_session_line("work\t0\t2\t1718000200\tcargo\t/Users/dev/repo").unwrap();
+        assert_eq!(s.name, "work");
+        assert_eq!(s.foreground_cmd, "cargo");
+        assert_eq!(s.cwd, "/Users/dev/repo");
+    }
+
+    #[test]
+    fn missing_6th_field_defaults_cwd_to_empty() {
+        // A 5-field line (no pane_current_path) should parse without error, cwd empty.
+        let s = parse_session_line("work\t0\t2\t1718000200\tcargo").unwrap();
+        assert_eq!(s.cwd, "");
     }
 
     #[test]
