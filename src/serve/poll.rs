@@ -118,6 +118,42 @@ pub fn sessions_snapshot(raw: &str) -> Vec<SessionDto> {
     parse_sessions(raw).iter().map(SessionDto::from).collect()
 }
 
+/// Fill each [`SessionDto`]'s `last_line` from a per-session pane capture
+/// (Gap 3), without touching [`sessions_snapshot`]'s empty-`last_line`
+/// contract.
+///
+/// `panes` holds `(session_name, raw_pane_capture)` pairs — the same capture
+/// pass the sessions-list poller already performs for the needs-input
+/// rising-edge check (Gap 1/task 1), reused here so panes are captured once
+/// per tick. Sessions with no matching entry in `panes` (e.g. the capture
+/// failed for that tick) are left with an empty `last_line`, matching
+/// `sessions_snapshot`'s existing behaviour for that session.
+///
+/// This is a pure sibling builder — the actual pane capture (I/O) happens in
+/// the poll task's blocking closure; this function only combines the two
+/// already-materialized values.
+pub fn sessions_with_last_line(
+    sessions: Vec<SessionDto>,
+    panes: &[(String, String)],
+) -> Vec<SessionDto> {
+    let captures: HashMap<&str, &str> = panes
+        .iter()
+        .map(|(name, capture)| (name.as_str(), capture.as_str()))
+        .collect();
+
+    sessions
+        .into_iter()
+        .map(|mut dto| {
+            if let Some(capture) = captures.get(dto.name.as_str()) {
+                dto.last_line = crate::sessions::model::Pane::new(dto.name.clone(), *capture)
+                    .last_line()
+                    .to_owned();
+            }
+            dto
+        })
+        .collect()
+}
+
 // ── Needs-input detection ────────────────────────────────────────────────────
 
 /// Needs-input rising edge: emit `event{needs_input}` only on the transition
@@ -405,6 +441,69 @@ background\t0\t1\t1718000100\tzsh\n";
         assert_eq!(dtos[0].state, "running"); // claude is not a shell → running
         assert_eq!(dtos[1].name, "background");
         assert_eq!(dtos[1].state, "idle"); // zsh → idle
+    }
+
+    // ── sessions_with_last_line ────────────────────────────────────────────
+
+    #[test]
+    fn sessions_with_last_line_fills_matching_session() {
+        let dtos = sessions_snapshot(FIXTURE_ONE_SESSION_RUNNING);
+        let panes = vec![(
+            "work".to_owned(),
+            "first\nsecond\nlast output line\n".to_owned(),
+        )];
+        let filled = sessions_with_last_line(dtos, &panes);
+        assert_eq!(filled.len(), 1);
+        assert_eq!(
+            filled[0].last_line, "last output line",
+            "matching session's last_line must be filled from its pane capture"
+        );
+    }
+
+    #[test]
+    fn sessions_with_last_line_ignores_trailing_blank_lines() {
+        let dtos = sessions_snapshot(FIXTURE_ONE_SESSION_RUNNING);
+        let panes = vec![("work".to_owned(), "real line\n\n\n".to_owned())];
+        let filled = sessions_with_last_line(dtos, &panes);
+        assert_eq!(
+            filled[0].last_line, "real line",
+            "trailing blank padding must be skipped, matching Pane::last_line"
+        );
+    }
+
+    #[test]
+    fn sessions_with_last_line_leaves_unmatched_session_empty() {
+        let dtos = sessions_snapshot(FIXTURE_ONE_SESSION_RUNNING);
+        // No pane entry for "work" at all.
+        let panes: Vec<(String, String)> = vec![];
+        let filled = sessions_with_last_line(dtos, &panes);
+        assert_eq!(
+            filled[0].last_line, "",
+            "a session with no matching pane capture must keep last_line empty"
+        );
+    }
+
+    #[test]
+    fn sessions_with_last_line_handles_multi_session_selectively() {
+        let dtos = sessions_snapshot(FIXTURE_TWO_SESSIONS);
+        // Only "main" has a pane capture this tick; "background" does not.
+        let panes = vec![("main".to_owned(), "hello world\n".to_owned())];
+        let filled = sessions_with_last_line(dtos, &panes);
+        let main = filled.iter().find(|d| d.name == "main").unwrap();
+        let background = filled.iter().find(|d| d.name == "background").unwrap();
+        assert_eq!(main.last_line, "hello world");
+        assert_eq!(background.last_line, "");
+    }
+
+    #[test]
+    fn sessions_with_last_line_empty_capture_yields_empty_last_line() {
+        let dtos = sessions_snapshot(FIXTURE_ONE_SESSION_RUNNING);
+        let panes = vec![("work".to_owned(), "".to_owned())];
+        let filled = sessions_with_last_line(dtos, &panes);
+        assert_eq!(
+            filled[0].last_line, "",
+            "an all-blank/empty capture must yield an empty last_line, not panic"
+        );
     }
 
     #[test]

@@ -35,7 +35,9 @@ use actix_web::web;
 
 use crate::detect::AgentState;
 use crate::serve::dto::{EventPayload, PanePayload, SessionsPayload, Topic, WsFrame, WsFrameKind};
-use crate::serve::poll::{PaneCursor, sessions_needing_input, sessions_snapshot};
+use crate::serve::poll::{
+    PaneCursor, sessions_needing_input, sessions_snapshot, sessions_with_last_line,
+};
 use crate::serve::status::detect as status_detect;
 use crate::sessions::tmux;
 
@@ -291,6 +293,11 @@ impl Handler<Subscribe> for Hub {
                         .then(move |result, act, _ctx| {
                             // web::block returns Result<Result<T, E>, BlockingError>
                             if let Ok(Ok((sessions, panes))) = result {
+                                // Fill last_line from the per-session pane
+                                // captures already taken above (Gap 3), reusing
+                                // the same capture pass as the needs-input
+                                // check below rather than capturing twice.
+                                let sessions = sessions_with_last_line(sessions, &panes);
                                 let frame = sessions_frame(sessions);
                                 for addr in &conns {
                                     addr.do_send(ServerFrame(frame.clone()));
