@@ -2,12 +2,43 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-16T17:18:28-04:00
+timestamp: 2026-07-18T12:00:00-04:00
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-07-18]
+
+### tmux locale fix + BA.13.3 session-space mapping, close-out
+
+- **What:** This session ran two `/sdlc-task` passes and then `/close-out`:
+  1. `ticket-fix-tmux-locale` (commit 648a4ac) — fixed run_tmux/attach_session to force
+     LC_ALL/LANG=en_US.UTF-8 on the spawned tmux child via a new pure `tmux_locale_env()` builder
+     in `src/sessions/tmux.rs`, fixing `list-sessions -F` output losing its tab separator on tmux
+     builds with no/non-UTF-8 parent locale (observed tmux 3.6b/macOS). Manual smoke test confirmed
+     live sessions are now returned instead of `[]` with LANG/LC_ALL unset.
+  2. `13.3-session-space-mapping` (BA.13.3; commits 5132ff1, ecf1092, 8491ff7) — added
+     `pane_current_path` as field 6 of `LIST_SESSIONS_FORMAT` and a `Session.cwd` field
+     (`src/sessions/model.rs`, `tmux.rs`); shipped `session_space()`/
+     `map_sessions_to_spaces[_by_name]()` in `src/brain/spaces.rs`, pure component-wise
+     longest-prefix matching of a session's cwd against `SpaceTree` entries with brain-root (".")
+     as fallback. Not yet wired to any command/endpoint — pure helpers awaiting a consumer (BA.13.4
+     is the natural next wiring point).
+  3. `/close-out` (in-place on main) — full validation suite green (fmt, clippy, cargo test: 1312 +
+     4 integration tests, cargo build --release, emoji gate); coverage scan found zero blocking
+     gaps (new code already exhaustively unit-tested); low-effort code review found 0 findings;
+     `/update-docs --patch` found nothing STALE, classified the new helpers as NO-DOC (no
+     user-facing surface yet). Both BA.13.3 and the ticket were already flipped closed / removed
+     from `focus.next` by each `sdlc-task` run's own bookkeeping stage. `planning/handoff.md` was
+     written pointing at BA.13.4 as the natural next block. No new `state.json` carryover entries
+     were needed.
+- **Why:** Routine SDLC close-out to keep bastion's status/log/state surfaces current after landing
+  a bugfix ticket and a feature block, and to hand off cleanly to the next session.
+- **Refs:** commits 648a4ac, 5132ff1, ecf1092, 8491ff7; BA.13.3; `planning/handoff.md`
 
 ---
 
