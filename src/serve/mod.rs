@@ -1031,6 +1031,8 @@ mod tests {
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
     }
 
     #[actix_web::test]
@@ -1042,6 +1044,8 @@ mod tests {
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
     }
 
     #[actix_web::test]
@@ -1053,6 +1057,44 @@ mod tests {
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
+    }
+
+    /// Gap 4: the two handoff 404 paths must be distinguishable by error
+    /// code — an unregistered workspace name (`C005`, config/registry miss)
+    /// vs a registered repo whose `handoff.md` is simply absent (`C002`).
+    #[actix_web::test]
+    async fn get_repo_handoff_unknown_repo_vs_missing_handoff_have_distinct_codes() {
+        // Unknown repo (not in registry at all) -> 404 + C005.
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/no-such-repo/handoff")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
+
+        // Registered repo with no handoff.md fixture written -> 404 + C002.
+        let tmp = TempDir::new();
+        write_fixture(&tmp.path().join("planning/status.md"), STATUS_MD);
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("repo-no-handoff".to_string(), tmp.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/repo-no-handoff/handoff")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C002");
     }
 
     #[actix_web::test]
