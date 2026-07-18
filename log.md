@@ -51,8 +51,6 @@ cdb6201 docs: log tmux-locale fix + BA.13.3 session-space mapping close-out
 
 ---
 
-## [2026-07-18]
-
 ### tmux locale fix + BA.13.3 session-space mapping, close-out
 
 - **What:** This session ran two `/sdlc-task` passes and then `/close-out`:
