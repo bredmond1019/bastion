@@ -8,14 +8,17 @@
 //!   and stopped when the last subscriber leaves or disconnects.
 //! - Uses [`crate::serve::poll::PaneCursor`] to emit `pane` frames only on
 //!   diff (no-change captures are silently dropped).
-//! - Drives the needs-input rising-edge debounce via [`should_emit_needs_input`]
-//!   to emit `event{needs_input}` only on the Blocked transition, not every
-//!   poll tick while blocked.
+//! - Drives the needs-input rising-edge debounce (via
+//!   [`crate::serve::poll::sessions_needing_input`]) from the **sessions-list**
+//!   poller — an always-on per-session pane scan — so a session transitioning
+//!   into `Blocked` reaches `sessions` subscribers even with no pane
+//!   subscribed. See `crate::serve::poll` for the pure decision core.
 //!
 //! # Pure helpers (unit-tested, Rule 6)
 //! - [`ConnId`] + monotonic counter
 //! - [`should_start_poll`] / [`should_stop_poll`] — poller lifecycle decisions
-//! - [`should_emit_needs_input`] — rising-edge debounce
+//! - [`crate::serve::poll::should_emit_needs_input`] /
+//!   [`crate::serve::poll::sessions_needing_input`] — rising-edge debounce
 //!
 //! # I/O shell (smoke-tested, Rule 6)
 //! - `Handler<Connect>` / `Handler<Disconnect>` — connection lifecycle
@@ -32,7 +35,7 @@ use actix_web::web;
 
 use crate::detect::AgentState;
 use crate::serve::dto::{EventPayload, PanePayload, SessionsPayload, Topic, WsFrame, WsFrameKind};
-use crate::serve::poll::{PaneCursor, sessions_snapshot};
+use crate::serve::poll::{PaneCursor, sessions_needing_input, sessions_snapshot};
 use crate::serve::status::detect as status_detect;
 use crate::sessions::tmux;
 
@@ -109,8 +112,9 @@ pub struct Hub {
     pane_handles: HashMap<String, SpawnHandle>,
     /// Per-pane diff cursor so only changed captures trigger a push.
     pane_cursors: HashMap<String, PaneCursor>,
-    /// Last agent state seen per pane, for needs-input rising-edge debounce.
-    pane_last_state: HashMap<String, AgentState>,
+    /// Last agent state seen per session, keyed by session name, for the
+    /// sessions-list poller's needs-input rising-edge debounce.
+    sessions_last_state: HashMap<String, AgentState>,
     /// Handle for the single shared sessions-list interval.
     sessions_handle: Option<SpawnHandle>,
     /// Poll cadence in seconds.
@@ -126,7 +130,7 @@ impl Hub {
             pane_subs: HashMap::new(),
             pane_handles: HashMap::new(),
             pane_cursors: HashMap::new(),
-            pane_last_state: HashMap::new(),
+            sessions_last_state: HashMap::new(),
             sessions_handle: None,
             poll_secs,
         }
@@ -160,11 +164,13 @@ pub fn should_stop_poll(new_count: usize) -> bool {
     new_count == 0
 }
 
-/// Needs-input rising edge: emit `event{needs_input}` only on the transition
-/// INTO `Blocked`, not on every poll while still blocked.
-pub fn should_emit_needs_input(prev: Option<AgentState>, new: AgentState) -> bool {
-    new == AgentState::Blocked && prev != Some(AgentState::Blocked)
-}
+// ── Helper: sessions-list poll tick result ────────────────────────────────────
+
+/// Result of one sessions-list poll tick's blocking work: the session DTOs to
+/// fan out, plus each session's raw pane capture (name, capture) so the tick's
+/// `.then` closure can compute needs-input state (Gap 1) without a second
+/// blocking round trip.
+type SessionsTickResult = (Vec<crate::serve::dto::SessionDto>, Vec<(String, String)>);
 
 // ── Helper: build a WsFrame from typed payload ────────────────────────────────
 
@@ -235,7 +241,6 @@ impl Handler<Disconnect> for Hub {
                         ctx.cancel_future(handle);
                     }
                     self.pane_cursors.remove(&name);
-                    self.pane_last_state.remove(&name);
                 }
             }
         }
@@ -259,28 +264,60 @@ impl Handler<Subscribe> for Hub {
                         if act.sessions_subs.is_empty() {
                             return;
                         }
-                        let subs = act.sessions_subs.clone();
                         let conns = act
                             .sessions_subs
                             .iter()
                             .filter_map(|id| act.conns.get(id).cloned())
                             .collect::<Vec<_>>();
 
-                        let fut = web::block(tmux::list_sessions_raw).into_actor(act).then(
-                            move |result, _act, _ctx| {
-                                // web::block returns Result<Result<T, E>, BlockingError>
-                                if let Ok(Ok(raw)) = result {
-                                    let sessions = sessions_snapshot(&raw);
-                                    let frame = sessions_frame(sessions);
+                        // One blocking closure: list sessions, then capture each
+                        // session's pane once so the per-session state feeds both
+                        // the needs-input rising-edge check (this task) and the
+                        // `last_line` fill-in (Gap 3, task 3).
+                        let fut = web::block(|| -> anyhow::Result<SessionsTickResult> {
+                            let raw = tmux::list_sessions_raw()?;
+                            let sessions = sessions_snapshot(&raw);
+                            let panes = sessions
+                                .iter()
+                                .filter_map(|s| {
+                                    tmux::capture_pane_raw(&s.name)
+                                        .ok()
+                                        .map(|capture| (s.name.clone(), capture))
+                                })
+                                .collect();
+                            Ok((sessions, panes))
+                        })
+                        .into_actor(act)
+                        .then(move |result, act, _ctx| {
+                            // web::block returns Result<Result<T, E>, BlockingError>
+                            if let Ok(Ok((sessions, panes))) = result {
+                                let frame = sessions_frame(sessions);
+                                for addr in &conns {
+                                    addr.do_send(ServerFrame(frame.clone()));
+                                }
+
+                                // Needs-input rising-edge debounce, scoped to the
+                                // sessions subscribers (Gap 1): a session crossing
+                                // into Blocked emits even with no pane subscribed.
+                                let current: Vec<(String, AgentState)> = panes
+                                    .iter()
+                                    .map(|(name, capture)| {
+                                        (name.clone(), status_detect::detect_state(capture))
+                                    })
+                                    .collect();
+                                let crossing =
+                                    sessions_needing_input(&act.sessions_last_state, &current);
+                                for name in crossing {
+                                    let event_frame = event_needs_input_frame(name);
                                     for addr in &conns {
-                                        addr.do_send(ServerFrame(frame.clone()));
+                                        addr.do_send(ServerFrame(event_frame.clone()));
                                     }
                                 }
-                                // Ignore tmux errors: best-effort delivery.
-                                let _ = subs; // keep alive
-                                actix::fut::ready(())
-                            },
-                        );
+                                act.sessions_last_state = current.into_iter().collect();
+                            }
+                            // Ignore tmux errors: best-effort delivery.
+                            actix::fut::ready(())
+                        });
                         ctx.spawn(fut);
                     });
                     self.sessions_handle = Some(handle);
@@ -315,7 +352,10 @@ impl Handler<Subscribe> for Hub {
                             .then(move |result, act, _ctx| {
                                 // web::block returns Result<Result<T, E>, BlockingError>
                                 if let Ok(Ok(capture)) = result {
-                                    // Pane diff — push only on change.
+                                    // Pane diff — push only on change. Needs-input
+                                    // detection lives in the sessions-list poller
+                                    // (Gap 1), not here, so it fires even with no
+                                    // pane subscribed.
                                     let cursor =
                                         act.pane_cursors.entry(name_for_then.clone()).or_default();
                                     if let Some((seq, lines)) = cursor.observe(&capture) {
@@ -324,18 +364,6 @@ impl Handler<Subscribe> for Hub {
                                             addr.do_send(ServerFrame(frame.clone()));
                                         }
                                     }
-
-                                    // Needs-input rising-edge debounce.
-                                    let state = status_detect::detect_state(&capture);
-                                    let prev = act.pane_last_state.get(&name_for_then).copied();
-                                    if should_emit_needs_input(prev, state) {
-                                        let event_frame =
-                                            event_needs_input_frame(name_for_then.clone());
-                                        for addr in &subs {
-                                            addr.do_send(ServerFrame(event_frame.clone()));
-                                        }
-                                    }
-                                    act.pane_last_state.insert(name_for_then.clone(), state);
                                 }
                                 actix::fut::ready(())
                             });
@@ -378,7 +406,6 @@ impl Handler<Unsubscribe> for Hub {
                         ctx.cancel_future(handle);
                     }
                     self.pane_cursors.remove(&name);
-                    self.pane_last_state.remove(&name);
                 }
             }
         }
@@ -435,69 +462,11 @@ mod tests {
         );
     }
 
-    // ── should_emit_needs_input ────────────────────────────────────────────
-
-    #[test]
-    fn emit_needs_input_on_transition_from_none_to_blocked() {
-        // No previous state + Blocked → rising edge, must emit.
-        assert!(
-            should_emit_needs_input(None, AgentState::Blocked),
-            "first observation of Blocked (no prior state) must emit"
-        );
-    }
-
-    #[test]
-    fn emit_needs_input_on_transition_from_working_to_blocked() {
-        assert!(
-            should_emit_needs_input(Some(AgentState::Working), AgentState::Blocked),
-            "Working→Blocked transition must emit"
-        );
-    }
-
-    #[test]
-    fn emit_needs_input_on_transition_from_idle_to_blocked() {
-        assert!(
-            should_emit_needs_input(Some(AgentState::Idle), AgentState::Blocked),
-            "Idle→Blocked transition must emit"
-        );
-    }
-
-    #[test]
-    fn no_emit_when_already_blocked() {
-        // Already Blocked last tick → no emission (suppress repeated events).
-        assert!(
-            !should_emit_needs_input(Some(AgentState::Blocked), AgentState::Blocked),
-            "Blocked→Blocked (no transition) must NOT emit"
-        );
-    }
-
-    #[test]
-    fn no_emit_when_transitioning_away_from_blocked() {
-        assert!(
-            !should_emit_needs_input(Some(AgentState::Blocked), AgentState::Working),
-            "Blocked→Working must NOT emit"
-        );
-        assert!(
-            !should_emit_needs_input(Some(AgentState::Blocked), AgentState::Idle),
-            "Blocked→Idle must NOT emit"
-        );
-    }
-
-    #[test]
-    fn no_emit_for_non_blocked_states() {
-        assert!(
-            !should_emit_needs_input(None, AgentState::Idle),
-            "None→Idle must NOT emit"
-        );
-        assert!(
-            !should_emit_needs_input(Some(AgentState::Idle), AgentState::Working),
-            "Idle→Working must NOT emit"
-        );
-        assert!(
-            !should_emit_needs_input(Some(AgentState::Idle), AgentState::Idle),
-            "Idle→Idle must NOT emit"
-        );
-    }
+    // Note: `should_emit_needs_input` / `sessions_needing_input` rising-edge
+    // coverage now lives in `crate::serve::poll`'s test module — that's the
+    // pure-logic home per Rule 6 (these helpers moved there in Gap 1 so the
+    // sessions-list poller and this module could both depend on them without
+    // a cycle).
 
     // ── ConnId::next ───────────────────────────────────────────────────────
 
