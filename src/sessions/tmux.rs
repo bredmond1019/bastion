@@ -17,9 +17,10 @@ use std::process::Command;
 ///   3. session_windows (count)
 ///   4. session_activity (epoch secs)
 ///   5. pane_current_command (foreground process name in the first pane)
+///   6. pane_current_path (cwd of the first pane, used for session → space mapping)
 ///
 /// State (running vs idle) is derived from field 5, not field 2.
-pub const LIST_SESSIONS_FORMAT: &str = "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{pane_current_command}";
+pub const LIST_SESSIONS_FORMAT: &str = "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{pane_current_command}\t#{pane_current_path}";
 
 /// Separator between fields in LIST_SESSIONS_FORMAT output.
 pub const FIELD_SEP: char = '\t';
@@ -358,6 +359,7 @@ mod tests {
         assert!(LIST_SESSIONS_FORMAT.contains("#{session_windows}"));
         assert!(LIST_SESSIONS_FORMAT.contains("#{session_activity}"));
         assert!(LIST_SESSIONS_FORMAT.contains("#{pane_current_command}"));
+        assert!(LIST_SESSIONS_FORMAT.contains("#{pane_current_path}"));
     }
 
     #[test]
