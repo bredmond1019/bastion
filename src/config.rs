@@ -95,7 +95,7 @@ pub fn load_serve_config(
 ///
 /// The `[workspaces]` table maps short names to corpus root paths; `default_workspace`
 /// names the entry used when neither `--root` nor `--workspace` is supplied.
-#[derive(Debug, serde::Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, serde::Deserialize, Default, PartialEq)]
 pub struct FileConfig {
     pub database_url: Option<String>,
     pub api_base_url: Option<String>,
@@ -126,7 +126,7 @@ pub struct FileConfig {
 /// [theme]
 /// name = "bastion"
 /// ```
-#[derive(Debug, serde::Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, serde::Deserialize, Default, PartialEq)]
 pub struct ThemeConfig {
     /// Theme preset name — resolved via `ui_theme::theme_by_name`. Any value not
     /// recognized as a known preset falls back to the `bastion` default there.
