@@ -407,6 +407,11 @@ The payload carries `{ "repo", "spec_slug", "status" }` flattened alongside the
 `event` field (Section 7.7) — `status` is whichever terminal value (`"done"` or
 `"blocked"`) triggered the transition.
 
+This push is wired: `Hub` owns a `FlowWatcher` and runs an always-on poll
+(`src/serve/ws/server.rs`, cadence = `BASTION_POLL_INTERVAL`, not gated on
+subscribers) that broadcasts each emitted frame to every connected `/ws`
+client, regardless of topic subscription.
+
 ---
 
 ## 9. Keep-alive / disconnect behaviour
