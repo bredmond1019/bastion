@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-18T12:00:00-04:00
+timestamp: 2026-07-19T00:32:33Z
 ---
 
 # Log — bastion
@@ -12,6 +12,27 @@ timestamp: 2026-07-18T12:00:00-04:00
 ---
 
 ## [2026-07-18]
+
+### PR #20 merged — serve-ui-contract-gaps, with a same-date log.md rebase conflict resolved
+
+- **What:** Opened PR #20 (`serve-ui-contract-gaps-flow` → `main`) on `bredmond1019/bastion`
+  covering the `serve-ui-contract-gaps` spec closed below. Verified the PR was clean/mergeable
+  with a passing GitGuardian check, then squash-merged it with `--delete-branch`. Checked out
+  `main` and ran `git pull` (configured to rebase), which hit a conflict in `log.md`: both
+  `main`'s prior commit (`cdb6201`, tmux-locale + BA.13.3 close-out) and the newly-merged PR had
+  independently appended a `## [2026-07-18]` date section, so the rebase of local unpushed
+  commits onto the newly-merged `origin/main` produced a duplicate heading. Resolved by merging
+  both entries under one `## [2026-07-18]` heading (`serve-ui-contract-gaps` entry first, then the
+  tmux-locale/BA.13.3 entry), completed the rebase cleanly with no other conflicts, pushed `main`,
+  and deleted the now-merged local feature branch.
+- **Why:** Land the `serve-ui-contract-gaps` spec (five serve ⇄ bastion-ui contract fixes) via the
+  standard PR flow, and unblock `main` after two independent sessions both appended a same-date
+  log section.
+- **Refs:** PR https://github.com/bredmond1019/bastion/pull/20. Companion CR
+  `serve-workflow-done-ws-push` (`event{workflow_done}` WS push) was explicitly left out of scope
+  for this spec — already ticketed at `planning/plan-serve-workflow-done-ws-push/plan.md` and
+  `planning/serve-workflow-done-ws-push/notes.md`, and already referenced in `planning/state.json`
+  (`BA.0.A`), so no new carryover entry was needed for it.
 
 ### serve-ui-contract-gaps closed — five serve ⇄ bastion-ui contract fixes + doc
 
