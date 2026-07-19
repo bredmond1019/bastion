@@ -26,6 +26,7 @@
 //!   start/stop (blocking tmux calls offloaded via `web::block`)
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -33,10 +34,13 @@ use actix::SpawnHandle;
 use actix::prelude::*;
 use actix_web::web;
 
+use crate::config::FileConfig;
 use crate::detect::AgentState;
 use crate::serve::dto::{EventPayload, PanePayload, SessionsPayload, Topic, WsFrame, WsFrameKind};
+use crate::serve::handlers::status::collect_flow_states;
 use crate::serve::poll::{
-    PaneCursor, sessions_needing_input, sessions_snapshot, sessions_with_last_line,
+    FlowWatcher, PaneCursor, sessions_needing_input, sessions_snapshot, sessions_with_last_line,
+    workflow_done_frame,
 };
 use crate::serve::status::detect as status_detect;
 use crate::sessions::tmux;
@@ -121,11 +125,20 @@ pub struct Hub {
     sessions_handle: Option<SpawnHandle>,
     /// Poll cadence in seconds.
     poll_secs: u64,
+    /// Workspace registry the flow-watch poller enumerates each cycle
+    /// (BA.0.A). Wrapped in `Arc` so a cycle's blocking file reads (spawned
+    /// via `web::block`) can hold a cheap clone without requiring
+    /// [`FileConfig`] itself to implement `Clone`.
+    registry: Arc<FileConfig>,
+    /// Stateful non-terminal→terminal tracker driving the `workflow_done` WS
+    /// push — shared across poll cycles (BA.0.A).
+    flow_watcher: FlowWatcher,
 }
 
 impl Hub {
-    /// Create a new hub with the given poll interval.
-    pub fn new(poll_secs: u64) -> Self {
+    /// Create a new hub with the given poll interval and workspace registry
+    /// (the latter drives the always-on flow-watch poller, BA.0.A).
+    pub fn new(poll_secs: u64, registry: FileConfig) -> Self {
         Self {
             conns: HashMap::new(),
             sessions_subs: HashSet::new(),
@@ -135,6 +148,8 @@ impl Hub {
             sessions_last_state: HashMap::new(),
             sessions_handle: None,
             poll_secs,
+            registry: Arc::new(registry),
+            flow_watcher: FlowWatcher::new(),
         }
     }
 
@@ -146,10 +161,89 @@ impl Hub {
             }
         }
     }
+
+    /// Deliver `frame` to **every** connected client, regardless of topic
+    /// subscription (BA.0.A). The `workflow_done` push is not
+    /// subscription-gated — every `/ws` client receives it.
+    fn broadcast_all(&self, frame: WsFrame) {
+        for addr in self.conns.values() {
+            addr.do_send(ServerFrame(frame.clone()));
+        }
+    }
 }
 
 impl Actor for Hub {
     type Context = Context<Self>;
+
+    /// Start the always-on flow-watch poller (BA.0.A) — unlike the
+    /// `sessions`/`pane` pollers, this one is not gated on subscribers: the
+    /// `workflow_done` push has no dedicated subscribe topic, so the only
+    /// way a client can observe it is for the hub to poll unconditionally
+    /// from actor startup.
+    fn started(&mut self, ctx: &mut Self::Context) {
+        let interval = Duration::from_secs(self.poll_secs);
+        ctx.run_interval(interval, |act, ctx| {
+            let registry = act.registry.clone();
+            // Move the watcher's state into the blocking closure and restore
+            // it from the `.then` continuation — `FlowWatcher` isn't `Clone`
+            // (its whole point is being the single mutable cursor across
+            // cycles), so `mem::take` is how the file-read work moves to the
+            // blocking pool without duplicating that state.
+            let mut watcher = std::mem::take(&mut act.flow_watcher);
+            let fut = web::block(move || {
+                let frames = watch_cycle(&registry, &mut watcher);
+                (watcher, frames)
+            })
+            .into_actor(act)
+            .then(|result, act, _ctx| {
+                // web::block returns Result<Result<T, E>, BlockingError>; here
+                // the inner closure is infallible, so only the outer layer
+                // can fail (thread-pool panic/shutdown).
+                if let Ok((watcher, frames)) = result {
+                    act.flow_watcher = watcher;
+                    for frame in frames {
+                        act.broadcast_all(frame);
+                    }
+                }
+                actix::fut::ready(())
+            });
+            ctx.spawn(fut);
+        });
+    }
+}
+
+// ── Flow-watch poll cycle (BA.0.A) ────────────────────────────────────────────
+
+/// One flow-watch poll cycle: for every registered workspace, enumerate its
+/// `sdlc-flow-state.json` files via [`collect_flow_states`], feed them through
+/// `watcher.observe`, and map each resulting [`crate::serve::dto::WorkflowDonePayload`]
+/// through [`workflow_done_frame`].
+///
+/// Thin I/O shell (file reads via `collect_flow_states`) over the pure
+/// `FlowWatcher::observe` / `workflow_done_frame` core — no actor messaging
+/// happens here, so it is directly unit-testable against a fixture workspace
+/// registered in a [`FileConfig`], driven through a shared `FlowWatcher`
+/// across calls (Rule 6).
+pub(crate) fn watch_cycle(registry: &FileConfig, watcher: &mut FlowWatcher) -> Vec<WsFrame> {
+    let Some(workspaces) = registry.workspaces.as_ref() else {
+        return Vec::new();
+    };
+
+    // Deterministic order (sorted names) so multi-workspace cycles are
+    // reproducible in tests, matching `collect_flow_states`'s own ordering
+    // convention.
+    let mut names: Vec<&String> = workspaces.keys().collect();
+    names.sort();
+
+    let mut frames = Vec::new();
+    for name in names {
+        let root = &workspaces[name];
+        let flows = collect_flow_states(root);
+        for payload in watcher.observe(name, &flows) {
+            frames.push(workflow_done_frame(&payload));
+        }
+    }
+    frames
 }
 
 // ── Pure helpers (unit-tested) ────────────────────────────────────────────────
@@ -424,6 +518,228 @@ impl Handler<Unsubscribe> for Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serve::dto::WorkflowDonePayload;
+    use std::sync::Mutex;
+
+    // ── Tiny TempDir helper (mirrors handlers/status.rs's test fixture) ────
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "bastion-hub-test-{}-{}",
+                std::process::id(),
+                ConnId::next().0
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write(path: &std::path::Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn flow_json(spec_slug: &str, status: &str) -> String {
+        format!(
+            r#"{{
+  "spec_slug": "{spec_slug}",
+  "branch": "{spec_slug}-flow",
+  "status": "{status}",
+  "current_task": 1,
+  "started_at": "2026-07-19T00:00:00Z",
+  "updated_at": "2026-07-19T00:00:00Z"
+}}"#
+        )
+    }
+
+    fn registry_with(name: &str, root: &std::path::Path) -> FileConfig {
+        let mut workspaces = HashMap::new();
+        workspaces.insert(name.to_string(), root.to_path_buf());
+        FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        }
+    }
+
+    // ── watch_cycle ──────────────────────────────────────────────────────
+
+    #[test]
+    fn watch_cycle_first_observation_emits_no_frames() {
+        let tmp = TempDir::new();
+        write(
+            &tmp.path().join("planning/spec-a/sdlc/sdlc-flow-state.json"),
+            &flow_json("spec-a", "running"),
+        );
+        let registry = registry_with("bastion", tmp.path());
+        let mut watcher = FlowWatcher::new();
+
+        let frames = watch_cycle(&registry, &mut watcher);
+        assert!(
+            frames.is_empty(),
+            "first observation must never emit a frame"
+        );
+    }
+
+    #[test]
+    fn watch_cycle_running_to_done_emits_one_frame() {
+        let tmp = TempDir::new();
+        let flow_path = tmp.path().join("planning/spec-a/sdlc/sdlc-flow-state.json");
+        write(&flow_path, &flow_json("spec-a", "running"));
+        let registry = registry_with("bastion", tmp.path());
+        let mut watcher = FlowWatcher::new();
+
+        // First cycle: no transition yet.
+        assert!(watch_cycle(&registry, &mut watcher).is_empty());
+
+        // Second cycle: running → done.
+        write(&flow_path, &flow_json("spec-a", "done"));
+        let frames = watch_cycle(&registry, &mut watcher);
+        assert_eq!(frames.len(), 1, "running→done must emit exactly one frame");
+        assert_eq!(frames[0].kind, WsFrameKind::Event);
+        assert_eq!(frames[0].payload["event"], "workflow_done");
+        assert_eq!(frames[0].payload["repo"], "bastion");
+        assert_eq!(frames[0].payload["spec_slug"], "spec-a");
+        assert_eq!(frames[0].payload["status"], "done");
+        assert_eq!(frames[0].payload["session"], "");
+    }
+
+    #[test]
+    fn watch_cycle_running_to_blocked_emits_one_frame() {
+        let tmp = TempDir::new();
+        let flow_path = tmp.path().join("planning/spec-a/sdlc/sdlc-flow-state.json");
+        write(&flow_path, &flow_json("spec-a", "running"));
+        let registry = registry_with("bastion", tmp.path());
+        let mut watcher = FlowWatcher::new();
+
+        assert!(watch_cycle(&registry, &mut watcher).is_empty());
+
+        write(&flow_path, &flow_json("spec-a", "blocked"));
+        let frames = watch_cycle(&registry, &mut watcher);
+        assert_eq!(
+            frames.len(),
+            1,
+            "running→blocked must emit exactly one frame"
+        );
+        assert_eq!(frames[0].payload["status"], "blocked");
+    }
+
+    #[test]
+    fn watch_cycle_unchanged_status_emits_no_frame() {
+        let tmp = TempDir::new();
+        let flow_path = tmp.path().join("planning/spec-a/sdlc/sdlc-flow-state.json");
+        write(&flow_path, &flow_json("spec-a", "running"));
+        let registry = registry_with("bastion", tmp.path());
+        let mut watcher = FlowWatcher::new();
+
+        assert!(watch_cycle(&registry, &mut watcher).is_empty());
+        // Second cycle: still running, no change.
+        assert!(watch_cycle(&registry, &mut watcher).is_empty());
+    }
+
+    #[test]
+    fn watch_cycle_already_terminal_emits_no_further_frame() {
+        let tmp = TempDir::new();
+        let flow_path = tmp.path().join("planning/spec-a/sdlc/sdlc-flow-state.json");
+        write(&flow_path, &flow_json("spec-a", "running"));
+        let registry = registry_with("bastion", tmp.path());
+        let mut watcher = FlowWatcher::new();
+
+        assert!(watch_cycle(&registry, &mut watcher).is_empty());
+        write(&flow_path, &flow_json("spec-a", "done"));
+        assert_eq!(watch_cycle(&registry, &mut watcher).len(), 1);
+
+        // Third cycle: still done — already terminal, no further frame.
+        let frames = watch_cycle(&registry, &mut watcher);
+        assert!(
+            frames.is_empty(),
+            "an already-terminal status must not re-emit a frame"
+        );
+    }
+
+    #[test]
+    fn watch_cycle_empty_registry_emits_no_frames() {
+        let registry = FileConfig::default();
+        let mut watcher = FlowWatcher::new();
+        assert!(watch_cycle(&registry, &mut watcher).is_empty());
+    }
+
+    // ── Hub::broadcast_all (hub-level test) ─────────────────────────────
+
+    /// Records every [`ServerFrame`] it receives — the test double standing
+    /// in for a `WsConn` recipient.
+    #[derive(Default)]
+    struct RecorderActor {
+        received: Arc<Mutex<Vec<WsFrame>>>,
+    }
+
+    impl Actor for RecorderActor {
+        type Context = Context<Self>;
+    }
+
+    impl Handler<ServerFrame> for RecorderActor {
+        type Result = ();
+
+        fn handle(&mut self, msg: ServerFrame, _ctx: &mut Context<Self>) {
+            self.received.lock().unwrap().push(msg.0);
+        }
+    }
+
+    /// Test-only probe message: round-trips through the recorder's mailbox so
+    /// the caller can await it and be sure every earlier `do_send` in the
+    /// (single-threaded, FIFO) mailbox has already been processed.
+    #[derive(Message)]
+    #[rtype(result = "Vec<WsFrame>")]
+    struct DrainReceived;
+
+    impl Handler<DrainReceived> for RecorderActor {
+        type Result = Vec<WsFrame>;
+
+        fn handle(&mut self, _msg: DrainReceived, _ctx: &mut Context<Self>) -> Vec<WsFrame> {
+            self.received.lock().unwrap().clone()
+        }
+    }
+
+    #[actix_web::test]
+    async fn broadcast_all_delivers_to_a_connection_with_no_topic_subscription() {
+        let recorder = RecorderActor::default().start();
+
+        let mut hub = Hub::new(2, FileConfig::default());
+        let id = ConnId::next();
+        // Connect the recorder without subscribing it to `sessions` or any
+        // `pane` topic — the workflow_done push must still reach it.
+        hub.conns.insert(id, recorder.clone().recipient());
+
+        let payload = WorkflowDonePayload {
+            repo: "bastion".to_string(),
+            spec_slug: "spec-a".to_string(),
+            status: "done".to_string(),
+        };
+        let frame = workflow_done_frame(&payload);
+        hub.broadcast_all(frame.clone());
+
+        let received = recorder.send(DrainReceived).await.unwrap();
+        assert_eq!(
+            received.len(),
+            1,
+            "an unsubscribed connection must still receive the broadcast frame"
+        );
+        assert_eq!(received[0], frame);
+    }
 
     // ── should_start_poll ──────────────────────────────────────────────────
 

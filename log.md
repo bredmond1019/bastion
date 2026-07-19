@@ -11,6 +11,39 @@ timestamp: 2026-07-19T00:32:33Z
 
 ---
 
+## [2026-07-19]
+
+### plan-serve-workflow-done-ws-push closed — runtime flow-watch poll + WS broadcast wired
+
+Ran `/sdlc-flow` on spec `plan-serve-workflow-done-ws-push` end to end across 6 tasks on branch
+`plan-serve-workflow-done-ws-push-flow`, PASS on the first attempt for every task and the end
+review. Implemented: a pure `workflow_done_frame()` builder in `src/serve/poll.rs` emitting the
+flattened serve-api §11.5 payload (task 1); `collect_flow_states()` extracted as the shared pure
+enumeration core behind `collect_repo_workflows` in `src/serve/handlers/status.rs` (task 2); `Hub`
+now owns a `FileConfig` registry + `FlowWatcher` and runs an always-on flow-watch poll each actor
+interval, broadcasting `workflow_done` frames to all `/ws` clients regardless of topic
+subscription (task 3); both `Hub::new` call sites rewired to the new signature, with `Clone`
+derived on `FileConfig`/`ThemeConfig` to support it (task 4); `docs/serve-api.md` §8.2 updated to
+note the push is now wired, no §11.5 wire-format or version change (task 5); task 6 confirmed the
+full validation suite (fmt/clippy/test/build --release) green with no further changes needed.
+Review verdict: PASS (0 findings). This closes the gap where `FlowWatcher` existed and was
+unit-tested but was never instantiated in runtime code, and unblocks `bastion-ui`'s
+`workflowDoneEventsProvider` (BU.8.B part 1). `state.json`'s `BA.0.A` block flipped `open` →
+`closed`.
+
+Next: open a PR for `plan-serve-workflow-done-ws-push-flow` → `main` and run `/close-out`.
+
+```
+19e165c feat: implement plan-serve-workflow-done-ws-push-task5
+bcdc472 feat: implement plan-serve-workflow-done-ws-push-task4
+7cbe9bc feat: implement plan-serve-workflow-done-ws-push-task3
+e2cf0f5 feat: implement plan-serve-workflow-done-ws-push-task2
+ab24741 feat: implement plan-serve-workflow-done-ws-push-task1
+26e35e0 docs: log PR #20 merge — serve-ui-contract-gaps close-out
+```
+
+---
+
 ## [2026-07-18]
 
 ### PR #20 merged — serve-ui-contract-gaps, with a same-date log.md rebase conflict resolved

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use crate::detect::AgentState;
-use crate::serve::dto::{SessionDto, WorkflowDonePayload};
+use crate::serve::dto::{SessionDto, WorkflowDonePayload, WsFrame, WsFrameKind};
 use crate::serve::status::flow::{FlowState, detect_transition};
 use crate::sessions::model::parse_sessions;
 
@@ -232,6 +232,28 @@ impl FlowWatcher {
         }
 
         events
+    }
+}
+
+/// Build the `event{workflow_done}` [`WsFrame`] for a transitioned flow.
+///
+/// Wire format (serve-api §11.5, flattened `EventPayload` + workflow fields):
+/// `{ "session": "", "event": "workflow_done", "repo": …, "spec_slug": …, "status": … }`
+/// with `kind == "event"`. `session` is always the empty string — this event is
+/// not scoped to a tmux session — and delivery is not subscription-gated (the
+/// I/O shell in `src/serve/ws/server.rs` broadcasts it to every connection).
+///
+/// Pure function: no I/O, no actor messaging.
+pub fn workflow_done_frame(payload: &WorkflowDonePayload) -> WsFrame {
+    WsFrame {
+        kind: WsFrameKind::Event,
+        payload: serde_json::json!({
+            "session": "",
+            "event": "workflow_done",
+            "repo": payload.repo,
+            "spec_slug": payload.spec_slug,
+            "status": payload.status,
+        }),
     }
 }
 
@@ -743,5 +765,57 @@ background\t0\t1\t1718000100\tzsh\n";
         );
         assert_eq!(events.len(), 1, "only the transitioned flow should emit");
         assert_eq!(events[0].spec_slug, "phase11-blockA");
+    }
+
+    // ── workflow_done_frame ──────────────────────────────────────────────────
+
+    #[test]
+    fn workflow_done_frame_has_event_kind() {
+        let payload = WorkflowDonePayload {
+            repo: "bastion".to_owned(),
+            spec_slug: "phase11-blockD".to_owned(),
+            status: "done".to_owned(),
+        };
+        let frame = workflow_done_frame(&payload);
+        assert_eq!(frame.kind, WsFrameKind::Event);
+    }
+
+    #[test]
+    fn workflow_done_frame_payload_fields_are_flattened_and_exact() {
+        let payload = WorkflowDonePayload {
+            repo: "bastion".to_owned(),
+            spec_slug: "phase11-blockD".to_owned(),
+            status: "done".to_owned(),
+        };
+        let frame = workflow_done_frame(&payload);
+
+        assert_eq!(frame.payload["session"], serde_json::json!(""));
+        assert_eq!(frame.payload["event"], serde_json::json!("workflow_done"));
+        assert_eq!(frame.payload["repo"], serde_json::json!("bastion"));
+        assert_eq!(
+            frame.payload["spec_slug"],
+            serde_json::json!("phase11-blockD")
+        );
+        assert_eq!(frame.payload["status"], serde_json::json!("done"));
+
+        // Exactly these five fields — nothing extra, nothing missing.
+        let obj = frame
+            .payload
+            .as_object()
+            .expect("payload must be an object");
+        assert_eq!(obj.len(), 5, "payload must have exactly 5 fields");
+    }
+
+    #[test]
+    fn workflow_done_frame_reflects_blocked_status() {
+        let payload = WorkflowDonePayload {
+            repo: "bella".to_owned(),
+            spec_slug: "some-spec".to_owned(),
+            status: "blocked".to_owned(),
+        };
+        let frame = workflow_done_frame(&payload);
+        assert_eq!(frame.payload["status"], serde_json::json!("blocked"));
+        assert_eq!(frame.payload["repo"], serde_json::json!("bella"));
+        assert_eq!(frame.payload["spec_slug"], serde_json::json!("some-spec"));
     }
 }

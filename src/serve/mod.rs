@@ -209,10 +209,6 @@ pub fn run(addr: String, token: String) -> Result<()> {
 ///
 /// `poll_secs` is passed to the [`Hub`] to set its poll cadence.
 async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
-    // Start the hub actor once (process-singleton within this actix System).
-    // All per-connection WsConn actors hold an Addr<Hub> clone.
-    let hub = Hub::new(poll_secs).start();
-
     // Load the workspace registry once at startup (BA.11.D) — malformed or
     // absent config degrades to an empty registry rather than failing boot,
     // matching `load_workspace_registry`'s own degradation contract.
@@ -221,6 +217,11 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         std::env::var("HOME").ok(),
     )
     .unwrap_or_default();
+
+    // Start the hub actor once (process-singleton within this actix System).
+    // All per-connection WsConn actors hold an Addr<Hub> clone.
+    let hub = Hub::new(poll_secs, registry.clone()).start();
+
     let registry = web::Data::new(registry);
 
     // ── Engine embed (BA.7.C task 2) ────────────────────────────────────────
@@ -512,7 +513,7 @@ mod tests {
         >,
     > {
         // Start a hub for test routing — mirrors production (Hub::start inside the actix System).
-        let hub = Hub::new(2).start();
+        let hub = Hub::new(2, registry.clone()).start();
         let hub_data = web::Data::new(hub);
         let registry_data = web::Data::new(registry);
 
