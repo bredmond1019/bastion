@@ -13,6 +13,46 @@ timestamp: 2026-07-18T12:00:00-04:00
 
 ## [2026-07-18]
 
+### serve-ui-contract-gaps closed — five serve ⇄ bastion-ui contract fixes + doc
+
+Ran `/sdlc-flow` on spec `serve-ui-contract-gaps` end to end across 7 tasks on branch
+`serve-ui-contract-gaps-flow`, PASS on the first attempt for every task and the end review. The
+spec closed the five server-side gaps filed by the four-agent bastion-ui ⇄ `bastion serve` audit:
+needs-input detection now runs in the Hub's sessions-list poller (a new pure
+`sessions_needing_input` helper in `poll.rs`), so `event{needs_input}` reaches sessions
+subscribers even with no pane subscribed, and the old per-pane emit + `pane_last_state` map were
+removed (task 1); `WsConn` installs a server heartbeat (5s ping / 10s client-timeout reap) with a
+unit-tested pure `client_timed_out(elapsed, timeout)` helper, tracking last-seen on any inbound
+activity (task 2); WS `sessions` frames now populate `last_line` via a new pure
+`sessions_with_last_line()` sibling reusing task 1's per-session pane captures, leaving REST
+`GET /api/sessions` unchanged and documented as such (task 3); an unknown workspace name now
+returns 404 + `C005` (ConfigError) instead of `C002`, distinguishing it from a registered repo
+missing `handoff.md` (task 4); a shared `web::JsonConfig` error handler now maps any malformed or
+wrong-typed JSON body to 400 + `ErrorPayload{code:"C006"}` on both the production `App` and the
+test `build_app` (task 5); `docs/serve-api.md` was re-pinned to v0.5 (frontmatter title fixed)
+with §7.5, §8.1, §9, §11.2–11.4, and §12.3 updated to describe the five landed fixes (task 6);
+task 7 ran the full validation suite clean (1331 + 4 tests, fmt/clippy/build). Review verdict:
+**PASS** (0 findings). Notable decision: `C005` was reused rather than adding a new code, since
+`errors.rs` is a vendored mirror of `claude-sdk-rs`'s C001–C014 taxonomy and extending it would
+diverge the mirror. This spec was an ad-hoc audit-driven CR (not a `master-plan`/`state.json`
+block), so no block flip was made. Next: the companion CR `serve-workflow-done-ws-push`
+(`event{workflow_done}` push), left explicitly out of scope here.
+
+```
+2a7b6b1 docs: re-pin serve-api.md to v0.5 and describe landed contract fixes
+1d1f031 feat: implement serve-ui-contract-gaps-task5
+27882c6 feat: implement serve-ui-contract-gaps-task4
+6ed1df7 feat: implement serve-ui-contract-gaps-task3
+8021bfd feat: implement serve-ui-contract-gaps-task2
+90c99bf feat: implement serve-ui-contract-gaps-task1
+30bd963 chore: update Cargo.lock
+cdb6201 docs: log tmux-locale fix + BA.13.3 session-space mapping close-out
+```
+
+---
+
+## [2026-07-18]
+
 ### tmux locale fix + BA.13.3 session-space mapping, close-out
 
 - **What:** This session ran two `/sdlc-task` passes and then `/close-out`:
