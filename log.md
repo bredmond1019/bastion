@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-19T00:32:33Z
+timestamp: 2026-07-19T13:27:48Z
 ---
 
 # Log — bastion
@@ -12,6 +12,28 @@ timestamp: 2026-07-19T00:32:33Z
 ---
 
 ## [2026-07-19]
+
+### BA.0.A shipped — PR #21 merged, event{workflow_done} WS push live; ws-push planning archived
+
+- **What:** Drove `plan-serve-workflow-done-ws-push` from spec to merged in one session.
+  `/generate-tasks` produced a 6-task spec with disjoint file ownership, then `/sdlc-flow
+  --auto-merge` ran it end to end: all 6 tasks PASS in 1 attempt each, end review PASS with 0
+  findings, docs patch clean. PR #21 opened and auto-merged to `main` (`d1f32df`), feature branch
+  cleaned. The running hub now instantiates `FlowWatcher` via an always-on `run_interval` in
+  `Actor::started()` and broadcasts `event{workflow_done}` to all `/ws` clients (not
+  subscription-gated); frame shape per serve-api §11.5 unchanged, no version bump. New seams:
+  `workflow_done_frame` (pure builder, `src/serve/poll.rs`), `collect_flow_states` (shared
+  `pub(crate)` enumeration, `src/serve/handlers/status.rs`), `watch_cycle` (thin I/O,
+  `src/serve/ws/server.rs`); `Hub::new` now takes a `FileConfig` registry. Then `/archive` retired
+  the two completed planning items (`plan-serve-workflow-done-ws-push` + the
+  `serve-workflow-done-ws-push` CR notes) into `planning/archive/`, distilling durable residue into
+  `knowledge.md`/`memory.md` (brain commit `b20b405`, graph clean, 0 net-new nodes).
+- **Why:** Closes the gap where `FlowWatcher` existed and was unit-tested but was never
+  instantiated in runtime code, so no `workflow_done` push ever reached clients. Shipping it
+  unblocks `bastion-ui`'s **BU.8.B part (1)** (`workflowDoneEventsProvider`) — a carryover was
+  injected into `bastion-ui`'s `state.json` recording the upstream unblock.
+- **Refs:** PR #21 (merge `d1f32df`); brain archive commit `b20b405`; serve-api §8.2/§11.5;
+  `state.json` `BA.0.A` = `closed`.
 
 ### plan-serve-workflow-done-ws-push closed — runtime flow-watch poll + WS broadcast wired
 
