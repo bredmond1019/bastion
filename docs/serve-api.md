@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.4"
+title: "serve-api contract v0.5"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), and the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes) that bastion-ui pins against."
 doc_id: serve-api
 layer: [console, surface, engine]
@@ -295,6 +295,15 @@ Pushed to all `sessions` subscribers each poll cycle when the session list chang
 |---|---|---|
 | `sessions` | array | Array of `SessionDto` objects (see Section 9.1) |
 
+`last_line` is populated (as of v0.5) with each session's pane's last
+non-blank captured line, reusing the same per-session pane-capture pass the
+sessions-list poller performs for needs-input detection (Section 8.1) — panes
+are captured once per tick and used for both. An idle session with no
+captured output (or a capture failure) still yields `""`. `GET
+/api/sessions` (Section 10.3) is **not** brought to the same parity in v0.5 —
+it still returns empty `last_line` for every session, unchanged from prior
+versions.
+
 ### 7.6 `"pane"` payload (server → client)
 
 Pushed to `pane:<name>` subscribers when captured pane output changes since the last push.
@@ -344,16 +353,27 @@ Pushed when a significant event is detected.
 
 ## 8. Event semantics
 
-### 8.1 `event{needs_input}` (v0.2)
+### 8.1 `event{needs_input}` (v0.2; detection moved to the sessions-list poller in v0.5)
 
-The hub polls each subscribed pane's output on every tick.  When a pane is
-subscribed (`pane:<name>` topic), the hub calls
+Needs-input detection runs in the **sessions-list poller**, on every tick, over
+**every live session** — not only sessions whose pane a client has subscribed
+to. Each tick the hub captures every session's pane output, calls
 `detect::detect(pane_output, claude.toml)` from Block C₀ to determine the agent
-state.  The `needs_input` event is emitted when:
+state, and diffs the result against the previous tick's per-session state
+(`sessions_last_state`, keyed by session name) using the pure
+`sessions_needing_input(prev, current)` helper (`src/serve/poll.rs`). The
+`needs_input` event is emitted for a session when:
 
 ```
 state == Blocked && visible_blocker == true
 ```
+
+and the session's *previous* recorded state was not already `Blocked` (rising
+edge — see below). The event is delivered to the connection's `sessions`
+subscribers, carrying that session's name — **a client needs no `pane:<name>`
+subscription to receive it**. This is what lets `bastion-ui`, which subscribes
+only to `sessions` on connect, surface a needs-input alert for a background
+session it has not opened a pane view for.
 
 The hub uses a **rising-edge debounce**: the event is emitted once per
 Blocked→Unblocked→Blocked transition cycle (i.e. once per "new prompt"), not on
@@ -362,6 +382,10 @@ without an intervening non-blocked state produce at most one event.
 
 The event drives the BastionUI alert flow: the mobile operator is notified once
 and can respond via a `send` or `send_key` frame to unblock the agent.
+
+Needs-input is emitted from exactly one place (the sessions-list poller); the
+per-pane poll interval (Section 7.6) only pushes pane-content diffs and no
+longer performs its own needs-input detection.
 
 ### 8.2 `event{workflow_done}` (v0.3)
 
@@ -387,8 +411,15 @@ The payload carries `{ "repo", "spec_slug", "status" }` flattened alongside the
 
 ## 9. Keep-alive / disconnect behaviour
 
-The server sends `Ping` frames and the client MUST respond with `Pong`.  Clients
-that fail to respond within the keep-alive window are disconnected.
+Each `WsConn` runs a server-side heartbeat, installed in `started()`
+(`src/serve/ws/session.rs`): every `HEARTBEAT_INTERVAL` (**5s**, default) tick,
+the server sends a `Ping` frame; if no activity has been observed from the
+client within `CLIENT_TIMEOUT` (**10s**, default) of the last-seen instant, the
+server stops the actor (triggering a Disconnect) instead of sending another
+ping. The client MUST respond to `Ping` with `Pong`; any inbound frame (`Pong`,
+`Text`, or client `Ping`) updates the connection's last-seen instant and resets
+the timeout window. Clients that fail to respond within the keep-alive window
+are disconnected.
 
 On disconnect (clean close, protocol error, or keep-alive timeout):
 - All topic subscriptions for that connection are released atomically.
@@ -776,9 +807,11 @@ Authorization: Bearer <token>
 | `has_handoff` | boolean | Whether `planning/handoff.md` exists |
 | `momentum_now` / `momentum_next` / `momentum_blocked` / `momentum_improve` / `momentum_recurring` | string | Body `## Momentum` queue line text; empty string when the section or bullet is absent |
 
-Returns `404` (`ErrorPayload`, code `C002`) when `name` is not a registered
-workspace, or when that workspace's `planning/status.md` is missing or fails
-to parse (no well-formed frontmatter).
+Returns `404` (`ErrorPayload`, code `C005`) when `name` is not a registered
+workspace, or `404` (code `C002`) when that workspace **is** registered but its
+`planning/status.md` is missing or fails to parse (no well-formed frontmatter).
+The two 404s are distinguishable by `code`: `C005` = unregistered workspace
+name; `C002` = registered workspace with a missing/malformed `status.md`.
 
 ---
 
@@ -811,8 +844,11 @@ Authorization: Bearer <token>
 | `title` | string | Frontmatter `title:` scalar if present, else the `# Handoff —`/`# Handoff -` heading text, else `""` |
 | `body` | string | The full raw markdown content of `handoff.md` (including frontmatter) |
 
-Returns `404` (`ErrorPayload`, code `C002`) when `name` is not a registered
-workspace, or when `planning/handoff.md` does not exist for that workspace.
+Returns `404` (`ErrorPayload`, code `C005`) when `name` is not a registered
+workspace, or `404` (code `C002`) when the workspace **is** registered but
+`planning/handoff.md` does not exist for it. The two 404s are distinguishable
+by `code`: `C005` = unregistered workspace name; `C002` = registered workspace
+with no `handoff.md`.
 
 ---
 
@@ -857,7 +893,7 @@ Authorization: Bearer <token>
 | `current_task` | integer | Current task index |
 | `started_at` / `updated_at` | string (RFC 3339) | Timestamps from `sdlc-flow-state.json` |
 
-Returns `404` (`ErrorPayload`, code `C002`) only when `name` is not a
+Returns `404` (`ErrorPayload`, code `C005`) only when `name` is not a
 registered workspace. A workspace with no specs, or no matching
 `sdlc-flow-state.json` files, returns `200` with `[]`. Individual malformed
 `sdlc-flow-state.json` files are skipped (not failed) — the route returns
@@ -946,6 +982,18 @@ Content-Type: application/json
   `src/sessions/ask.rs`), then sends `command` the same way as `inject`.
 
 ### 12.3 Error responses
+
+A malformed request body — non-JSON payload, or JSON that fails to deserialize
+into `CommandRequest` (e.g. a wrong-typed field) — is caught by the server's
+`web::JsonConfig` error handler **before** the handler body runs, and returns
+`400` with the `ErrorPayload` shape, code `C006`. This applies to every `POST`
+route that deserializes a JSON body (not just this one), and is distinct from
+the handler-level `mode`/field validation below (both use `C006`, but the
+`JsonConfig` path never reaches the handler's own validation logic):
+
+```json
+{ "code": "C006", "message": "Json deserialize error: ..." }
+```
 
 Validation failures (bad `mode`/field combination) are checked before any I/O
 and return `400` with the `ErrorPayload` shape (Section 10.4):
@@ -1096,3 +1144,16 @@ This document follows a simple monotonic version scheme:
   Section 14).  Renumbered Configuration → Section 14, Versioning → Section 15.  Updated
   frontmatter title, description, `layer`, `keywords`, `related`, and the current-contract
   version note.
+- **2026-07-18 — v0.5 doc catch-up (`serve-ui-contract-gaps`):** No version bump — these are
+  server-side bug fixes bringing the implementation into line with intent, not new routes or
+  breaking changes. (1) Section 8.1: needs-input detection moved from the per-pane poll interval
+  into the sessions-list poller, so `event{needs_input}` now reaches `sessions` subscribers with
+  no `pane:<name>` subscription required. (2) Section 9: documented the now-implemented WS
+  keep-alive heartbeat (`HEARTBEAT_INTERVAL` 5s / `CLIENT_TIMEOUT` 10s) and client-timeout
+  reaping. (3) Section 7.5: documented that WS `sessions` frames now carry a populated
+  `last_line`; REST `GET /api/sessions` is unchanged (still empty). (4) Sections 11.2–11.4:
+  an unknown/unregistered workspace name now returns `404`/`C005` (ConfigError), distinguishable
+  from a registered workspace missing `status.md`/`handoff.md` (still `404`/`C002`). (5) Section
+  12.3: documented that a malformed/non-JSON request body on any JSON-consuming route now returns
+  `400`/`C006` via a `web::JsonConfig` error handler, instead of actix's plain-text 400. Also
+  fixed the frontmatter `title` scalar, which had lagged at "v0.4" since the previous entry.
