@@ -17,9 +17,10 @@ use std::process::Command;
 ///   3. session_windows (count)
 ///   4. session_activity (epoch secs)
 ///   5. pane_current_command (foreground process name in the first pane)
+///   6. pane_current_path (cwd of the first pane, used for session → space mapping)
 ///
 /// State (running vs idle) is derived from field 5, not field 2.
-pub const LIST_SESSIONS_FORMAT: &str = "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{pane_current_command}";
+pub const LIST_SESSIONS_FORMAT: &str = "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{pane_current_command}\t#{pane_current_path}";
 
 /// Separator between fields in LIST_SESSIONS_FORMAT output.
 pub const FIELD_SEP: char = '\t';
@@ -149,6 +150,25 @@ pub fn send_named_key_args(session_name: &str, key: &str) -> Vec<String> {
     ]
 }
 
+/// Returns the locale env pairs to force on the spawned tmux child.
+///
+/// `run_tmux` inherits the parent process environment as-is. When the parent
+/// has no `LANG`/`LC_ALL` (or a non-UTF-8 locale), some tmux builds —
+/// observed on tmux 3.6b/macOS — emit `list-sessions -F` output whose field
+/// separator is not a plain tab, which breaks `parse_session_line`'s
+/// tab-separated-fields check on every line. Forcing a known-good UTF-8
+/// locale on the spawned child keeps `list-sessions` output tab-separated
+/// regardless of the parent environment.
+///
+/// `en_US.UTF-8` is used rather than `C.UTF-8` because this is the
+/// macOS-first deployment target and macOS does not ship `C.UTF-8`.
+/// `LC_ALL` is included because it takes precedence over `LANG` and any
+/// per-category `LC_*` variables, so the override is authoritative even
+/// when the parent process already sets a conflicting `LANG`.
+pub fn tmux_locale_env() -> Vec<(&'static str, &'static str)> {
+    vec![("LC_ALL", "en_US.UTF-8"), ("LANG", "en_US.UTF-8")]
+}
+
 // ── Execution ─────────────────────────────────────────────────────────────────
 
 /// Errors produced by this module.
@@ -168,13 +188,17 @@ pub fn run_tmux(args: &[String]) -> Result<String> {
     debug_assert!(!args.is_empty(), "args must not be empty");
     let (bin, rest) = args.split_first().expect("args must not be empty");
 
-    let output = Command::new(bin).args(rest).output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow::Error::new(TmuxError::NotInstalled)
-        } else {
-            anyhow::Error::new(e).context("failed to run tmux")
-        }
-    })?;
+    let output = Command::new(bin)
+        .args(rest)
+        .envs(tmux_locale_env())
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::Error::new(TmuxError::NotInstalled)
+            } else {
+                anyhow::Error::new(e).context("failed to run tmux")
+            }
+        })?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -262,13 +286,17 @@ pub fn attach_session(session_name: &str) -> Result<()> {
     debug_assert!(!args.is_empty(), "args must not be empty");
     let (bin, rest) = args.split_first().expect("args must not be empty");
 
-    let status = Command::new(bin).args(rest).status().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow::Error::new(TmuxError::NotInstalled)
-        } else {
-            anyhow::Error::new(e).context("failed to run tmux")
-        }
-    })?;
+    let status = Command::new(bin)
+        .args(rest)
+        .envs(tmux_locale_env())
+        .status()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::Error::new(TmuxError::NotInstalled)
+            } else {
+                anyhow::Error::new(e).context("failed to run tmux")
+            }
+        })?;
 
     if status.success() {
         return Ok(());
@@ -331,6 +359,7 @@ mod tests {
         assert!(LIST_SESSIONS_FORMAT.contains("#{session_windows}"));
         assert!(LIST_SESSIONS_FORMAT.contains("#{session_activity}"));
         assert!(LIST_SESSIONS_FORMAT.contains("#{pane_current_command}"));
+        assert!(LIST_SESSIONS_FORMAT.contains("#{pane_current_path}"));
     }
 
     #[test]
@@ -498,6 +527,42 @@ mod tests {
         assert_eq!(args.len(), 5);
         assert!(!args.contains(&"-l".to_string()));
         assert!(!args.contains(&"--".to_string()));
+    }
+
+    // ── tmux_locale_env ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn tmux_locale_env_sets_lc_all_and_lang() {
+        let env = tmux_locale_env();
+        assert!(
+            env.iter().any(|(k, _)| *k == "LC_ALL"),
+            "missing LC_ALL in: {env:?}"
+        );
+        assert!(
+            env.iter().any(|(k, _)| *k == "LANG"),
+            "missing LANG in: {env:?}"
+        );
+    }
+
+    #[test]
+    fn tmux_locale_env_values_are_utf8_locales() {
+        let env = tmux_locale_env();
+        for (k, v) in &env {
+            assert!(
+                v.to_uppercase().contains("UTF-8"),
+                "{k} value {v} does not contain UTF-8"
+            );
+        }
+    }
+
+    #[test]
+    fn tmux_locale_env_lc_all_present_for_precedence() {
+        // LC_ALL takes precedence over LANG and any per-category LC_*, so it
+        // must be present for the override to be authoritative even when the
+        // parent process already sets a conflicting LANG.
+        let env = tmux_locale_env();
+        let lc_all = env.iter().find(|(k, _)| *k == "LC_ALL");
+        assert!(lc_all.is_some(), "LC_ALL must be present: {env:?}");
     }
 
     // ── stderr classification (#2) ──────────────────────────────────────────────

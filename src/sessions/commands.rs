@@ -251,6 +251,7 @@ mod tests {
             foreground_cmd: String::new(),
             last_line: last_line.to_string(),
             agent_state: crate::detect::AgentState::Unknown,
+            cwd: String::new(),
         }
     }
 
@@ -267,6 +268,7 @@ mod tests {
             foreground_cmd: foreground_cmd.to_string(),
             last_line: last_line.to_string(),
             agent_state: crate::detect::AgentState::Unknown,
+            cwd: String::new(),
         }
     }
 

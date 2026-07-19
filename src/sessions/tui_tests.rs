@@ -283,6 +283,7 @@ mod tests {
                 foreground_cmd: String::new(),
                 last_line: String::new(),
                 agent_state: AgentState::Idle,
+                cwd: String::new(),
             },
             Session {
                 name: "blocked-sess".to_string(),
@@ -291,6 +292,7 @@ mod tests {
                 foreground_cmd: String::new(),
                 last_line: String::new(),
                 agent_state: AgentState::Blocked,
+                cwd: String::new(),
             },
             Session {
                 name: "working-sess".to_string(),
@@ -299,6 +301,7 @@ mod tests {
                 foreground_cmd: String::new(),
                 last_line: String::new(),
                 agent_state: AgentState::Working,
+                cwd: String::new(),
             },
         ];
 

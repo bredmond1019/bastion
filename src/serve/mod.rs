@@ -44,6 +44,7 @@ use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
 use actix_web_actors::ws as actix_ws;
 use anyhow::Result;
 use auth::BearerAuthMiddleware;
+use dto::ErrorPayload;
 use engine_serve::abort::RunRegistry;
 use engine_serve::dispatch::Dispatcher;
 use engine_serve::durable::spawn_durable_writer;
@@ -145,6 +146,30 @@ async fn hub_ws_handler(
         &req,
         stream,
     )
+}
+
+// ── Malformed-body contract (Gap 5) ─────────────────────────────────────────
+
+/// Build the `web::JsonConfig` that maps a failed `web::Json<T>` deserialize
+/// (unknown enum variant, wrong-typed field, non-JSON body) to the project's
+/// `400` + `ErrorPayload { code: "C006", .. }` contract instead of actix's
+/// default plain-text 400.
+///
+/// Shared by both [`run_server`]'s production `App` and the test `build_app`
+/// so the two exercise identical behaviour (Rule 6: the closure itself is a
+/// thin I/O shell around the pure [`ErrorPayload`] shape).
+fn json_config() -> web::JsonConfig {
+    web::JsonConfig::default().error_handler(|err, _req| {
+        let message = err.to_string();
+        actix_web::error::InternalError::from_response(
+            err,
+            HttpResponse::BadRequest().json(ErrorPayload {
+                code: "C006".to_owned(),
+                message,
+            }),
+        )
+        .into()
+    })
 }
 
 // ── Server boot ───────────────────────────────────────────────────────────────
@@ -334,6 +359,10 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // Shared workspace registry — accessible to status handlers via
             // web::Data<FileConfig> (BA.11.D).
             .app_data(registry_data)
+            // Malformed request bodies (unknown enum variant, wrong-typed
+            // field, non-JSON) get the C0xx ErrorPayload contract instead of
+            // actix's default plain-text 400 (Gap 5).
+            .app_data(json_config())
             // Public liveness endpoint.
             //
             // `/health` collision (BA.7.C task 2): `engine_serve::http::configure`
@@ -536,6 +565,7 @@ mod tests {
         App::new()
             .app_data(hub_data)
             .app_data(registry_data)
+            .app_data(json_config())
             .service(web::resource("/health").route(web::get().to(health)))
             .service(protected)
             .service(ws_scope)
@@ -1031,6 +1061,8 @@ mod tests {
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
     }
 
     #[actix_web::test]
@@ -1042,6 +1074,8 @@ mod tests {
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
     }
 
     #[actix_web::test]
@@ -1053,6 +1087,44 @@ mod tests {
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
+    }
+
+    /// Gap 4: the two handoff 404 paths must be distinguishable by error
+    /// code — an unregistered workspace name (`C005`, config/registry miss)
+    /// vs a registered repo whose `handoff.md` is simply absent (`C002`).
+    #[actix_web::test]
+    async fn get_repo_handoff_unknown_repo_vs_missing_handoff_have_distinct_codes() {
+        // Unknown repo (not in registry at all) -> 404 + C005.
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/no-such-repo/handoff")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
+
+        // Registered repo with no handoff.md fixture written -> 404 + C002.
+        let tmp = TempDir::new();
+        write_fixture(&tmp.path().join("planning/status.md"), STATUS_MD);
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("repo-no-handoff".to_string(), tmp.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/repo-no-handoff/handoff")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C002");
     }
 
     #[actix_web::test]
@@ -1220,8 +1292,53 @@ mod tests {
             }))
             .to_request();
         let resp = test::call_service(&app, req).await;
-        // Unknown "mode" fails JSON deserialization -> actix's default 400.
+        // Unknown "mode" fails JSON deserialization -> the C0xx ErrorPayload
+        // contract (Gap 5), not actix's default plain-text 400.
         assert_eq!(resp.status(), 400);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C006");
+    }
+
+    #[actix_web::test]
+    async fn actions_command_non_json_body_returns_400_c006() {
+        // A malformed body that never even parses as JSON (wrong content and
+        // no valid JSON syntax) must still hit the JsonConfig error handler,
+        // not actix's default plain-text 400 (Gap 5).
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/actions/command")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .insert_header(("content-type", "application/json"))
+            .set_payload("this is not json")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C006");
+    }
+
+    #[actix_web::test]
+    async fn actions_command_wrong_typed_field_returns_400_c006() {
+        // "session" typed as a number instead of a string fails deserialize
+        // of CommandRequest -> the JsonConfig error handler, not the
+        // handler-level validation_error_response path.
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/actions/command")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .set_json(serde_json::json!({
+                "mode": "inject",
+                "session": 12345,
+                "command": "/status"
+            }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C006");
     }
 
     #[actix_web::test]

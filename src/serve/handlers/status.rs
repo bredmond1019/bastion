@@ -13,7 +13,9 @@
 //! - `GET /api/repos/{name}/workflows` — parsed `sdlc-flow-state.json` files
 //!
 //! # Error mapping
-//! - Unknown workspace name (not in the registry) → 404 + `C002`.
+//! - Unknown workspace name (not in the registry) → 404 + `C005`
+//!   (ConfigError — a registry miss, distinct from a registered repo with no
+//!   handoff).
 //! - Known workspace but `status.md`/`handoff.md` missing or malformed →
 //!   404 + `C002` (status/handoff routes only — `/repos` and `/workflows`
 //!   degrade to an empty/partial result instead of failing the whole route).
@@ -32,9 +34,14 @@ use crate::serve::status::repo::parse_status;
 // ── Handler helpers ───────────────────────────────────────────────────────────
 
 /// Build a 404 response for an unknown workspace registry name.
+///
+/// Uses `C005` (ConfigError — a workspace absent from the registry is a
+/// config/registry miss) so it is distinguishable from a registered repo
+/// that is merely missing `status.md`/`handoff.md` (`C002`). See
+/// `planning/serve-ui-contract-gaps/tasks.md` Gap 4.
 fn unknown_workspace_response(name: &str) -> HttpResponse {
     HttpResponse::NotFound().json(ErrorPayload {
-        code: "C002".to_owned(),
+        code: "C005".to_owned(),
         message: format!("unknown workspace: {name}"),
     })
 }

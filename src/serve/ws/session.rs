@@ -20,6 +20,8 @@
 //! a custom `StreamHandler` is registered).  On `Close` or protocol error the
 //! actor stops, which triggers `stopping` → `Disconnect` to the hub.
 
+use std::time::{Duration, Instant};
+
 use actix::prelude::*;
 use actix::{ActorContext, AsyncContext};
 use actix_http::ws::Item;
@@ -119,6 +121,21 @@ pub fn classify_inbound(text: &str) -> Inbound {
     }
 }
 
+// ── Keep-alive constants + pure timeout decision ───────────────────────────────
+
+/// How often the server sends a `Ping` to an idle connection (§9).
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How long a connection may go without client activity before it is reaped (§9).
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Pure decision: has a connection gone silent for longer than `timeout`?
+///
+/// No I/O — this is the seam unit-tested for the keep-alive contract (Rule 6).
+pub fn client_timed_out(elapsed: Duration, timeout: Duration) -> bool {
+    elapsed > timeout
+}
+
 // ── Per-connection actor ──────────────────────────────────────────────────────
 
 /// Per-connection WebSocket actor.
@@ -129,6 +146,8 @@ pub struct WsConn {
     hub: Addr<Hub>,
     /// Accumulation buffer for fragmented text messages (Continuation frames).
     continuation_buf: Option<Vec<u8>>,
+    /// Instant of the last observed client activity (inbound frame of any kind).
+    last_seen: Instant,
 }
 
 impl WsConn {
@@ -138,7 +157,20 @@ impl WsConn {
             id: ConnId::next(),
             hub,
             continuation_buf: None,
+            last_seen: Instant::now(),
         }
+    }
+
+    /// Install the server heartbeat: ping every [`HEARTBEAT_INTERVAL`], and stop
+    /// the actor if the client has been silent for longer than [`CLIENT_TIMEOUT`].
+    fn heartbeat(&self, ctx: &mut ws::WebsocketContext<Self>) {
+        ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
+            if client_timed_out(act.last_seen.elapsed(), CLIENT_TIMEOUT) {
+                ctx.stop();
+                return;
+            }
+            ctx.ping(b"");
+        });
     }
 }
 
@@ -151,6 +183,8 @@ impl Actor for WsConn {
             id: self.id,
             addr: ctx.address().recipient(),
         });
+        // Start the keep-alive heartbeat.
+        self.heartbeat(ctx);
     }
 
     fn stopping(&mut self, _ctx: &mut Self::Context) -> Running {
@@ -187,12 +221,14 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsConn {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
             Ok(ws::Message::Text(text)) => {
+                self.last_seen = Instant::now();
                 self.dispatch_text(&text, ctx);
             }
             Ok(ws::Message::Binary(_)) => {
                 // Binary frames are silently dropped.
             }
             Ok(ws::Message::Ping(bytes)) => {
+                self.last_seen = Instant::now();
                 // actix-web-actors does NOT auto-pong; must respond explicitly.
                 ctx.pong(&bytes);
             }
@@ -218,13 +254,17 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsConn {
                         if let Some(mut buf) = self.continuation_buf.take() {
                             buf.extend_from_slice(&bytes);
                             if let Ok(text) = std::str::from_utf8(&buf) {
+                                self.last_seen = Instant::now();
                                 self.dispatch_text(text, ctx);
                             }
                         }
                     }
                 }
             }
-            Ok(ws::Message::Pong(_)) | Ok(ws::Message::Nop) => {
+            Ok(ws::Message::Pong(_)) => {
+                self.last_seen = Instant::now();
+            }
+            Ok(ws::Message::Nop) => {
                 // No action needed.
             }
             Err(_) => {
@@ -440,5 +480,46 @@ mod tests {
     fn classify_missing_kind_field_is_invalid() {
         let text = r#"{"payload":{"text":"hi"}}"#;
         assert!(matches!(classify_inbound(text), Inbound::Invalid(_)));
+    }
+
+    // ── client_timed_out — pure keep-alive decision ────────────────────────
+
+    #[test]
+    fn client_timed_out_below_threshold_is_false() {
+        assert!(!client_timed_out(
+            Duration::from_secs(9),
+            Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
+    fn client_timed_out_at_threshold_is_false() {
+        // Strictly-greater-than semantics: exactly at the timeout is not yet timed out.
+        assert!(!client_timed_out(
+            Duration::from_secs(10),
+            Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
+    fn client_timed_out_above_threshold_is_true() {
+        assert!(client_timed_out(
+            Duration::from_secs(11),
+            Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
+    fn client_timed_out_zero_elapsed_is_false() {
+        assert!(!client_timed_out(
+            Duration::from_secs(0),
+            Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
+    fn heartbeat_and_timeout_constants_match_spec() {
+        assert_eq!(HEARTBEAT_INTERVAL, Duration::from_secs(5));
+        assert_eq!(CLIENT_TIMEOUT, Duration::from_secs(10));
     }
 }

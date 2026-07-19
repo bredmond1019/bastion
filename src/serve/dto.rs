@@ -755,6 +755,7 @@ mod tests {
             foreground_cmd: "zsh".to_owned(),
             last_line: last_line.to_owned(),
             agent_state: crate::detect::AgentState::Unknown,
+            cwd: String::new(),
         }
     }
 

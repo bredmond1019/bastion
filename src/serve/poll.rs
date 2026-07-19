@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use crate::detect::AgentState;
 use crate::serve::dto::{SessionDto, WorkflowDonePayload};
 use crate::serve::status::flow::{FlowState, detect_transition};
 use crate::sessions::model::parse_sessions;
@@ -115,6 +116,74 @@ fn extract_lines(capture: &str) -> Vec<String> {
 /// the poll task in Task 4.
 pub fn sessions_snapshot(raw: &str) -> Vec<SessionDto> {
     parse_sessions(raw).iter().map(SessionDto::from).collect()
+}
+
+/// Fill each [`SessionDto`]'s `last_line` from a per-session pane capture
+/// (Gap 3), without touching [`sessions_snapshot`]'s empty-`last_line`
+/// contract.
+///
+/// `panes` holds `(session_name, raw_pane_capture)` pairs — the same capture
+/// pass the sessions-list poller already performs for the needs-input
+/// rising-edge check (Gap 1/task 1), reused here so panes are captured once
+/// per tick. Sessions with no matching entry in `panes` (e.g. the capture
+/// failed for that tick) are left with an empty `last_line`, matching
+/// `sessions_snapshot`'s existing behaviour for that session.
+///
+/// This is a pure sibling builder — the actual pane capture (I/O) happens in
+/// the poll task's blocking closure; this function only combines the two
+/// already-materialized values.
+pub fn sessions_with_last_line(
+    sessions: Vec<SessionDto>,
+    panes: &[(String, String)],
+) -> Vec<SessionDto> {
+    let captures: HashMap<&str, &str> = panes
+        .iter()
+        .map(|(name, capture)| (name.as_str(), capture.as_str()))
+        .collect();
+
+    sessions
+        .into_iter()
+        .map(|mut dto| {
+            if let Some(capture) = captures.get(dto.name.as_str()) {
+                dto.last_line = crate::sessions::model::Pane::new(dto.name.clone(), *capture)
+                    .last_line()
+                    .to_owned();
+            }
+            dto
+        })
+        .collect()
+}
+
+// ── Needs-input detection ────────────────────────────────────────────────────
+
+/// Needs-input rising edge: emit `event{needs_input}` only on the transition
+/// INTO `Blocked`, not on every poll while still blocked.
+pub fn should_emit_needs_input(prev: Option<AgentState>, new: AgentState) -> bool {
+    new == AgentState::Blocked && prev != Some(AgentState::Blocked)
+}
+
+/// Return the names of every session in `current` whose `(prev, current)`
+/// state pair satisfies [`should_emit_needs_input`] — i.e. the sessions that
+/// just crossed into `Blocked` this tick.
+///
+/// `prev` is keyed by session name and holds the state observed on the
+/// previous poll tick (sessions absent from `prev` are treated as having no
+/// prior observation, matching `should_emit_needs_input(None, ..)`).
+/// `current` is the full list of sessions observed this tick, in order.
+///
+/// This is the pure decision core for the sessions-list poller (the I/O shell
+/// in `src/serve/ws/server.rs` captures each session's pane, computes its
+/// `AgentState`, and calls this helper before fanning out `event{needs_input}`
+/// frames).
+pub fn sessions_needing_input(
+    prev: &HashMap<String, AgentState>,
+    current: &[(String, AgentState)],
+) -> Vec<String> {
+    current
+        .iter()
+        .filter(|(name, state)| should_emit_needs_input(prev.get(name).copied(), *state))
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 // ── Flow watcher (BA.11.D) ──────────────────────────────────────────────────────
@@ -374,6 +443,69 @@ background\t0\t1\t1718000100\tzsh\n";
         assert_eq!(dtos[1].state, "idle"); // zsh → idle
     }
 
+    // ── sessions_with_last_line ────────────────────────────────────────────
+
+    #[test]
+    fn sessions_with_last_line_fills_matching_session() {
+        let dtos = sessions_snapshot(FIXTURE_ONE_SESSION_RUNNING);
+        let panes = vec![(
+            "work".to_owned(),
+            "first\nsecond\nlast output line\n".to_owned(),
+        )];
+        let filled = sessions_with_last_line(dtos, &panes);
+        assert_eq!(filled.len(), 1);
+        assert_eq!(
+            filled[0].last_line, "last output line",
+            "matching session's last_line must be filled from its pane capture"
+        );
+    }
+
+    #[test]
+    fn sessions_with_last_line_ignores_trailing_blank_lines() {
+        let dtos = sessions_snapshot(FIXTURE_ONE_SESSION_RUNNING);
+        let panes = vec![("work".to_owned(), "real line\n\n\n".to_owned())];
+        let filled = sessions_with_last_line(dtos, &panes);
+        assert_eq!(
+            filled[0].last_line, "real line",
+            "trailing blank padding must be skipped, matching Pane::last_line"
+        );
+    }
+
+    #[test]
+    fn sessions_with_last_line_leaves_unmatched_session_empty() {
+        let dtos = sessions_snapshot(FIXTURE_ONE_SESSION_RUNNING);
+        // No pane entry for "work" at all.
+        let panes: Vec<(String, String)> = vec![];
+        let filled = sessions_with_last_line(dtos, &panes);
+        assert_eq!(
+            filled[0].last_line, "",
+            "a session with no matching pane capture must keep last_line empty"
+        );
+    }
+
+    #[test]
+    fn sessions_with_last_line_handles_multi_session_selectively() {
+        let dtos = sessions_snapshot(FIXTURE_TWO_SESSIONS);
+        // Only "main" has a pane capture this tick; "background" does not.
+        let panes = vec![("main".to_owned(), "hello world\n".to_owned())];
+        let filled = sessions_with_last_line(dtos, &panes);
+        let main = filled.iter().find(|d| d.name == "main").unwrap();
+        let background = filled.iter().find(|d| d.name == "background").unwrap();
+        assert_eq!(main.last_line, "hello world");
+        assert_eq!(background.last_line, "");
+    }
+
+    #[test]
+    fn sessions_with_last_line_empty_capture_yields_empty_last_line() {
+        let dtos = sessions_snapshot(FIXTURE_ONE_SESSION_RUNNING);
+        let panes = vec![("work".to_owned(), "".to_owned())];
+        let filled = sessions_with_last_line(dtos, &panes);
+        assert_eq!(
+            filled[0].last_line, "",
+            "an all-blank/empty capture must yield an empty last_line, not panic"
+        );
+    }
+
     #[test]
     fn sessions_snapshot_empty_input_returns_empty_vec() {
         let dtos = sessions_snapshot("");
@@ -388,6 +520,131 @@ background\t0\t1\t1718000100\tzsh\n";
         // Only the valid line should survive.
         assert_eq!(dtos.len(), 1);
         assert_eq!(dtos[0].name, "work");
+    }
+
+    // ── should_emit_needs_input ────────────────────────────────────────────
+
+    #[test]
+    fn emit_needs_input_on_transition_from_none_to_blocked() {
+        assert!(
+            should_emit_needs_input(None, AgentState::Blocked),
+            "first observation of Blocked (no prior state) must emit"
+        );
+    }
+
+    #[test]
+    fn emit_needs_input_on_transition_from_working_to_blocked() {
+        assert!(
+            should_emit_needs_input(Some(AgentState::Working), AgentState::Blocked),
+            "Working->Blocked transition must emit"
+        );
+    }
+
+    #[test]
+    fn emit_needs_input_on_transition_from_idle_to_blocked() {
+        assert!(
+            should_emit_needs_input(Some(AgentState::Idle), AgentState::Blocked),
+            "Idle->Blocked transition must emit"
+        );
+    }
+
+    #[test]
+    fn no_emit_when_already_blocked() {
+        assert!(
+            !should_emit_needs_input(Some(AgentState::Blocked), AgentState::Blocked),
+            "Blocked->Blocked (no transition) must NOT emit"
+        );
+    }
+
+    #[test]
+    fn no_emit_when_transitioning_away_from_blocked() {
+        assert!(
+            !should_emit_needs_input(Some(AgentState::Blocked), AgentState::Working),
+            "Blocked->Working must NOT emit"
+        );
+        assert!(
+            !should_emit_needs_input(Some(AgentState::Blocked), AgentState::Idle),
+            "Blocked->Idle must NOT emit"
+        );
+    }
+
+    #[test]
+    fn no_emit_for_non_blocked_states() {
+        assert!(
+            !should_emit_needs_input(None, AgentState::Idle),
+            "None->Idle must NOT emit"
+        );
+        assert!(
+            !should_emit_needs_input(Some(AgentState::Idle), AgentState::Working),
+            "Idle->Working must NOT emit"
+        );
+        assert!(
+            !should_emit_needs_input(Some(AgentState::Idle), AgentState::Idle),
+            "Idle->Idle must NOT emit"
+        );
+    }
+
+    // ── sessions_needing_input ──────────────────────────────────────────────
+
+    #[test]
+    fn sessions_needing_input_none_to_blocked_emits() {
+        let prev = HashMap::new();
+        let current = vec![("main".to_owned(), AgentState::Blocked)];
+        let names = sessions_needing_input(&prev, &current);
+        assert_eq!(names, vec!["main".to_owned()]);
+    }
+
+    #[test]
+    fn sessions_needing_input_working_to_blocked_emits() {
+        let mut prev = HashMap::new();
+        prev.insert("main".to_owned(), AgentState::Working);
+        let current = vec![("main".to_owned(), AgentState::Blocked)];
+        let names = sessions_needing_input(&prev, &current);
+        assert_eq!(names, vec!["main".to_owned()]);
+    }
+
+    #[test]
+    fn sessions_needing_input_idle_to_blocked_emits() {
+        let mut prev = HashMap::new();
+        prev.insert("main".to_owned(), AgentState::Idle);
+        let current = vec![("main".to_owned(), AgentState::Blocked)];
+        let names = sessions_needing_input(&prev, &current);
+        assert_eq!(names, vec!["main".to_owned()]);
+    }
+
+    #[test]
+    fn sessions_needing_input_blocked_to_blocked_does_not_emit() {
+        let mut prev = HashMap::new();
+        prev.insert("main".to_owned(), AgentState::Blocked);
+        let current = vec![("main".to_owned(), AgentState::Blocked)];
+        let names = sessions_needing_input(&prev, &current);
+        assert!(names.is_empty(), "already-Blocked must not re-emit");
+    }
+
+    #[test]
+    fn sessions_needing_input_away_from_blocked_does_not_emit() {
+        let mut prev = HashMap::new();
+        prev.insert("main".to_owned(), AgentState::Blocked);
+        let current = vec![("main".to_owned(), AgentState::Working)];
+        let names = sessions_needing_input(&prev, &current);
+        assert!(names.is_empty(), "Blocked->Working must not emit");
+    }
+
+    #[test]
+    fn sessions_needing_input_multi_session_emits_only_crossing_names() {
+        let mut prev = HashMap::new();
+        prev.insert("alpha".to_owned(), AgentState::Working); // crosses
+        prev.insert("beta".to_owned(), AgentState::Blocked); // already blocked
+        prev.insert("gamma".to_owned(), AgentState::Idle); // stays idle
+        // "delta" absent from prev (first observation) and crosses too.
+        let current = vec![
+            ("alpha".to_owned(), AgentState::Blocked),
+            ("beta".to_owned(), AgentState::Blocked),
+            ("gamma".to_owned(), AgentState::Idle),
+            ("delta".to_owned(), AgentState::Blocked),
+        ];
+        let names = sessions_needing_input(&prev, &current);
+        assert_eq!(names, vec!["alpha".to_owned(), "delta".to_owned()]);
     }
 
     // ── FlowWatcher ───────────────────────────────────────────────────────
