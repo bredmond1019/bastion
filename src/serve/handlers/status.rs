@@ -27,7 +27,7 @@ use actix_web::{HttpResponse, web};
 
 use crate::config::{FileConfig, resolve_workspace_root};
 use crate::serve::dto::{ErrorPayload, RepoStatusDto, RepoSummaryDto, WorkflowStateDto};
-use crate::serve::status::flow::parse_flow_state;
+use crate::serve::status::flow::{FlowState, parse_flow_state};
 use crate::serve::status::handoff::{HandoffInfo, read_handoff};
 use crate::serve::status::repo::parse_status;
 
@@ -117,8 +117,13 @@ fn read_repo_handoff(root: &Path) -> Option<HandoffInfo> {
 
 /// Walk `{root}/planning/*/sdlc/sdlc-flow-state.json`, parsing each match via
 /// [`parse_flow_state`]. Missing/malformed entries are skipped silently —
-/// the route returns whatever parses, empty when none do.
-fn collect_repo_workflows(root: &Path) -> Vec<WorkflowStateDto> {
+/// the route (and the flow-watch poll loop, `src/serve/ws/server.rs`) get
+/// whatever parses, empty when none do.
+///
+/// This is the shared enumeration core both `collect_repo_workflows` (the
+/// REST handler) and the WS flow-watch loop build on — see
+/// `planning/plan-serve-workflow-done-ws-push/tasks.md` Task 2.
+pub(crate) fn collect_flow_states(root: &Path) -> Vec<FlowState> {
     let mut out = Vec::new();
 
     let Ok(entries) = std::fs::read_dir(root.join("planning")) else {
@@ -135,12 +140,20 @@ fn collect_repo_workflows(root: &Path) -> Vec<WorkflowStateDto> {
         if let Ok(content) = std::fs::read_to_string(&flow_path)
             && let Some(state) = parse_flow_state(&content)
         {
-            out.push(state.into());
+            out.push(state);
         }
     }
 
-    out.sort_by(|a: &WorkflowStateDto, b: &WorkflowStateDto| a.spec_slug.cmp(&b.spec_slug));
+    out.sort_by(|a: &FlowState, b: &FlowState| a.spec_slug.cmp(&b.spec_slug));
     out
+}
+
+/// `GET /api/repos/{name}/workflows` DTO projection over [`collect_flow_states`].
+fn collect_repo_workflows(root: &Path) -> Vec<WorkflowStateDto> {
+    collect_flow_states(root)
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -354,6 +367,67 @@ mod tests {
     fn read_repo_handoff_missing_file_returns_none() {
         let tmp = TempDir::new();
         assert!(read_repo_handoff(tmp.path()).is_none());
+    }
+
+    // ── collect_flow_states ───────────────────────────────────────────────
+
+    #[test]
+    fn collect_flow_states_finds_nested_flow_state() {
+        let tmp = TempDir::new();
+        write(
+            &tmp.path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+
+        let flows = collect_flow_states(tmp.path());
+        assert_eq!(flows.len(), 1);
+        assert_eq!(flows[0].spec_slug, "phase6-blockA");
+        assert_eq!(flows[0].status, "done");
+    }
+
+    #[test]
+    fn collect_flow_states_no_planning_dir_returns_empty() {
+        let tmp = TempDir::new();
+        assert_eq!(collect_flow_states(tmp.path()), Vec::new());
+    }
+
+    #[test]
+    fn collect_flow_states_skips_malformed_entries() {
+        let tmp = TempDir::new();
+        write(
+            &tmp.path()
+                .join("planning/bad-spec/sdlc/sdlc-flow-state.json"),
+            "{ not json",
+        );
+        write(
+            &tmp.path()
+                .join("planning/good-spec/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+
+        let flows = collect_flow_states(tmp.path());
+        assert_eq!(flows.len(), 1);
+        assert_eq!(flows[0].spec_slug, "phase6-blockA");
+    }
+
+    #[test]
+    fn collect_flow_states_sorted_by_spec_slug() {
+        let tmp = TempDir::new();
+        let zeta_json = FLOW_JSON.replace("phase6-blockA", "zeta-spec");
+        let alpha_json = FLOW_JSON.replace("phase6-blockA", "alpha-spec");
+        write(
+            &tmp.path().join("planning/z-dir/sdlc/sdlc-flow-state.json"),
+            &zeta_json,
+        );
+        write(
+            &tmp.path().join("planning/a-dir/sdlc/sdlc-flow-state.json"),
+            &alpha_json,
+        );
+
+        let flows = collect_flow_states(tmp.path());
+        let slugs: Vec<&str> = flows.iter().map(|f| f.spec_slug.as_str()).collect();
+        assert_eq!(slugs, vec!["alpha-spec", "zeta-spec"]);
     }
 
     // ── collect_repo_workflows ───────────────────────────────────────────
