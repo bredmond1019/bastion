@@ -98,11 +98,19 @@ pub fn tmux_error_to_status(err: &anyhow::Error) -> (StatusCode, ErrorPayload) {
 
 /// True when a tmux `ExitError` stderr indicates an unknown/missing session target.
 ///
-/// Matches the two message patterns emitted by tmux:
-/// - `"can't find session: <name>"` — kill-session, send-keys, capture-pane
+/// Matches the message patterns tmux emits when the `-t <name>` target does not
+/// resolve to a live session:
+/// - `"can't find session: <name>"` — `kill-session`, `has-session`
+/// - `"can't find pane: <name>"` — `send-keys`, `capture-pane` resolve the
+///   target as a pane, so an unknown *session* surfaces as a missing pane
+///   (observed on tmux 3.6b). Without this, an inject/pane read against an
+///   unknown session would fall through to the generic 500/C010 branch instead
+///   of the documented 404/C002 (serve-api §12.3 / §10).
 /// - `"session not found: <name>"` — some tmux builds
 fn is_unknown_session(stderr: &str) -> bool {
-    stderr.contains("can't find session") || stderr.contains("session not found")
+    stderr.contains("can't find session")
+        || stderr.contains("can't find pane")
+        || stderr.contains("session not found")
 }
 
 // ── Handler helpers ───────────────────────────────────────────────────────────
@@ -285,6 +293,19 @@ mod tests {
         let err = make_tmux_err(TmuxError::ExitError {
             code: 1,
             stderr: "session not found: mysession".to_owned(),
+        });
+        let (status, payload) = tmux_error_to_status(&err);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(payload.code, "C002");
+    }
+
+    #[test]
+    fn exit_error_cant_find_pane_maps_to_404_c002() {
+        // tmux's send-keys/capture-pane report an unknown session target as a
+        // missing pane (observed on tmux 3.6b) — still a 404/C002, not 500.
+        let err = make_tmux_err(TmuxError::ExitError {
+            code: 1,
+            stderr: "can't find pane: no-such-session".to_owned(),
         });
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::NOT_FOUND);
