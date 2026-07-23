@@ -13,6 +13,42 @@ timestamp: 2026-07-23T22:55:34Z
 
 ## [2026-07-23]
 
+### 11.L-typeshare-ts-generation — done
+
+- **What:** `/sdlc-flow` drove spec `11.L-typeshare-ts-generation` (BA.11.L) end to end across 5
+  tasks, all PASS in 1 attempt each: `typeshare = "1"` added and `#[typeshare]` annotated onto 27
+  of 29 public DTO types in `src/serve/dto.rs` as compile-time-only markers (task 1); a
+  `typeshare.toml` config plus generated + committed `types/serve.ts` via `typeshare-cli v1.13.4`,
+  with a field-level `serialized_as = "number"` fix for `PanePayload.seq` (`u64` is a hard parse
+  error in this typeshare version) and a `Value = "any"` type mapping for `serde_json::Value`
+  (task 2); `scripts/gen-types.sh` (single-source regen helper) and
+  `scripts/check-typeshare-drift.sh` (fails non-zero with a visible diff on stale TS, actionable
+  install hint when the CLI is absent), smoke-tested in all three directions (task 3);
+  `docs/serve-api.md` bumped v0.6 → v0.7 with a new Section 15 documenting the generated-types
+  artifact, regen script, and drift check (task 4); and a final re-validation of the full gate set
+  confirming no runtime/source drift (task 5). One consolidated review passed with no findings.
+  `Topic` and `CommandValidationError` were deliberately left unannotated (neither derives
+  serde `Serialize`/`Deserialize`) — documented in the spec's Notes. No `serve` runtime behavior
+  changed. `state.json`'s `BA.11.L` block flipped to `closed`.
+- **Why:** Ships BA.11.L — a Rust-source-of-truth TypeScript type-generation pipeline over the
+  serve DTO contract with a drift gate, so BastionWeb (`BW.0.B`) consumes compile-checked types
+  instead of hand-mirroring them.
+- **Refs:** `planning/11.L-typeshare-ts-generation/`; branch
+  `11.L-typeshare-ts-generation-flow`; `state.json`'s `BA.11.L` block = `closed`.
+- Next: resume Phase 13/14 blocks per `state.json`'s regenerated `focus.next` ordering (BA.11.J
+  cost read endpoint, BA.11.M live run read/stream endpoint remain queued in Phase 11).
+
+```
+d32a800 feat: implement 11.L-typeshare-ts-generation-task4
+f613664 feat: implement 11.L-typeshare-ts-generation-task3
+f73dcf9 feat: implement 11.L-typeshare-ts-generation-task2
+19ed00b feat: implement 11.L-typeshare-ts-generation-task1
+d4f8962 Updated status and docs
+60239dd docs: log 7.D-console-momentum-metrics ship (PR #22)
+7dd0803 11.K-cross-brain-board-endpoint: 5 task(s), review PASS (#23)
+79ff7a5 7.D-console-momentum-metrics: 5 task(s), review PASS (#22)
+```
+
 ### 11.K-cross-brain-board-endpoint merged — PR #23
 
 - **What:** `/sdlc-flow` drove spec `11.K-cross-brain-board-endpoint` (BA.11.K) end to end across 5
