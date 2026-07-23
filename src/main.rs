@@ -13,6 +13,7 @@ mod detect;
 mod docview;
 mod inspect;
 mod man;
+mod momentum;
 mod monitor;
 mod observ;
 mod overview;
