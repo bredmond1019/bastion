@@ -108,6 +108,12 @@ pub enum Commands {
     },
     /// Quick stack health check — prints orchestrator API + DB reachability (non-TUI)
     Status,
+    /// Cross-repo momentum & metrics rollup — reads every workspace's `planning/status.md`
+    ///
+    /// Surfaces the D30 momentum queues (`now`/`next`/`blocked`) and the `## Metrics`
+    /// section across every registered workspace in one glanceable table. Read-only (D25) —
+    /// `/log-work` writes the queues; bastion only reads via the `[workspaces]` registry.
+    Momentum,
     /// List all tmux sessions with their last line of pane output
     Sessions,
     /// Attach your terminal to an existing tmux session
@@ -1007,6 +1013,12 @@ mod tests {
         assert!(cli.verbose);
         assert!(cli.json_logs);
         assert!(matches!(cli.command, Some(Commands::Sessions)));
+    }
+
+    #[test]
+    fn momentum_parses() {
+        let cli = Cli::try_parse_from(["bastion", "momentum"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Momentum)));
     }
 
     #[test]

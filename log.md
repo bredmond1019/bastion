@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-19T00:32:33Z
+timestamp: 2026-07-19T13:27:48Z
 ---
 
 # Log — bastion
@@ -11,7 +11,63 @@ timestamp: 2026-07-19T00:32:33Z
 
 ---
 
+## [run: 2026-07-23]
+
+Implemented BA.7.D (`7.D-console-momentum-metrics`) end to end via `/sdlc-flow` across 5 tasks,
+all PASS in 1 attempt each: task 1 added a pure `parse_metrics` bullet-list extractor and a
+`parse_repo_rollup` composer (reusing `serve::status::repo::parse_status` per the spec's inverted
+reuse direction) plus a new `RepoRollup` type in `src/momentum/parse.rs`; task 2 added a pure
+`render_table(rollups: &[RepoRollup]) -> String` in `src/momentum/render.rs` producing a
+deterministic cross-repo now/next/blocked table with a rolled-up `## Metrics` section, panic-free
+on an empty slice; task 3 added the registry file-walk shell `collect_rollups` plus a `pub fn
+run()` in `src/momentum/collect.rs`/`mod.rs`, gracefully skipping missing/malformed `status.md`
+files; task 4 wired the `bastion momentum` CLI subcommand (variant, dispatch, `command_name`
+mapping, clap parse test) into `src/cli.rs`/`src/main.rs`; task 5 confirmed all four gated checks
+green (fmt/clippy/test — 1366 passed/build --release) and smoke-tested `cargo run -- momentum`
+against a real 4-workspace registry (bastion/bella/mev + a missing `ghost` path), confirming
+correct table/metrics rollup and silent skip of the unreadable workspace. One notable decision:
+task 1 registered `mod momentum;` in `src/main.rs` ahead of task 4's nominal ownership so the new
+pure-logic tests would compile and run immediately rather than sit dead until task 4. Review
+verdict: **PASS** (0 findings). `state.json`'s `BA.7.D` block flipped `open` → `closed`. Next:
+resume Phase 13/14 blocks per `state.json`'s regenerated `focus.next` ordering (BA.13.5, BA.13.4,
+BA.14.1–3, …).
+
+```
+a76b0fc docs: update docs for 7.D-console-momentum-metrics
+0a77395 feat: implement 7.D-console-momentum-metrics-task4
+3afbf37 feat: implement 7.D-console-momentum-metrics-task3
+d293410 feat: implement 7.D-console-momentum-metrics-task2
+a3ab646 feat: implement 7.D-console-momentum-metrics-task1
+a562043 fix(serve): map tmux "can't find pane" to 404/C002 for unknown-session inject
+7fb64c2 docs: log BA.0.A ship + ws-push archive close-out
+d1f32df Merge pull request #21 from bredmond1019/plan-serve-workflow-done-ws-push-flow
+```
+
+---
+
 ## [2026-07-19]
+
+### BA.0.A shipped — PR #21 merged, event{workflow_done} WS push live; ws-push planning archived
+
+- **What:** Drove `plan-serve-workflow-done-ws-push` from spec to merged in one session.
+  `/generate-tasks` produced a 6-task spec with disjoint file ownership, then `/sdlc-flow
+  --auto-merge` ran it end to end: all 6 tasks PASS in 1 attempt each, end review PASS with 0
+  findings, docs patch clean. PR #21 opened and auto-merged to `main` (`d1f32df`), feature branch
+  cleaned. The running hub now instantiates `FlowWatcher` via an always-on `run_interval` in
+  `Actor::started()` and broadcasts `event{workflow_done}` to all `/ws` clients (not
+  subscription-gated); frame shape per serve-api §11.5 unchanged, no version bump. New seams:
+  `workflow_done_frame` (pure builder, `src/serve/poll.rs`), `collect_flow_states` (shared
+  `pub(crate)` enumeration, `src/serve/handlers/status.rs`), `watch_cycle` (thin I/O,
+  `src/serve/ws/server.rs`); `Hub::new` now takes a `FileConfig` registry. Then `/archive` retired
+  the two completed planning items (`plan-serve-workflow-done-ws-push` + the
+  `serve-workflow-done-ws-push` CR notes) into `planning/archive/`, distilling durable residue into
+  `knowledge.md`/`memory.md` (brain commit `b20b405`, graph clean, 0 net-new nodes).
+- **Why:** Closes the gap where `FlowWatcher` existed and was unit-tested but was never
+  instantiated in runtime code, so no `workflow_done` push ever reached clients. Shipping it
+  unblocks `bastion-ui`'s **BU.8.B part (1)** (`workflowDoneEventsProvider`) — a carryover was
+  injected into `bastion-ui`'s `state.json` recording the upstream unblock.
+- **Refs:** PR #21 (merge `d1f32df`); brain archive commit `b20b405`; serve-api §8.2/§11.5;
+  `state.json` `BA.0.A` = `closed`.
 
 ### plan-serve-workflow-done-ws-push closed — runtime flow-watch poll + WS broadcast wired
 
