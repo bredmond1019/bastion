@@ -46,6 +46,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Run { .. } => "run",
         Commands::Abort { .. } => "abort",
         Commands::Status => "status",
+        Commands::Momentum => "momentum",
         Commands::Sessions => "sessions",
         Commands::Attach { .. } => "attach",
         Commands::New { .. } => "new",
@@ -163,6 +164,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
             } => run::trigger(workflow, args, monitor, force).await,
             Commands::Abort { run, yes } => run::abort::run(run, yes).await,
             Commands::Status => run::status().await,
+            // Momentum rollup is DB-free (D25 read-only) and synchronous — reads
+            // `[workspaces]` status.md files directly, no orchestrator/Postgres coupling.
+            Commands::Momentum => momentum::run(),
             // Sessions path is DB-free (D4): no Config::load(), no Postgres pool.
             // All session verbs are sync blocking (D5): no async/tokio coupling.
             Commands::Sessions => sessions::run(),
@@ -398,6 +402,11 @@ mod tests {
     #[test]
     fn command_name_status() {
         assert_eq!(command_name(&Commands::Status), "status");
+    }
+
+    #[test]
+    fn command_name_momentum() {
+        assert_eq!(command_name(&Commands::Momentum), "momentum");
     }
 
     #[test]
