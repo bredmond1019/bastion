@@ -11,6 +11,8 @@
 //! - [`WsFrameKind`] — discriminant enum extended by later blocks.
 //! - [`CommandRequest`] / [`CommandResponse`] — `POST /actions/command` quick-action
 //!   inject/spawn request and response (BA.11.E).
+//! - [`BoardDto`] / [`BoardScope`] — `GET /api/board` cross-brain now/next/blocked/finished
+//!   rollup response and its `scope` query param (BA.11.K).
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -529,6 +531,97 @@ pub struct WorkflowDonePayload {
     pub spec_slug: String,
     /// The terminal status that triggered the event (`"done"` or `"blocked"`).
     pub status: String,
+}
+
+// ── Board (BA.11.K) ──────────────────────────────────────────────────────────
+
+/// `scope` query param for `GET /api/board`.
+///
+/// Deserializes from the lowercase wire values (`"hq"`, `"tier"`, `"project"`,
+/// `"business"`); missing/absent `scope` defaults to [`BoardScope::Hq`]. An
+/// unknown scope string fails to deserialize (surfaced as a 400 via the
+/// existing malformed-request `ErrorPayload` path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BoardScope {
+    /// Whole-brain aggregate (`mev::brain::state::TierScope::All`).
+    #[default]
+    Hq,
+    /// Single tier's aggregate board (`TierScope::Tier(<tier>)`, default `"core"`).
+    Tier,
+    /// Single tier resolved per-project (client renders each project's board
+    /// from `repos[]`); same underlying `TierScope::Tier(<tier>)`.
+    Project,
+    /// Shortcut for `tier=business` (`TierScope::Tier("business")`).
+    Business,
+}
+
+/// One lane entry (a single now/next/blocked/finished block) in a board response.
+///
+/// Wire format:
+/// `{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [] }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoardBlockDto {
+    /// Canonical block ID (e.g. `BA.11.K`).
+    pub id: String,
+    /// Brief human description, looked up from the owning repo's `tracks[].blocks[]`.
+    pub title: String,
+    /// Owning repo slug.
+    pub repo: String,
+    /// Lifecycle status, when known (`"open"`/`"in_progress"`/`"closed"`).
+    #[serde(default)]
+    pub status: Option<String>,
+    /// What this block is waiting on (populated for `blocked` lane entries).
+    #[serde(default)]
+    pub blocked_by: Vec<okf_core::BlockedBy>,
+}
+
+/// The four now/next/blocked/finished lanes for one board (aggregate or per-repo).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct BoardLaneDto {
+    /// Blocks currently in progress.
+    #[serde(default)]
+    pub now: Vec<BoardBlockDto>,
+    /// Blocks queued for next (ordered).
+    #[serde(default)]
+    pub next: Vec<BoardBlockDto>,
+    /// Blocks waiting on something.
+    #[serde(default)]
+    pub blocked: Vec<BoardBlockDto>,
+    /// Blocks whose `status == "closed"`.
+    #[serde(default)]
+    pub finished: Vec<BoardBlockDto>,
+}
+
+/// One repo's lane breakdown within a `scope=project` board response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoBoardDto {
+    /// Repo slug.
+    pub repo: String,
+    /// Tier classification, when known (e.g. `"core"`, `"business"`).
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// This repo's own four lanes.
+    pub lanes: BoardLaneDto,
+}
+
+/// JSON response for `GET /api/board?scope=hq|tier|project|business[&tier=<name>]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoardDto {
+    /// The resolved scope this response was projected under.
+    #[serde(default)]
+    pub scope: BoardScope,
+    /// The resolved tier name, when `scope` is tier-scoped (`None` for `hq`).
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// Aggregate lanes across all in-scope repos.
+    pub lanes: BoardLaneDto,
+    /// Per-project lane breakdown (populated for `scope=project`; empty otherwise).
+    #[serde(default)]
+    pub repos: Vec<RepoBoardDto>,
+    /// Freshness flag: `true` when any in-scope repo's `status.md` cache lags
+    /// its `state.json` (derived from `mev::brain::sync::check_sync`).
+    pub stale: bool,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1752,5 +1845,100 @@ mod tests {
             result.is_err(),
             "CommandResponse must fail when session is missing"
         );
+    }
+
+    // ── BoardScope ────────────────────────────────────────────────────────
+
+    #[test]
+    fn board_scope_deserializes_from_each_lowercase_string() {
+        assert_eq!(
+            serde_json::from_str::<BoardScope>(r#""hq""#).expect("hq"),
+            BoardScope::Hq
+        );
+        assert_eq!(
+            serde_json::from_str::<BoardScope>(r#""tier""#).expect("tier"),
+            BoardScope::Tier
+        );
+        assert_eq!(
+            serde_json::from_str::<BoardScope>(r#""project""#).expect("project"),
+            BoardScope::Project
+        );
+        assert_eq!(
+            serde_json::from_str::<BoardScope>(r#""business""#).expect("business"),
+            BoardScope::Business
+        );
+    }
+
+    #[test]
+    fn board_scope_missing_defaults_to_hq() {
+        assert_eq!(BoardScope::default(), BoardScope::Hq);
+    }
+
+    #[test]
+    fn board_scope_unknown_value_fails_to_deserialize() {
+        let result: Result<BoardScope, _> = serde_json::from_str(r#""bogus""#);
+        assert!(result.is_err(), "unknown scope string must fail to parse");
+    }
+
+    // ── BoardDto ──────────────────────────────────────────────────────────
+
+    fn sample_board_block() -> BoardBlockDto {
+        BoardBlockDto {
+            id: "BA.11.K".to_owned(),
+            title: "Cross-brain board read endpoint".to_owned(),
+            repo: "bastion".to_owned(),
+            status: Some("in_progress".to_owned()),
+            blocked_by: vec![okf_core::BlockedBy::External {
+                what: "reviewer availability".to_owned(),
+            }],
+        }
+    }
+
+    fn sample_board_dto() -> BoardDto {
+        let lanes = BoardLaneDto {
+            now: vec![sample_board_block()],
+            next: vec![],
+            blocked: vec![],
+            finished: vec![],
+        };
+        BoardDto {
+            scope: BoardScope::Hq,
+            tier: None,
+            lanes: lanes.clone(),
+            repos: vec![RepoBoardDto {
+                repo: "bastion".to_owned(),
+                tier: Some("core".to_owned()),
+                lanes,
+            }],
+            stale: true,
+        }
+    }
+
+    #[test]
+    fn board_dto_round_trips() {
+        let dto = sample_board_dto();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: BoardDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn board_dto_serializes_expected_fields() {
+        let dto = sample_board_dto();
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(v["scope"], "hq");
+        assert_eq!(v["stale"], true);
+        assert_eq!(v["lanes"]["now"][0]["id"], "BA.11.K");
+        assert_eq!(v["repos"][0]["repo"], "bastion");
+        assert_eq!(v["repos"][0]["tier"], "core");
+    }
+
+    #[test]
+    fn board_dto_scope_defaults_when_absent() {
+        let raw = r#"{"lanes":{"now":[],"next":[],"blocked":[],"finished":[]},"stale":false}"#;
+        let dto: BoardDto = serde_json::from_str(raw).expect("scope should default to hq");
+        assert_eq!(dto.scope, BoardScope::Hq);
+        assert!(dto.tier.is_none());
+        assert!(dto.repos.is_empty());
     }
 }
