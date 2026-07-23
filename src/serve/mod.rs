@@ -345,7 +345,10 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // /actions/command — POST only
             .service(
                 web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
-            );
+            )
+            // ── Cross-brain board route (BA.11.K) ───────────────────────────
+            // /board — GET only (now/next/blocked/finished rollup)
+            .service(web::resource("/board").route(web::get().to(handlers::board::get_board)));
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
         // v0.2: route backed by hub + WsConn (replaces echo actor).
@@ -557,7 +560,8 @@ mod tests {
             )
             .service(
                 web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
-            );
+            )
+            .service(web::resource("/board").route(web::get().to(handlers::board::get_board)));
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
             .app_data(hub_data.clone())
@@ -1358,5 +1362,136 @@ mod tests {
 
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert_eq!(body["code"], "C006");
+    }
+
+    // ── /api/board — route registration (BA.11.K) ───────────────────────────
+
+    /// Build a temp brain root containing a minimal valid `brain.toml` plus a
+    /// minimal leaf-shaped `planning/state.json`, so the board handler's brain
+    /// walk (`find_brain_root` → `discover_state_files` → `load_state`) resolves
+    /// successfully. Mirrors `brainval::tests::make_temp_brain_root`. Returns the
+    /// directory — callers are responsible for `remove_dir_all` teardown.
+    fn make_temp_board_brain_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-serve-board-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let planning_dir = dir.join("planning");
+        std::fs::create_dir_all(&planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"[vocab]
+layer = ["console"]
+status = ["active"]
+
+[crawl]
+skip_dirs = ["target", ".git"]
+
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "."
+status_file = "planning/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "bastion"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            planning_dir.join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-04",
+  "focus": {
+    "now": [{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "status": "in_progress" }],
+    "next": [],
+    "blocked": []
+  },
+  "tracks": [
+    {
+      "title": "Phase 11",
+      "blocks": [
+        { "id": "BA.11.K", "title": "Cross-brain board read endpoint", "status": "in_progress" }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    /// Registry whose (unnamed) `default_workspace` resolves to the temp brain
+    /// root — `get_board`'s `resolve_workspace_root(None, None, &registry)` call
+    /// takes the same "no explicit root, no workspace name" path `bastion serve`
+    /// uses in production, so routing it through `default_workspace` mirrors how
+    /// a real deployment's registry would point at its own brain root.
+    fn registry_with_board_fixture(brain_root: &std::path::Path) -> FileConfig {
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("brain-root".to_string(), brain_root.to_path_buf());
+        FileConfig {
+            workspaces: Some(workspaces),
+            default_workspace: Some("brain-root".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn get_board_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/board without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_board_hq_scope_returns_200_with_four_lanes() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/board?scope=hq with a valid token must return 200"
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["scope"], "hq");
+        let lanes = &body["lanes"];
+        assert!(lanes["now"].is_array(), "lanes.now must be an array");
+        assert!(lanes["next"].is_array(), "lanes.next must be an array");
+        assert!(
+            lanes["blocked"].is_array(),
+            "lanes.blocked must be an array"
+        );
+        assert!(
+            lanes["finished"].is_array(),
+            "lanes.finished must be an array"
+        );
+        assert!(body["repos"].is_array(), "repos must be an array");
+        assert!(body["stale"].is_boolean(), "stale must be a boolean");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
