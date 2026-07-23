@@ -97,6 +97,7 @@ See [docs/sessions.md](docs/sessions.md) for the full session-control reference 
 | `ask --session S --prompt-file P --out O` | Shipped | Send a prompt file to a Claude session and wait for the output file; creates the session if absent |
 | `brain (--dependents\|--blast-radius\|--lineage) <NODE_ID> [--root DIR] [--workspace NAME]` | Shipped | Structural queries over the OKF `[[link]]` graph: direct dependents, transitive blast radius, or full lineage |
 | `code (--def\|--refs\|--dependents) <SYMBOL> [--root DIR] [--workspace NAME]` | Shipped | Symbol-level code graph queries via tree-sitter: definition sites, call/import references, or direct dependents |
+| `momentum` | Shipped | Cross-repo rollup of each workspace-registry repo's `now`/`next`/`blocked` momentum queues and `## Metrics` bullets, read from `status.md`; skips repos with a missing/malformed file |
 
 ## Configuration
 
