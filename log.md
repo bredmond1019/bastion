@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-19T13:27:48Z
+timestamp: 2026-07-23T21:28:10Z
 ---
 
 # Log — bastion
@@ -10,6 +10,26 @@ timestamp: 2026-07-19T13:27:48Z
 *Append-only working log. One dated entry per session. Newest entries at the top.*
 
 ---
+
+## [2026-07-23]
+
+### 7.D-console-momentum-metrics merged — PR #22
+
+- **What:** `/sdlc-flow` drove spec `7.D-console-momentum-metrics` (BA.7.D) end to end across 5
+  tasks, all PASS in 1 attempt each: a pure `parse_metrics`/`parse_repo_rollup` extractor plus a
+  new `RepoRollup` type (task 1); a pure `render_table` producing a deterministic cross-repo
+  now/next/blocked table with a rolled-up `## Metrics` section (task 2); the registry file-walk
+  shell `collect_rollups` + `pub fn run()` in `src/momentum/collect.rs`/`mod.rs` (task 3); the
+  `bastion momentum` CLI subcommand wired into `src/cli.rs`/`src/main.rs` (task 4); all four gated
+  checks confirmed green (fmt/clippy/test — 1366 passed/build --release) plus a live smoke test of
+  `cargo run -- momentum` (task 5). One consolidated review passed with 0 findings; a docs patch
+  updated `README.md`. Branch `7.D-console-momentum-metrics-flow` opened as PR #22 on
+  `bredmond1019/bastion`, then squash-merged and deleted; local `main` rebased and synced with
+  origin.
+- **Why:** Ships BA.7.D — the console's hybrid dashboard surface reading cross-repo momentum and
+  metrics — closing out the block per `master-plan.md`'s Phase 7 sequence.
+- **Refs:** PR #22 (https://github.com/bredmond1019/bastion/pull/22);
+  `planning/7.D-console-momentum-metrics/`; `state.json`'s `BA.7.D` block = `closed`.
 
 ## [run: 2026-07-23]
 
