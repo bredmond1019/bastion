@@ -1,22 +1,22 @@
 ---
 type: Guideline
-title: "serve-api contract v0.5"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), and the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes) that bastion-ui pins against."
+title: "serve-api contract v0.6"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), and the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, bastion-ui, contract, engine-serve, abort, X-API-Key]
-related: [config, observ, data-contract, abort]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key]
+related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.5 Contract
+# serve-api — v0.6 Contract
 
-**Version:** v0.5  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–12, 14, 15 — plus, when mounted,
-`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 13.  
-**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–12, 14, 15; `bastion abort`
-(`src/run/abort.rs`, this repo) for Section 13's abort route.
+**Version:** v0.6  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–13, 15, 16 — plus, when mounted,
+`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 14.  
+**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15, 16; `bastion abort`
+(`src/run/abort.rs`, this repo) for Section 14's abort route.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -43,16 +43,16 @@ transport security on the tailnet.
 ## 2. Authentication
 
 All routes **except** `GET /health` under bastion's own `/api` and `/ws` scopes are protected by
-mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 13,
+mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 14,
 mounted only when config allows) are a **separate, unmounted-at-`/api` surface with their own
 `X-API-Key` gate** — the two auth schemes coexist side by side and are never double-applied to the
 same request:
 
 | Route family | Scheme | Header |
 |---|---|---|
-| `/health`, `/api/*`, `/ws` (Sections 3–12) | Bearer | `Authorization: Bearer <BASTION_SERVE_TOKEN>` |
-| Engine routes (Section 13): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
-| Engine routes (Section 13): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
+| `/health`, `/api/*`, `/ws` (Sections 3–13) | Bearer | `Authorization: Bearer <BASTION_SERVE_TOKEN>` |
+| Engine routes (Section 14): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
+| Engine routes (Section 14): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
 
 The engine's own `GET /health` is shadowed by bastion's `/health` handler (first-registration-wins
 for duplicate exact-path routes — verified empirically, not a panic), so the process's `/health`
@@ -103,6 +103,7 @@ to verify the configured token.
 | `GET /api/repos/{name}/handoff` | Yes — `Authorization: Bearer <token>` |
 | `GET /api/repos/{name}/workflows` | Yes — `Authorization: Bearer <token>` |
 | `POST /api/actions/command` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/board` | Yes — `Authorization: Bearer <token>` |
 
 ---
 
@@ -1034,7 +1035,134 @@ Execution-path failures (after validation passes) map as follows:
 
 ---
 
-## 13. Embedded engine route table (v0.5, BA.7.C)
+## 13. Cross-brain board API (v0.6, BA.11.K)
+
+One read-only route projecting the cross-brain now/next/blocked/finished rollup — the same
+aggregate `bastion emit-state` / `bastion validate-brain --state` already compute from the
+mev/okf-core brain walk — onto HTTP. Lives under the bearer-protected `/api` scope. This route
+never mutates any tier's or repo's `state.json` (D25 — bastion is a read-only surface over the
+brain).
+
+### 13.1 `GET /api/board` — cross-brain now/next/blocked/finished board
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `scope` | string | No | `"hq"` | One of `"hq"` \| `"tier"` \| `"project"` \| `"business"` (Section 13.2). An unrecognized value fails query deserialization and returns `400` (Section 13.4). |
+| `tier` | string | No | `"core"` | Tier name; only consulted when `scope` is `"tier"` or `"project"` (Section 13.2). Ignored for `"hq"`/`"business"`. |
+
+**Request:**
+
+```
+GET /api/board?scope=hq HTTP/1.1
+Authorization: Bearer <token>
+```
+
+### 13.2 Scope semantics
+
+| `scope` | Resolved walk scope | `tier` param | `BoardDto.tier` |
+|---|---|---|---|
+| `"hq"` (default) | `TierScope::All` — whole-brain aggregate | Ignored | `null` |
+| `"tier"` | `TierScope::Tier(<tier>)` — that tier's aggregate board | Optional, default `"core"` | Resolved tier name |
+| `"project"` | `TierScope::Tier(<tier>)`, same walk as `"tier"` — the client renders each project's board from `repos[]` | Optional, default `"core"` | Resolved tier name |
+| `"business"` | `TierScope::Tier("business")` — shortcut, ignores `tier` param | Ignored | `"business"` |
+
+An empty-string `tier` param (`?tier=`) is treated the same as an absent one — it falls back to the
+`"core"` default. An unknown `tier` name (no matching tier in `brain.toml`) is **not** an error: the
+brain walk simply finds no in-scope repos for that tier, and the response comes back with empty
+lanes and `repos: []` rather than a 4xx/5xx.
+
+**Future refinement (not implemented in BA.11.K):** a context-aware default for `tier` — deriving
+the "current" tier from the serving repo's own location in the brain tree instead of the
+hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
+
+### 13.3 Response (200 OK): `BoardDto`
+
+```json
+{
+  "scope": "hq",
+  "tier": null,
+  "lanes": {
+    "now": [
+      { "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [] }
+    ],
+    "next": [],
+    "blocked": [],
+    "finished": [
+      { "id": "BA.11.D", "title": "Repo status REST surface", "repo": "bastion", "status": "closed", "blocked_by": [] }
+    ]
+  },
+  "repos": [],
+  "stale": false
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `scope` | string | Echoes the resolved `scope` (`"hq"`, `"tier"`, `"project"`, or `"business"`). |
+| `tier` | string \| null | The resolved tier name for tier-scoped responses (`"tier"`/`"project"`/`"business"`); `null` for `"hq"`. |
+| `lanes` | `BoardLaneDto` | Aggregate now/next/blocked/finished lanes across every in-scope repo. |
+| `repos` | array of `RepoBoardDto` | Per-project lane breakdown for every in-scope repo (populated for all scopes — the client picks whether to render the aggregate `lanes` or the per-project `repos[]` breakdown). |
+| `stale` | boolean | `true` when any in-scope repo's `planning/status.md` cache lags its `state.json`, per `mev::brain::sync::check_sync`. |
+
+#### `BoardLaneDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `now` | array of `BoardBlockDto` | Blocks currently in progress. |
+| `next` | array of `BoardBlockDto` | Blocks queued next (ordered). |
+| `blocked` | array of `BoardBlockDto` | Blocks waiting on something; each entry's `blocked_by` is populated. |
+| `finished` | array of `BoardBlockDto` | Blocks whose `status == "closed"` — the terminal value in `mev::brain::state`'s `VALID_TRACK_BLOCK_STATUSES` (`open`/`in_progress`/`closed`). |
+
+#### `BoardBlockDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Canonical block ID (e.g. `"BA.11.K"`). |
+| `title` | string | Block title, looked up from the owning repo's `tracks[].blocks[]`. |
+| `repo` | string | Owning repo slug. |
+| `status` | string \| null | Lifecycle status when known (`"open"`/`"in_progress"`/`"closed"`). |
+| `blocked_by` | array | What this block is waiting on; populated for `blocked`-lane entries, empty elsewhere. |
+
+#### `RepoBoardDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | Repo slug. |
+| `tier` | string \| null | Tier classification when known (e.g. `"core"`, `"business"`). |
+| `lanes` | `BoardLaneDto` | This repo's own four lanes. |
+
+### 13.4 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Unrecognized `scope` value (fails `BoardScope` query deserialization) | `400 Bad Request` | Plain text — actix's default `web::Query` extractor failure. `GET /api/board` has **no** `QueryConfig` error handler installed (unlike the `web::JsonConfig` handler that gives `POST /api/actions/command` its JSON `C006` body, Section 12.3) — a bad `scope` query value returns actix's stock `text/plain` 400, not an `ErrorPayload`. |
+| Unresolvable brain root (no `brain.toml` walking up from the workspace root) or unparseable `brain.toml` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
+
+Individual malformed/unreadable `state.json` files under an otherwise-resolvable brain root are
+skipped (degrade gracefully, matching `derive_rollup`'s own behavior) rather than failing the
+whole request — only an unresolvable brain root is a hard error.
+
+**Example 400 body (unknown scope, verified against the running handler):**
+
+```
+Query deserialize error: unknown variant `bogus`, expected one of `hq`, `tier`, `project`, `business`
+```
+
+(`Content-Type: text/plain; charset=utf-8` — not JSON.)
+
+**Example 500 body (unresolvable brain root):**
+
+```json
+{ "code": "C010", "message": "could not resolve brain root from /some/workspace: <error detail>" }
+```
+
+---
+
+## 14. Embedded engine route table (v0.5, BA.7.C)
 
 `bastion serve` embeds `engine-serve`'s route table (`engine_serve::http::configure`) at the
 **server root** — not under `/api` — per D48 ("the abort endpoint and the rest of the engine
@@ -1043,7 +1171,7 @@ growth (`planning/7.C-cost-budget-alerts-abort/tasks.md`, *Scope growth* section
 same `engine-serve` surface engine-rs's own `EN.1.C`/`EN.2.B` shipped as an embeddable library —
 `bastion serve` is the first (and, as of this writing, only) process that actually mounts it.
 
-### 13.1 Mount decision
+### 14.1 Mount decision
 
 The engine routes are mounted only when **both** `DATABASE_URL` and `BASTION_ENGINE_API_KEY` are
 set (non-empty) at boot — decided once, pure, by `serve::decide_engine_mount` (`src/serve/
@@ -1053,7 +1181,7 @@ stderr and emits a `tracing::warn!` `observ` event rather than failing to boot o
 that would 500 on every request. A `DATABASE_URL` present but unreachable (connection failure at
 boot) also leaves the engine routes unmounted, logged the same way.
 
-### 13.2 Routes
+### 14.2 Routes
 
 | Route | Method | Auth | Description |
 |---|---|---|---|
@@ -1067,7 +1195,7 @@ boot) also leaves the engine routes unmounted, logged the same way.
 an exact string match, entirely separate from bastion's own `BASTION_SERVE_TOKEN` Bearer check
 (Section 2). Neither scheme is layered on the other's routes.
 
-### 13.3 Testing
+### 14.3 Testing
 
 Covered by the in-process integration test `tests/abort_contract.rs`, which builds a real
 `engine-serve` `App` (via `AppState`) and asserts the 401 / 404 / 202 paths against it — the
@@ -1078,25 +1206,25 @@ including the empty-string-counts-as-absent case.
 
 ---
 
-## 14. Configuration reference
+## 15. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | `host:port` to bind |
 | `BASTION_SERVE_TOKEN` | **Yes** | — | Bearer token for protected routes; absent token is a typed error at startup |
-| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 13 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
-| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 13) check. Absent leaves those routes unmounted. |
+| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 14 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
+| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 14) check. Absent leaves those routes unmounted. |
 
 `bastion serve` loads config via `load_serve_config()` (`src/config.rs`), which
 is DB-free and does **not** require `DATABASE_URL` for its own `/api`/`/ws` surface. The
 `[workspaces]` registry consumed by Section 11's routes is loaded separately via
 `load_workspace_registry()` — also DB-free — once at server startup. `DATABASE_URL` and
-`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 13.1), not
+`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 14.1), not
 through `load_serve_config()`.
 
 ---
 
-## 15. Versioning policy
+## 16. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -1105,7 +1233,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.5**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.6**.
 
 ---
 
@@ -1162,3 +1290,19 @@ This document follows a simple monotonic version scheme:
   12.3: documented that a malformed/non-JSON request body on any JSON-consuming route now returns
   `400`/`C006` via a `web::JsonConfig` error handler, instead of actix's plain-text 400. Also
   fixed the frontmatter `title` scalar, which had lagged at "v0.4" since the previous entry.
+- **2026-07-23 — v0.5 → v0.6 (BA.11.K):** Added Section 13 (Cross-brain board API) —
+  `GET /api/board?scope=hq|tier|project|business[&tier=<name>]`, projecting the mev/okf-core
+  cross-brain now/next/blocked/finished rollup (the same aggregate `bastion emit-state` /
+  `bastion validate-brain --state` already compute) onto HTTP. Documented the scope→`TierScope`
+  resolution table (`hq`→`All`; `tier`/`project`→`Tier(<tier>` or default `"core">`;
+  `business`→`Tier("business")`), the `BoardDto`/`BoardLaneDto`/`BoardBlockDto`/`RepoBoardDto`
+  response schema, the `finished` lane's `status == "closed"` definition, the `stale` freshness
+  flag (`mev::brain::sync::check_sync`), and the context-aware-tier-default as a documented
+  future refinement (not implemented in this block). Noted that an unrecognized `scope` value
+  returns actix's default plain-text `400` (no `QueryConfig` error handler is installed for this
+  route, unlike the `web::JsonConfig` handler backing Section 12.3's `C006` JSON body) — verified
+  against the running handler, not assumed. An unknown `tier` name is not an error: it resolves
+  to an empty in-scope rollup. Added the `/api/board` row to the auth policy table (Section 2.3).
+  Renumbered Embedded engine route table → Section 14 (subsections 14.1–14.3), Configuration
+  reference → Section 15, Versioning policy → Section 16. Updated frontmatter title, description,
+  `keywords`, `related`, and the current-contract version note.
