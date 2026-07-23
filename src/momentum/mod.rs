@@ -12,6 +12,7 @@
 //! [`parse::parse_metrics`] here.
 
 pub mod parse;
+pub mod render;
 
 // Reuse the shared parser instead of duplicating frontmatter/momentum parsing.
 pub use crate::serve::status::repo::{RepoStatus, parse_status};
