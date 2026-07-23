@@ -167,6 +167,7 @@ pub struct PanePayload {
     /// tmux session name whose pane was captured.
     pub session: String,
     /// Monotonically increasing sequence number; bumped on every diff push.
+    #[typeshare(serialized_as = "number")]
     pub seq: u64,
     /// Non-blank trailing lines from the captured pane output.
     pub lines: Vec<String>,
