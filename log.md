@@ -11,6 +11,36 @@ timestamp: 2026-07-23T21:28:10Z
 
 ---
 
+## [run: 2026-07-23]
+
+Implemented BA.11.K (`11.K-cross-brain-board-endpoint`) end to end via `/sdlc-flow` across 5 tasks,
+all PASS in 1 attempt each: task 1 added the `BoardScope`/`BoardBlockDto`/`BoardLaneDto`/
+`RepoBoardDto`/`BoardDto` serde DTOs to `src/serve/dto.rs` (reusing `okf_core::BlockedBy` directly
+rather than mirroring it); task 2 added `src/serve/handlers/board.rs` with pure scope-resolution
+(`resolve_scope`), rollup/finished-lane projection (`build_board`, `finished_blocks_for_repo`), and
+stale-flag derivation (`is_stale_for_scope`), reusing mev/okf-core's discover→load→build-graph→
+derive-rollup brain walk under `web::block`; task 3 registered `GET /api/board` under the bearer-
+protected `/api` scope with integration tests for 401-without-token and 200-with-four-lanes; task 4
+documented the endpoint as Section 13 of `docs/serve-api.md` (v0.6 contract), correcting the spec's
+assumed 400 error shape after empirically verifying it's actix's default plain-text response (no
+`QueryConfig` handler installed on this route, unlike `POST /api/actions/command`'s JSON `C006`);
+task 5 confirmed all gated checks green (`cargo test` 1395 passed) and smoke-tested a live
+`bastion serve` across all four scopes, the 401/400 error paths, and the unknown-tier→empty-rollup
+case. Review passed with 0 findings. Next: resume Phase 13/14 blocks per `state.json`'s regenerated
+`focus.next` ordering (BA.13.4/BA.13.5, BA.14.1–14.3), or pick up BA.11.J/BA.11.L/BA.11.M in the
+Phase 11 serve-endpoint track.
+
+```
+e6e4dea docs: update docs for 11.K-cross-brain-board-endpoint
+198201d feat: implement 11.K-cross-brain-board-endpoint-task4
+e34f5be feat: implement 11.K-cross-brain-board-endpoint-task3
+e59316d feat: implement 11.K-cross-brain-board-endpoint-task2
+376a543 feat: implement 11.K-cross-brain-board-endpoint-task1
+5fc4a41 docs: log 7.D-console-momentum-metrics ship (PR #22)
+79ff7a5 7.D-console-momentum-metrics: 5 task(s), review PASS (#22)
+d1f32df Merge pull request #21 from bredmond1019/plan-serve-workflow-done-ws-push-flow
+```
+
 ## [2026-07-23]
 
 ### 7.D-console-momentum-metrics merged — PR #22
