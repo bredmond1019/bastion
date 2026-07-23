@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-23T21:28:10Z
+timestamp: 2026-07-23T22:55:34Z
 ---
 
 # Log — bastion
@@ -12,6 +12,23 @@ timestamp: 2026-07-23T21:28:10Z
 ---
 
 ## [2026-07-23]
+
+### 11.K-cross-brain-board-endpoint merged — PR #23
+
+- **What:** `/sdlc-flow` drove spec `11.K-cross-brain-board-endpoint` (BA.11.K) end to end across 5
+  tasks, all PASS in 1 attempt each: the `BoardScope`/`BoardBlockDto`/`BoardLaneDto`/
+  `RepoBoardDto`/`BoardDto` serde DTOs; the `GET /api/board` handler with pure scope-resolution,
+  rollup/finished-lane projection, and stale-flag derivation reusing the mev/okf-core brain walk;
+  the bearer-protected route registration with 401/200 integration tests; a docs patch documenting
+  the endpoint as Section 13 of `docs/serve-api.md`; and a final smoke test across all four scopes
+  plus the 401/400 error paths. One consolidated review passed with no findings. Branch
+  `11.K-cross-brain-board-endpoint-flow` opened as PR #23 on `bredmond1019/bastion`, squash-merged
+  and deleted; local `main` synced (rebased) with origin.
+- **Why:** Ships BA.11.K — the read-only cross-brain now/next/blocked/finished board REST
+  projection over HTTP — closing out the block per `master-plan.md`'s Phase 11 serve-endpoint
+  track.
+- **Refs:** PR #23 (https://github.com/bredmond1019/bastion/pull/23);
+  `planning/11.K-cross-brain-board-endpoint/`; `state.json`'s `BA.11.K` block = `closed`.
 
 ### 7.D-console-momentum-metrics merged — PR #22
 
