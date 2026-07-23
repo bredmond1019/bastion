@@ -16,6 +16,7 @@
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
+use typeshare::typeshare;
 
 // ── Health ─────────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 /// ```json
 /// { "status": "ok", "service": "bastion" }
 /// ```
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HealthResponse {
     /// Liveness status; always `"ok"` when the server is healthy.
@@ -56,6 +58,7 @@ impl HealthResponse {
 /// ```json
 /// { "kind": "echo", "payload": <any JSON value> }
 /// ```
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WsFrame {
     /// Frame type discriminant.  The Flutter client switches on this field.
@@ -69,6 +72,7 @@ pub struct WsFrame {
 /// v0 defined `Echo` and `Error`.  v0.2 adds client→server kinds (`Subscribe`,
 /// `Unsubscribe`, `Send`, `SendKey`) and server→client kinds (`Sessions`, `Pane`,
 /// `Event`).
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WsFrameKind {
@@ -99,6 +103,7 @@ pub enum WsFrameKind {
 /// Payload shape for `WsFrameKind::Error` frames.
 ///
 /// Allows the server to surface typed error information over the WS channel.
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorPayload {
     /// Short machine-readable error code (e.g. `"C001"`).
@@ -112,6 +117,7 @@ pub struct ErrorPayload {
 /// Payload for client→server `subscribe` / `unsubscribe` frames.
 ///
 /// Wire format: `{ "topic": "sessions" }` or `{ "topic": "pane:work" }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubscribePayload {
     /// Topic string: `"sessions"` or `"pane:<name>"`.
@@ -121,6 +127,7 @@ pub struct SubscribePayload {
 /// Payload for client→server `send` frames (literal keystrokes + Enter).
 ///
 /// Wire format: `{ "session": "main", "keys": "cargo test" }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendPayload {
     /// Target tmux session name.
@@ -132,6 +139,7 @@ pub struct SendPayload {
 /// Payload for client→server `send_key` frames (single named tmux key).
 ///
 /// Wire format: `{ "session": "main", "key": "Escape" }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendKeyPayload {
     /// Target tmux session name.
@@ -143,6 +151,7 @@ pub struct SendKeyPayload {
 /// Payload for server→client `sessions` frames (session list snapshot).
 ///
 /// Wire format: `{ "sessions": [ … ] }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionsPayload {
     /// Current snapshot of all tmux sessions.
@@ -152,6 +161,7 @@ pub struct SessionsPayload {
 /// Payload for server→client `pane` frames (pane diff push).
 ///
 /// Wire format: `{ "session": "main", "seq": 42, "lines": ["line1", "line2"] }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PanePayload {
     /// tmux session name whose pane was captured.
@@ -165,6 +175,7 @@ pub struct PanePayload {
 /// Payload for server→client `event` frames (e.g. `needs_input`).
 ///
 /// Wire format: `{ "session": "main", "event": "needs_input" }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventPayload {
     /// Session that triggered the event.
@@ -224,6 +235,7 @@ pub fn parse_topic(s: &str) -> Option<Topic> {
 /// ```json
 /// { "name": "main", "state": "running", "last_line": "$ cargo test" }
 /// ```
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionDto {
     /// tmux session name.
@@ -250,6 +262,7 @@ impl From<&Session> for SessionDto {
 /// ```json
 /// { "session_name": "main", "lines": ["line1", "line2"] }
 /// ```
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneDto {
     /// tmux session name this pane belongs to.
@@ -276,6 +289,7 @@ impl PaneDto {
 ///
 /// Sends a literal string of keystrokes to the session followed by `Enter`.
 /// Wire format: `{ "keys": "cargo test" }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendBody {
     /// Literal text to send to the session (forwarded with `-l`).
@@ -291,6 +305,7 @@ pub struct SendBody {
 ///
 /// Accepted key names include: `Escape`, `Enter`, `Up`, `Down`, `Left`,
 /// `Right`, and modifier combinations such as `C-c`.
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyBody {
     /// Symbolic tmux key name to send (e.g. `"Escape"`, `"Up"`, `"C-c"`).
@@ -300,6 +315,7 @@ pub struct KeyBody {
 /// Request body for `POST /api/sessions` (create a new tmux session).
 ///
 /// Wire format: `{ "name": "mysession", "dir": "/optional/start/dir" }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewSessionBody {
     /// Name of the new tmux session to create.
@@ -314,6 +330,7 @@ pub struct NewSessionBody {
 /// Dispatch mode for `POST /actions/command`.
 ///
 /// Serializes/deserializes as the lowercase wire string (`"inject"` / `"spawn"`).
+#[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandMode {
@@ -341,6 +358,7 @@ pub const ALLOWED_COMMAND_MODELS: &[&str] = &["opus", "sonnet"];
 /// Field requirements are mode-dependent and enforced by [`CommandRequest::validate`],
 /// not by serde: `session` is required for `inject`; `name` is required for `spawn`;
 /// `model`, when present, must be one of [`ALLOWED_COMMAND_MODELS`].
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommandRequest {
     /// Dispatch mode: `"inject"` or `"spawn"`.
@@ -422,6 +440,7 @@ impl CommandRequest {
 /// Response body for `POST /actions/command`.
 ///
 /// Wire format: `{ "session": "work" }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommandResponse {
     /// The target tmux session id (existing for inject, newly created for spawn).
@@ -433,6 +452,7 @@ pub struct CommandResponse {
 /// JSON response element for `GET /repos` (one per workspace registry entry).
 ///
 /// Wire format: `{ "name": "bastion", "now": "BA.11.D in progress", "has_handoff": false }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RepoSummaryDto {
     /// Workspace registry name.
@@ -448,6 +468,7 @@ pub struct RepoSummaryDto {
 /// Mirrors [`crate::serve::status::repo::RepoStatus`] field-for-field — kept
 /// as an independent DTO (per this module's doc comment) rather than reusing
 /// the domain type directly.
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RepoStatusDto {
     /// Workspace registry name.
@@ -492,6 +513,7 @@ impl From<crate::serve::status::repo::RepoStatus> for RepoStatusDto {
 /// JSON response element for `GET /repos/{name}/workflows`.
 ///
 /// Serializable projection of [`crate::serve::status::flow::FlowState`].
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowStateDto {
     pub spec_slug: String,
@@ -523,6 +545,7 @@ impl From<crate::serve::status::flow::FlowState> for WorkflowStateDto {
 /// flattened into the same JSON object by the caller (Task 4 WS wiring).
 ///
 /// Wire format: `{ "repo": "bastion", "spec_slug": "phase11-blockD", "status": "done" }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowDonePayload {
     /// Workspace registry name the workflow belongs to.
@@ -541,6 +564,7 @@ pub struct WorkflowDonePayload {
 /// `"business"`); missing/absent `scope` defaults to [`BoardScope::Hq`]. An
 /// unknown scope string fails to deserialize (surfaced as a 400 via the
 /// existing malformed-request `ErrorPayload` path).
+#[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum BoardScope {
@@ -560,6 +584,7 @@ pub enum BoardScope {
 ///
 /// Wire format:
 /// `{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [] }`
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoardBlockDto {
     /// Canonical block ID (e.g. `BA.11.K`).
@@ -577,6 +602,7 @@ pub struct BoardBlockDto {
 }
 
 /// The four now/next/blocked/finished lanes for one board (aggregate or per-repo).
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct BoardLaneDto {
     /// Blocks currently in progress.
@@ -594,6 +620,7 @@ pub struct BoardLaneDto {
 }
 
 /// One repo's lane breakdown within a `scope=project` board response.
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RepoBoardDto {
     /// Repo slug.
@@ -606,6 +633,7 @@ pub struct RepoBoardDto {
 }
 
 /// JSON response for `GET /api/board?scope=hq|tier|project|business[&tier=<name>]`.
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoardDto {
     /// The resolved scope this response was projected under.
