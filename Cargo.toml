@@ -29,6 +29,7 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 tiktoken-rs = "0.12.0"
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"
+typeshare = "1"
 clap_mangen = "0.2"
 bella-engine = { path = "../bella/crates/bella-engine" }
 mev = { path = "../mev" }
