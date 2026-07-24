@@ -253,6 +253,80 @@ export interface CommandResponse {
 }
 
 /**
+ * One entry in a `GET /api/docs/{repo}/tree` listing.
+ * 
+ * Wire format:
+ * ```json
+ * { "path": "planning/status.md", "name": "status.md", "is_dir": false }
+ * ```
+ */
+export interface DocEntryDto {
+	/** Repo-root-relative path — exactly what `GET /api/docs/{repo}/file`'s `?path=` accepts. */
+	path: string;
+	/** The entry's base name (final path component). */
+	name: string;
+	/** `true` when the entry is a directory, `false` for a file. */
+	is_dir: boolean;
+}
+
+/**
+ * JSON response for `GET /api/docs/{repo}/file?path=<rel-file>`.
+ * 
+ * Wire format:
+ * ```json
+ * {
+ * "repo": "bastion",
+ * "path": "planning/status.md",
+ * "content": "---\ntype: Status\n---\n\n# bastion — Status\n…",
+ * "bytes": 8421,
+ * "modified": "2026-07-24T18:03:11Z"
+ * }
+ * ```
+ */
+export interface DocFileDto {
+	/** Echoes the resolved workspace registry name. */
+	repo: string;
+	/** The validated, repo-root-relative path that was read. */
+	path: string;
+	/**
+	 * The file's raw markdown, byte-for-byte — no rendering, no frontmatter stripping, no
+	 * sentinel removal.
+	 */
+	content: string;
+	/** Content length in bytes. */
+	bytes: number;
+	/** Filesystem mtime, RFC 3339 UTC; `None` when unavailable. */
+	modified?: string;
+}
+
+/**
+ * JSON response for `GET /api/docs/{repo}/tree?path=<rel-dir>`.
+ * 
+ * Wire format:
+ * ```json
+ * {
+ * "repo": "bastion",
+ * "root": "planning",
+ * "entries": [
+ * { "path": "planning/status.md", "name": "status.md", "is_dir": false },
+ * { "path": "planning/decisions", "name": "decisions", "is_dir": true }
+ * ]
+ * }
+ * ```
+ */
+export interface DocTreeDto {
+	/** Echoes the resolved workspace registry name. */
+	repo: string;
+	/**
+	 * The allowlisted root (or subtree) the listing is relative to; `""` when the whole
+	 * allowlist was walked.
+	 */
+	root: string;
+	/** Sorted directories-first, then by `name`. Only markdown-bearing entries appear. */
+	entries?: DocEntryDto[];
+}
+
+/**
  * Payload shape for `WsFrameKind::Error` frames.
  * 
  * Allows the server to surface typed error information over the WS channel.
