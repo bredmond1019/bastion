@@ -378,6 +378,12 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             .service(web::resource("/runs").route(web::get().to(handlers::runs::list_runs)))
             // /runs/{id} — GET (per-node run-state snapshot)
             .service(web::resource("/runs/{id}").route(web::get().to(handlers::runs::get_run)))
+            // ── Attention / carryover board route (BA.11.P) ─────────────────
+            // /attention — GET only (stale carryover, aging backlog, orphaned captures)
+            .service(
+                web::resource("/attention")
+                    .route(web::get().to(handlers::attention::get_attention)),
+            )
             .app_data(live_data);
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
@@ -602,6 +608,10 @@ mod tests {
             .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
             .service(web::resource("/runs").route(web::get().to(handlers::runs::list_runs)))
             .service(web::resource("/runs/{id}").route(web::get().to(handlers::runs::get_run)))
+            .service(
+                web::resource("/attention")
+                    .route(web::get().to(handlers::attention::get_attention)),
+            )
             .app_data(live_data);
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
@@ -1587,6 +1597,248 @@ heading = "bastion"
             resp.status(),
             404,
             "GET /api/runs/{{id}} for an unknown run must return 404; got {}",
+            resp.status()
+        );
+    }
+
+    // ── Attention / carryover board route (BA.11.P) ────────────────────────
+
+    /// Temp brain root for `/api/attention` tests — same overall shape as
+    /// [`make_temp_board_brain_root`] (a `brain.toml` + a leaf `planning/state.json`),
+    /// but the root's own `planning/state.json` is `kind: "brain"` (it's the HQ
+    /// file `discover_state_files` resolves at `<root>/planning/state.json`) and
+    /// carries `carryover[]` + `backlog[]` fixtures: one stale carryover item,
+    /// one plain aging-backlog item, one capture-origin item (→ `orphaned_captures`),
+    /// one snoozed item, and one under-threshold (recent) item — all with dates
+    /// far enough in the past (or future, for the snooze) to be deterministic
+    /// regardless of when the test runs.
+    fn make_temp_attention_brain_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-serve-attention-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let planning_dir = dir.join("planning");
+        std::fs::create_dir_all(&planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"[vocab]
+layer = ["console"]
+status = ["active"]
+
+[crawl]
+skip_dirs = ["target", ".git"]
+
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "."
+status_file = "planning/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "bastion"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            planning_dir.join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "brain",
+  "updated": "2026-07-04",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": [],
+  "carryover": [
+    {
+      "slug": "stale-known-issue",
+      "scope": {},
+      "kind": "known_issue",
+      "text": "stale carryover fixture item",
+      "created": "2026-01-01"
+    }
+  ],
+  "backlog": [
+    {
+      "slug": "aging-idea",
+      "title": "Aging backlog fixture item",
+      "repo": "bastion",
+      "type": "feature",
+      "status": "idea",
+      "created": "2026-01-01"
+    },
+    {
+      "slug": "captured-idea",
+      "title": "Orphaned capture fixture item",
+      "repo": "bastion",
+      "type": "feature",
+      "status": "idea",
+      "created": "2026-01-01",
+      "origin": { "type": "capture", "notes": "planning/captured-idea/notes.md" }
+    },
+    {
+      "slug": "snoozed-idea",
+      "title": "Snoozed backlog fixture item",
+      "repo": "bastion",
+      "type": "feature",
+      "status": "idea",
+      "created": "2026-01-01",
+      "snoozed_until": "2099-01-01"
+    },
+    {
+      "slug": "fresh-idea",
+      "title": "Under-threshold backlog fixture item",
+      "repo": "bastion",
+      "type": "feature",
+      "status": "idea",
+      "created": "2999-01-01"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    /// Registry pointing `default_workspace` at the temp attention brain root —
+    /// mirrors [`registry_with_board_fixture`].
+    fn registry_with_attention_fixture(brain_root: &std::path::Path) -> FileConfig {
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("brain-root".to_string(), brain_root.to_path_buf());
+        FileConfig {
+            workspaces: Some(workspaces),
+            default_workspace: Some("brain-root".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn get_attention_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/attention?scope=hq")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/attention without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_attention_hq_scope_returns_200_with_three_lanes() {
+        let dir = make_temp_attention_brain_root();
+        let registry = registry_with_attention_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/attention?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/attention?scope=hq with a valid token must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["scope"], "hq");
+        assert!(body["as_of"].is_string(), "as_of must be a string");
+        assert!(
+            body["thresholds"].is_object(),
+            "thresholds must be an object"
+        );
+
+        let lanes = &body["lanes"];
+        let stale_carryover = lanes["stale_carryover"]
+            .as_array()
+            .expect("stale_carryover must be an array");
+        let aging_backlog = lanes["aging_backlog"]
+            .as_array()
+            .expect("aging_backlog must be an array");
+        let orphaned_captures = lanes["orphaned_captures"]
+            .as_array()
+            .expect("orphaned_captures must be an array");
+
+        assert!(
+            stale_carryover
+                .iter()
+                .any(|c| c["slug"] == "stale-known-issue"),
+            "stale carryover fixture item must appear in stale_carryover; got {stale_carryover:?}"
+        );
+        assert!(
+            aging_backlog.iter().any(|b| b["slug"] == "aging-idea"),
+            "aging backlog fixture item must appear in aging_backlog; got {aging_backlog:?}"
+        );
+        assert!(
+            orphaned_captures
+                .iter()
+                .any(|b| b["slug"] == "captured-idea"),
+            "capture fixture item must appear in orphaned_captures; got {orphaned_captures:?}"
+        );
+        assert!(
+            !aging_backlog.iter().any(|b| b["slug"] == "captured-idea"),
+            "capture fixture item must NOT appear in aging_backlog"
+        );
+        assert!(
+            !aging_backlog.iter().any(|b| b["slug"] == "snoozed-idea"),
+            "snoozed fixture item must be absent from aging_backlog"
+        );
+        assert!(
+            !aging_backlog.iter().any(|b| b["slug"] == "fresh-idea"),
+            "under-threshold fixture item must be absent from aging_backlog"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_attention_unknown_tier_returns_200_with_empty_lanes() {
+        let dir = make_temp_attention_brain_root();
+        let registry = registry_with_attention_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/attention?scope=tier&tier=nonexistent-tier")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "an unknown tier must still return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let lanes = &body["lanes"];
+        assert_eq!(lanes["stale_carryover"], serde_json::json!([]));
+        assert_eq!(lanes["aging_backlog"], serde_json::json!([]));
+        assert_eq!(lanes["orphaned_captures"], serde_json::json!([]));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_attention_unrecognized_scope_returns_400() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/attention?scope=bogus")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            400,
+            "an unrecognized scope must return 400; got {}",
             resp.status()
         );
     }
