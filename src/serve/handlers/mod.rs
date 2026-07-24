@@ -5,6 +5,7 @@
 //! `/api` scope so they inherit `BearerAuthMiddleware`.
 
 pub mod actions;
+pub mod attention;
 pub mod board;
 pub mod runs;
 pub mod sessions;
