@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-23T22:55:34Z
+timestamp: 2026-07-23T23:43:08Z
 ---
 
 # Log — bastion
@@ -34,7 +34,9 @@ timestamp: 2026-07-23T22:55:34Z
   serve DTO contract with a drift gate, so BastionWeb (`BW.0.B`) consumes compile-checked types
   instead of hand-mirroring them.
 - **Refs:** `planning/11.L-typeshare-ts-generation/`; branch
-  `11.L-typeshare-ts-generation-flow`; `state.json`'s `BA.11.L` block = `closed`.
+  `11.L-typeshare-ts-generation-flow`; PR
+  [#24](https://github.com/bredmond1019/bastion/pull/24) (squash-merged, branch deleted);
+  `state.json`'s `BA.11.L` block = `closed`.
 - Next: resume Phase 13/14 blocks per `state.json`'s regenerated `focus.next` ordering (BA.11.J
   cost read endpoint, BA.11.M live run read/stream endpoint remain queued in Phase 11).
 
