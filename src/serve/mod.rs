@@ -32,6 +32,7 @@
 //!   [`auth::BearerAuthMiddleware`], requiring `Authorization: Bearer <token>`.
 
 pub mod auth;
+pub mod docs;
 pub mod dto;
 pub mod handlers;
 pub mod poll;
