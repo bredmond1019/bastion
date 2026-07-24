@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod attention;
 pub mod board;
+pub mod docs;
 pub mod runs;
 pub mod sessions;
 pub mod status;

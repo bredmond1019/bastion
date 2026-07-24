@@ -11,6 +11,52 @@ timestamp: 2026-07-23T23:43:08Z
 
 ---
 
+## [run: 2026-07-24]
+
+### 11.Q-docs-read-endpoint — done
+
+- **What:** `/sdlc-flow` drove spec `11.Q-docs-read-endpoint` (BA.11.Q) end to end across 6
+  tasks, all PASS in 1 attempt each: typeshare-annotated `DocEntryDto`/`DocTreeDto`/`DocFileDto`
+  DTOs added to `src/serve/dto.rs` and `types/serve.ts` regenerated (task 1); the pure
+  traversal-rejecting `validate_rel_path`, the canonicalize-then-contain
+  `resolve_allowlisted_path` (each `ALLOWED_ROOTS` entry canonicalized independently so a
+  symlinked `planning/` resolves correctly), a pure `build_doc_tree` assembly helper, and the
+  `DocsError` enum, all exhaustively unit-tested with real temp-dir symlink fixtures in
+  `src/serve/docs.rs` (task 2); thin `web::block` shells `get_docs_tree`/`get_docs_file` in
+  `src/serve/handlers/docs.rs` mapping `DocsError` to the spec's HTTP status/C0xx codes, plus a
+  fix for a task-2 gap that let a non-allowlisted repo-root directory be read as if it were an
+  allowed file (task 3); `GET /api/docs/{repo}/tree` and `/file` registered in both app
+  factories in `src/serve/mod.rs` with integration tests covering 401, a real symlinked
+  `planning/` tree listing and raw read, three distinct 403/C003 traversal rejections
+  (`../..`, bare `.env`, absolute path), and 404/C005 vs 404/C002 (task 4); `docs/serve-api.md`
+  promoted the planned §20 banner to real Section 16 (v0.9 → v0.10), renumbered trailing
+  sections, fixed cross-references, and updated the §2.3 auth table (task 5); and a final
+  validation pass confirming all gates green (`cargo fmt --check`, `cargo clippy -D warnings`,
+  `cargo test`, `cargo build --release`, `./scripts/check-typeshare-drift.sh`) plus a live
+  `bastion serve` smoke test against a real symlinked `planning/` vault, confirming the tree,
+  file read, and traversal-rejection routes all behave correctly end-to-end (task 6). One
+  consolidated review passed with no findings. Notable decisions: task 2's
+  `resolve_allowlisted_path` had a gap where a non-allowlisted repo-root directory could pass
+  containment checks and be treated as a readable file — caught and fixed in task 3 with a
+  dedicated regression test; no `mev`/`okf-core` change was made. `state.json`'s `BA.11.Q`
+  block flipped to `closed`.
+- **Why:** Exposes an allowlisted, traversal-rejecting markdown file tree and raw-read API over
+  `serve` so BastionWeb's reader (`BW.2.A`) can browse and render brain markdown across repos
+  without duplicating read/allowlist logic in the BFF.
+
+```
+630a05d docs: update docs for 11.Q-docs-read-endpoint
+51ad38d docs: promote docs-read API to serve-api §16, bump v0.9 -> v0.10
+a25e91c feat: implement 11.Q-docs-read-endpoint-task4
+84b529e feat: implement 11.Q-docs-read-endpoint-task3
+2424f61 feat: implement 11.Q-docs-read-endpoint-task2
+aa21e12 feat: implement 11.Q-docs-read-endpoint-task1
+4e5dd5d docs(serve-api): draft planned GET /api/docs contract (BA.11.Q)
+2b65d90 docs(data-contract): re-pin to canonical v1.2.0 (OR.Y)
+```
+
+Next: BA.11.J (Cost read endpoint, GET /api/costs) is next in Phase 11's queue.
+
 ## [2026-07-24]
 
 ### 11.P-attention-read-endpoint — done

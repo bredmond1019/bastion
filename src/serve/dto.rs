@@ -17,6 +17,9 @@
 //!   [`AttentionBacklogDto`] / [`AttentionThresholdsDto`] — `GET /api/attention` stale-carryover /
 //!   aging-backlog / orphaned-capture projection response (BA.11.P). Reuses [`BoardScope`] for its
 //!   `scope` query param — the semantics are identical to `GET /api/board`.
+//! - [`DocTreeDto`] / [`DocEntryDto`] — `GET /api/docs/{repo}/tree` allowlisted markdown tree
+//!   response (BA.11.Q).
+//! - [`DocFileDto`] — `GET /api/docs/{repo}/file` raw markdown read response (BA.11.Q).
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -886,6 +889,81 @@ pub struct RunStateDto {
     pub metadata: serde_json::Value,
     /// Per-node projected states, one entry per class name in `TaskContext::node_runs`.
     pub nodes: Vec<NodeTransitionDto>,
+}
+
+// ── Docs read API (BA.11.Q) ─────────────────────────────────────────────────────
+
+/// One entry in a `GET /api/docs/{repo}/tree` listing.
+///
+/// Wire format:
+/// ```json
+/// { "path": "planning/status.md", "name": "status.md", "is_dir": false }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocEntryDto {
+    /// Repo-root-relative path — exactly what `GET /api/docs/{repo}/file`'s `?path=` accepts.
+    pub path: String,
+    /// The entry's base name (final path component).
+    pub name: String,
+    /// `true` when the entry is a directory, `false` for a file.
+    pub is_dir: bool,
+}
+
+/// JSON response for `GET /api/docs/{repo}/tree?path=<rel-dir>`.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "repo": "bastion",
+///   "root": "planning",
+///   "entries": [
+///     { "path": "planning/status.md", "name": "status.md", "is_dir": false },
+///     { "path": "planning/decisions", "name": "decisions", "is_dir": true }
+///   ]
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocTreeDto {
+    /// Echoes the resolved workspace registry name.
+    pub repo: String,
+    /// The allowlisted root (or subtree) the listing is relative to; `""` when the whole
+    /// allowlist was walked.
+    pub root: String,
+    /// Sorted directories-first, then by `name`. Only markdown-bearing entries appear.
+    #[serde(default)]
+    pub entries: Vec<DocEntryDto>,
+}
+
+/// JSON response for `GET /api/docs/{repo}/file?path=<rel-file>`.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "repo": "bastion",
+///   "path": "planning/status.md",
+///   "content": "---\ntype: Status\n---\n\n# bastion — Status\n…",
+///   "bytes": 8421,
+///   "modified": "2026-07-24T18:03:11Z"
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocFileDto {
+    /// Echoes the resolved workspace registry name.
+    pub repo: String,
+    /// The validated, repo-root-relative path that was read.
+    pub path: String,
+    /// The file's raw markdown, byte-for-byte — no rendering, no frontmatter stripping, no
+    /// sentinel removal.
+    pub content: String,
+    /// Content length in bytes.
+    #[typeshare(serialized_as = "number")]
+    pub bytes: u64,
+    /// Filesystem mtime, RFC 3339 UTC; `None` when unavailable.
+    #[serde(default)]
+    pub modified: Option<String>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -2373,5 +2451,89 @@ mod tests {
         assert!(v["nodes"][0]["usage"].is_null());
         assert!(v["nodes"][0]["output"].is_object());
         assert!(v["nodes"][1]["output"].is_null());
+    }
+
+    // ── DocTreeDto / DocEntryDto / DocFileDto (BA.11.Q) ────────────────────
+
+    fn sample_doc_tree_dto() -> DocTreeDto {
+        DocTreeDto {
+            repo: "bastion".to_owned(),
+            root: "planning".to_owned(),
+            entries: vec![
+                DocEntryDto {
+                    path: "planning/status.md".to_owned(),
+                    name: "status.md".to_owned(),
+                    is_dir: false,
+                },
+                DocEntryDto {
+                    path: "planning/decisions".to_owned(),
+                    name: "decisions".to_owned(),
+                    is_dir: true,
+                },
+            ],
+        }
+    }
+
+    fn sample_doc_file_dto() -> DocFileDto {
+        DocFileDto {
+            repo: "bastion".to_owned(),
+            path: "planning/status.md".to_owned(),
+            content: "---\ntype: Status\n---\n\n# bastion — Status\n".to_owned(),
+            bytes: 41,
+            modified: Some("2026-07-24T18:03:11Z".to_owned()),
+        }
+    }
+
+    #[test]
+    fn doc_tree_dto_round_trips() {
+        let dto = sample_doc_tree_dto();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: DocTreeDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn doc_tree_dto_serializes_expected_fields() {
+        let dto = sample_doc_tree_dto();
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(v["repo"], "bastion");
+        assert_eq!(v["root"], "planning");
+        assert_eq!(v["entries"][0]["path"], "planning/status.md");
+        assert_eq!(v["entries"][0]["name"], "status.md");
+        assert_eq!(v["entries"][0]["is_dir"], false);
+        assert_eq!(v["entries"][1]["is_dir"], true);
+    }
+
+    #[test]
+    fn doc_tree_dto_entries_default_to_empty_when_absent() {
+        let raw = r#"{"repo":"bastion","root":""}"#;
+        let dto: DocTreeDto = serde_json::from_str(raw).expect("entries should default");
+        assert!(dto.entries.is_empty());
+    }
+
+    #[test]
+    fn doc_file_dto_round_trips() {
+        let dto = sample_doc_file_dto();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: DocFileDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn doc_file_dto_serializes_expected_fields() {
+        let dto = sample_doc_file_dto();
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(v["repo"], "bastion");
+        assert_eq!(v["path"], "planning/status.md");
+        assert_eq!(v["bytes"], 41);
+        assert_eq!(v["modified"], "2026-07-24T18:03:11Z");
+        assert!(v["content"].as_str().unwrap().starts_with("---\ntype"));
+    }
+
+    #[test]
+    fn doc_file_dto_modified_defaults_to_null_when_absent() {
+        let raw = r#"{"repo":"bastion","path":"README.md","content":"hello","bytes":5}"#;
+        let dto: DocFileDto = serde_json::from_str(raw).expect("modified should default");
+        assert!(dto.modified.is_none());
     }
 }

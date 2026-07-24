@@ -6,13 +6,13 @@ doc_id: data-contract
 layer: [console, engine]
 project: bastion
 status: active
-keywords: [data contract, orchestrator, PostgreSQL, node_runs, field mappings, v1.1.0, cancellation, abort, budget gate]
+keywords: [data contract, orchestrator, PostgreSQL, node_runs, field mappings, v1.2.0, cancellation, abort, budget gate, event read api]
 related: [monitor, costs, inspect, run]
 ---
 
 # Data Contract (Consumer View)
 
-**Pinned Contract Version: 1.1.0**
+**Pinned Contract Version: 1.2.0**
 
 The **canonical, authoritative** contract is owned by the orchestrator:
 `python-orchestration-system/docs/data-contract.md`. This file is bastion's *consumer* view — it
@@ -35,7 +35,13 @@ pins the version bastion is built against and maps each contract field to bastio
 - The **DAG edges** come from `GET /workflows/{type}/graph` (HTTP) — the only source of edges and
   of not-yet-run nodes.
 - Join the two on **node class name**.
-- Reserved for later: an orchestrator HTTP read API (`GET /events/{id}`) — do not depend on it.
+- As of the canonical contract's v1.2.0, the orchestrator's own Python API now serves a read-only
+  `GET /events/{event_id}` alternative to the direct-DB read above (`X-API-Key` gated, `404` for
+  unknown/malformed ids, `200 {event_id, workflow_type, status, created_at, updated_at,
+  task_context}` with `status` derived server-side — six values, precedence in the canonical
+  doc's §7). Bastion does not consume this route yet — monitor/inspect/costs still read PostgreSQL
+  directly — but it is no longer reserved-only; wiring bastion to it is a future `BA.*` block, not
+  this re-pin.
 
 ### Costs (DB-only)
 
@@ -102,6 +108,15 @@ present):
 | `metadata.budget.reason.spent` / `.limit` | `BudgetHalt`'s `spent` / `limit` fields |
 | `metadata.cancellation.cancelled == true` | `WorkflowRun.status == RunStatus::Cancelled` |
 
+The canonical contract's v1.2.0 adds a third run-level annotation, `metadata.failure` — written
+when a workflow raises inside the orchestrator's `process_incoming_event`, on a fresh session
+that survives the enclosing transaction's rollback: `{ "failure": { "failed": true, "error":
+"<ExcType>: <msg>", "at": "<iso8601>" } }`. This is not yet wired into
+`db::workflows::derive_run_status` — bastion's existing per-node `RunStatus::Failed` derivation
+(from `node_runs`) already covers the same terminal state for direct-DB reads; consuming
+`metadata.failure` explicitly (e.g. to surface the top-level error message) is future work, not
+this re-pin.
+
 `RunStatus` gained the two run-level-only variants `Cancelled` and `BudgetHalted` alongside the
 existing per-node-derived `Pending`/`Running`/`Success`/`Failed`. `derive_run_status` (`src/db/
 workflows.rs`) checks `metadata.budget` before `metadata.cancellation` — a run can only be
@@ -119,7 +134,11 @@ keys never turns a previously-valid run into a parse failure.
 
 ### Trigger → `api::client::trigger_workflow`
 
-`POST /` with `{ "workflow_type": str, "data": object }` → `202 { "task_id": str, "message": str }`.
+`POST /` with `{ "workflow_type": str, "data": object }` → `202 { "task_id": str, "event_id": str,
+"message": str }`. The canonical contract's v1.2.0 adds `event_id` (the `events.id` row just
+created) alongside the existing Celery `task_id` — it is the id to poll with the new
+`GET /events/{event_id}` read route. `bastion` does not read `event_id` off the response yet;
+consuming it is future work, not this re-pin.
 
 ### Abort → `api::client::abort_run`
 
@@ -162,3 +181,4 @@ Every branch is unit-tested element-by-element in `src/run/abort.rs` (`render_ou
 | 1.0.0 | 2026-06-20 | Initial pin against canonical 1.0.0. |
 | 1.1.0 | 2026-07-16 | Re-pin from 1.0.0 straight to 1.1.0, resolving known drift against the canonical 1.0.1 patch (no bastion-visible shape change in 1.0.1 — `POST /events/` auth only, and bastion never calls that endpoint). Registers the canonical's v1.1.0 additions: `POST /events/{run_id}/abort` (§ above) and the `metadata.cancellation` / `metadata.budget` run-level annotations (§ above) — both unconsumed by bastion Rust types today; wiring them up is `BA.7.C`'s job. |
 | 1.1.0 | 2026-07-16 | Mapping change against the same pinned version (`BA.7.C`, no canonical bump) — the two v1.1.0 additions registered above are now consumed: the abort endpoint by `api::client::abort_run` / `bastion abort <run>`, served by `engine-serve` embedded in `bastion serve` (D48); the `metadata.cancellation` / `metadata.budget` annotations by `db::workflows::derive_run_status` into `WorkflowRun.status`/`budget_halt`. |
+| 1.2.0 | 2026-07-24 | Re-pin from 1.1.0 to 1.2.0 (`OR.Y`). Registers the canonical's v1.2.0 additions, none yet consumed by bastion Rust types: the orchestrator's own `GET /events/{event_id}` read route (§ Monitor / Inspect above — no longer reserved), `event_id` on the `POST /events/` 202 body (§ Trigger above), and the `metadata.failure` run-level annotation (§ Run-level `metadata` annotations above). Wiring any of these into `db::workflows`/`api::client` is future work. |

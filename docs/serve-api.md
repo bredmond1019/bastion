@@ -1,23 +1,23 @@
 ---
 type: Guideline
-title: "serve-api contract v0.9"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), and the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P)."
+title: "serve-api contract v0.10"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), and the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.9 Contract
+# serve-api — v0.10 Contract
 
-**Version:** v0.9  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–15, 17, 18 — plus, when mounted,
-`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 16.  
-**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15, 17, 18; bastion-web
-(`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; `bastion abort` (`src/run/abort.rs`,
-this repo) for Section 16's abort route.
+**Version:** v0.10  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–16, 18, 19 — plus, when mounted,
+`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 17.  
+**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15, 18, 19; bastion-web
+(`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web (`BW.2.A`) for Section
+16; `bastion abort` (`src/run/abort.rs`, this repo) for Section 17's abort route.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -44,7 +44,7 @@ transport security on the tailnet.
 ## 2. Authentication
 
 All routes **except** `GET /health` under bastion's own `/api` and `/ws` scopes are protected by
-mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 16,
+mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 17,
 mounted only when config allows) are a **separate, unmounted-at-`/api` surface with their own
 `X-API-Key` gate** — the two auth schemes coexist side by side and are never double-applied to the
 same request:
@@ -52,8 +52,8 @@ same request:
 | Route family | Scheme | Header |
 |---|---|---|
 | `/health`, `/api/*`, `/ws` (Sections 3–13) | Bearer | `Authorization: Bearer <BASTION_SERVE_TOKEN>` |
-| Engine routes (Section 16): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
-| Engine routes (Section 16): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
+| Engine routes (Section 17): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
+| Engine routes (Section 17): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
 
 The engine's own `GET /health` is shadowed by bastion's `/health` handler (first-registration-wins
 for duplicate exact-path routes — verified empirically, not a panic), so the process's `/health`
@@ -106,6 +106,8 @@ to verify the configured token.
 | `POST /api/actions/command` | Yes — `Authorization: Bearer <token>` |
 | `GET /api/board` | Yes — `Authorization: Bearer <token>` |
 | `GET /api/attention` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/docs/{repo}/tree` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/docs/{repo}/file` | Yes — `Authorization: Bearer <token>` |
 
 ---
 
@@ -1170,12 +1172,12 @@ Two read-only routes projecting the embedded engine's in-memory `LiveStateStore`
 live_state::LiveStateStore`, `../engine-rs/crates/engine-serve/src/live_state.rs`) onto HTTP, so a
 remote client (bastion-web `BW.3.B` node drill-in) can read a run's current per-node state without
 polling Postgres. Live under the bearer-protected `/api` scope (Section 2) — same auth as Sections
-3–13, distinct from the Section 16 engine `X-API-Key` scheme.
+3–13, distinct from the Section 17 engine `X-API-Key` scheme.
 
 `LiveStateStore` is a single instance shared between the mounted engine's `on_progress` writer and
-these read handlers (`src/serve/mod.rs`): when the Section 16 engine mount is active, the engine
+these read handlers (`src/serve/mod.rs`): when the Section 17 engine mount is active, the engine
 records every node transition into this store as the run executes, and these routes read the same
-store. **When the engine is not mounted** (Section 16.1 — `DATABASE_URL` / `BASTION_ENGINE_API_KEY`
+store. **When the engine is not mounted** (Section 17.1 — `DATABASE_URL` / `BASTION_ENGINE_API_KEY`
 absent), the store still exists but stays empty for the lifetime of the process: `GET /api/runs`
 returns `200 []` and `GET /api/runs/{id}` returns `404` for every id — the same graceful-degradation
 posture as the rest of this contract, not an error.
@@ -1211,7 +1213,7 @@ No query parameters. No 404 case — an empty store is a normal 200.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `id` | string (UUID) | The run id, as returned by `GET /api/runs` or minted by the Section 16 `/events/` trigger. Must parse as a UUID. |
+| `id` | string (UUID) | The run id, as returned by `GET /api/runs` or minted by the Section 17 `/events/` trigger. Must parse as a UUID. |
 
 **Request:**
 
@@ -1500,7 +1502,142 @@ unrecognized-scope `400` — and manually smoke-tested end-to-end against a runn
 
 ---
 
-## 16. Embedded engine route table (v0.5, BA.7.C)
+## 16. Docs read API (v0.10, BA.11.Q)
+
+Two read-only routes for browsing and reading brain markdown across repos: a file tree and a raw-file
+read, both **allowlisted and traversal-rejecting**. The allowlist is a security boundary and lives
+here, in the process that owns the filesystem — never in a client or BFF. Read-only (D25): no route
+under `/api/docs` writes, creates, or deletes anything.
+
+The `{repo}` path segment is a name from the **existing `[workspaces]` registry** (`src/config.rs`) —
+the same registry `GET /api/repos` (Section 11.1) lists and the CLI's `--workspace` flag uses. A
+client populates its repo switcher from `GET /api/repos`; there is no separate docs-only naming
+scheme.
+
+### 16.1 `GET /api/docs/{repo}/tree` — allowlisted markdown tree
+
+| Parameter | In | Required | Default | Description |
+|---|---|---|---|---|
+| `repo` | path | Yes | — | Workspace registry name (e.g. `brain`, `bastion`). Unknown → `404`/`C005`. |
+| `path` | query | No | all allowlisted roots | Relative directory to scope the listing to. Must satisfy the path rules in 16.3. |
+
+```
+GET /api/docs/bastion/tree?path=planning HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK): `DocTreeDto`**
+
+```json
+{
+  "repo": "bastion",
+  "root": "planning",
+  "entries": [
+    { "path": "planning/status.md", "name": "status.md", "is_dir": false },
+    { "path": "planning/decisions", "name": "decisions", "is_dir": true }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | Echoes the resolved registry name. |
+| `root` | string | The allowlisted root (or subtree) the listing is relative to; `""` when the whole allowlist was walked. |
+| `entries` | array of `DocEntryDto` | `{ path, name, is_dir }` — `path` is repo-root-relative and is exactly what `16.2`'s `?path=` accepts. Sorted directories-first, then by `name`. |
+
+Only markdown files appear (`.md`/`.mdx`); directories that contain no markdown at any depth are
+omitted. The walk hides the same directories the corpus crawl does — `brain.toml`'s `[crawl].skip_dirs`
+plus any nested-`.git` subtree — via `mev::brain::crawl::crawl_brain`.
+
+### 16.2 `GET /api/docs/{repo}/file` — raw markdown content
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `repo` | path | Yes | Workspace registry name. |
+| `path` | query | Yes | Repo-root-relative file path. Must satisfy the path rules in 16.3. Absent `path` maps to the same `403`/`C003` response as any other rejected path. |
+
+```
+GET /api/docs/bastion/file?path=planning/status.md HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK): `DocFileDto`**
+
+```json
+{
+  "repo": "bastion",
+  "path": "planning/status.md",
+  "content": "---\ntype: Status\n---\n\n# bastion — Status\n…",
+  "bytes": 8421,
+  "modified": "2026-07-24T18:03:11Z"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` / `path` | string | Echo the resolved repo and the validated relative path. |
+| `content` | string | The file's **raw** markdown, byte-for-byte, no rendering, no frontmatter stripping, no sentinel removal. Rendering is the client's job. |
+| `bytes` | integer | Content length in bytes. |
+| `modified` | string \| null | Filesystem mtime, RFC 3339 UTC; `null` when unavailable. |
+
+### 16.3 Path rules (the security contract)
+
+A `path` is accepted only when **all** of the following hold. The first four are checked **before any
+filesystem access**:
+
+1. It is **relative** — no leading `/`, no drive prefix.
+2. It contains **no `..`** component (and no root/prefix component anywhere).
+3. It contains **no NUL byte and no backslash**.
+4. For `16.2`, its extension is **`.md` or `.mdx`**.
+5. After joining and `canonicalize()`, the result is **contained within a canonicalized allowlisted
+   root** — which also rejects a symlink *inside* the tree that points out of it.
+
+**Allowlisted roots**, per repo: `docs/`, `planning/`, `business/`, plus repo-root-level `*.md` files
+(`README.md`, `CLAUDE.md`). Source code, dotfiles, and non-markdown data are never served — the
+extension rule means a `.env`, a key, or a `state.json` is unreadable through this route even from
+inside an allowed root.
+
+> **Note on `planning/`:** in every repo `planning/` is a **symlink into the company-brain vault**
+> (`core/_planning/<repo>/`). Containment is therefore checked against each *allowlisted root*
+> canonicalized independently — not against a canonicalized repo root, which would reject every
+> legitimate `planning/` read.
+
+### 16.4 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (Section 2.2) |
+| Path fails any rule in 16.3 — traversal, disallowed extension, a missing required `?path=` on the file route, or outside every allowlisted root | `403 Forbidden` | JSON `ErrorPayload`, code `C003`. **One uniform response for all four** — the API never discloses whether a path outside the allowlist exists. |
+| Unknown `{repo}` (not in the `[workspaces]` registry) | `404 Not Found` | JSON `ErrorPayload`, code `C005` (matches Section 11's convention) |
+| File absent inside an allowlisted root | `404 Not Found` | JSON `ErrorPayload`, code `C002` |
+| File is not valid UTF-8 | `500 Internal Server Error` | JSON `ErrorPayload`, code `C014` |
+| Other read failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C009` |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
+
+### 16.5 Out of scope
+
+Writes of any kind; rendering, wikilink resolution, and link rewriting (all client-side, `BW.2.A`);
+frontmatter/title extraction on tree entries; a configurable allowlist; non-markdown assets (images,
+PDFs); search (that is the retrieval path, not this one); caching/ETags.
+
+### 16.6 Testing
+
+`validate_rel_path` and `resolve_allowlisted_path` (`src/serve/docs.rs`) are the pure/allowlist
+security core — exhaustively unit-tested with no I/O for the pure rejection vectors (`../x`,
+`a/../../b`, `/etc/passwd`, a Windows-style `C:\…`, an embedded NUL, a backslash, an empty path,
+`foo.md/../../.env`, a bare `.env`) and, for `resolve_allowlisted_path`, against a real temp-dir
+symlink fixture asserting both that a symlinked allowlist root (mirroring `planning/`) is accepted
+and that a symlink inside a root pointing outside it is rejected. The thin `web::block` shells
+(`get_docs_tree` / `get_docs_file`, `src/serve/handlers/docs.rs`) and route wiring in
+`src/serve/mod.rs` are covered by `#[actix_web::test]` integration tests against a temp workspace
+fixture with a real symlinked `planning/` dir, asserting the bearer-auth `401`, a `200` tree listing
+that excludes non-markdown files, a `200` raw read through the symlinked root, the `403`/`C003`
+uniform rejection across traversal / bad-extension / absolute-path vectors, and the distinct
+`404`/`C005` (unknown repo) vs. `404`/`C002` (missing file) cases.
+
+---
+
+## 17. Embedded engine route table (v0.5, BA.7.C)
 
 `bastion serve` embeds `engine-serve`'s route table (`engine_serve::http::configure`) at the
 **server root** — not under `/api` — per D48 ("the abort endpoint and the rest of the engine
@@ -1509,7 +1646,7 @@ growth (`planning/7.C-cost-budget-alerts-abort/tasks.md`, *Scope growth* section
 same `engine-serve` surface engine-rs's own `EN.1.C`/`EN.2.B` shipped as an embeddable library —
 `bastion serve` is the first (and, as of this writing, only) process that actually mounts it.
 
-### 16.1 Mount decision
+### 17.1 Mount decision
 
 The engine routes are mounted only when **both** `DATABASE_URL` and `BASTION_ENGINE_API_KEY` are
 set (non-empty) at boot — decided once, pure, by `serve::decide_engine_mount` (`src/serve/
@@ -1519,7 +1656,7 @@ stderr and emits a `tracing::warn!` `observ` event rather than failing to boot o
 that would 500 on every request. A `DATABASE_URL` present but unreachable (connection failure at
 boot) also leaves the engine routes unmounted, logged the same way.
 
-### 16.2 Routes
+### 17.2 Routes
 
 | Route | Method | Auth | Description |
 |---|---|---|---|
@@ -1533,7 +1670,7 @@ boot) also leaves the engine routes unmounted, logged the same way.
 an exact string match, entirely separate from bastion's own `BASTION_SERVE_TOKEN` Bearer check
 (Section 2). Neither scheme is layered on the other's routes.
 
-### 16.3 Testing
+### 17.3 Testing
 
 Covered by the in-process integration test `tests/abort_contract.rs`, which builds a real
 `engine-serve` `App` (via `AppState`) and asserts the 401 / 404 / 202 paths against it — the
@@ -1544,13 +1681,13 @@ including the empty-string-counts-as-absent case.
 
 ---
 
-## 17. Generated TypeScript types (v0.7, BA.11.L)
+## 18. Generated TypeScript types (v0.7, BA.11.L)
 
 The contract DTOs in `src/serve/dto.rs` are annotated with `#[typeshare]` and are the **single
 source of truth** for the TypeScript types consumed by BastionWeb (`BW.0.B`) and any other TS
 client of this contract. `bastion-ui` (Flutter) is unaffected — it has no TS surface.
 
-### 17.1 Generated artifact
+### 18.1 Generated artifact
 
 `types/serve.ts` (committed at the bastion package root) is the generated TypeScript output. It
 is produced by the `typeshare` CLI reading the `#[typeshare]`-annotated types in `src/serve/dto.rs`
@@ -1565,7 +1702,7 @@ Two exclusions from generation, both internal-only types that never cross the wi
 each carries a data variant with no serde representation for `typeshare` to mirror, so both are
 left unannotated rather than forced.
 
-### 17.2 Regenerating
+### 18.2 Regenerating
 
 Prerequisite: the `typeshare` CLI on `PATH` (`cargo install typeshare-cli --locked`).
 
@@ -1578,7 +1715,7 @@ typeshare src/serve --lang typescript --output-file types/serve.ts --config-file
 Run this after any change to `src/serve/dto.rs`'s public types (new field, new type, new enum
 variant, etc.) and commit the regenerated `types/serve.ts` alongside the `dto.rs` change.
 
-### 17.3 Drift check
+### 18.3 Drift check
 
 `scripts/check-typeshare-drift.sh` regenerates the types to a temp file (via the same invocation
 `gen-types.sh` uses, so the two scripts can never diverge on flags) and diffs it against the
@@ -1600,25 +1737,25 @@ documented in Sections 3, 5–13 is unchanged.
 
 ---
 
-## 18. Configuration reference
+## 19. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | `host:port` to bind |
 | `BASTION_SERVE_TOKEN` | **Yes** | — | Bearer token for protected routes; absent token is a typed error at startup |
-| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 16 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
-| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 16) check. Absent leaves those routes unmounted. |
+| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 17 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
+| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 17) check. Absent leaves those routes unmounted. |
 
 `bastion serve` loads config via `load_serve_config()` (`src/config.rs`), which
 is DB-free and does **not** require `DATABASE_URL` for its own `/api`/`/ws` surface. The
 `[workspaces]` registry consumed by Section 11's routes is loaded separately via
 `load_workspace_registry()` — also DB-free — once at server startup. `DATABASE_URL` and
-`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 16.1), not
+`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 17.1), not
 through `load_serve_config()`.
 
 ---
 
-## 19. Versioning policy
+## 20. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -1627,12 +1764,37 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.9**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.10**.
 
 ---
 
 ## Amendment Log
 
+- **2026-07-24 — v0.9 → v0.10 (BA.11.Q):** Added Section 16 (Docs read API) —
+  `GET /api/docs/{repo}/tree?path=<rel-dir>` (allowlisted markdown tree, directories-first then by
+  name, `path` optional and defaults to walking every allowlisted root with `root: ""`) and
+  `GET /api/docs/{repo}/file?path=<rel-file>` (raw markdown read — no rendering, frontmatter
+  stripping, or sentinel removal — plus `bytes` and an RFC-3339 `modified`), both under the
+  existing bearer-protected `/api` scope. Documented the `DocTreeDto`/`DocEntryDto`/`DocFileDto`
+  response schema and the security contract this block introduces: a pure pre-check
+  (`validate_rel_path`) rejecting an absolute path, a `..` component, a NUL byte, a backslash, an
+  empty path, and (for the file route) a non-`.md`/`.mdx` extension before any filesystem access,
+  followed by canonicalize-then-contain allowlist resolution (`resolve_allowlisted_path`) against
+  the allowlisted roots (`docs/`, `planning/`, `business/`, plus repo-root `*.md` files) —
+  **each allowlisted root canonicalized independently**, never a canonicalized repo root, so that
+  `planning/`'s company-brain-vault symlink resolves correctly while a symlink inside a root
+  pointing outside it is still rejected. All three rejection reasons (traversal, bad extension,
+  outside every allowlisted root) and a missing required `?path=` on the file route collapse into
+  one uniform `403`/`C003` response so the API never discloses whether an out-of-allowlist path
+  exists; an unknown `{repo}` is `404`/`C005`, a missing in-allowlist file is `404`/`C002`. This
+  promotes the formerly-planned §20 draft (banner-marked "NOT YET IMPLEMENTED", removed from its
+  end-of-document position) to its own numbered Section 16 placed after Section 15 — no existing
+  endpoint's documented contract changed. Added both `/api/docs/{repo}/tree` and
+  `/api/docs/{repo}/file` rows to the auth policy table (Section 2.3). Renumbered Embedded engine
+  route table → Section 17 (subsections 17.1–17.3), Generated TypeScript types → Section 18
+  (subsections 18.1–18.3), Configuration reference → Section 19, Versioning policy → Section 20,
+  and updated every in-document cross-reference to the renumbered sections. Updated frontmatter
+  title, description, `keywords`, and the current-contract version note.
 - **2026-07-24 — v0.8 → v0.9 (BA.11.P):** Added Section 15 (Attention / carryover API) —
   `GET /api/attention?scope=hq|tier|project|business[&tier=<name>]`, projecting the tier-scoped
   Attention board (stale `carryover[]`, aging `backlog[]`, orphaned `/capture` notes) that
