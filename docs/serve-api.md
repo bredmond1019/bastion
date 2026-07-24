@@ -1631,6 +1631,133 @@ This document follows a simple monotonic version scheme:
 
 ---
 
+## 20. Planned: Docs read API (BA.11.Q) — **NOT YET IMPLEMENTED**
+
+> **Status: planned, not served.** This is the drafted contract for block `BA.11.Q` (scoped in
+> `planning/master-plan.md`); the routes do **not** exist on any running `bastion serve` today, and
+> the contract version is deliberately **not** bumped for them. Clients (`bastion-ui`, bastion-web
+> `BW.2.A`) MUST NOT pin against this section until `BA.11.Q` closes — at which point it is promoted
+> to its own numbered section after Section 15, the trailing sections are renumbered, the version goes
+> v0.9 → v0.10, and an Amendment Log entry lands.
+
+Two read-only routes for browsing and reading brain markdown across repos: a file tree and a raw-file
+read, both **allowlisted and traversal-rejecting**. The allowlist is a security boundary and lives
+here, in the process that owns the filesystem — never in a client or BFF. Read-only (D25): no route
+under `/api/docs` writes, creates, or deletes anything.
+
+The `{repo}` path segment is a name from the **existing `[workspaces]` registry** (`src/config.rs`) —
+the same registry `GET /api/repos` (Section 11.1) lists and the CLI's `--workspace` flag uses. A
+client populates its repo switcher from `GET /api/repos`; there is no separate docs-only naming
+scheme.
+
+### 20.1 `GET /api/docs/{repo}/tree` — allowlisted markdown tree
+
+| Parameter | In | Required | Default | Description |
+|---|---|---|---|---|
+| `repo` | path | Yes | — | Workspace registry name (e.g. `brain`, `bastion`). Unknown → `404`/`C005`. |
+| `path` | query | No | all allowlisted roots | Relative directory to scope the listing to. Must satisfy the path rules in 20.3. |
+
+```
+GET /api/docs/bastion/tree?path=planning HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK): `DocTreeDto`**
+
+```json
+{
+  "repo": "bastion",
+  "root": "planning",
+  "entries": [
+    { "path": "planning/status.md", "name": "status.md", "is_dir": false },
+    { "path": "planning/decisions", "name": "decisions", "is_dir": true }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | Echoes the resolved registry name. |
+| `root` | string | The allowlisted root (or subtree) the listing is relative to; `""` when the whole allowlist was walked. |
+| `entries` | array of `DocEntryDto` | `{ path, name, is_dir }` — `path` is repo-root-relative and is exactly what `20.2`'s `?path=` accepts. Sorted directories-first, then by `name`. |
+
+Only markdown files appear (`.md`/`.mdx`); directories that contain no markdown at any depth are
+omitted. The walk hides the same directories the corpus crawl does — `brain.toml`'s `[crawl].skip_dirs`
+plus any nested-`.git` subtree.
+
+### 20.2 `GET /api/docs/{repo}/file` — raw markdown content
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `repo` | path | Yes | Workspace registry name. |
+| `path` | query | Yes | Repo-root-relative file path. Must satisfy the path rules in 20.3. |
+
+```
+GET /api/docs/bastion/file?path=planning/status.md HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK): `DocFileDto`**
+
+```json
+{
+  "repo": "bastion",
+  "path": "planning/status.md",
+  "content": "---\ntype: Status\n---\n\n# bastion — Status\n…",
+  "bytes": 8421,
+  "modified": "2026-07-24T18:03:11Z"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` / `path` | string | Echo the resolved repo and the validated relative path. |
+| `content` | string | The file's **raw** markdown, byte-for-byte, no rendering, no frontmatter stripping, no sentinel removal. Rendering is the client's job. |
+| `bytes` | integer | Content length in bytes. |
+| `modified` | string \| null | Filesystem mtime, RFC 3339 UTC; `null` when unavailable. |
+
+### 20.3 Path rules (the security contract)
+
+A `path` is accepted only when **all** of the following hold. The first four are checked **before any
+filesystem access**:
+
+1. It is **relative** — no leading `/`, no drive prefix.
+2. It contains **no `..`** component (and no root/prefix component anywhere).
+3. It contains **no NUL byte and no backslash**.
+4. For `20.2`, its extension is **`.md` or `.mdx`**.
+5. After joining and `canonicalize()`, the result is **contained within a canonicalized allowlisted
+   root** — which also rejects a symlink *inside* the tree that points out of it.
+
+**Allowlisted roots**, per repo: `docs/`, `planning/`, `business/`, plus repo-root-level `*.md` files
+(`README.md`, `CLAUDE.md`). Source code, dotfiles, and non-markdown data are never served — the
+extension rule means a `.env`, a key, or a `state.json` is unreadable through this route even from
+inside an allowed root.
+
+> **Note on `planning/`:** in every repo `planning/` is a **symlink into the company-brain vault**
+> (`core/_planning/<repo>/`). Containment is therefore checked against each *allowlisted root*
+> canonicalized independently — not against a canonicalized repo root, which would reject every
+> legitimate `planning/` read.
+
+### 20.4 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (Section 2.2) |
+| Path fails any rule in 20.3 — traversal, disallowed extension, or outside every allowlisted root | `403 Forbidden` | JSON `ErrorPayload`, code `C003`. **One uniform response for all three** — the API never discloses whether a path outside the allowlist exists. |
+| Unknown `{repo}` (not in the `[workspaces]` registry) | `404 Not Found` | JSON `ErrorPayload`, code `C005` (matches Section 11's convention) |
+| File absent inside an allowlisted root | `404 Not Found` | JSON `ErrorPayload`, code `C002` |
+| File is not valid UTF-8 | `500 Internal Server Error` | JSON `ErrorPayload`, code `C014` |
+| Other read failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C009` |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
+
+### 20.5 Out of scope
+
+Writes of any kind; rendering, wikilink resolution, and link rewriting (all client-side, `BW.2.A`);
+frontmatter/title extraction on tree entries; a configurable allowlist; non-markdown assets (images,
+PDFs); search (that is the retrieval path, not this one); caching/ETags.
+
+---
+
 ## Amendment Log
 
 - **2026-07-24 — v0.8 → v0.9 (BA.11.P):** Added Section 15 (Attention / carryover API) —
