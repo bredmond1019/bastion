@@ -38,6 +38,11 @@ okf-core = { path = "../okf-core" }
 # expect and coordinate breaks from ../engine-rs rather than assuming a bastion
 # regression. Do NOT add `default-features = false`.
 engine-serve = { path = "../engine-rs/crates/engine-serve" }
+# Same unpinned cross-repo path-dependency posture as engine-serve above —
+# needed at normal build time (not just tests) for the BA.11.M run-read
+# projection (`TaskContext`/`NodeRunStatus`) and its `{id}` UUID parsing.
+engine-contract = { path = "../engine-rs/crates/engine-contract" }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [lib]
 name = "bastion"
@@ -50,7 +55,7 @@ tempfile = "3"
 # ../engine-rs/crates/engine-serve/tests/abort_integration.rs) to exercise
 # bastion's `api::client::abort_run` against the actual engine. Same unpinned
 # cross-repo path-dependency posture as engine-serve above.
+# (engine-contract + uuid moved to [dependencies] for BA.11.M — the run-read
+# projection needs them at normal build time, not just in tests.)
 engine-core = { path = "../engine-rs/crates/engine-core" }
-engine-contract = { path = "../engine-rs/crates/engine-contract" }
-uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"

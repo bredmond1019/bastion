@@ -6,5 +6,6 @@
 
 pub mod actions;
 pub mod board;
+pub mod runs;
 pub mod sessions;
 pub mod status;
