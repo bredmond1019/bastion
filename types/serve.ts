@@ -3,22 +3,75 @@
 */
 
 /**
- * One lane entry (a single now/next/blocked/finished block) in a board response.
+ * One `backlog[]` node that has crossed the backlog staleness threshold — used for both the
+ * `aging_backlog` lane (non-capture nodes) and the `orphaned_captures` lane (`origin.type ==
+ * "capture"` nodes, never both).
  * 
  * Wire format:
- * `{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [] }`
+ * ```json
+ * { "repo": "bastion", "slug": "serve-attention-endpoint", "title": "Attention projection",
+ * "kind": "feature", "status": "ready", "notes": null,
+ * "created": "2026-07-10", "reviewed": null,
+ * "age_days": 14, "threshold_days": 7 }
+ * ```
  */
-export interface BoardBlockDto {
-	/** Canonical block ID (e.g. `BA.11.K`). */
-	id: string;
-	/** Brief human description, looked up from the owning repo's `tracks[].blocks[]`. */
-	title: string;
+export interface AttentionBacklogDto {
 	/** Owning repo slug. */
 	repo: string;
-	/** Lifecycle status, when known (`"open"`/`"in_progress"`/`"closed"`). */
-	status?: string;
-	/** What this block is waiting on (populated for `blocked` lane entries). */
-	blocked_by?: BlockedBy[];
+	/** Stable item slug. */
+	slug: string;
+	/** Human-readable title. */
+	title: string;
+	/** Backlog kind (serde-renamed from `type` on the domain type). */
+	kind: string;
+	/** Lifecycle status (`"idea"` / `"ready"`, the only statuses that can age). */
+	status: string;
+	/**
+	 * Notes; for `orphaned_captures` this is `origin.notes` falling back to the node's own
+	 * `notes`.
+	 */
+	notes?: string;
+	/** Creation date (`YYYY-MM-DD`), when recorded. */
+	created?: string;
+	/** Last-reviewed date (`YYYY-MM-DD`), when recorded. */
+	reviewed?: string;
+	/** Days past the anchor date (`max(created, reviewed)`), as of `as_of`. */
+	age_days: number;
+	/** The `backlog_days` threshold this item tripped. */
+	threshold_days: number;
+}
+
+/**
+ * One `carryover[]` entry that has crossed its per-`kind` staleness threshold.
+ * 
+ * Wire format:
+ * ```json
+ * { "repo": "bastion", "slug": "engine-mount-env", "kind": "env",
+ * "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
+ * "clears_when": "the engine mount is documented in .env.example",
+ * "created": "2026-07-01", "reviewed": null,
+ * "age_days": 23, "threshold_days": 3 }
+ * ```
+ */
+export interface AttentionCarryoverDto {
+	/** Owning repo slug. */
+	repo: string;
+	/** Stable item slug. */
+	slug: string;
+	/** Carryover kind (`"env"`, `"deferred"`, `"known_issue"`, `"constraint"`, or other). */
+	kind: string;
+	/** The carryover text itself, untruncated. */
+	text: string;
+	/** What clears this item, when recorded. */
+	clears_when?: string;
+	/** Creation date (`YYYY-MM-DD`), when recorded. */
+	created?: string;
+	/** Last-reviewed date (`YYYY-MM-DD`), when recorded. */
+	reviewed?: string;
+	/** Days past the anchor date (`max(created, reviewed)`), as of `as_of`. */
+	age_days: number;
+	/** The per-`kind` threshold this item tripped. */
+	threshold_days: number;
 }
 
 /**
@@ -41,6 +94,69 @@ export enum BoardScope {
 	Project = "project",
 	/** Shortcut for `tier=business` (`TierScope::Tier("business")`). */
 	Business = "business",
+}
+
+/** The three Attention board lanes. */
+export interface AttentionLanesDto {
+	/** `carryover[]` entries past their per-`kind` threshold, oldest-first. */
+	stale_carryover?: AttentionCarryoverDto[];
+	/** Non-capture `backlog[]` nodes past `backlog_days`, oldest-first. */
+	aging_backlog?: AttentionBacklogDto[];
+	/** `backlog[]` nodes with `origin.type == "capture"` past `backlog_days`, oldest-first. */
+	orphaned_captures?: AttentionBacklogDto[];
+}
+
+/**
+ * The resolved `brain.toml` `[attention]` thresholds, mirroring
+ * `mev::brain::config::AttentionThresholds`.
+ */
+export interface AttentionThresholdsDto {
+	/** Threshold (days) for `kind == "env"` carryover. */
+	env_days: number;
+	/** Threshold (days) for `kind == "deferred"` carryover. */
+	deferred_days: number;
+	/** Threshold (days) for `kind == "known_issue"` carryover. */
+	known_issue_days: number;
+	/** Threshold (days) for `kind == "constraint"` carryover. */
+	constraint_days: number;
+	/** Threshold (days) for aging/orphaned `backlog[]` nodes. */
+	backlog_days: number;
+}
+
+/** JSON response for `GET /api/attention?scope=hq|tier|project|business[&tier=<name>]`. */
+export interface AttentionDto {
+	/**
+	 * The resolved scope this response was projected under. Reuses [`BoardScope`] — the
+	 * `/api/attention` query semantics are identical to `/api/board`.
+	 */
+	scope?: BoardScope;
+	/** The resolved tier name, when `scope` is tier-scoped (`None` for `hq`). */
+	tier?: string;
+	/** `YYYY-MM-DD` the ages were computed against. */
+	as_of: string;
+	/** The three Attention lanes. */
+	lanes: AttentionLanesDto;
+	/** The resolved thresholds used to compute every `age_days` / `threshold_days` pair above. */
+	thresholds: AttentionThresholdsDto;
+}
+
+/**
+ * One lane entry (a single now/next/blocked/finished block) in a board response.
+ * 
+ * Wire format:
+ * `{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [] }`
+ */
+export interface BoardBlockDto {
+	/** Canonical block ID (e.g. `BA.11.K`). */
+	id: string;
+	/** Brief human description, looked up from the owning repo's `tracks[].blocks[]`. */
+	title: string;
+	/** Owning repo slug. */
+	repo: string;
+	/** Lifecycle status, when known (`"open"`/`"in_progress"`/`"closed"`). */
+	status?: string;
+	/** What this block is waiting on (populated for `blocked` lane entries). */
+	blocked_by?: BlockedBy[];
 }
 
 /** The four now/next/blocked/finished lanes for one board (aggregate or per-repo). */

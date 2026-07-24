@@ -13,6 +13,10 @@
 //!   inject/spawn request and response (BA.11.E).
 //! - [`BoardDto`] / [`BoardScope`] — `GET /api/board` cross-brain now/next/blocked/finished
 //!   rollup response and its `scope` query param (BA.11.K).
+//! - [`AttentionDto`] / [`AttentionLanesDto`] / [`AttentionCarryoverDto`] /
+//!   [`AttentionBacklogDto`] / [`AttentionThresholdsDto`] — `GET /api/attention` stale-carryover /
+//!   aging-backlog / orphaned-capture projection response (BA.11.P). Reuses [`BoardScope`] for its
+//!   `scope` query param — the semantics are identical to `GET /api/board`.
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -651,6 +655,144 @@ pub struct BoardDto {
     /// Freshness flag: `true` when any in-scope repo's `status.md` cache lags
     /// its `state.json` (derived from `mev::brain::sync::check_sync`).
     pub stale: bool,
+}
+
+// ── Attention (BA.11.P) ──────────────────────────────────────────────────────
+
+/// One `carryover[]` entry that has crossed its per-`kind` staleness threshold.
+///
+/// Wire format:
+/// ```json
+/// { "repo": "bastion", "slug": "engine-mount-env", "kind": "env",
+///   "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
+///   "clears_when": "the engine mount is documented in .env.example",
+///   "created": "2026-07-01", "reviewed": null,
+///   "age_days": 23, "threshold_days": 3 }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttentionCarryoverDto {
+    /// Owning repo slug.
+    pub repo: String,
+    /// Stable item slug.
+    pub slug: String,
+    /// Carryover kind (`"env"`, `"deferred"`, `"known_issue"`, `"constraint"`, or other).
+    pub kind: String,
+    /// The carryover text itself, untruncated.
+    pub text: String,
+    /// What clears this item, when recorded.
+    #[serde(default)]
+    pub clears_when: Option<String>,
+    /// Creation date (`YYYY-MM-DD`), when recorded.
+    #[serde(default)]
+    pub created: Option<String>,
+    /// Last-reviewed date (`YYYY-MM-DD`), when recorded.
+    #[serde(default)]
+    pub reviewed: Option<String>,
+    /// Days past the anchor date (`max(created, reviewed)`), as of `as_of`.
+    #[typeshare(serialized_as = "number")]
+    pub age_days: i64,
+    /// The per-`kind` threshold this item tripped.
+    #[typeshare(serialized_as = "number")]
+    pub threshold_days: i64,
+}
+
+/// One `backlog[]` node that has crossed the backlog staleness threshold — used for both the
+/// `aging_backlog` lane (non-capture nodes) and the `orphaned_captures` lane (`origin.type ==
+/// "capture"` nodes, never both).
+///
+/// Wire format:
+/// ```json
+/// { "repo": "bastion", "slug": "serve-attention-endpoint", "title": "Attention projection",
+///   "kind": "feature", "status": "ready", "notes": null,
+///   "created": "2026-07-10", "reviewed": null,
+///   "age_days": 14, "threshold_days": 7 }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttentionBacklogDto {
+    /// Owning repo slug.
+    pub repo: String,
+    /// Stable item slug.
+    pub slug: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Backlog kind (serde-renamed from `type` on the domain type).
+    pub kind: String,
+    /// Lifecycle status (`"idea"` / `"ready"`, the only statuses that can age).
+    pub status: String,
+    /// Notes; for `orphaned_captures` this is `origin.notes` falling back to the node's own
+    /// `notes`.
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Creation date (`YYYY-MM-DD`), when recorded.
+    #[serde(default)]
+    pub created: Option<String>,
+    /// Last-reviewed date (`YYYY-MM-DD`), when recorded.
+    #[serde(default)]
+    pub reviewed: Option<String>,
+    /// Days past the anchor date (`max(created, reviewed)`), as of `as_of`.
+    #[typeshare(serialized_as = "number")]
+    pub age_days: i64,
+    /// The `backlog_days` threshold this item tripped.
+    #[typeshare(serialized_as = "number")]
+    pub threshold_days: i64,
+}
+
+/// The three Attention board lanes.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AttentionLanesDto {
+    /// `carryover[]` entries past their per-`kind` threshold, oldest-first.
+    #[serde(default)]
+    pub stale_carryover: Vec<AttentionCarryoverDto>,
+    /// Non-capture `backlog[]` nodes past `backlog_days`, oldest-first.
+    #[serde(default)]
+    pub aging_backlog: Vec<AttentionBacklogDto>,
+    /// `backlog[]` nodes with `origin.type == "capture"` past `backlog_days`, oldest-first.
+    #[serde(default)]
+    pub orphaned_captures: Vec<AttentionBacklogDto>,
+}
+
+/// The resolved `brain.toml` `[attention]` thresholds, mirroring
+/// `mev::brain::config::AttentionThresholds`.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttentionThresholdsDto {
+    /// Threshold (days) for `kind == "env"` carryover.
+    #[typeshare(serialized_as = "number")]
+    pub env_days: i64,
+    /// Threshold (days) for `kind == "deferred"` carryover.
+    #[typeshare(serialized_as = "number")]
+    pub deferred_days: i64,
+    /// Threshold (days) for `kind == "known_issue"` carryover.
+    #[typeshare(serialized_as = "number")]
+    pub known_issue_days: i64,
+    /// Threshold (days) for `kind == "constraint"` carryover.
+    #[typeshare(serialized_as = "number")]
+    pub constraint_days: i64,
+    /// Threshold (days) for aging/orphaned `backlog[]` nodes.
+    #[typeshare(serialized_as = "number")]
+    pub backlog_days: i64,
+}
+
+/// JSON response for `GET /api/attention?scope=hq|tier|project|business[&tier=<name>]`.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttentionDto {
+    /// The resolved scope this response was projected under. Reuses [`BoardScope`] — the
+    /// `/api/attention` query semantics are identical to `/api/board`.
+    #[serde(default)]
+    pub scope: BoardScope,
+    /// The resolved tier name, when `scope` is tier-scoped (`None` for `hq`).
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// `YYYY-MM-DD` the ages were computed against.
+    pub as_of: String,
+    /// The three Attention lanes.
+    pub lanes: AttentionLanesDto,
+    /// The resolved thresholds used to compute every `age_days` / `threshold_days` pair above.
+    pub thresholds: AttentionThresholdsDto,
 }
 
 // ── Live run read DTOs (BA.11.M) ───────────────────────────────────────────────
@@ -2062,6 +2204,108 @@ mod tests {
         assert_eq!(dto.scope, BoardScope::Hq);
         assert!(dto.tier.is_none());
         assert!(dto.repos.is_empty());
+    }
+
+    // ── AttentionDto (BA.11.P) ──────────────────────────────────────────────
+
+    fn sample_attention_carryover() -> AttentionCarryoverDto {
+        AttentionCarryoverDto {
+            repo: "bastion".to_owned(),
+            slug: "engine-mount-env".to_owned(),
+            kind: "env".to_owned(),
+            text: "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set".to_owned(),
+            clears_when: Some("the engine mount is documented in .env.example".to_owned()),
+            created: Some("2026-07-01".to_owned()),
+            reviewed: None,
+            age_days: 23,
+            threshold_days: 3,
+        }
+    }
+
+    fn sample_attention_backlog() -> AttentionBacklogDto {
+        AttentionBacklogDto {
+            repo: "bastion".to_owned(),
+            slug: "serve-attention-endpoint".to_owned(),
+            title: "Attention projection".to_owned(),
+            kind: "feature".to_owned(),
+            status: "ready".to_owned(),
+            notes: None,
+            created: Some("2026-07-10".to_owned()),
+            reviewed: None,
+            age_days: 14,
+            threshold_days: 7,
+        }
+    }
+
+    fn sample_attention_dto() -> AttentionDto {
+        AttentionDto {
+            scope: BoardScope::Hq,
+            tier: None,
+            as_of: "2026-07-24".to_owned(),
+            lanes: AttentionLanesDto {
+                stale_carryover: vec![sample_attention_carryover()],
+                aging_backlog: vec![sample_attention_backlog()],
+                orphaned_captures: vec![],
+            },
+            thresholds: AttentionThresholdsDto {
+                env_days: 3,
+                deferred_days: 5,
+                known_issue_days: 10,
+                constraint_days: 10,
+                backlog_days: 7,
+            },
+        }
+    }
+
+    #[test]
+    fn attention_dto_round_trips() {
+        let dto = sample_attention_dto();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: AttentionDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn attention_dto_serializes_expected_fields() {
+        let dto = sample_attention_dto();
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(v["scope"], "hq");
+        assert_eq!(v["as_of"], "2026-07-24");
+        assert_eq!(v["lanes"]["stale_carryover"][0]["slug"], "engine-mount-env");
+        assert_eq!(v["lanes"]["stale_carryover"][0]["age_days"], 23);
+        assert_eq!(
+            v["lanes"]["aging_backlog"][0]["slug"],
+            "serve-attention-endpoint"
+        );
+        assert!(
+            v["lanes"]["orphaned_captures"]
+                .as_array()
+                .expect("orphaned_captures should be an array")
+                .is_empty()
+        );
+        assert_eq!(v["thresholds"]["backlog_days"], 7);
+    }
+
+    #[test]
+    fn attention_dto_lanes_default_to_empty_when_absent() {
+        let raw = r#"{}"#;
+        let lanes: AttentionLanesDto = serde_json::from_str(raw).expect("lanes should default");
+        assert!(lanes.stale_carryover.is_empty());
+        assert!(lanes.aging_backlog.is_empty());
+        assert!(lanes.orphaned_captures.is_empty());
+    }
+
+    #[test]
+    fn attention_backlog_dto_used_by_both_aging_and_orphaned_lanes() {
+        // Same DTO type backs both lanes — assert a capture-flavoured instance (notes carrying
+        // the origin.notes fallback) round-trips identically to a plain backlog instance.
+        let capture = AttentionBacklogDto {
+            notes: Some("captured from a stray idea".to_owned()),
+            ..sample_attention_backlog()
+        };
+        let json = serde_json::to_string(&capture).expect("serialize");
+        let back: AttentionBacklogDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(capture, back);
     }
 
     // ── RunStateDto / NodeTransitionDto (BA.11.M) ──────────────────────────

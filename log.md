@@ -13,6 +13,36 @@ timestamp: 2026-07-23T23:43:08Z
 
 ## [2026-07-24]
 
+### 11.P-attention-read-endpoint — done
+
+- **What:** `/sdlc-flow` drove spec `11.P-attention-read-endpoint` (BA.11.P) end to end across 5
+  tasks, all PASS in 1 attempt each: typeshare-annotated `AttentionDto`/`AttentionLanesDto`/
+  `AttentionCarryoverDto`/`AttentionBacklogDto`/`AttentionThresholdsDto` DTOs added to
+  `src/serve/dto.rs` (reusing `BoardScope`) and `types/serve.ts` regenerated (task 1); a pure
+  `resolve_scope`/`tier_of_repo`/`build_attention` projection plus a thin `get_attention` I/O
+  shell in `src/serve/handlers/attention.rs`, with 20+ unit tests covering scoping, lane split,
+  snooze/threshold/no-anchor absence, and ordering (task 2); `GET /api/attention` registered in
+  both app factories in `src/serve/mod.rs` with 4 integration tests (401-without-token,
+  200-with-three-lanes, unknown-tier-empty-lanes-200, unrecognized-scope-400) (task 3);
+  `docs/serve-api.md` promoted the planned §13.5 stub to its own numbered Section 15, bumped
+  v0.8 → v0.9, renumbered trailing sections, and updated the §2.3 auth table (task 4); and a
+  final validation pass confirming all gates green (`cargo fmt --check`, `cargo clippy -D
+  warnings`, `cargo test`, `cargo build --release`, `./scripts/check-typeshare-drift.sh`) plus a
+  real-binary smoke test of `bastion serve` against the live `agentic-portfolio` brain root,
+  confirming exact item-for-item parity (same repos, slugs, order, `age_days`) with the
+  `## ⚠ Attention` board `mev emit-state` splices into `status.md` (task 5). One consolidated
+  review passed with no findings. Notable decisions: tasks 2–4 were found already implemented
+  and committed on this branch from a prior invocation of the pipeline, so this run verified
+  acceptance criteria against the spec and re-ran validation rather than re-implementing; no
+  `mev`/`okf-core` change was made. `state.json`'s `BA.11.P` block flipped to `closed`.
+- **Why:** Exposes the tier-scoped Attention board (stale carryover, aging backlog, orphaned
+  captures) over `serve` as a read-only endpoint, so BastionWeb (`BW.1.C`), the TUI, and the
+  phone can see items that never resurface without reading a repo's `status.md`.
+- **Refs:** `planning/11.P-attention-read-endpoint/`; branch `11.P-attention-read-endpoint-flow`;
+  commits `063d885`, `2b45c3a`, `67585ca`, `554d4f4`, `46121eb`.
+
+---
+
 ### 11.M-live-run-read-endpoint — done
 
 - **What:** `/sdlc-flow` drove spec `11.M-live-run-read-endpoint` (BA.11.M, re-scoped

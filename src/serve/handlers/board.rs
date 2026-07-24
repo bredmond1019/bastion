@@ -380,6 +380,7 @@ mod tests {
 
     fn sample_state_file(blocks: Vec<TrackBlock>) -> StateFile {
         StateFile {
+            epics: Vec::new(),
             repo: "bastion".to_owned(),
             kind: "project".to_owned(),
             updated: "2026-07-23".to_owned(),
@@ -399,6 +400,7 @@ mod tests {
 
     fn sample_track_block(id: &str, status: Option<&str>) -> TrackBlock {
         TrackBlock {
+            epics: Vec::new(),
             id: id.to_owned(),
             title: format!("{id} title"),
             status: status.map(|s| s.to_owned()),
@@ -454,6 +456,7 @@ mod tests {
 
     fn sample_block(id: &str, status: Option<&str>, blocked_by: Vec<BlockedBy>) -> Block {
         Block {
+            epics: Vec::new(),
             id: id.to_owned(),
             title: format!("{id} title"),
             status: status.map(|s| s.to_owned()),
