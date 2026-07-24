@@ -1,23 +1,23 @@
 ---
 type: Guideline
-title: "serve-api contract v0.8"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, and the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half)."
+title: "serve-api contract v0.9"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), and the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.8 Contract
+# serve-api — v0.9 Contract
 
-**Version:** v0.8  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–14, 16, 17 — plus, when mounted,
-`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 15.  
-**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 16, 17; bastion-web
-(`BW.3.B`) for Section 14; `bastion abort` (`src/run/abort.rs`, this repo) for Section 15's abort
-route.
+**Version:** v0.9  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–15, 17, 18 — plus, when mounted,
+`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 16.  
+**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15, 17, 18; bastion-web
+(`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; `bastion abort` (`src/run/abort.rs`,
+this repo) for Section 16's abort route.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -44,7 +44,7 @@ transport security on the tailnet.
 ## 2. Authentication
 
 All routes **except** `GET /health` under bastion's own `/api` and `/ws` scopes are protected by
-mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 15,
+mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 16,
 mounted only when config allows) are a **separate, unmounted-at-`/api` surface with their own
 `X-API-Key` gate** — the two auth schemes coexist side by side and are never double-applied to the
 same request:
@@ -52,8 +52,8 @@ same request:
 | Route family | Scheme | Header |
 |---|---|---|
 | `/health`, `/api/*`, `/ws` (Sections 3–13) | Bearer | `Authorization: Bearer <BASTION_SERVE_TOKEN>` |
-| Engine routes (Section 15): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
-| Engine routes (Section 15): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
+| Engine routes (Section 16): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
+| Engine routes (Section 16): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
 
 The engine's own `GET /health` is shadowed by bastion's `/health` handler (first-registration-wins
 for duplicate exact-path routes — verified empirically, not a panic), so the process's `/health`
@@ -105,6 +105,7 @@ to verify the configured token.
 | `GET /api/repos/{name}/workflows` | Yes — `Authorization: Bearer <token>` |
 | `POST /api/actions/command` | Yes — `Authorization: Bearer <token>` |
 | `GET /api/board` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/attention` | Yes — `Authorization: Bearer <token>` |
 
 ---
 
@@ -1161,86 +1162,6 @@ Query deserialize error: unknown variant `bogus`, expected one of `hq`, `tier`, 
 { "code": "C010", "message": "could not resolve brain root from /some/workspace: <error detail>" }
 ```
 
-### 13.5 Planned: `GET /api/attention` — attention / carryover projection (BA.11.P) — **NOT YET IMPLEMENTED**
-
-> **Status: planned, not served.** This subsection is the drafted contract for the block `BA.11.P`
-> scoped in `planning/master-plan.md`; the route does **not** exist on any running `bastion serve`
-> today, and the contract version is deliberately **not** bumped for it. Clients (`bastion-ui`,
-> bastion-web `BW.1.C`) MUST NOT pin against it until `BA.11.P` closes, at which point it is promoted
-> to its own numbered section, the version goes v0.8 → v0.9, and an Amendment Log entry lands.
-
-Read-only projection of the **Attention board** — the stale-carryover / aging-backlog /
-orphaned-capture lanes that `mev emit-state` splices into every brain-level `status.md` and the
-`/attention` slash command reads locally. Same bearer-protected `/api` scope, same read-only posture
-as `GET /api/board` (D25). The dispositions `/attention` offers (promote · keep · snooze · resolve ·
-archive) are **writes** and stay CLI-only — this route never exposes them.
-
-**Query parameters** — identical semantics to `GET /api/board` (Section 13.2), so one scope switch
-can drive both fetches:
-
-| Parameter | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `scope` | string | No | `"hq"` | One of `"hq"` \| `"tier"` \| `"project"` \| `"business"`. |
-| `tier` | string | No | `"core"` | Only consulted when `scope` is `"tier"` or `"project"`. An unknown tier is not an error — it yields empty lanes. |
-
-**Scoping rule** (mirrors `mev::brain::emit::plan_attention_board`): `hq` unions `carryover[]` from
-every loaded repo/tier file plus the whole HQ `backlog[]`; a tier scope unions `carryover[]` from that
-tier's leaf repos *plus the tier brain file itself*, and only the HQ `backlog[]` nodes whose `repo`
-belongs to that tier.
-
-**Planned response (200 OK): `AttentionDto`**
-
-```json
-{
-  "scope": "hq",
-  "tier": null,
-  "as_of": "2026-07-24",
-  "lanes": {
-    "stale_carryover": [
-      {
-        "repo": "bastion", "slug": "engine-mount-env", "kind": "env",
-        "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
-        "clears_when": "the engine mount is documented in .env.example",
-        "created": "2026-07-01", "reviewed": null,
-        "age_days": 23, "threshold_days": 3
-      }
-    ],
-    "aging_backlog": [
-      {
-        "repo": "bastion", "slug": "serve-attention-endpoint", "title": "Attention projection",
-        "kind": "feature", "status": "ready", "notes": null,
-        "created": "2026-07-10", "reviewed": null,
-        "age_days": 14, "threshold_days": 7
-      }
-    ],
-    "orphaned_captures": []
-  },
-  "thresholds": {
-    "env_days": 3, "deferred_days": 5, "known_issue_days": 10,
-    "constraint_days": 10, "backlog_days": 7
-  }
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `scope` / `tier` | string / string \| null | Echo the resolved scope + tier, exactly as `BoardDto` does. |
-| `as_of` | string | `YYYY-MM-DD` the ages were computed against. |
-| `lanes.stale_carryover` | array of `AttentionCarryoverDto` | `carryover[]` entries past their per-`kind` threshold. |
-| `lanes.aging_backlog` | array of `AttentionBacklogDto` | Non-capture `backlog[]` nodes (`status` `idea`/`ready`) past `backlog_days`. |
-| `lanes.orphaned_captures` | array of `AttentionBacklogDto` | Same shape, for nodes with `origin.type == "capture"`; `notes` carries `origin.notes` (falling back to `notes`). Never duplicated into `aging_backlog`. |
-| `thresholds` | `AttentionThresholdsDto` | The resolved `brain.toml` `[attention]` thresholds, so a client can render "Nd over" without reading `brain.toml`. |
-
-Every lane is sorted **oldest-first** (descending `age_days`). Items that are snoozed
-(`today < snoozed_until`) or under threshold are **absent** rather than flagged — the projection uses
-mev's own `carryover_stale_age` / `backlog_stale_age` predicates, so this route shows exactly what the
-local board and the `W_STATE_*_STALE` warnings show. Item text is returned untruncated; the 60/80-char
-clamp is a markdown-row concern and stays in mev.
-
-**Planned error responses** — same table as Section 13.4 (401 without a bearer token; stock text/plain
-400 on an unrecognized `scope`; `500` + `C010` for an unresolvable brain root or a `web::block`
-failure; individual malformed `state.json` files skipped rather than fatal).
-
 ---
 
 ## 14. Live run read API (v0.8, BA.11.M)
@@ -1249,12 +1170,12 @@ Two read-only routes projecting the embedded engine's in-memory `LiveStateStore`
 live_state::LiveStateStore`, `../engine-rs/crates/engine-serve/src/live_state.rs`) onto HTTP, so a
 remote client (bastion-web `BW.3.B` node drill-in) can read a run's current per-node state without
 polling Postgres. Live under the bearer-protected `/api` scope (Section 2) — same auth as Sections
-3–13, distinct from the Section 15 engine `X-API-Key` scheme.
+3–13, distinct from the Section 16 engine `X-API-Key` scheme.
 
 `LiveStateStore` is a single instance shared between the mounted engine's `on_progress` writer and
-these read handlers (`src/serve/mod.rs`): when the Section 15 engine mount is active, the engine
+these read handlers (`src/serve/mod.rs`): when the Section 16 engine mount is active, the engine
 records every node transition into this store as the run executes, and these routes read the same
-store. **When the engine is not mounted** (Section 15.1 — `DATABASE_URL` / `BASTION_ENGINE_API_KEY`
+store. **When the engine is not mounted** (Section 16.1 — `DATABASE_URL` / `BASTION_ENGINE_API_KEY`
 absent), the store still exists but stays empty for the lifetime of the process: `GET /api/runs`
 returns `200 []` and `GET /api/runs/{id}` returns `404` for every id — the same graceful-degradation
 posture as the rest of this contract, not an error.
@@ -1290,7 +1211,7 @@ No query parameters. No 404 case — an empty store is a normal 200.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `id` | string (UUID) | The run id, as returned by `GET /api/runs` or minted by the Section 15 `/events/` trigger. Must parse as a UUID. |
+| `id` | string (UUID) | The run id, as returned by `GET /api/runs` or minted by the Section 16 `/events/` trigger. Must parse as a UUID. |
 
 **Request:**
 
@@ -1393,7 +1314,193 @@ mounted (recorded in `planning/11.M-live-run-read-endpoint/tasks.md`'s `## Notes
 
 ---
 
-## 15. Embedded engine route table (v0.5, BA.7.C)
+## 15. Attention / carryover API (v0.9, BA.11.P)
+
+One read-only route projecting the tier-scoped **Attention board** — the stale `carryover[]`,
+aging `backlog[]`, and orphaned-capture lanes that `mev emit-state` splices into every brain-level
+`status.md` and the local `/attention` slash command reads — onto HTTP, so BastionWeb (`BW.1.C`),
+the TUI, and the phone can see the items that never resurface without reading a repo's
+`status.md`. Lives under the bearer-protected `/api` scope (Section 2). Same read-only posture as
+`GET /api/board` (Section 13, D25) — this route never mutates any tier's or repo's `state.json`,
+and the dispositions `/attention` offers locally (promote · keep · snooze · resolve · archive) are
+**writes** and stay CLI-only; this route never exposes them.
+
+### 15.1 `GET /api/attention` — attention / carryover projection
+
+**Query parameters** — identical semantics to `GET /api/board` (Section 13.2), so one scope switch
+can drive both fetches:
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `scope` | string | No | `"hq"` | One of `"hq"` \| `"tier"` \| `"project"` \| `"business"` (Section 13.2). An unrecognized value fails query deserialization and returns `400` (Section 15.3). |
+| `tier` | string | No | `"core"` | Tier name; only consulted when `scope` is `"tier"` or `"project"` (Section 13.2). Ignored for `"hq"`/`"business"`. An unknown tier is not an error — it yields empty lanes. |
+
+**Request:**
+
+```
+GET /api/attention?scope=hq HTTP/1.1
+Authorization: Bearer <token>
+```
+
+### 15.2 Scoping rule
+
+Scope resolution is identical to `GET /api/board` — see Section 13.2 for the full
+`scope` → `TierScope` table (including the empty-string-`tier`-falls-back-to-`"core"` and
+unknown-tier-yields-empty-lanes rules). What differs is which items each resolved scope pulls in,
+mirroring `mev::brain::emit::plan_attention_board`:
+
+- **`hq`** (`TierScope::All`) — unions `carryover[]` from **every** loaded repo/tier file, plus the
+  **whole** HQ `backlog[]`.
+- **`tier`** / **`project`** (`TierScope::Tier(t)`) — unions `carryover[]` from that tier's leaf
+  repos **plus the tier brain file itself**, and only those HQ `backlog[]` nodes whose `repo`
+  belongs to tier `t`.
+- **`business`** (`TierScope::Tier("business")`) — same rule as `tier`, ignoring a stray `&tier=`.
+
+The HQ `backlog[]` is the one on the single `kind == "brain"` file whose scope is `TierScope::All`.
+`backlog[]` nodes with `origin.type == "capture"` are never counted toward `aging_backlog` — they
+are split into `orphaned_captures` instead, carrying `origin.notes` (falling back to the node's own
+`notes`). A capture never appears in both lanes.
+
+Item filtering is delegated to `mev::brain::state::carryover_stale_age` / `backlog_stale_age` — the
+same predicates the `W_STATE_*_STALE` warnings use. `Some(age_days)` means the item belongs on the
+board; `None` (under its per-`kind`/`backlog_days` threshold, snoozed via `today < snoozed_until`,
+or lacking both a `created` and a `reviewed` anchor date) means the item is **absent** from the
+response rather than present-and-flagged. Every lane is sorted **oldest-first** (descending
+`age_days`). Item text is returned untruncated — the 60/80-char row clamp `mev`'s markdown renderer
+applies is a rendering concern and stays in `mev`.
+
+### 15.3 Response (200 OK): `AttentionDto`
+
+```json
+{
+  "scope": "hq",
+  "tier": null,
+  "as_of": "2026-07-24",
+  "lanes": {
+    "stale_carryover": [
+      {
+        "repo": "bastion", "slug": "engine-mount-env", "kind": "env",
+        "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
+        "clears_when": "the engine mount is documented in .env.example",
+        "created": "2026-07-01", "reviewed": null,
+        "age_days": 23, "threshold_days": 3
+      }
+    ],
+    "aging_backlog": [
+      {
+        "repo": "bastion", "slug": "serve-attention-endpoint", "title": "Attention projection",
+        "kind": "feature", "status": "ready", "notes": null,
+        "created": "2026-07-10", "reviewed": null,
+        "age_days": 14, "threshold_days": 7
+      }
+    ],
+    "orphaned_captures": []
+  },
+  "thresholds": {
+    "env_days": 3, "deferred_days": 5, "known_issue_days": 10,
+    "constraint_days": 10, "backlog_days": 7
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `scope` | string | Echoes the resolved `scope` (`"hq"`, `"tier"`, `"project"`, or `"business"`), reusing `BoardDto`'s `BoardScope`. |
+| `tier` | string \| null | The resolved tier name for tier-scoped responses; `null` for `"hq"`. |
+| `as_of` | string | `YYYY-MM-DD` the ages were computed against. |
+| `lanes` | `AttentionLanesDto` | The three Attention lanes. |
+| `thresholds` | `AttentionThresholdsDto` | The resolved `brain.toml` `[attention]` thresholds, so a client can render "Nd over" without reading `brain.toml`. |
+
+#### `AttentionLanesDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `stale_carryover` | array of `AttentionCarryoverDto` | `carryover[]` entries past their per-`kind` threshold, oldest-first. |
+| `aging_backlog` | array of `AttentionBacklogDto` | Non-capture `backlog[]` nodes (`status` `"idea"`/`"ready"`) past `backlog_days`, oldest-first. |
+| `orphaned_captures` | array of `AttentionBacklogDto` | `backlog[]` nodes with `origin.type == "capture"` past `backlog_days`, oldest-first. Never duplicated into `aging_backlog`. |
+
+#### `AttentionCarryoverDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | Owning repo slug. |
+| `slug` | string | Stable item slug. |
+| `kind` | string | Carryover kind (`"env"`, `"deferred"`, `"known_issue"`, `"constraint"`, or other). |
+| `text` | string | The carryover text itself, untruncated. |
+| `clears_when` | string \| null | What clears this item, when recorded. |
+| `created` | string \| null | Creation date (`YYYY-MM-DD`), when recorded. |
+| `reviewed` | string \| null | Last-reviewed date (`YYYY-MM-DD`), when recorded. |
+| `age_days` | number | Days since `max(created, reviewed)`, as computed by `carryover_stale_age`. |
+| `threshold_days` | number | The per-`kind` threshold this item tripped (`AttentionThresholds::carryover_threshold`). |
+
+#### `AttentionBacklogDto`
+
+Used by both the `aging_backlog` and `orphaned_captures` lanes.
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | Owning repo slug. |
+| `slug` | string | Stable item slug. |
+| `title` | string | Human-readable title. |
+| `kind` | string | Backlog kind (serde-renamed from `type` on the domain type). |
+| `status` | string | Lifecycle status (`"idea"` / `"ready"`, the only statuses that can age). |
+| `notes` | string \| null | For `orphaned_captures` this is `origin.notes`, falling back to the node's own `notes`; for `aging_backlog` it is the node's own `notes`. |
+| `created` | string \| null | Creation date (`YYYY-MM-DD`), when recorded. |
+| `reviewed` | string \| null | Last-reviewed date (`YYYY-MM-DD`), when recorded. |
+| `age_days` | number | Days since `max(created, reviewed)`, as computed by `backlog_stale_age`. |
+| `threshold_days` | number | `AttentionThresholds::backlog_days`. |
+
+#### `AttentionThresholdsDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `env_days` | number | Threshold (days) for `kind == "env"` carryover. Default `3`. |
+| `deferred_days` | number | Threshold (days) for `kind == "deferred"` carryover. Default `5`. |
+| `known_issue_days` | number | Threshold (days) for `kind == "known_issue"` carryover. Default `10`. |
+| `constraint_days` | number | Threshold (days) for `kind == "constraint"` carryover. Default `10`. |
+| `backlog_days` | number | Threshold (days) for aging/orphaned `backlog[]` nodes. Default `7`. |
+
+Thresholds are read from `brain.toml`'s `[attention]` table (`mev::brain::config::AttentionThresholds`);
+an absent table yields the defaults shown above.
+
+### 15.4 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Unrecognized `scope` value (fails `BoardScope` query deserialization) | `400 Bad Request` | Plain text — actix's default `web::Query` extractor failure, same as `GET /api/board` (Section 13.4) — no `QueryConfig` error handler is installed for this route either. |
+| Unresolvable brain root (no `brain.toml` walking up from the workspace root) or unparseable `brain.toml` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
+
+Individual malformed/unreadable `state.json` files under an otherwise-resolvable brain root are
+skipped (degrade gracefully) rather than failing the whole request — only an unresolvable brain
+root is a hard error.
+
+### 15.5 Out of scope
+
+- The **"what next" priority ranking** half of `BW.1.C` — not this route; `BW.1.C` ranks
+  client-side from `BoardDto` + `age_days` in the interim.
+- **Any mutation.** `/attention`'s promote · keep (`reviewed`) · snooze · resolve · archive
+  dispositions stay CLI-only — `serve` is read-only over the brain (D25).
+- Any change to `mev` or `okf-core`; the markdown Attention board (`mev` keeps owning `status.md`
+  splicing); SSE/streaming of anything.
+
+### 15.6 Testing
+
+`tier_of_repo` and `build_attention` (`src/serve/handlers/attention.rs`) are the pure, I/O-free
+projection — exhaustively unit-tested with `today` threaded in as a parameter (scope resolution
+including the business/empty-tier cases; tier lookup hit/miss; hq vs. tier carryover union; HQ
+`backlog[]` tier filtering; the capture-vs-backlog lane split including the `origin.notes` →
+`notes` fallback; the snoozed/under-threshold/no-anchor absences; oldest-first ordering; per-`kind`
+`threshold_days`). The thin async handler (`get_attention`) and route wiring in `src/serve/mod.rs`
+are covered by `#[actix_web::test]` integration tests against a temp brain-root fixture, asserting
+the bearer-auth `401`, the `200` + three-lane body, the unknown-tier `200` + empty lanes, and the
+unrecognized-scope `400` — and manually smoke-tested end-to-end against a running `bastion serve`
+(recorded in `planning/11.P-attention-read-endpoint/tasks.md`'s `## Notes`).
+
+---
+
+## 16. Embedded engine route table (v0.5, BA.7.C)
 
 `bastion serve` embeds `engine-serve`'s route table (`engine_serve::http::configure`) at the
 **server root** — not under `/api` — per D48 ("the abort endpoint and the rest of the engine
@@ -1402,7 +1509,7 @@ growth (`planning/7.C-cost-budget-alerts-abort/tasks.md`, *Scope growth* section
 same `engine-serve` surface engine-rs's own `EN.1.C`/`EN.2.B` shipped as an embeddable library —
 `bastion serve` is the first (and, as of this writing, only) process that actually mounts it.
 
-### 15.1 Mount decision
+### 16.1 Mount decision
 
 The engine routes are mounted only when **both** `DATABASE_URL` and `BASTION_ENGINE_API_KEY` are
 set (non-empty) at boot — decided once, pure, by `serve::decide_engine_mount` (`src/serve/
@@ -1412,7 +1519,7 @@ stderr and emits a `tracing::warn!` `observ` event rather than failing to boot o
 that would 500 on every request. A `DATABASE_URL` present but unreachable (connection failure at
 boot) also leaves the engine routes unmounted, logged the same way.
 
-### 15.2 Routes
+### 16.2 Routes
 
 | Route | Method | Auth | Description |
 |---|---|---|---|
@@ -1426,7 +1533,7 @@ boot) also leaves the engine routes unmounted, logged the same way.
 an exact string match, entirely separate from bastion's own `BASTION_SERVE_TOKEN` Bearer check
 (Section 2). Neither scheme is layered on the other's routes.
 
-### 15.3 Testing
+### 16.3 Testing
 
 Covered by the in-process integration test `tests/abort_contract.rs`, which builds a real
 `engine-serve` `App` (via `AppState`) and asserts the 401 / 404 / 202 paths against it — the
@@ -1437,13 +1544,13 @@ including the empty-string-counts-as-absent case.
 
 ---
 
-## 16. Generated TypeScript types (v0.7, BA.11.L)
+## 17. Generated TypeScript types (v0.7, BA.11.L)
 
 The contract DTOs in `src/serve/dto.rs` are annotated with `#[typeshare]` and are the **single
 source of truth** for the TypeScript types consumed by BastionWeb (`BW.0.B`) and any other TS
 client of this contract. `bastion-ui` (Flutter) is unaffected — it has no TS surface.
 
-### 16.1 Generated artifact
+### 17.1 Generated artifact
 
 `types/serve.ts` (committed at the bastion package root) is the generated TypeScript output. It
 is produced by the `typeshare` CLI reading the `#[typeshare]`-annotated types in `src/serve/dto.rs`
@@ -1458,7 +1565,7 @@ Two exclusions from generation, both internal-only types that never cross the wi
 each carries a data variant with no serde representation for `typeshare` to mirror, so both are
 left unannotated rather than forced.
 
-### 16.2 Regenerating
+### 17.2 Regenerating
 
 Prerequisite: the `typeshare` CLI on `PATH` (`cargo install typeshare-cli --locked`).
 
@@ -1471,7 +1578,7 @@ typeshare src/serve --lang typescript --output-file types/serve.ts --config-file
 Run this after any change to `src/serve/dto.rs`'s public types (new field, new type, new enum
 variant, etc.) and commit the regenerated `types/serve.ts` alongside the `dto.rs` change.
 
-### 16.3 Drift check
+### 17.3 Drift check
 
 `scripts/check-typeshare-drift.sh` regenerates the types to a temp file (via the same invocation
 `gen-types.sh` uses, so the two scripts can never diverge on flags) and diffs it against the
@@ -1493,25 +1600,25 @@ documented in Sections 3, 5–13 is unchanged.
 
 ---
 
-## 17. Configuration reference
+## 18. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | `host:port` to bind |
 | `BASTION_SERVE_TOKEN` | **Yes** | — | Bearer token for protected routes; absent token is a typed error at startup |
-| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 15 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
-| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 15) check. Absent leaves those routes unmounted. |
+| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 16 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
+| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 16) check. Absent leaves those routes unmounted. |
 
 `bastion serve` loads config via `load_serve_config()` (`src/config.rs`), which
 is DB-free and does **not** require `DATABASE_URL` for its own `/api`/`/ws` surface. The
 `[workspaces]` registry consumed by Section 11's routes is loaded separately via
 `load_workspace_registry()` — also DB-free — once at server startup. `DATABASE_URL` and
-`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 15.1), not
+`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 16.1), not
 through `load_serve_config()`.
 
 ---
 
-## 18. Versioning policy
+## 19. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -1520,12 +1627,31 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.8**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.9**.
 
 ---
 
 ## Amendment Log
 
+- **2026-07-24 — v0.8 → v0.9 (BA.11.P):** Added Section 15 (Attention / carryover API) —
+  `GET /api/attention?scope=hq|tier|project|business[&tier=<name>]`, projecting the tier-scoped
+  Attention board (stale `carryover[]`, aging `backlog[]`, orphaned `/capture` notes) that
+  `mev emit-state` already splices into `status.md`, onto HTTP. Query-param and scope semantics
+  are identical to `GET /api/board` (Section 13.2, reuses `BoardScope`). Documented the
+  `AttentionDto`/`AttentionLanesDto`/`AttentionCarryoverDto`/`AttentionBacklogDto`/
+  `AttentionThresholdsDto` response schema, the scoping rule mirroring
+  `mev::brain::emit::plan_attention_board` (HQ unions everything; a tier scope unions that tier's
+  leaf repos' carryover plus the tier brain file's own, and only HQ `backlog[]` nodes whose `repo`
+  is in that tier), the capture-vs-aging lane split (`origin.type == "capture"` → `orphaned_captures`
+  only, carrying `origin.notes` falling back to `notes`), oldest-first lane ordering, and that
+  snoozed/under-threshold/no-anchor items are absent rather than flagged. This promotes the
+  formerly-planned §13.5 draft (removed from Section 13) to its own numbered section — no existing
+  endpoint's documented contract changed. Added the `/api/attention` row to the auth policy table
+  (Section 2.3). Renumbered Embedded engine route table → Section 16 (subsections 16.1–16.3),
+  Generated TypeScript types → Section 17 (subsections 17.1–17.3), Configuration reference →
+  Section 18, Versioning policy → Section 19, and updated every in-document cross-reference to the
+  renumbered sections. Updated frontmatter title, description, `keywords`, and the
+  current-contract version note.
 - **2026-07-24 — v0.7 → v0.8 (BA.11.M, read half):** Added Section 14 (Live run read API) —
   `GET /api/runs` (currently-tracked run ids) and `GET /api/runs/{id}` (per-node `RunStateDto`
   snapshot: status, timing, output, and for a failed node its error + input, plus LLM-node
