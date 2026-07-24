@@ -1161,6 +1161,86 @@ Query deserialize error: unknown variant `bogus`, expected one of `hq`, `tier`, 
 { "code": "C010", "message": "could not resolve brain root from /some/workspace: <error detail>" }
 ```
 
+### 13.5 Planned: `GET /api/attention` — attention / carryover projection (BA.11.P) — **NOT YET IMPLEMENTED**
+
+> **Status: planned, not served.** This subsection is the drafted contract for the block `BA.11.P`
+> scoped in `planning/master-plan.md`; the route does **not** exist on any running `bastion serve`
+> today, and the contract version is deliberately **not** bumped for it. Clients (`bastion-ui`,
+> bastion-web `BW.1.C`) MUST NOT pin against it until `BA.11.P` closes, at which point it is promoted
+> to its own numbered section, the version goes v0.8 → v0.9, and an Amendment Log entry lands.
+
+Read-only projection of the **Attention board** — the stale-carryover / aging-backlog /
+orphaned-capture lanes that `mev emit-state` splices into every brain-level `status.md` and the
+`/attention` slash command reads locally. Same bearer-protected `/api` scope, same read-only posture
+as `GET /api/board` (D25). The dispositions `/attention` offers (promote · keep · snooze · resolve ·
+archive) are **writes** and stay CLI-only — this route never exposes them.
+
+**Query parameters** — identical semantics to `GET /api/board` (Section 13.2), so one scope switch
+can drive both fetches:
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `scope` | string | No | `"hq"` | One of `"hq"` \| `"tier"` \| `"project"` \| `"business"`. |
+| `tier` | string | No | `"core"` | Only consulted when `scope` is `"tier"` or `"project"`. An unknown tier is not an error — it yields empty lanes. |
+
+**Scoping rule** (mirrors `mev::brain::emit::plan_attention_board`): `hq` unions `carryover[]` from
+every loaded repo/tier file plus the whole HQ `backlog[]`; a tier scope unions `carryover[]` from that
+tier's leaf repos *plus the tier brain file itself*, and only the HQ `backlog[]` nodes whose `repo`
+belongs to that tier.
+
+**Planned response (200 OK): `AttentionDto`**
+
+```json
+{
+  "scope": "hq",
+  "tier": null,
+  "as_of": "2026-07-24",
+  "lanes": {
+    "stale_carryover": [
+      {
+        "repo": "bastion", "slug": "engine-mount-env", "kind": "env",
+        "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
+        "clears_when": "the engine mount is documented in .env.example",
+        "created": "2026-07-01", "reviewed": null,
+        "age_days": 23, "threshold_days": 3
+      }
+    ],
+    "aging_backlog": [
+      {
+        "repo": "bastion", "slug": "serve-attention-endpoint", "title": "Attention projection",
+        "kind": "feature", "status": "ready", "notes": null,
+        "created": "2026-07-10", "reviewed": null,
+        "age_days": 14, "threshold_days": 7
+      }
+    ],
+    "orphaned_captures": []
+  },
+  "thresholds": {
+    "env_days": 3, "deferred_days": 5, "known_issue_days": 10,
+    "constraint_days": 10, "backlog_days": 7
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `scope` / `tier` | string / string \| null | Echo the resolved scope + tier, exactly as `BoardDto` does. |
+| `as_of` | string | `YYYY-MM-DD` the ages were computed against. |
+| `lanes.stale_carryover` | array of `AttentionCarryoverDto` | `carryover[]` entries past their per-`kind` threshold. |
+| `lanes.aging_backlog` | array of `AttentionBacklogDto` | Non-capture `backlog[]` nodes (`status` `idea`/`ready`) past `backlog_days`. |
+| `lanes.orphaned_captures` | array of `AttentionBacklogDto` | Same shape, for nodes with `origin.type == "capture"`; `notes` carries `origin.notes` (falling back to `notes`). Never duplicated into `aging_backlog`. |
+| `thresholds` | `AttentionThresholdsDto` | The resolved `brain.toml` `[attention]` thresholds, so a client can render "Nd over" without reading `brain.toml`. |
+
+Every lane is sorted **oldest-first** (descending `age_days`). Items that are snoozed
+(`today < snoozed_until`) or under threshold are **absent** rather than flagged — the projection uses
+mev's own `carryover_stale_age` / `backlog_stale_age` predicates, so this route shows exactly what the
+local board and the `W_STATE_*_STALE` warnings show. Item text is returned untruncated; the 60/80-char
+clamp is a markdown-row concern and stays in mev.
+
+**Planned error responses** — same table as Section 13.4 (401 without a bearer token; stock text/plain
+400 on an unrecognized `scope`; `500` + `C010` for an unresolvable brain root or a `web::block`
+failure; individual malformed `state.json` files skipped rather than fatal).
+
 ---
 
 ## 14. Live run read API (v0.8, BA.11.M)
