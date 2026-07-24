@@ -50,6 +50,16 @@ use engine_serve::dispatch::Dispatcher;
 use engine_serve::durable::spawn_durable_writer;
 use engine_serve::http::AppState as EngineAppState;
 use engine_serve::live_state::LiveStateStore;
+use engine_serve::workflows::register_builtin_workflows;
+
+/// Build the engine's `Dispatcher` with every builtin workflow (currently
+/// just `SDLC_FLOW`) registered. Pulled out of `run()` so the wiring is
+/// unit-testable without standing up actix/Postgres.
+fn build_engine_dispatcher() -> Dispatcher {
+    let mut dispatcher = Dispatcher::new();
+    register_builtin_workflows(&mut dispatcher);
+    dispatcher
+}
 use std::sync::Arc;
 use ws::server::Hub;
 
@@ -265,7 +275,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         "engine routes mounted (DATABASE_URL + engine_api_key present)"
                     );
                     let state = EngineAppState {
-                        dispatcher: Arc::new(Dispatcher::new()),
+                        dispatcher: Arc::new(build_engine_dispatcher()),
                         live: live_store.clone(),
                         durable: spawn_durable_writer(Some(pool)),
                         runs: RunRegistry::new(),
@@ -438,6 +448,13 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
 #[cfg(test)]
 mod engine_mount_tests {
     use super::*;
+
+    #[test]
+    fn build_engine_dispatcher_registers_sdlc_flow() {
+        let dispatcher = build_engine_dispatcher();
+        assert!(dispatcher.is_registered("SDLC_FLOW"));
+        assert_eq!(dispatcher.registered_types(), vec!["SDLC_FLOW".to_string()]);
+    }
 
     #[test]
     fn decide_engine_mount_mounts_when_both_present() {
