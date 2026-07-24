@@ -653,6 +653,99 @@ pub struct BoardDto {
     pub stale: bool,
 }
 
+// ── Live run read DTOs (BA.11.M) ───────────────────────────────────────────────
+
+/// Token/model usage for an LLM node, projected from `engine_contract::task_context::Usage`.
+///
+/// Wire format:
+/// ```json
+/// { "input_tokens": 512, "output_tokens": 128, "model": "claude-sonnet-5" }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunUsageDto {
+    /// Prompt token count, when reported by the provider.
+    #[serde(default)]
+    #[typeshare(serialized_as = "number")]
+    pub input_tokens: Option<u64>,
+    /// Completion token count, when reported by the provider.
+    #[serde(default)]
+    #[typeshare(serialized_as = "number")]
+    pub output_tokens: Option<u64>,
+    /// Model identifier used for this node's LLM call.
+    pub model: String,
+}
+
+/// One node's projected run state — the join of `TaskContext::node_runs[class]`
+/// (status/timing/error/input/usage) with `TaskContext::nodes[class]` (output),
+/// keyed by the node's class name (BA.11.M).
+///
+/// Wire format:
+/// ```json
+/// {
+///   "node": "DataIngestionNode",
+///   "status": "success",
+///   "started_at": "2026-07-24T12:00:00Z",
+///   "completed_at": "2026-07-24T12:00:01Z",
+///   "error": null,
+///   "input": null,
+///   "output": { "documents_loaded": 3 },
+///   "usage": null
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeTransitionDto {
+    /// Node identity — the Python class name (contract §1), used as the map key
+    /// in both `TaskContext::nodes` and `TaskContext::node_runs`.
+    pub node: String,
+    /// Lifecycle status as the lowercase wire string: `pending`/`running`/`success`/`failed`.
+    pub status: String,
+    /// ISO-8601 UTC timestamp set on entry, `null` while pending.
+    #[serde(default)]
+    pub started_at: Option<String>,
+    /// ISO-8601 UTC timestamp set on success or failure, `null` before completion.
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    /// Error message, present only for a `failed` node.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// The node's recorded input, present only for a `failed` node.
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
+    /// The node's output value from `TaskContext::nodes`, `null` when not yet produced.
+    #[serde(default)]
+    pub output: Option<serde_json::Value>,
+    /// Token/model usage, present only for LLM nodes.
+    #[serde(default)]
+    pub usage: Option<RunUsageDto>,
+}
+
+/// JSON response for `GET /api/runs/{id}` — the projected `LiveStateStore` snapshot
+/// for one run (BA.11.M).
+///
+/// Wire format:
+/// ```json
+/// {
+///   "run_id": "b6a1...",
+///   "event": { "ticket_id": "T-1" },
+///   "metadata": { "workflow": "sdlc-flow" },
+///   "nodes": [ { "node": "DataIngestionNode", "status": "success", ... } ]
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunStateDto {
+    /// The run's UUID as a string.
+    pub run_id: String,
+    /// The triggering event payload, carried through from `TaskContext::event`.
+    pub event: serde_json::Value,
+    /// Workflow-level metadata, carried through from `TaskContext::metadata`.
+    pub metadata: serde_json::Value,
+    /// Per-node projected states, one entry per class name in `TaskContext::node_runs`.
+    pub nodes: Vec<NodeTransitionDto>,
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1969,5 +2062,72 @@ mod tests {
         assert_eq!(dto.scope, BoardScope::Hq);
         assert!(dto.tier.is_none());
         assert!(dto.repos.is_empty());
+    }
+
+    // ── RunStateDto / NodeTransitionDto (BA.11.M) ──────────────────────────
+
+    fn sample_run_state_dto() -> RunStateDto {
+        RunStateDto {
+            run_id: "b6a1c1e0-0000-4000-8000-000000000000".to_owned(),
+            event: serde_json::json!({ "ticket_id": "T-1" }),
+            metadata: serde_json::json!({ "workflow": "sdlc-flow" }),
+            nodes: vec![
+                NodeTransitionDto {
+                    node: "DataIngestionNode".to_owned(),
+                    status: "success".to_owned(),
+                    started_at: Some("2026-07-24T12:00:00Z".to_owned()),
+                    completed_at: Some("2026-07-24T12:00:01Z".to_owned()),
+                    error: None,
+                    input: None,
+                    output: Some(serde_json::json!({ "documents_loaded": 3 })),
+                    usage: None,
+                },
+                NodeTransitionDto {
+                    node: "SummarizeNode".to_owned(),
+                    status: "failed".to_owned(),
+                    started_at: Some("2026-07-24T12:00:01Z".to_owned()),
+                    completed_at: Some("2026-07-24T12:00:02Z".to_owned()),
+                    error: Some("timeout".to_owned()),
+                    input: Some(serde_json::json!({ "documents": 3 })),
+                    output: None,
+                    usage: Some(RunUsageDto {
+                        input_tokens: Some(512),
+                        output_tokens: Some(128),
+                        model: "claude-sonnet-5".to_owned(),
+                    }),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn run_state_dto_round_trips() {
+        let dto = sample_run_state_dto();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: RunStateDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn run_state_dto_serializes_expected_fields() {
+        let dto = sample_run_state_dto();
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(v["run_id"], "b6a1c1e0-0000-4000-8000-000000000000");
+        assert_eq!(v["event"]["ticket_id"], "T-1");
+        assert_eq!(v["nodes"][0]["node"], "DataIngestionNode");
+        assert_eq!(v["nodes"][0]["status"], "success");
+        assert!(v["nodes"][0]["error"].is_null());
+        assert_eq!(v["nodes"][1]["status"], "failed");
+        assert_eq!(v["nodes"][1]["error"], "timeout");
+        assert_eq!(v["nodes"][1]["usage"]["model"], "claude-sonnet-5");
+    }
+
+    #[test]
+    fn run_state_dto_usage_null_when_absent() {
+        let dto = sample_run_state_dto();
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert!(v["nodes"][0]["usage"].is_null());
+        assert!(v["nodes"][0]["output"].is_object());
+        assert!(v["nodes"][1]["output"].is_null());
     }
 }
