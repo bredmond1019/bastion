@@ -2,12 +2,56 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-23T22:55:34Z
+timestamp: 2026-07-23T23:43:08Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-07-24]
+
+### 11.M-live-run-read-endpoint — done
+
+- **What:** `/sdlc-flow` drove spec `11.M-live-run-read-endpoint` (BA.11.M, re-scoped
+  owner-approved to the **read half only** of D42's live run endpoint) end to end across 5
+  tasks, all PASS in 1 attempt each: typeshare-annotated `RunStateDto`/`NodeTransitionDto`/
+  `RunUsageDto` DTOs added to `src/serve/dto.rs` and `types/serve.ts` regenerated (task 1); a
+  pure `project_run(run_id, &TaskContext) -> RunStateDto` projection plus thin async
+  `list_runs`/`get_run` handlers in a new `src/serve/handlers/runs.rs`, with 13 unit tests
+  covering multi-node statuses, failed-node error/input, LLM usage vs `None`, and 400/404/200
+  handler paths (task 2); a single `LiveStateStore` hoisted above the engine-mount match in
+  `src/serve/mod.rs` and shared between the engine's `on_progress` writer and the new
+  bearer-protected `GET /api/runs` + `GET /api/runs/{id}` read routes, plus 3 integration
+  tests (task 3); `docs/serve-api.md` bumped v0.7 → v0.8 with a new endpoint section, DTO field
+  tables, and trailing-section renumbering (task 4); and a final validation pass confirming all
+  four gates green (`cargo test`: 1414 passed) plus a real-binary smoke test of the endpoint
+  against a running `bastion serve` (401/200-empty/404/400, and `200 []` graceful degradation
+  with the engine unmounted) (task 5). One consolidated review passed with no findings. Notable
+  decisions: moved `engine-contract`/`uuid` from dev- to normal dependencies (recorded as a D18
+  amendment); the SSE/WS stream half of D42 is deliberately deferred to a proposed follow-on
+  block `BA.11.N` — no `engine-serve` change was made in this block. `state.json`'s `BA.11.M`
+  block flipped to `closed`.
+- **Why:** Ships the read half of BA.11.M so bastion-web's node drill-in (`BW.3.B`) can pull a
+  run's live per-node state (output/error/input/tokens/model/timing) from the embedded engine's
+  `LiveStateStore` over HTTP instead of polling Postgres.
+- **Refs:** `planning/11.M-live-run-read-endpoint/`; branch `11.M-live-run-read-endpoint-flow`;
+  `state.json`'s `BA.11.M` block = `closed`.
+- Next: resume Phase 13/14 blocks per `state.json`'s regenerated `focus.next` ordering; BA.11.J
+  (cost read endpoint) and the follow-on `BA.11.N` (live run stream) remain queued in Phase 11.
+
+```
+2f1aa57 docs: update docs for 11.M-live-run-read-endpoint
+2156bdd feat: implement 11.M-live-run-read-endpoint-task4
+05db5e8 feat: implement 11.M-live-run-read-endpoint-task3
+fc353b6 feat: implement 11.M-live-run-read-endpoint-task2
+f092ee5 feat: implement 11.M-live-run-read-endpoint-task1
+61ca446 docs: record PR #24 merge in log.md
+98daa6c 11.L-typeshare-ts-generation: 5 task(s), review PASS (#24)
+d4f8962 Updated status and docs
+```
 
 ---
 
@@ -34,7 +78,9 @@ timestamp: 2026-07-23T22:55:34Z
   serve DTO contract with a drift gate, so BastionWeb (`BW.0.B`) consumes compile-checked types
   instead of hand-mirroring them.
 - **Refs:** `planning/11.L-typeshare-ts-generation/`; branch
-  `11.L-typeshare-ts-generation-flow`; `state.json`'s `BA.11.L` block = `closed`.
+  `11.L-typeshare-ts-generation-flow`; PR
+  [#24](https://github.com/bredmond1019/bastion/pull/24) (squash-merged, branch deleted);
+  `state.json`'s `BA.11.L` block = `closed`.
 - Next: resume Phase 13/14 blocks per `state.json`'s regenerated `focus.next` ordering (BA.11.J
   cost read endpoint, BA.11.M live run read/stream endpoint remain queued in Phase 11).
 

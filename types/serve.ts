@@ -204,6 +204,64 @@ export interface NewSessionBody {
 }
 
 /**
+ * Token/model usage for an LLM node, projected from `engine_contract::task_context::Usage`.
+ * 
+ * Wire format:
+ * ```json
+ * { "input_tokens": 512, "output_tokens": 128, "model": "claude-sonnet-5" }
+ * ```
+ */
+export interface RunUsageDto {
+	/** Prompt token count, when reported by the provider. */
+	input_tokens?: number;
+	/** Completion token count, when reported by the provider. */
+	output_tokens?: number;
+	/** Model identifier used for this node's LLM call. */
+	model: string;
+}
+
+/**
+ * One node's projected run state — the join of `TaskContext::node_runs[class]`
+ * (status/timing/error/input/usage) with `TaskContext::nodes[class]` (output),
+ * keyed by the node's class name (BA.11.M).
+ * 
+ * Wire format:
+ * ```json
+ * {
+ * "node": "DataIngestionNode",
+ * "status": "success",
+ * "started_at": "2026-07-24T12:00:00Z",
+ * "completed_at": "2026-07-24T12:00:01Z",
+ * "error": null,
+ * "input": null,
+ * "output": { "documents_loaded": 3 },
+ * "usage": null
+ * }
+ * ```
+ */
+export interface NodeTransitionDto {
+	/**
+	 * Node identity — the Python class name (contract §1), used as the map key
+	 * in both `TaskContext::nodes` and `TaskContext::node_runs`.
+	 */
+	node: string;
+	/** Lifecycle status as the lowercase wire string: `pending`/`running`/`success`/`failed`. */
+	status: string;
+	/** ISO-8601 UTC timestamp set on entry, `null` while pending. */
+	started_at?: string;
+	/** ISO-8601 UTC timestamp set on success or failure, `null` before completion. */
+	completed_at?: string;
+	/** Error message, present only for a `failed` node. */
+	error?: string;
+	/** The node's recorded input, present only for a `failed` node. */
+	input?: any;
+	/** The node's output value from `TaskContext::nodes`, `null` when not yet produced. */
+	output?: any;
+	/** Token/model usage, present only for LLM nodes. */
+	usage?: RunUsageDto;
+}
+
+/**
  * JSON response for `GET /api/sessions/{name}/pane`.
  * 
  * Wire format:
@@ -274,6 +332,31 @@ export interface RepoSummaryDto {
 	now: string;
 	/** Whether `planning/handoff.md` exists for this workspace. */
 	has_handoff: boolean;
+}
+
+/**
+ * JSON response for `GET /api/runs/{id}` — the projected `LiveStateStore` snapshot
+ * for one run (BA.11.M).
+ * 
+ * Wire format:
+ * ```json
+ * {
+ * "run_id": "b6a1...",
+ * "event": { "ticket_id": "T-1" },
+ * "metadata": { "workflow": "sdlc-flow" },
+ * "nodes": [ { "node": "DataIngestionNode", "status": "success", ... } ]
+ * }
+ * ```
+ */
+export interface RunStateDto {
+	/** The run's UUID as a string. */
+	run_id: string;
+	/** The triggering event payload, carried through from `TaskContext::event`. */
+	event: any;
+	/** Workflow-level metadata, carried through from `TaskContext::metadata`. */
+	metadata: any;
+	/** Per-node projected states, one entry per class name in `TaskContext::node_runs`. */
+	nodes: NodeTransitionDto[];
 }
 
 /**

@@ -224,6 +224,17 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
 
     let registry = web::Data::new(registry);
 
+    // ── Live run-state store (BA.11.M) ──────────────────────────────────────
+    //
+    // Hoisted above the engine-mount decision so it exists (and is shareable
+    // via `web::Data<LiveStateStore>`) whether or not the engine mounts. When
+    // the engine *is* mounted, this exact instance is cloned into
+    // `EngineAppState.live` so `on_progress` records into the same store the
+    // `/api/runs` read routes below observe. When the engine is skipped, the
+    // store simply stays empty (`GET /api/runs` → `[]`, `GET /api/runs/{id}`
+    // → 404) — the same graceful-degradation posture as the engine routes.
+    let live_store = LiveStateStore::new();
+
     // ── Engine embed (BA.7.C task 2) ────────────────────────────────────────
     //
     // Decide once at boot whether to mount `engine-serve`'s route table.
@@ -255,7 +266,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                     );
                     let state = EngineAppState {
                         dispatcher: Arc::new(Dispatcher::new()),
-                        live: LiveStateStore::new(),
+                        live: live_store.clone(),
                         durable: spawn_durable_writer(Some(pool)),
                         runs: RunRegistry::new(),
                         api_key: engine_api_key,
@@ -283,10 +294,13 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         }
     };
 
+    let live_data = web::Data::new(live_store);
+
     HttpServer::new(move || {
         let hub_data = web::Data::new(hub.clone());
         let registry_data = registry.clone();
         let engine_data = engine_data.clone();
+        let live_data = live_data.clone();
 
         // Protected scope — bearer auth enforced on all children.
         //
@@ -348,7 +362,13 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             )
             // ── Cross-brain board route (BA.11.K) ───────────────────────────
             // /board — GET only (now/next/blocked/finished rollup)
-            .service(web::resource("/board").route(web::get().to(handlers::board::get_board)));
+            .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
+            // ── Live run-state read routes (BA.11.M) ────────────────────────
+            // /runs — GET (currently-tracked run ids)
+            .service(web::resource("/runs").route(web::get().to(handlers::runs::list_runs)))
+            // /runs/{id} — GET (per-node run-state snapshot)
+            .service(web::resource("/runs/{id}").route(web::get().to(handlers::runs::get_run)))
+            .app_data(live_data);
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
         // v0.2: route backed by hub + WsConn (replaces echo actor).
@@ -519,6 +539,7 @@ mod tests {
         let hub = Hub::new(2, registry.clone()).start();
         let hub_data = web::Data::new(hub);
         let registry_data = web::Data::new(registry);
+        let live_data = web::Data::new(LiveStateStore::new());
 
         // Mirror production routing exactly (same web::resource groupings for
         // correct 405 behaviour on wrong methods).
@@ -561,7 +582,10 @@ mod tests {
             .service(
                 web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
             )
-            .service(web::resource("/board").route(web::get().to(handlers::board::get_board)));
+            .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
+            .service(web::resource("/runs").route(web::get().to(handlers::runs::list_runs)))
+            .service(web::resource("/runs/{id}").route(web::get().to(handlers::runs::get_run)))
+            .app_data(live_data);
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
             .app_data(hub_data.clone())
@@ -1493,5 +1517,60 @@ heading = "bastion"
         assert!(body["stale"].is_boolean(), "stale must be a boolean");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Live run-state routes (BA.11.M) ───────────────────────────────────
+
+    #[actix_web::test]
+    async fn list_runs_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get().uri("/api/runs").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/runs without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_runs_returns_200_empty_array_when_store_empty() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/runs")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/runs with a valid token must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(
+            body,
+            serde_json::json!([]),
+            "GET /api/runs must return an empty array when no run is tracked; got {body}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_run_returns_404_for_unknown_run_id() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let unknown_id = uuid::Uuid::new_v4();
+        let req = test::TestRequest::get()
+            .uri(&format!("/api/runs/{unknown_id}"))
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            404,
+            "GET /api/runs/{{id}} for an unknown run must return 404; got {}",
+            resp.status()
+        );
     }
 }

@@ -1,22 +1,23 @@
 ---
 type: Guideline
-title: "serve-api contract v0.7"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, and the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb."
+title: "serve-api contract v0.8"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, and the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.7 Contract
+# serve-api — v0.8 Contract
 
-**Version:** v0.7  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–13, 15, 16 — plus, when mounted,
-`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 14.  
-**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15, 16; `bastion abort`
-(`src/run/abort.rs`, this repo) for Section 14's abort route.
+**Version:** v0.8  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–14, 16, 17 — plus, when mounted,
+`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 15.  
+**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 16, 17; bastion-web
+(`BW.3.B`) for Section 14; `bastion abort` (`src/run/abort.rs`, this repo) for Section 15's abort
+route.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -43,7 +44,7 @@ transport security on the tailnet.
 ## 2. Authentication
 
 All routes **except** `GET /health` under bastion's own `/api` and `/ws` scopes are protected by
-mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 14,
+mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 15,
 mounted only when config allows) are a **separate, unmounted-at-`/api` surface with their own
 `X-API-Key` gate** — the two auth schemes coexist side by side and are never double-applied to the
 same request:
@@ -51,8 +52,8 @@ same request:
 | Route family | Scheme | Header |
 |---|---|---|
 | `/health`, `/api/*`, `/ws` (Sections 3–13) | Bearer | `Authorization: Bearer <BASTION_SERVE_TOKEN>` |
-| Engine routes (Section 14): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
-| Engine routes (Section 14): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
+| Engine routes (Section 15): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
+| Engine routes (Section 15): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
 
 The engine's own `GET /health` is shadowed by bastion's `/health` handler (first-registration-wins
 for duplicate exact-path routes — verified empirically, not a panic), so the process's `/health`
@@ -1162,7 +1163,157 @@ Query deserialize error: unknown variant `bogus`, expected one of `hq`, `tier`, 
 
 ---
 
-## 14. Embedded engine route table (v0.5, BA.7.C)
+## 14. Live run read API (v0.8, BA.11.M)
+
+Two read-only routes projecting the embedded engine's in-memory `LiveStateStore` (`engine_serve::
+live_state::LiveStateStore`, `../engine-rs/crates/engine-serve/src/live_state.rs`) onto HTTP, so a
+remote client (bastion-web `BW.3.B` node drill-in) can read a run's current per-node state without
+polling Postgres. Live under the bearer-protected `/api` scope (Section 2) — same auth as Sections
+3–13, distinct from the Section 15 engine `X-API-Key` scheme.
+
+`LiveStateStore` is a single instance shared between the mounted engine's `on_progress` writer and
+these read handlers (`src/serve/mod.rs`): when the Section 15 engine mount is active, the engine
+records every node transition into this store as the run executes, and these routes read the same
+store. **When the engine is not mounted** (Section 15.1 — `DATABASE_URL` / `BASTION_ENGINE_API_KEY`
+absent), the store still exists but stays empty for the lifetime of the process: `GET /api/runs`
+returns `200 []` and `GET /api/runs/{id}` returns `404` for every id — the same graceful-degradation
+posture as the rest of this contract, not an error.
+
+**This is a read-only snapshot, not a stream.** There is no SSE/WS push and no `engine-serve` change
+in this API — a client observes the current state only when it requests it. Live push (token-by-
+token / transition-by-transition) is split into a follow-on block (proposed `BA.11.N`): SSE over a
+`tokio::sync::broadcast` tee added to `engine-serve`'s `on_progress` closure. Until that ships,
+`BW.3.A`'s ~2s client polling against these two routes is the standing fallback.
+
+### 14.1 `GET /api/runs` — currently-tracked run ids
+
+**Request:**
+
+```
+GET /api/runs HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):** a JSON array of run-id strings (UUIDs), one per run currently tracked by the
+shared `LiveStateStore` (`list_active()`). `[]` when no run is tracked, including when the engine is
+not mounted.
+
+```json
+["b6a1c1e0-0000-4000-8000-000000000000"]
+```
+
+No query parameters. No 404 case — an empty store is a normal 200.
+
+### 14.2 `GET /api/runs/{id}` — one run's per-node snapshot
+
+**Path parameter:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `id` | string (UUID) | The run id, as returned by `GET /api/runs` or minted by the Section 15 `/events/` trigger. Must parse as a UUID. |
+
+**Request:**
+
+```
+GET /api/runs/b6a1c1e0-0000-4000-8000-000000000000 HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK): `RunStateDto`** — the run's `TaskContext` snapshot projected to wire shape,
+joining each tracked node's `node_runs[class]` (status/timing/error/input/usage) with its
+`nodes[class]` (output) by class name, sorted by class name for deterministic output:
+
+```json
+{
+  "run_id": "b6a1c1e0-0000-4000-8000-000000000000",
+  "event": { "ticket_id": "T-1" },
+  "metadata": { "workflow": "sdlc-flow" },
+  "nodes": [
+    {
+      "node": "DataIngestionNode",
+      "status": "success",
+      "started_at": "2026-07-24T12:00:00Z",
+      "completed_at": "2026-07-24T12:00:01Z",
+      "error": null,
+      "input": null,
+      "output": { "documents_loaded": 3 },
+      "usage": null
+    },
+    {
+      "node": "SummarizeNode",
+      "status": "failed",
+      "started_at": "2026-07-24T12:00:01Z",
+      "completed_at": "2026-07-24T12:00:02Z",
+      "error": "timeout",
+      "input": { "documents": 3 },
+      "output": null,
+      "usage": { "input_tokens": 512, "output_tokens": 128, "model": "claude-sonnet-5" }
+    }
+  ]
+}
+```
+
+#### `RunStateDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `run_id` | string | The run's UUID, echoed back. |
+| `event` | JSON value | The triggering event payload, carried through from `TaskContext::event`. |
+| `metadata` | JSON value | Workflow-level metadata, carried through from `TaskContext::metadata`. |
+| `nodes` | array of `NodeTransitionDto` | One entry per node class present in `TaskContext::node_runs`, sorted by class name. Empty when the run has no recorded node transitions yet. |
+
+#### `NodeTransitionDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `node` | string | The node's class name — the map key in both `TaskContext::nodes` and `TaskContext::node_runs`. |
+| `status` | string | Lowercase wire status: `"pending"` \| `"running"` \| `"success"` \| `"failed"`. |
+| `started_at` | string \| null | ISO-8601 UTC timestamp set on entry; `null` while `pending`. |
+| `completed_at` | string \| null | ISO-8601 UTC timestamp set on success or failure; `null` before completion. |
+| `error` | string \| null | Error message; present only for a `failed` node. |
+| `input` | JSON value \| null | The node's recorded input; present only for a `failed` node. |
+| `output` | JSON value \| null | The node's output from `TaskContext::nodes`; `null` when not yet produced (e.g. still `running`, or `failed` before producing output). |
+| `usage` | `RunUsageDto` \| null | Token/model usage; present only for LLM nodes, `null` for non-LLM nodes and for nodes that have not yet reported usage. |
+
+#### `RunUsageDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `input_tokens` | number \| null | Prompt token count, when reported by the provider. |
+| `output_tokens` | number \| null | Completion token count, when reported by the provider. |
+| `model` | string | Model identifier used for this node's LLM call. |
+
+### 14.3 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Malformed `{id}` (not a valid UUID) | `400 Bad Request` | JSON `ErrorPayload`, code `C006` |
+| Unknown or no-longer-tracked run id | `404 Not Found` | JSON `ErrorPayload`, code `C002` |
+
+`GET /api/runs` has no error case beyond the shared 401 — an empty or non-existent store is a
+normal `200 []`.
+
+### 14.4 Out of scope
+
+No SSE/WS stream, no `engine-serve` broadcast/tee, and no Postgres history read are part of this
+API — see the block-level scope note above. Token-by-token LLM output streaming and orchestrator-
+workflow surfaces (`BA.11.G`) are likewise out of scope.
+
+### 14.5 Testing
+
+`project_run` (`src/serve/handlers/runs.rs`) is the pure `TaskContext` → `RunStateDto` projection —
+exhaustively unit-tested with no I/O (multi-node mixed statuses, failed-node error+input, LLM-node
+usage vs. non-LLM `None`, empty `node_runs`, output joined by class name). The async handlers
+(`list_runs`/`get_run`) and the `LiveStateStore`-sharing wiring in `src/serve/mod.rs` are the thin
+I/O shell — covered by `#[actix_web::test]` handler-level tests plus `src/serve/mod.rs` integration
+tests asserting the bearer-auth 401, the empty-store `200 []`, and the unknown-id `404` against a
+real `App`, and manually smoke-tested end-to-end against a running `bastion serve` with the engine
+mounted (recorded in `planning/11.M-live-run-read-endpoint/tasks.md`'s `## Notes`).
+
+---
+
+## 15. Embedded engine route table (v0.5, BA.7.C)
 
 `bastion serve` embeds `engine-serve`'s route table (`engine_serve::http::configure`) at the
 **server root** — not under `/api` — per D48 ("the abort endpoint and the rest of the engine
@@ -1171,7 +1322,7 @@ growth (`planning/7.C-cost-budget-alerts-abort/tasks.md`, *Scope growth* section
 same `engine-serve` surface engine-rs's own `EN.1.C`/`EN.2.B` shipped as an embeddable library —
 `bastion serve` is the first (and, as of this writing, only) process that actually mounts it.
 
-### 14.1 Mount decision
+### 15.1 Mount decision
 
 The engine routes are mounted only when **both** `DATABASE_URL` and `BASTION_ENGINE_API_KEY` are
 set (non-empty) at boot — decided once, pure, by `serve::decide_engine_mount` (`src/serve/
@@ -1181,7 +1332,7 @@ stderr and emits a `tracing::warn!` `observ` event rather than failing to boot o
 that would 500 on every request. A `DATABASE_URL` present but unreachable (connection failure at
 boot) also leaves the engine routes unmounted, logged the same way.
 
-### 14.2 Routes
+### 15.2 Routes
 
 | Route | Method | Auth | Description |
 |---|---|---|---|
@@ -1195,7 +1346,7 @@ boot) also leaves the engine routes unmounted, logged the same way.
 an exact string match, entirely separate from bastion's own `BASTION_SERVE_TOKEN` Bearer check
 (Section 2). Neither scheme is layered on the other's routes.
 
-### 14.3 Testing
+### 15.3 Testing
 
 Covered by the in-process integration test `tests/abort_contract.rs`, which builds a real
 `engine-serve` `App` (via `AppState`) and asserts the 401 / 404 / 202 paths against it — the
@@ -1206,13 +1357,13 @@ including the empty-string-counts-as-absent case.
 
 ---
 
-## 15. Generated TypeScript types (v0.7, BA.11.L)
+## 16. Generated TypeScript types (v0.7, BA.11.L)
 
 The contract DTOs in `src/serve/dto.rs` are annotated with `#[typeshare]` and are the **single
 source of truth** for the TypeScript types consumed by BastionWeb (`BW.0.B`) and any other TS
 client of this contract. `bastion-ui` (Flutter) is unaffected — it has no TS surface.
 
-### 15.1 Generated artifact
+### 16.1 Generated artifact
 
 `types/serve.ts` (committed at the bastion package root) is the generated TypeScript output. It
 is produced by the `typeshare` CLI reading the `#[typeshare]`-annotated types in `src/serve/dto.rs`
@@ -1227,7 +1378,7 @@ Two exclusions from generation, both internal-only types that never cross the wi
 each carries a data variant with no serde representation for `typeshare` to mirror, so both are
 left unannotated rather than forced.
 
-### 15.2 Regenerating
+### 16.2 Regenerating
 
 Prerequisite: the `typeshare` CLI on `PATH` (`cargo install typeshare-cli --locked`).
 
@@ -1240,7 +1391,7 @@ typeshare src/serve --lang typescript --output-file types/serve.ts --config-file
 Run this after any change to `src/serve/dto.rs`'s public types (new field, new type, new enum
 variant, etc.) and commit the regenerated `types/serve.ts` alongside the `dto.rs` change.
 
-### 15.3 Drift check
+### 16.3 Drift check
 
 `scripts/check-typeshare-drift.sh` regenerates the types to a temp file (via the same invocation
 `gen-types.sh` uses, so the two scripts can never diverge on flags) and diffs it against the
@@ -1262,25 +1413,25 @@ documented in Sections 3, 5–13 is unchanged.
 
 ---
 
-## 16. Configuration reference
+## 17. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | `host:port` to bind |
 | `BASTION_SERVE_TOKEN` | **Yes** | — | Bearer token for protected routes; absent token is a typed error at startup |
-| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 14 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
-| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 14) check. Absent leaves those routes unmounted. |
+| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 15 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
+| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 15) check. Absent leaves those routes unmounted. |
 
 `bastion serve` loads config via `load_serve_config()` (`src/config.rs`), which
 is DB-free and does **not** require `DATABASE_URL` for its own `/api`/`/ws` surface. The
 `[workspaces]` registry consumed by Section 11's routes is loaded separately via
 `load_workspace_registry()` — also DB-free — once at server startup. `DATABASE_URL` and
-`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 14.1), not
+`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 15.1), not
 through `load_serve_config()`.
 
 ---
 
-## 17. Versioning policy
+## 18. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -1289,12 +1440,26 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.7**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.8**.
 
 ---
 
 ## Amendment Log
 
+- **2026-07-24 — v0.7 → v0.8 (BA.11.M, read half):** Added Section 14 (Live run read API) —
+  `GET /api/runs` (currently-tracked run ids) and `GET /api/runs/{id}` (per-node `RunStateDto`
+  snapshot: status, timing, output, and for a failed node its error + input, plus LLM-node
+  token/model usage), both under the existing bearer-protected `/api` scope. The routes project
+  the embedded engine's in-memory `LiveStateStore`, which is now shared as a single instance
+  between the engine's `on_progress` writer (when the Section 15 engine mount is active) and these
+  read handlers; with the engine unmounted the store stays empty (`200 []` / `404`) rather than
+  erroring. This is a read-only snapshot — no SSE/WS stream and no `engine-serve` change are
+  introduced; the D42 live **stream** half of the original `BA.11.M` scope is split into a
+  follow-on block (proposed `BA.11.N` — SSE over an `engine-serve` broadcast tee), with
+  `BW.3.A`'s ~2s polling as the standing fallback until then. Renumbered Embedded engine route
+  table → Section 15 (subsections 15.1–15.3), Generated TypeScript types → Section 16
+  (subsections 16.1–16.3), Configuration reference → Section 17, Versioning policy → Section 18.
+  Updated frontmatter title, description, `keywords`, and the current-contract version note.
 - **2026-07-23 — v0.6 → v0.7 (BA.11.L):** Added Section 15 (Generated TypeScript types) —
   documents `types/serve.ts` (committed, generated from `#[typeshare]`-annotated `src/serve/
   dto.rs` via `typeshare.toml`, MUST NOT be hand-edited), the regenerate command
