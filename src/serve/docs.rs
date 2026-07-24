@@ -158,7 +158,14 @@ pub fn resolve_allowlisted_path(repo_root: &Path, rel: &Path) -> Result<PathBuf,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(DocsError::NotFound),
             Err(e) => return Err(DocsError::Io(e.to_string())),
         };
-        if canonical_target.parent() == Some(canonical_root.as_path()) {
+        // `is_repo_root_markdown` only checked the path *shape* (a single
+        // component not equal to an allowed root's name) — it cannot see
+        // whether the target is actually a file. A single-component
+        // directory name that happens not to collide with an allowed root
+        // (e.g. `src`) would otherwise sail through here. Require it to be a
+        // real file, matching the "repo-root-level `*.md` FILES" contract.
+        if canonical_target.parent() == Some(canonical_root.as_path()) && canonical_target.is_file()
+        {
             return Ok(canonical_target);
         }
         return Err(DocsError::Forbidden);
@@ -542,6 +549,23 @@ mod tests {
         let rel = validate_rel_path("planning/missing.md", true).expect("validates");
         let result = resolve_allowlisted_path(repo.path(), &rel);
         assert_eq!(result, Err(DocsError::NotFound));
+    }
+
+    #[test]
+    fn rejects_repo_root_level_directory_not_on_the_allowlist() {
+        // `src` is a single path component that doesn't collide with any
+        // `ALLOWED_ROOTS` entry, so the repo-root-markdown-file shortcut
+        // must not treat it as readable just because it canonicalizes and
+        // lives directly under the repo root — it is a directory, not a
+        // markdown file.
+        let repo = TempDir::new("repo8");
+        let src_dir = repo.path().join("src");
+        fs::create_dir_all(&src_dir).expect("create src dir");
+        fs::write(src_dir.join("main.md"), "# not allowlisted").expect("write main.md");
+
+        let rel = validate_rel_path("src", false).expect("validates");
+        let result = resolve_allowlisted_path(repo.path(), &rel);
+        assert_eq!(result, Err(DocsError::Forbidden));
     }
 
     #[test]
