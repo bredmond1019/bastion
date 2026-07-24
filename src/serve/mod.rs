@@ -385,6 +385,17 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                 web::resource("/attention")
                     .route(web::get().to(handlers::attention::get_attention)),
             )
+            // ── Docs read routes (BA.11.Q) ───────────────────────────────────
+            // /docs/{repo}/tree — GET only (allowlisted markdown tree)
+            // /docs/{repo}/file — GET only (raw markdown read)
+            .service(
+                web::resource("/docs/{repo}/tree")
+                    .route(web::get().to(handlers::docs::get_docs_tree)),
+            )
+            .service(
+                web::resource("/docs/{repo}/file")
+                    .route(web::get().to(handlers::docs::get_docs_file)),
+            )
             .app_data(live_data);
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
@@ -612,6 +623,14 @@ mod tests {
             .service(
                 web::resource("/attention")
                     .route(web::get().to(handlers::attention::get_attention)),
+            )
+            .service(
+                web::resource("/docs/{repo}/tree")
+                    .route(web::get().to(handlers::docs::get_docs_tree)),
+            )
+            .service(
+                web::resource("/docs/{repo}/file")
+                    .route(web::get().to(handlers::docs::get_docs_file)),
             )
             .app_data(live_data);
         let ws_scope = web::scope("/ws")
@@ -1842,5 +1861,261 @@ heading = "bastion"
             "an unrecognized scope must return 400; got {}",
             resp.status()
         );
+    }
+
+    // ── Docs read routes (BA.11.Q) ───────────────────────────────────────
+
+    /// Build a fixture repo whose `planning/` is a REAL symlink pointing at a
+    /// sibling "vault" directory — mirroring the real repos where
+    /// `planning/` is a symlink into the company-brain vault. Exercises the
+    /// canonicalize-the-allowlisted-root-not-the-repo-root rule end to end
+    /// (BA.11.Q task 2's core regression case).
+    ///
+    /// Layout:
+    /// ```text
+    /// <repo>/
+    ///   docs/served.md
+    ///   planning -> <vault>/          (symlink)
+    ///   .env                          (non-markdown, must be excluded)
+    /// <vault>/
+    ///   status.md
+    /// ```
+    ///
+    /// Returns `(repo_dir, vault_dir)` — callers own teardown of both.
+    fn make_temp_docs_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!(
+            "bastion-serve-docs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo_dir = base.join("repo");
+        let vault_dir = base.join("vault");
+        std::fs::create_dir_all(repo_dir.join("docs")).unwrap();
+        std::fs::create_dir_all(&vault_dir).unwrap();
+
+        std::fs::write(
+            repo_dir.join("docs/served.md"),
+            "# Served\n\nDocs tree fixture content.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            vault_dir.join("status.md"),
+            "# Status\n\nSymlinked planning fixture content.\n",
+        )
+        .unwrap();
+        std::fs::write(repo_dir.join(".env"), "SECRET=nope\n").unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&vault_dir, repo_dir.join("planning")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&vault_dir, repo_dir.join("planning")).unwrap();
+
+        (repo_dir, vault_dir)
+    }
+
+    /// Registry naming the fixture repo `docs-repo`.
+    fn registry_with_docs_fixture(repo_dir: &std::path::Path) -> FileConfig {
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("docs-repo".to_string(), repo_dir.to_path_buf());
+        FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        }
+    }
+
+    fn teardown_docs_fixture(repo_dir: &std::path::Path, vault_dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(repo_dir);
+        let _ = std::fs::remove_dir_all(vault_dir);
+    }
+
+    #[actix_web::test]
+    async fn get_docs_tree_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/docs/docs-repo/tree")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/docs/{{repo}}/tree without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_docs_file_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/docs/docs-repo/file?path=docs/served.md")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/docs/{{repo}}/file without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_docs_tree_returns_200_with_docs_and_symlinked_planning_excluding_env() {
+        let (repo_dir, vault_dir) = make_temp_docs_fixture();
+        let registry = registry_with_docs_fixture(&repo_dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/docs/docs-repo/tree")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/docs/docs-repo/tree with a valid token must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["repo"], "docs-repo");
+        let entries = body["entries"]
+            .as_array()
+            .expect("entries must be an array");
+
+        // build_doc_tree returns only the top-level listing for root: "" —
+        // assert both allowlisted-root directories are present and the
+        // non-markdown .env file never appears anywhere in the response.
+        let body_str = body.to_string();
+        assert!(
+            entries.iter().any(|e| e["name"] == "docs"),
+            "tree must include the docs/ directory; got {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|e| e["name"] == "planning"),
+            "tree must include the symlinked planning/ directory; got {entries:?}"
+        );
+        assert!(
+            !body_str.contains(".env"),
+            "tree must never include the non-markdown .env file; got {body_str}"
+        );
+
+        teardown_docs_fixture(&repo_dir, &vault_dir);
+    }
+
+    #[actix_web::test]
+    async fn get_docs_file_returns_200_raw_content_through_symlinked_planning_root() {
+        let (repo_dir, vault_dir) = make_temp_docs_fixture();
+        let registry = registry_with_docs_fixture(&repo_dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/docs/docs-repo/file?path=planning/status.md")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/docs/docs-repo/file through the symlinked planning/ root must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["repo"], "docs-repo");
+        assert_eq!(body["path"], "planning/status.md");
+        assert_eq!(
+            body["content"], "# Status\n\nSymlinked planning fixture content.\n",
+            "raw content must match the file on disk through the symlinked planning/ vault byte-for-byte"
+        );
+
+        teardown_docs_fixture(&repo_dir, &vault_dir);
+    }
+
+    #[actix_web::test]
+    async fn get_docs_file_traversal_dot_dot_returns_403_c003() {
+        let (repo_dir, vault_dir) = make_temp_docs_fixture();
+        let registry = registry_with_docs_fixture(&repo_dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/docs/docs-repo/file?path=../../etc/passwd")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C003");
+
+        teardown_docs_fixture(&repo_dir, &vault_dir);
+    }
+
+    #[actix_web::test]
+    async fn get_docs_file_bare_dotenv_returns_403_c003() {
+        let (repo_dir, vault_dir) = make_temp_docs_fixture();
+        let registry = registry_with_docs_fixture(&repo_dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/docs/docs-repo/file?path=.env")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C003");
+
+        teardown_docs_fixture(&repo_dir, &vault_dir);
+    }
+
+    #[actix_web::test]
+    async fn get_docs_file_absolute_path_returns_403_c003() {
+        let (repo_dir, vault_dir) = make_temp_docs_fixture();
+        let registry = registry_with_docs_fixture(&repo_dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/docs/docs-repo/file?path=%2Fetc%2Fpasswd")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C003");
+
+        teardown_docs_fixture(&repo_dir, &vault_dir);
+    }
+
+    #[actix_web::test]
+    async fn get_docs_tree_unknown_repo_returns_404_c005() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/docs/no-such-repo/tree")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
+    }
+
+    #[actix_web::test]
+    async fn get_docs_file_missing_file_returns_404_c002() {
+        let (repo_dir, vault_dir) = make_temp_docs_fixture();
+        let registry = registry_with_docs_fixture(&repo_dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/docs/docs-repo/file?path=docs/nonexistent.md")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C002");
+
+        teardown_docs_fixture(&repo_dir, &vault_dir);
     }
 }
