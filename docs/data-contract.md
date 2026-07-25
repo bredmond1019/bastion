@@ -6,13 +6,13 @@ doc_id: data-contract
 layer: [console, engine]
 project: bastion
 status: active
-keywords: [data contract, orchestrator, PostgreSQL, node_runs, field mappings, v1.2.0, cancellation, abort, budget gate, event read api]
+keywords: [data contract, orchestrator, PostgreSQL, node_runs, field mappings, v1.3.0, cancellation, abort, budget gate, event read api, ingest]
 related: [monitor, costs, inspect, run]
 ---
 
 # Data Contract (Consumer View)
 
-**Pinned Contract Version: 1.2.0**
+**Pinned Contract Version: 1.3.0**
 
 The **canonical, authoritative** contract is owned by the orchestrator:
 `python-orchestration-system/docs/data-contract.md`. This file is bastion's *consumer* view — it
@@ -182,3 +182,4 @@ Every branch is unit-tested element-by-element in `src/run/abort.rs` (`render_ou
 | 1.1.0 | 2026-07-16 | Re-pin from 1.0.0 straight to 1.1.0, resolving known drift against the canonical 1.0.1 patch (no bastion-visible shape change in 1.0.1 — `POST /events/` auth only, and bastion never calls that endpoint). Registers the canonical's v1.1.0 additions: `POST /events/{run_id}/abort` (§ above) and the `metadata.cancellation` / `metadata.budget` run-level annotations (§ above) — both unconsumed by bastion Rust types today; wiring them up is `BA.7.C`'s job. |
 | 1.1.0 | 2026-07-16 | Mapping change against the same pinned version (`BA.7.C`, no canonical bump) — the two v1.1.0 additions registered above are now consumed: the abort endpoint by `api::client::abort_run` / `bastion abort <run>`, served by `engine-serve` embedded in `bastion serve` (D48); the `metadata.cancellation` / `metadata.budget` annotations by `db::workflows::derive_run_status` into `WorkflowRun.status`/`budget_halt`. |
 | 1.2.0 | 2026-07-24 | Re-pin from 1.1.0 to 1.2.0 (`OR.Y`). Registers the canonical's v1.2.0 additions, none yet consumed by bastion Rust types: the orchestrator's own `GET /events/{event_id}` read route (§ Monitor / Inspect above — no longer reserved), `event_id` on the `POST /events/` 202 body (§ Trigger above), and the `metadata.failure` run-level annotation (§ Run-level `metadata` annotations above). Wiring any of these into `db::workflows`/`api::client` is future work. |
+| 1.3.0 | 2026-07-24 | Re-pin from 1.2.0 to 1.3.0 (`OR.Q`). Registers the canonical's v1.3.0 additions: `POST /ingest/proposal` and `POST /ingest/artifact` (canonical § 7 HTTP surface) — the ingest seam engine-rs hybrid workflows POST finished artifacts through into `brain_documents`. No mapping or Rust-type change here: `bastion` is a **read-only Postgres observer** (§ above) with no artifacts to ingest, so it never calls either route and consumes neither. |
