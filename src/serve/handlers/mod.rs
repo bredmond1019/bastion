@@ -9,6 +9,7 @@ pub mod attention;
 pub mod board;
 pub mod docs;
 pub mod epics;
+pub mod pipeline;
 pub mod runs;
 pub mod sessions;
 pub mod status;

@@ -284,6 +284,17 @@ export interface CommandResponse {
 	session: string;
 }
 
+/** A single contact channel bundle for an opportunity. */
+export interface ContactDto {
+	name?: string;
+	role?: string;
+	emails?: string[];
+	whatsapp?: string[];
+	phones?: string[];
+	links?: string[];
+	note?: string;
+}
+
 /**
  * One entry in a `GET /api/docs/{repo}/tree` listing.
  * 
@@ -510,6 +521,102 @@ export interface NodeTransitionDto {
 	usage?: RunUsageDto;
 }
 
+/** One entry in an opportunity's `actions` activity log. */
+export interface OpportunityActionDto {
+	/** Date/timestamp of the action (e.g. `2026-07-25`). */
+	at: string;
+	/** Action kind (e.g. `research`, `outreach`). */
+	kind: string;
+	/** Free-text note. */
+	note: string;
+}
+
+/** One prospect archetype inside a ProspectingResult research brief. */
+export interface ProspectLeadDto {
+	name: string;
+	pillar: string;
+	pain_points?: string[];
+	outreach_hook?: string;
+	source?: string;
+}
+
+/**
+ * The research brief embedded in an opportunity body's first ```json fence.
+ * 
+ * `kind` is `"company"` (a CompanyBrief — has `company_name`) or
+ * `"prospecting"` (a ProspectingResult — has `prospects`/`vertical`); the two
+ * families' fields are unioned so a single DTO covers both, with the unused
+ * family's fields left empty/`None`.
+ */
+export interface ResearchBriefDto {
+	/** `"company"` or `"prospecting"`. */
+	kind: string;
+	company_name?: string;
+	summary?: string;
+	recent_developments?: string[];
+	pain_points?: string[];
+	outreach_hooks?: string[];
+	sources?: string[];
+	vertical?: string;
+	common_pain_points?: string[];
+	prospects?: ProspectLeadDto[];
+}
+
+/** The full projection for one opportunity (`GET /api/pipeline/{slug}`). */
+export interface OpportunityDetailDto {
+	/** File stem (e.g. `anthropic`). */
+	slug: string;
+	/** `kind` frontmatter; defaults to `company` when absent. */
+	kind: string;
+	/** `title` frontmatter (falls back to `slug` when absent). */
+	title: string;
+	/** `source` frontmatter, when present. */
+	source?: string;
+	/** `stage` frontmatter, when present. */
+	stage?: string;
+	/** `last_contact` frontmatter, when present. */
+	last_contact?: string;
+	/** `next_action` frontmatter, when present. */
+	next_action?: string;
+	/** `url` frontmatter, when present. */
+	url?: string;
+	/** `links` frontmatter list. */
+	links?: string[];
+	/** `research_ref` frontmatter, when present. */
+	research_ref?: string;
+	/** `contacts` frontmatter list. */
+	contacts?: ContactDto[];
+	/** The research brief parsed from the body's first ```json fence, when present. */
+	findings?: ResearchBriefDto;
+	/** `actions` frontmatter list (activity log). */
+	actions?: OpportunityActionDto[];
+	/** The markdown body (everything after the frontmatter block), when non-empty. */
+	body_markdown?: string;
+}
+
+/** A single opportunity, projected for the list view (`GET /api/pipeline`). */
+export interface OpportunitySummaryDto {
+	/** File stem (e.g. `anthropic`) — the `{slug}` for the detail route. */
+	slug: string;
+	/**
+	 * `kind` frontmatter (`company` | `prospecting-sweep` | `job-posting`);
+	 * defaults to `company` when absent.
+	 */
+	kind: string;
+	/** `title` frontmatter (falls back to `slug` when absent). */
+	title: string;
+	/** `source` frontmatter, when present. */
+	source?: string;
+	/** `stage` frontmatter, when present. */
+	stage?: string;
+	/** `last_contact` frontmatter, when present. */
+	last_contact?: string;
+	/** `next_action` frontmatter, when present. */
+	next_action?: string;
+	/** Whether the body carries a parseable research brief (```json fence). */
+	has_findings: boolean;
+}
+
 /**
  * JSON response for `GET /api/sessions/{name}/pane`.
  * 
@@ -537,6 +644,21 @@ export interface PanePayload {
 	seq: number;
 	/** Non-blank trailing lines from the captured pane output. */
 	lines: string[];
+}
+
+/**
+ * JSON response for `GET /api/pipeline`.
+ * 
+ * `stages` is the canonical stage vocabulary/order parsed from
+ * `business/docs/pipeline.md`'s `## Stages` line; `opportunities` are the
+ * per-file summaries, sorted by stage order (index in `stages`, unknown/none
+ * last) then title.
+ */
+export interface PipelineDto {
+	/** Canonical stage vocabulary in pipeline order. */
+	stages?: string[];
+	/** One summary per opportunity file (opportunities + leads). */
+	opportunities?: OpportunitySummaryDto[];
 }
 
 /**

@@ -399,6 +399,16 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // ── Epic registry route (BA.11.R) ────────────────────────────────
             // /epics — GET only (HQ cross-repo initiative registry)
             .service(web::resource("/epics").route(web::get().to(handlers::epics::get_epics)))
+            // ── Pipeline / opportunities routes (BW.3.A) ─────────────────────
+            // /pipeline — GET only (stage vocab + opportunity summaries)
+            // /pipeline/{slug} — GET only (one opportunity's full projection)
+            .service(
+                web::resource("/pipeline").route(web::get().to(handlers::pipeline::get_pipeline)),
+            )
+            .service(
+                web::resource("/pipeline/{slug}")
+                    .route(web::get().to(handlers::pipeline::get_pipeline_opportunity)),
+            )
             .app_data(live_data);
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
@@ -640,6 +650,13 @@ mod tests {
                     .route(web::get().to(handlers::docs::get_docs_file)),
             )
             .service(web::resource("/epics").route(web::get().to(handlers::epics::get_epics)))
+            .service(
+                web::resource("/pipeline").route(web::get().to(handlers::pipeline::get_pipeline)),
+            )
+            .service(
+                web::resource("/pipeline/{slug}")
+                    .route(web::get().to(handlers::pipeline::get_pipeline_opportunity)),
+            )
             .app_data(live_data);
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
@@ -2503,5 +2520,143 @@ heading = "bastion"
         assert_eq!(body["code"], "C002");
 
         teardown_docs_fixture(&repo_dir, &vault_dir);
+    }
+
+    // ── Pipeline / opportunities routes (BW.3.A) ──────────────────────────────
+
+    const PIPELINE_MD: &str = "# Pipeline\n\n## Stages\n\n`identified` → `researching` → `contacted` → `conversation` → `proposal-sent` → `closed-won` → `closed-lost`\n\n---\n";
+    const OPP_ANTHROPIC: &str = "---\ntitle: Anthropic\nkind: company\nstage: identified\nsource: RESEARCH_AGENT\n---\n\n# Anthropic\n\n## Research Brief\n```json\n{ \"company_name\": \"Anthropic\", \"summary\": \"An AI lab.\" }\n```\n";
+    const OPP_LEAD: &str =
+        "---\ntitle: Warm Lead\nkind: company\nstage: contacted\n---\n\n# Warm Lead\n";
+
+    /// Build a temp brain root (with `brain.toml` so `find_brain_root` stops
+    /// there) populated with `business/docs/...`, and a `FileConfig` whose
+    /// `default_workspace` points at it so `resolve_workspace_root(None, None)`
+    /// resolves the start path there.
+    fn make_temp_pipeline_brain_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-pipeline-route-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let docs = dir.join("business").join("docs");
+        std::fs::create_dir_all(docs.join("opportunities")).unwrap();
+        std::fs::create_dir_all(docs.join("leads")).unwrap();
+        std::fs::write(dir.join("brain.toml"), "").unwrap();
+        std::fs::write(docs.join("pipeline.md"), PIPELINE_MD).unwrap();
+        std::fs::write(docs.join("opportunities/anthropic.md"), OPP_ANTHROPIC).unwrap();
+        std::fs::write(docs.join("opportunities/index.md"), "# index\n").unwrap();
+        std::fs::write(docs.join("leads/warm-lead.md"), OPP_LEAD).unwrap();
+        std::fs::write(docs.join("leads/README.md"), "# readme\n").unwrap();
+        dir
+    }
+
+    fn registry_with_pipeline_fixture(brain_root: &std::path::Path) -> FileConfig {
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("hq".to_string(), brain_root.to_path_buf());
+        FileConfig {
+            workspaces: Some(workspaces),
+            default_workspace: Some("hq".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn get_pipeline_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get().uri("/api/pipeline").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[actix_web::test]
+    async fn get_pipeline_opportunity_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/pipeline/anthropic")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[actix_web::test]
+    async fn get_pipeline_wrong_method_returns_405() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/pipeline")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 405);
+    }
+
+    #[actix_web::test]
+    async fn get_pipeline_returns_200_with_stages_and_sorted_opportunities() {
+        let dir = make_temp_pipeline_brain_root();
+        let registry = registry_with_pipeline_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/pipeline")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["stages"][0], "identified");
+        let opps = body["opportunities"].as_array().unwrap();
+        // index.md/README.md skipped -> exactly two opportunities.
+        assert_eq!(opps.len(), 2);
+        // identified (anthropic) sorts before contacted (warm-lead).
+        assert_eq!(opps[0]["slug"], "anthropic");
+        assert_eq!(opps[0]["has_findings"], true);
+        assert_eq!(opps[1]["slug"], "warm-lead");
+        assert_eq!(opps[1]["has_findings"], false);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_pipeline_opportunity_returns_200_detail() {
+        let dir = make_temp_pipeline_brain_root();
+        let registry = registry_with_pipeline_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/pipeline/anthropic")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["slug"], "anthropic");
+        assert_eq!(body["kind"], "company");
+        assert_eq!(body["findings"]["kind"], "company");
+        assert_eq!(body["findings"]["company_name"], "Anthropic");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_pipeline_opportunity_unknown_slug_returns_404_c002() {
+        let dir = make_temp_pipeline_brain_root();
+        let registry = registry_with_pipeline_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/pipeline/does-not-exist")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C002");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

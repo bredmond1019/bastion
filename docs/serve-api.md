@@ -1,7 +1,7 @@
 ---
 type: Guideline
-title: "serve-api contract v0.11"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R)."
+title: "serve-api contract v0.12"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), and the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -10,9 +10,9 @@ keywords: [serve, api, websocket, sessions, status, actions, quick-action, board
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.11 Contract
+# serve-api — v0.12 Contract
 
-**Version:** v0.11  
+**Version:** v0.12  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–21 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21;
@@ -1861,11 +1861,150 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.11**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.12**.
+
+---
+
+## 22. Pipeline / opportunities API (v0.12, BW.3.A)
+
+A read-only (D25) projection over the **business sub-brain**'s opportunity
+markdown files, so a web client can browse a sales pipeline of "opportunities"
+(researched companies, prospecting sweeps, and future job postings). Backing
+handlers live in `src/serve/handlers/pipeline.rs`.
+
+The data source lives at the **HQ brain root** (a sibling of `brain.toml`):
+
+- `business/docs/pipeline.md` — its `## Stages` line
+  (`` `identified` → `researching` → `contacted` → `conversation` → `proposal-sent` → `closed-won` → `closed-lost` ``)
+  is the canonical stage vocabulary/order.
+- `business/docs/opportunities/*.md` and `business/docs/leads/*.md` — one file
+  per opportunity. `index.md` and `README.md` are skipped, as is any non-`.md`
+  file. When the same slug exists in both directories, `opportunities/` wins.
+
+The HQ root is resolved exactly like `GET /api/board` / `GET /api/attention`:
+`resolve_workspace_root(None, None, registry)` picks a starting path, then
+`find_brain_root` walks up to the directory containing `brain.toml`;
+`business/docs/...` is read relative to that root. A missing/unreadable
+`business/` tree is **not** an error for the list route — it degrades to empty
+`stages`/`opportunities`.
+
+Each opportunity file is `YAML frontmatter + body`. Frontmatter fields (all
+optional except a title fallback to the slug): `kind` (`company` |
+`prospecting-sweep` | `job-posting`, default `company`), `stage`, `source`,
+`url`, `links[]`, `last_contact`, `next_action`, `research_ref`,
+`contacts[]` (`{name, role, emails[], whatsapp[], phones[], links[], note}`),
+`actions[]` (`{at, kind, note}`). The **research brief** is not frontmatter — it
+is the first ` ```json ` fenced block in the body (raw EN.4.A output): a
+CompanyBrief (has `company_name`) or a ProspectingResult (has
+`prospects`/`vertical`).
+
+### 22.1 `GET /api/pipeline` — stage vocab + opportunity summaries
+
+Bearer-protected (Section 2). Response `200 OK`: `PipelineDto`.
+
+```json
+{
+  "stages": ["identified", "researching", "contacted", "conversation", "proposal-sent", "closed-won", "closed-lost"],
+  "opportunities": [
+    {
+      "slug": "anthropic",
+      "kind": "company",
+      "title": "Anthropic",
+      "source": "RESEARCH_AGENT test run (company mode)",
+      "stage": "identified",
+      "last_contact": null,
+      "next_action": null,
+      "has_findings": true
+    }
+  ]
+}
+```
+
+Opportunities are sorted by **stage order** (the index of `stage` in `stages`;
+an unknown or absent stage sorts last) then `title` (case-insensitive).
+`has_findings` is `true` when the body carries a parseable ` ```json ` brief.
+
+`PipelineDto`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `stages` | string[] | Canonical stage vocabulary in pipeline order (`[]` when `pipeline.md` is absent). |
+| `opportunities` | `OpportunitySummaryDto[]` | One per opportunity file. |
+
+`OpportunitySummaryDto`: `slug` (string, file stem), `kind` (string), `title`
+(string), `source` (string?), `stage` (string?), `last_contact` (string?),
+`next_action` (string?), `has_findings` (boolean).
+
+### 22.2 `GET /api/pipeline/{slug}` — one opportunity's full projection
+
+Bearer-protected. `{slug}` is the file stem. Response `200 OK`:
+`OpportunityDetailDto`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `slug` | string | File stem. |
+| `kind` | string | Default `company`. |
+| `title` | string | Falls back to `slug`. |
+| `source` / `stage` / `last_contact` / `next_action` / `url` / `research_ref` | string? | Frontmatter scalars. |
+| `links` | string[] | Frontmatter list. |
+| `contacts` | `ContactDto[]` | `{name?, role?, emails[], whatsapp[], phones[], links[], note?}`. |
+| `findings` | `ResearchBriefDto?` | Parsed from the body's first ` ```json ` fence. |
+| `actions` | `OpportunityActionDto[]` | `{at, kind, note}` activity log. |
+| `body_markdown` | string? | The body after the frontmatter (absent when empty). |
+
+`ResearchBriefDto`: `kind` (string — `"company"` \| `"prospecting"`),
+`company_name` (string?), `summary` (string?), `recent_developments` (string[]),
+`pain_points` (string[]), `outreach_hooks` (string[]), `sources` (string[]),
+`vertical` (string?), `common_pain_points` (string[]), `prospects`
+(`ProspectLeadDto[]`). `ProspectLeadDto`: `name` (string), `pillar` (string),
+`pain_points` (string[]), `outreach_hook` (string?), `source` (string?).
+
+### 22.3 Error responses
+
+| Condition | Status | `code` |
+|---|---|---|
+| `{slug}` not found in either directory, or a slug containing a path separator / `.` / NUL (rejected before any filesystem access, so an invalid slug is indistinguishable from an absent one) | 404 | `C002` |
+| Brain root unresolvable (no `brain.toml`) | 500 | `C010` |
+| `web::block` thread-pool failure | 500 | `C010` |
+
+### 22.4 Testing
+
+The pure projection functions (`parse_stages`, `split_frontmatter`,
+`extract_json_brief`, `parse_opportunity`, `to_summary`, `stage_rank`,
+`sort_opportunities`, `valid_slug`) are unit-tested with inline fixture markdown
+(company brief, prospecting sweep, structured contacts, minimal title-only,
+defaults). Route tests cover 401-without-token on both routes, a 405 on
+wrong-method, and hermetic 200s (a temp brain root with `brain.toml` +
+`business/docs/...` registered as `default_workspace`), plus the 404/`C002`
+unknown-slug branch.
 
 ---
 
 ## Amendment Log
+
+- **2026-07-26 — v0.11 → v0.12 (BW.3.A):** Added Section 22 (Pipeline /
+  opportunities API) — `GET /api/pipeline` (canonical stage vocabulary parsed
+  from `business/docs/pipeline.md`'s `## Stages` line + one summary per
+  opportunity file, sorted by stage order then title) and
+  `GET /api/pipeline/{slug}` (the full projection for one opportunity:
+  frontmatter contacts/actions/links, the research brief parsed from the body's
+  first ` ```json ` fence — a CompanyBrief or a ProspectingResult — and the raw
+  body markdown), both under the existing bearer-protected `/api` scope. A
+  read-only (D25) projection over the business sub-brain's
+  `business/docs/opportunities/*.md` + `business/docs/leads/*.md` (skipping
+  `index.md`/`README.md` and non-`.md` files), read from the HQ brain root
+  resolved the same way as Sections 13/15 (`resolve_workspace_root` →
+  `find_brain_root`). Documented the
+  `PipelineDto`/`OpportunitySummaryDto`/`OpportunityDetailDto`/`ContactDto`/
+  `OpportunityActionDto`/`ResearchBriefDto`/`ProspectLeadDto` response schema and
+  the 404/`C002` (unknown/invalid slug, uniform so an invalid slug is
+  indistinguishable from an absent one) + 500/`C010` (brain root unresolvable,
+  `web::block` failure) error mapping. A missing/unreadable `business/` tree
+  degrades the list route to empty `stages`/`opportunities` rather than erroring.
+  Appended as Section 22 (after Versioning policy) to avoid renumbering the
+  engine/types/config/versioning sections; the auth policy table (Section 2.3)
+  already covers all `/api/*` routes generically. Updated frontmatter title,
+  description, and the current-contract version note.
 
 - **2026-07-25 — v0.10 → v0.11 (BA.11.R):** Additive `BoardBlockDto` fields
   `epics: Vec<String>` (default `[]`), `wave: Option<i64>`, `priority: Option<u8>`,

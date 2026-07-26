@@ -20,6 +20,10 @@
 //! - [`DocTreeDto`] / [`DocEntryDto`] — `GET /api/docs/{repo}/tree` allowlisted markdown tree
 //!   response (BA.11.Q).
 //! - [`DocFileDto`] — `GET /api/docs/{repo}/file` raw markdown read response (BA.11.Q).
+//! - [`PipelineDto`] / [`OpportunitySummaryDto`] / [`OpportunityDetailDto`] /
+//!   [`ContactDto`] / [`OpportunityActionDto`] / [`ResearchBriefDto`] /
+//!   [`ProspectLeadDto`] — `GET /api/pipeline` + `GET /api/pipeline/{slug}` read
+//!   projection over the business sub-brain's opportunity markdown files (BW.3.A).
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -1027,6 +1031,181 @@ pub struct DocFileDto {
     /// Filesystem mtime, RFC 3339 UTC; `None` when unavailable.
     #[serde(default)]
     pub modified: Option<String>,
+}
+
+// ── Pipeline / opportunities API (BW.3.A) ────────────────────────────────────
+//
+// Read projection over the business sub-brain's opportunity markdown files
+// (`business/docs/opportunities/*.md` + `business/docs/leads/*.md`). Read-only
+// (D25) — the API never writes. Backing handlers live in
+// `handlers/pipeline.rs`.
+
+/// JSON response for `GET /api/pipeline`.
+///
+/// `stages` is the canonical stage vocabulary/order parsed from
+/// `business/docs/pipeline.md`'s `## Stages` line; `opportunities` are the
+/// per-file summaries, sorted by stage order (index in `stages`, unknown/none
+/// last) then title.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PipelineDto {
+    /// Canonical stage vocabulary in pipeline order.
+    #[serde(default)]
+    pub stages: Vec<String>,
+    /// One summary per opportunity file (opportunities + leads).
+    #[serde(default)]
+    pub opportunities: Vec<OpportunitySummaryDto>,
+}
+
+/// A single opportunity, projected for the list view (`GET /api/pipeline`).
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpportunitySummaryDto {
+    /// File stem (e.g. `anthropic`) — the `{slug}` for the detail route.
+    pub slug: String,
+    /// `kind` frontmatter (`company` | `prospecting-sweep` | `job-posting`);
+    /// defaults to `company` when absent.
+    pub kind: String,
+    /// `title` frontmatter (falls back to `slug` when absent).
+    pub title: String,
+    /// `source` frontmatter, when present.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// `stage` frontmatter, when present.
+    #[serde(default)]
+    pub stage: Option<String>,
+    /// `last_contact` frontmatter, when present.
+    #[serde(default)]
+    pub last_contact: Option<String>,
+    /// `next_action` frontmatter, when present.
+    #[serde(default)]
+    pub next_action: Option<String>,
+    /// Whether the body carries a parseable research brief (```json fence).
+    pub has_findings: bool,
+}
+
+/// The full projection for one opportunity (`GET /api/pipeline/{slug}`).
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpportunityDetailDto {
+    /// File stem (e.g. `anthropic`).
+    pub slug: String,
+    /// `kind` frontmatter; defaults to `company` when absent.
+    pub kind: String,
+    /// `title` frontmatter (falls back to `slug` when absent).
+    pub title: String,
+    /// `source` frontmatter, when present.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// `stage` frontmatter, when present.
+    #[serde(default)]
+    pub stage: Option<String>,
+    /// `last_contact` frontmatter, when present.
+    #[serde(default)]
+    pub last_contact: Option<String>,
+    /// `next_action` frontmatter, when present.
+    #[serde(default)]
+    pub next_action: Option<String>,
+    /// `url` frontmatter, when present.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// `links` frontmatter list.
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// `research_ref` frontmatter, when present.
+    #[serde(default)]
+    pub research_ref: Option<String>,
+    /// `contacts` frontmatter list.
+    #[serde(default)]
+    pub contacts: Vec<ContactDto>,
+    /// The research brief parsed from the body's first ```json fence, when present.
+    #[serde(default)]
+    pub findings: Option<ResearchBriefDto>,
+    /// `actions` frontmatter list (activity log).
+    #[serde(default)]
+    pub actions: Vec<OpportunityActionDto>,
+    /// The markdown body (everything after the frontmatter block), when non-empty.
+    #[serde(default)]
+    pub body_markdown: Option<String>,
+}
+
+/// A single contact channel bundle for an opportunity.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContactDto {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub emails: Vec<String>,
+    #[serde(default)]
+    pub whatsapp: Vec<String>,
+    #[serde(default)]
+    pub phones: Vec<String>,
+    #[serde(default)]
+    pub links: Vec<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// One entry in an opportunity's `actions` activity log.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpportunityActionDto {
+    /// Date/timestamp of the action (e.g. `2026-07-25`).
+    pub at: String,
+    /// Action kind (e.g. `research`, `outreach`).
+    pub kind: String,
+    /// Free-text note.
+    pub note: String,
+}
+
+/// The research brief embedded in an opportunity body's first ```json fence.
+///
+/// `kind` is `"company"` (a CompanyBrief — has `company_name`) or
+/// `"prospecting"` (a ProspectingResult — has `prospects`/`vertical`); the two
+/// families' fields are unioned so a single DTO covers both, with the unused
+/// family's fields left empty/`None`.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResearchBriefDto {
+    /// `"company"` or `"prospecting"`.
+    pub kind: String,
+    // ── CompanyBrief fields ──
+    #[serde(default)]
+    pub company_name: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub recent_developments: Vec<String>,
+    #[serde(default)]
+    pub pain_points: Vec<String>,
+    #[serde(default)]
+    pub outreach_hooks: Vec<String>,
+    #[serde(default)]
+    pub sources: Vec<String>,
+    // ── ProspectingResult fields ──
+    #[serde(default)]
+    pub vertical: Option<String>,
+    #[serde(default)]
+    pub common_pain_points: Vec<String>,
+    #[serde(default)]
+    pub prospects: Vec<ProspectLeadDto>,
+}
+
+/// One prospect archetype inside a ProspectingResult research brief.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProspectLeadDto {
+    pub name: String,
+    pub pillar: String,
+    #[serde(default)]
+    pub pain_points: Vec<String>,
+    #[serde(default)]
+    pub outreach_hook: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
