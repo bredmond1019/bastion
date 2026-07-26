@@ -11,6 +11,48 @@ timestamp: 2026-07-25T19:02:48Z
 
 ---
 
+## [run: 2026-07-25]
+
+### 11.R-epic-ranking-board-enrichment — BAILED
+
+- **What:** `/sdlc-flow` attempted spec `11.R-epic-ranking-board-enrichment` (BA.11.R — carry
+  `epics`/`wave`/`priority`/`due`/`track` through `BoardBlockDto`, populate `blocked_by` on all
+  four lanes, add `GET /api/epics` and `scope=epic`). Only Task 1 executed, across two attempts:
+  attempt 1 added the five new fields to `BoardBlockDto` (`src/serve/dto.rs`) and updated the
+  `sample_board_block()` test helper, deliberately leaving `src/serve/handlers/board.rs`
+  untouched since its two `BoardBlockDto` construction sites and the `BoardScope::Epic` match arm
+  are Task 2/3's file scope; attempt 2 reproduced the identical compile errors from attempt 1
+  (`BoardBlockDto` missing fields `due`/`epics`/`priority`/`wave`/`track` at `board.rs:99,124`;
+  non-exhaustive `BoardScope::Epic` match at `board.rs:79`; closure-arity mismatch in
+  `tests/abort_contract.rs:95`) with no progress, indicating the fix did not address the
+  underlying DTO/enum mismatch. The pipeline **BAILED** rather than loop a third time. Tasks
+  2–8 never ran. Decisions from Task 1: kept the spec's documented type deviation
+  (`wave: Option<i64>`, mirroring `okf_core::TrackBlock.wave`, not the master-plan's
+  `Option<u32>`); confirmed `dto.rs` itself compiles and formats clean in isolation, with all
+  reported failures isolated to `board.rs` (Task 2/3 scope) and the unrelated
+  `tests/abort_contract.rs`.
+- **Why it bailed:** Attempt 2 reproduces the identical compile errors from attempt 1
+  (`BoardBlockDto` missing fields `due`/`epics`/`priority`/`wave`/`track` in `board.rs:99,124`;
+  non-exhaustive `BoardScope::Epic` match in `board.rs:79`; closure arg mismatch in
+  `tests/abort_contract.rs:95`) — no progress was made, indicating the fix did not address the
+  underlying DTO/enum mismatch.
+- **Next:** A fresh pass needs to actually wire `board.rs`'s two `BoardBlockDto` construction
+  sites (`board_block_from`, `finished_blocks_for_repo`) to populate the five new fields via the
+  per-repo join described in the spec, add the `BoardScope::Epic` match arm, and separately fix
+  the pre-existing `tests/abort_contract.rs:95` closure-arity break (unrelated to this spec but
+  blocking the gate) before re-running Task 1's validation and moving to Task 2.
+
+```
+59076c1 fix: fix pass 1 for 11.R-epic-ranking-board-enrichment-task1
+d5079a4 feat: implement 11.R-epic-ranking-board-enrichment-task1
+1caf2d3 monitor: add --watch headless loop, alert rules, and notify sink
+1b8a5a2 updated data contract
+6adf546 Merge pull request #27 from bredmond1019/11.Q-docs-read-endpoint-flow
+ba1a28f chore: wrap up 11.Q-docs-read-endpoint
+630a05d docs: update docs for 11.Q-docs-read-endpoint
+51ad38d docs: promote docs-read API to serve-api §16, bump v0.9 -> v0.10
+```
+
 ## [2026-07-25]
 
 ### bastion-web docs reader outage — fixed via workspace config
