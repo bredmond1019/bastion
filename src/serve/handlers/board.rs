@@ -5,23 +5,31 @@
 //! `bastion emit-state` / `bastion validate-brain --state` over HTTP.
 //!
 //! # Route
-//! - `GET /api/board?scope=hq|tier|project|business[&tier=<name>]`
+//! - `GET /api/board?scope=hq|tier|project|business|epic[&tier=<name>][&epic=<slug>]`
+//!   — `scope=epic` requires `&epic=<slug>` and projects every block tagged
+//!   with that epic across every repo (BA.11.R); the other scopes are
+//!   unchanged (BA.11.K).
 //!
 //! # Pure core vs I/O shell (Rule 6)
-//! [`resolve_scope`] and [`build_board`] (plus [`is_stale_for_scope`]) are pure —
-//! unit-tested directly, no filesystem access. [`get_board`] is the thin async
-//! handler: it resolves a starting path from the shared [`FileConfig`] registry,
-//! walks up to the brain root (`mev::brain::config::find_brain_root`), then runs
-//! the same discover → load → build-graph → derive-rollup pipeline
-//! `mev::validate_brain_state` / `bastion emit-state` already use — see
-//! `src/brainval/mod.rs` — under `web::block`, and hands the pure functions the
-//! resulting rollups/files.
+//! [`resolve_scope`], [`build_board`], [`filter_board_to_epic`] (plus
+//! [`is_stale_for_scope`]) are pure — unit-tested directly, no filesystem
+//! access. [`get_board`] is the thin async handler: it resolves a starting
+//! path from the shared [`FileConfig`] registry, walks up to the brain root
+//! (`mev::brain::config::find_brain_root`), then runs the same discover →
+//! load → build-graph → derive-rollup pipeline `mev::validate_brain_state` /
+//! `bastion emit-state` already use — see `src/brainval/mod.rs` — under
+//! `web::block`, and hands the pure functions the resulting rollups/files.
+//! `scope=epic` additionally consults [`crate::serve::handlers::epics::hq_epic_registry`]
+//! to validate `&epic=<slug>` before filtering.
 //!
 //! # Error mapping
 //! - Brain root unresolvable (no `brain.toml` walking up from the workspace root)
 //!   → 500 + `C010` (mirrors the `web::block` failure code used by
 //!   `handlers/status.rs`; there is no dedicated "brain not found" C-code and this
 //!   is an operator-configuration problem, not a per-request one).
+//! - `scope=epic` with a missing `&epic=` param, or a value absent from the HQ
+//!   `epics[]` registry → 404 + `C005` (one uniform "no such epic board"
+//!   response for both, per §11's registry-miss convention).
 //! - `web::block` thread-pool failure → 500 + `C010`.
 //! - Malformed `scope`/`tier` query parsing is handled by actix's `web::Query`
 //!   extractor before the handler runs (surfaced as 400).
@@ -36,9 +44,10 @@ use crate::config::{FileConfig, resolve_workspace_root};
 use crate::serve::dto::{
     BoardBlockDto, BoardDto, BoardLaneDto, BoardScope, ErrorPayload, RepoBoardDto,
 };
+use crate::serve::handlers::epics::hq_epic_registry;
 
 use mev::Diagnostic;
-use mev::brain::config::{find_brain_root, load_brain_config};
+use mev::brain::config::{BrainConfig, find_brain_root, load_brain_config};
 use mev::brain::state::{
     RepoRollup, StateSource, TierScope, build_state_graph, derive_rollup, discover_state_files,
     load_state,
@@ -58,12 +67,16 @@ const CLOSED_STATUS: &str = "closed";
 /// `GET /api/board` query params.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct BoardQuery {
-    /// `scope=hq|tier|project|business`; missing defaults to [`BoardScope::Hq`].
+    /// `scope=hq|tier|project|business|epic`; missing defaults to [`BoardScope::Hq`].
     #[serde(default)]
     pub scope: BoardScope,
     /// `tier=<name>`; only consulted for `scope=tier`/`scope=project` (default `"core"`).
     #[serde(default)]
     pub tier: Option<String>,
+    /// `epic=<slug>`; required (and only consulted) for `scope=epic`. Missing or
+    /// unknown → 404/`C005` (see [`epic_error_response`]).
+    #[serde(default)]
+    pub epic: Option<String>,
 }
 
 // ── Pure core ────────────────────────────────────────────────────────────────────
@@ -90,9 +103,9 @@ pub fn resolve_scope(scope: BoardScope, tier_param: Option<&str>) -> (TierScope,
             TierScope::Tier(BUSINESS_TIER.to_owned()),
             Some(BUSINESS_TIER.to_owned()),
         ),
-        // `Epic` is a cross-repo projection (`TierScope::All`, same as `Hq`) further
-        // filtered by `&epic=<slug>` — that filtering is not implemented by this task
-        // (BA.11.R task 1 is DTO-surface only); wired up in a follow-on task.
+        // `Epic` is a cross-repo projection (`TierScope::All`, same as `Hq`), then
+        // further filtered by `&epic=<slug>` in `get_board` via
+        // `filter_board_to_epic` — an epic spans every repo, so `tier` is `None`.
         BoardScope::Epic => (TierScope::All, None),
     }
 }
@@ -336,6 +349,54 @@ pub fn build_board(
     }
 }
 
+/// Filter an already-built [`BoardDto`] down to the blocks tagged with `slug`
+/// in their `epics[]` membership, on all four lanes — both the aggregate
+/// `lanes` and each [`RepoBoardDto`]'s own lanes. A [`RepoBoardDto`] left with
+/// all four lanes empty after filtering is dropped from `repos[]` entirely (a
+/// repo that contributes no member block has nothing to say about this
+/// epic). A block tagged with more than one epic slug naturally survives the
+/// filter for each of its epics — callers invoke this once per `&epic=`
+/// value, so a block in `["a", "b"]` appears on both `a`'s and `b`'s boards.
+///
+/// `scope`/`tier` on the returned [`BoardDto`] are left as `build_board`
+/// already set them (`Epic`, `tier: None`) — this fn only prunes lane
+/// membership, it doesn't touch the envelope fields.
+pub fn filter_board_to_epic(mut board: BoardDto, slug: &str) -> BoardDto {
+    let keep = |dto: &BoardBlockDto| dto.epics.iter().any(|e| e == slug);
+
+    board.lanes.now.retain(keep);
+    board.lanes.next.retain(keep);
+    board.lanes.blocked.retain(keep);
+    board.lanes.finished.retain(keep);
+
+    board.repos.retain_mut(|repo| {
+        repo.lanes.now.retain(keep);
+        repo.lanes.next.retain(keep);
+        repo.lanes.blocked.retain(keep);
+        repo.lanes.finished.retain(keep);
+        !(repo.lanes.now.is_empty()
+            && repo.lanes.next.is_empty()
+            && repo.lanes.blocked.is_empty()
+            && repo.lanes.finished.is_empty())
+    });
+
+    board
+}
+
+/// Is `&epic=` absent or blank on a `scope=epic` request? Pulled out of
+/// [`get_board`] as its own pure fn so the missing-param error branch is
+/// unit-testable without spinning up actix.
+fn epic_param_missing(epic: Option<&str>) -> bool {
+    epic.map(str::trim).unwrap_or("").is_empty()
+}
+
+/// Is `slug` present in the HQ `epics[]` registry? Pulled out of [`get_board`]
+/// as its own pure fn so the unknown-slug error branch is unit-testable
+/// without spinning up actix.
+fn epic_known(slug: &str, registry: &[okf_core::Epic]) -> bool {
+    registry.iter().any(|e| e.slug == slug)
+}
+
 /// Is any in-scope repo's `status.md` cache stale relative to its `state.json`?
 ///
 /// `check_sync` runs over every `[[repos]]` entry in `brain.toml` regardless of
@@ -360,6 +421,17 @@ fn blocking_error_response(err: actix_web::error::BlockingError) -> HttpResponse
     })
 }
 
+/// Build a 404 response for `scope=epic`'s two registry-miss cases: a missing
+/// `&epic=` param, or a value not present in the HQ `epics[]` registry — one
+/// uniform "no such epic board" shape (matching §11's registry-miss
+/// convention), `message` naming which of the two happened.
+fn epic_error_response(message: impl std::fmt::Display) -> HttpResponse {
+    HttpResponse::NotFound().json(ErrorPayload {
+        code: "C005".to_owned(),
+        message: message.to_string(),
+    })
+}
+
 /// Build a 500 response for a brain-root resolution failure (no `brain.toml`
 /// found walking up from the resolved workspace root, or the file failed to
 /// parse). This is an operator-configuration problem, not a per-request one —
@@ -372,16 +444,23 @@ fn brain_root_error_response(message: impl std::fmt::Display) -> HttpResponse {
     })
 }
 
-/// Loaded `(StateSource, StateFile)` pairs, the in-scope `RepoRollup`s for a
-/// resolved [`TierScope`], and the `stale` freshness flag — the three inputs
-/// [`build_board`] needs, assembled by [`assemble_board`].
-type BoardAssembly = (Vec<RepoRollup>, Vec<(StateSource, StateFile)>, bool);
+/// The loaded [`BrainConfig`], `(StateSource, StateFile)` pairs, the in-scope
+/// `RepoRollup`s for a resolved [`TierScope`], and the `stale` freshness flag —
+/// the inputs [`build_board`] (plus, for `scope=epic`, [`hq_epic_registry`])
+/// needs, assembled by [`assemble_board`].
+type BoardAssembly = (
+    BrainConfig,
+    Vec<RepoRollup>,
+    Vec<(StateSource, StateFile)>,
+    bool,
+);
 
-/// Assemble the brain-walk inputs `build_board` needs: the loaded `(StateSource,
-/// StateFile)` pairs, the in-scope `RepoRollup`s for `tier_scope`, and the
-/// `stale` flag. Reuses the exact discover → load → build-graph → derive-rollup
-/// pipeline `mev::validate_brain_state` runs (see `src/brainval/mod.rs`) instead
-/// of re-plumbing it. Malformed/unreadable individual `state.json` files are
+/// Assemble the brain-walk inputs `build_board` needs: the loaded
+/// [`BrainConfig`], the loaded `(StateSource, StateFile)` pairs, the in-scope
+/// `RepoRollup`s for `tier_scope`, and the `stale` flag. Reuses the exact
+/// discover → load → build-graph → derive-rollup pipeline
+/// `mev::validate_brain_state` runs (see `src/brainval/mod.rs`) instead of
+/// re-plumbing it. Malformed/unreadable individual `state.json` files are
 /// skipped (degrade gracefully) rather than failing the whole request — only an
 /// unresolvable brain root is a hard error.
 fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<BoardAssembly, String> {
@@ -404,11 +483,22 @@ fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<BoardAssembly, 
     let sync_diags = check_sync(root, &config);
     let stale = is_stale_for_scope(&sync_diags, &in_scope_repos);
 
-    Ok((rollups, loaded, stale))
+    Ok((config, rollups, loaded, stale))
 }
 
-/// `GET /api/board?scope=hq|tier|project|business[&tier=<name>]` — cross-brain
-/// now/next/blocked/finished board (BA.11.K).
+/// The two error shapes [`get_board`]'s `web::block` closure can fail with:
+/// an operator-configuration brain-root problem (500/`C010`), or — `scope=epic`
+/// only — a slug absent from the HQ registry (404/`C005`). The missing-`epic`-
+/// param case is checked synchronously before the closure ever runs, so it
+/// isn't a variant here.
+enum BoardError {
+    BrainRoot(String),
+    UnknownEpic(String),
+}
+
+/// `GET /api/board?scope=hq|tier|project|business|epic[&tier=<name>][&epic=<slug>]`
+/// — cross-brain now/next/blocked/finished board (BA.11.K), plus the
+/// cross-repo `scope=epic` initiative projection (BA.11.R).
 ///
 /// Bearer auth is inherited from the `/api` scope's `BearerAuthMiddleware` — a
 /// request without a valid token never reaches this handler (401 upstream).
@@ -416,22 +506,44 @@ pub async fn get_board(
     query: web::Query<BoardQuery>,
     registry: web::Data<FileConfig>,
 ) -> HttpResponse {
-    let BoardQuery { scope, tier } = query.into_inner();
+    let BoardQuery { scope, tier, epic } = query.into_inner();
+
+    if scope == BoardScope::Epic && epic_param_missing(epic.as_deref()) {
+        return epic_error_response("scope=epic requires a non-empty &epic=<slug> query param");
+    }
+
     let (tier_scope, resolved_tier) = resolve_scope(scope, tier.as_deref());
 
     let start: PathBuf =
         resolve_workspace_root(None, None, &registry).unwrap_or_else(|_| PathBuf::from("."));
 
-    match web::block(move || -> Result<BoardDto, String> {
-        let root = find_brain_root(&start)
-            .map_err(|e| format!("could not resolve brain root from {}: {e}", start.display()))?;
-        let (rollups, files, stale) = assemble_board(&root, &tier_scope)?;
-        Ok(build_board(scope, resolved_tier, &rollups, &files, stale))
+    match web::block(move || -> Result<BoardDto, BoardError> {
+        let root = find_brain_root(&start).map_err(|e| {
+            BoardError::BrainRoot(format!(
+                "could not resolve brain root from {}: {e}",
+                start.display()
+            ))
+        })?;
+        let (config, rollups, files, stale) =
+            assemble_board(&root, &tier_scope).map_err(BoardError::BrainRoot)?;
+        let board = build_board(scope, resolved_tier, &rollups, &files, stale);
+
+        if scope != BoardScope::Epic {
+            return Ok(board);
+        }
+
+        // Checked non-empty above.
+        let slug = epic.expect("scope=epic requires &epic=, checked before web::block");
+        if !epic_known(&slug, hq_epic_registry(&config, &files)) {
+            return Err(BoardError::UnknownEpic(format!("unknown epic: {slug}")));
+        }
+        Ok(filter_board_to_epic(board, &slug))
     })
     .await
     {
         Ok(Ok(dto)) => HttpResponse::Ok().json(dto),
-        Ok(Err(msg)) => brain_root_error_response(msg),
+        Ok(Err(BoardError::BrainRoot(msg))) => brain_root_error_response(msg),
+        Ok(Err(BoardError::UnknownEpic(msg))) => epic_error_response(msg),
         Err(err) => blocking_error_response(err),
     }
 }
@@ -511,6 +623,24 @@ mod tests {
                 TierScope::Tier("business".to_owned()),
                 Some("business".to_owned())
             )
+        );
+    }
+
+    #[test]
+    fn resolve_scope_epic_is_all_with_no_tier() {
+        // An epic spans every repo — same TierScope as Hq — and tier is
+        // always None since epics aren't tier-scoped.
+        assert_eq!(
+            resolve_scope(BoardScope::Epic, None),
+            (TierScope::All, None)
+        );
+    }
+
+    #[test]
+    fn resolve_scope_epic_ignores_tier_param() {
+        assert_eq!(
+            resolve_scope(BoardScope::Epic, Some("core")),
+            (TierScope::All, None)
         );
     }
 
@@ -1065,6 +1195,176 @@ mod tests {
     fn build_board_threads_stale_flag() {
         let dto = build_board(BoardScope::Hq, None, &[], &[], true);
         assert!(dto.stale);
+    }
+
+    // ── filter_board_to_epic ─────────────────────────────────────────────────
+
+    /// A two-repo board: `bastion` has a `now`-lane block tagged with both
+    /// `epic-alpha` and `epic-beta`, `bella` has a `now`-lane block tagged
+    /// only with `epic-alpha`, and `mev` has a `now`-lane block tagged with
+    /// neither (so `mev` should be dropped entirely once filtered).
+    fn multi_repo_epic_board() -> BoardDto {
+        let rollups = vec![
+            sample_rollup("bastion", "core"),
+            sample_rollup("bella", "core"),
+            sample_rollup("mev", "core"),
+        ];
+
+        let bastion_file = StateFile {
+            tracks: vec![Track {
+                title: "Phase 11".to_owned(),
+                blocks: vec![sample_track_block_full(
+                    "BA.1.A",
+                    Some("in_progress"),
+                    Vec::new(),
+                    None,
+                    None,
+                    None,
+                    vec!["epic-alpha".to_owned(), "epic-beta".to_owned()],
+                )],
+            }],
+            ..sample_state_file(Vec::new())
+        };
+        let bella_file = StateFile {
+            repo: "bella".to_owned(),
+            tracks: vec![Track {
+                title: "Phase 1".to_owned(),
+                blocks: vec![sample_track_block_full(
+                    "BA.1.A",
+                    Some("in_progress"),
+                    Vec::new(),
+                    None,
+                    None,
+                    None,
+                    vec!["epic-alpha".to_owned()],
+                )],
+            }],
+            ..sample_state_file(Vec::new())
+        };
+        let mev_file = StateFile {
+            repo: "mev".to_owned(),
+            tracks: vec![Track {
+                title: "Phase 1".to_owned(),
+                blocks: vec![sample_track_block("BA.1.A", Some("in_progress"))],
+            }],
+            ..sample_state_file(Vec::new())
+        };
+
+        let files = vec![
+            (sample_source("bastion"), bastion_file),
+            (sample_source("bella"), bella_file),
+            (sample_source("mev"), mev_file),
+        ];
+
+        build_board(BoardScope::Epic, None, &rollups, &files, false)
+    }
+
+    #[test]
+    fn filter_board_to_epic_keeps_only_tagged_blocks_across_repos() {
+        let board = multi_repo_epic_board();
+        let filtered = filter_board_to_epic(board, "epic-alpha");
+
+        // Aggregate `now` lane: bastion's + bella's blocks, mev's dropped.
+        assert_eq!(filtered.lanes.now.len(), 2);
+        assert!(filtered.lanes.now.iter().any(|b| b.repo == "bastion"));
+        assert!(filtered.lanes.now.iter().any(|b| b.repo == "bella"));
+        assert!(!filtered.lanes.now.iter().any(|b| b.repo == "mev"));
+    }
+
+    #[test]
+    fn filter_board_to_epic_drops_repos_with_no_member_block() {
+        let board = multi_repo_epic_board();
+        let filtered = filter_board_to_epic(board, "epic-alpha");
+
+        // `mev` contributed no block tagged epic-alpha -> dropped from repos[].
+        assert_eq!(filtered.repos.len(), 2);
+        assert!(filtered.repos.iter().any(|r| r.repo == "bastion"));
+        assert!(filtered.repos.iter().any(|r| r.repo == "bella"));
+        assert!(!filtered.repos.iter().any(|r| r.repo == "mev"));
+    }
+
+    #[test]
+    fn filter_board_to_epic_block_with_two_epics_appears_on_both() {
+        let board = multi_repo_epic_board();
+
+        let alpha = filter_board_to_epic(board.clone(), "epic-alpha");
+        assert!(
+            alpha
+                .lanes
+                .now
+                .iter()
+                .any(|b| b.id == "BA.1.A" && b.repo == "bastion")
+        );
+
+        let beta = filter_board_to_epic(board, "epic-beta");
+        assert_eq!(beta.lanes.now.len(), 1);
+        assert_eq!(beta.lanes.now[0].repo, "bastion");
+    }
+
+    #[test]
+    fn filter_board_to_epic_unknown_slug_yields_empty_lanes_and_no_repos() {
+        let board = multi_repo_epic_board();
+        let filtered = filter_board_to_epic(board, "no-such-epic");
+
+        assert!(filtered.lanes.now.is_empty());
+        assert!(filtered.lanes.next.is_empty());
+        assert!(filtered.lanes.blocked.is_empty());
+        assert!(filtered.lanes.finished.is_empty());
+        assert!(filtered.repos.is_empty());
+    }
+
+    // ── epic_param_missing / epic_known / epic_error_response ───────────────
+    // (BA.11.R error branches for `scope=epic`: missing `&epic=` param, and a
+    // slug absent from the HQ registry.)
+
+    #[test]
+    fn epic_param_missing_true_when_absent() {
+        assert!(epic_param_missing(None));
+    }
+
+    #[test]
+    fn epic_param_missing_true_when_blank() {
+        assert!(epic_param_missing(Some("   ")));
+        assert!(epic_param_missing(Some("")));
+    }
+
+    #[test]
+    fn epic_param_missing_false_when_present() {
+        assert!(!epic_param_missing(Some("bastion-surfaces")));
+    }
+
+    #[test]
+    fn epic_known_true_when_slug_in_registry() {
+        let registry = vec![sample_epic("bastion-surfaces")];
+        assert!(epic_known("bastion-surfaces", &registry));
+    }
+
+    #[test]
+    fn epic_known_false_when_slug_absent() {
+        let registry = vec![sample_epic("bastion-surfaces")];
+        assert!(!epic_known("no-such-epic", &registry));
+    }
+
+    #[test]
+    fn epic_known_false_when_registry_empty() {
+        assert!(!epic_known("bastion-surfaces", &[]));
+    }
+
+    #[test]
+    fn epic_error_response_is_404_with_c005() {
+        let resp = epic_error_response("unknown epic: no-such-epic");
+        assert_eq!(resp.status(), actix_web::http::StatusCode::NOT_FOUND);
+    }
+
+    fn sample_epic(slug: &str) -> okf_core::Epic {
+        okf_core::Epic {
+            slug: slug.to_owned(),
+            title: format!("{slug} title"),
+            description: None,
+            status: None,
+            plan: None,
+            repos: Vec::new(),
+        }
     }
 
     // ── is_stale_for_scope ────────────────────────────────────────────────────
