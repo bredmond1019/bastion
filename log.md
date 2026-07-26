@@ -132,7 +132,7 @@ Next: BA.11.J (Cost read endpoint, GET /api/costs) is next in Phase 11's queue.
   warnings`, `cargo test`, `cargo build --release`, `./scripts/check-typeshare-drift.sh`) plus a
   real-binary smoke test of `bastion serve` against the live `agentic-portfolio` brain root,
   confirming exact item-for-item parity (same repos, slugs, order, `age_days`) with the
-  `## ⚠ Attention` board `mev emit-state` splices into `status.md` (task 5). One consolidated
+  `## Attention` board `mev emit-state` splices into `status.md` (task 5). One consolidated
   review passed with no findings. Notable decisions: tasks 2–4 were found already implemented
   and committed on this branch from a prior invocation of the pipeline, so this run verified
   acceptance criteria against the spec and re-ran validation rather than re-implementing; no
