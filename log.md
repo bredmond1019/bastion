@@ -13,6 +13,42 @@ timestamp: 2026-07-25T19:02:48Z
 
 ## [run: 2026-07-26]
 
+### 11.R-epic-ranking-board-enrichment — DONE
+
+- **What:** `/sdlc-flow` resumed spec `11.R-epic-ranking-board-enrichment` and ran all 8 tasks to
+  a PASS. `BoardBlockDto` gained five enrichment fields (`epics`/`wave`/`priority`/`due`/`track`,
+  `wave` typed `Option<i64>` per the documented deviation from the master plan's `Option<u32>`)
+  and a `BoardScope::Epic` variant (task 1); `src/serve/handlers/board.rs` now joins those fields
+  back from the owning repo's `tracks[].blocks[]` and populates `blocked_by` on all four lanes via
+  a pure `unmet_deps` filter (task 2); `GET /api/board?scope=epic&epic=<slug>` projects a single
+  epic's blocks across every repo, with 404/C005 for a missing or unknown slug (task 3); `GET
+  /api/epics` was completed end-to-end — pure `build_epics` mapper over the HQ registry plus an
+  `assemble_epics`/`get_epics` I/O shell mirroring `handlers/attention.rs`'s shape (task 4);
+  both routes were registered in the app factory and the test factory with integration coverage
+  for 401, enrichment, `blocked_by`, `scope=epic`, and both 404 branches (task 5); `types/serve.ts`
+  was regenerated, requiring a `#[typeshare(serialized_as = "number")]` annotation on
+  `BoardBlockDto.wave` since typeshare 1.13.4 doesn't support bare `Option<i64>` (task 6);
+  `docs/serve-api.md` picked up the enriched field table, a `blocked_by` correction, a new §17
+  Epics registry API section, and a version bump v0.10 → v0.11 (task 7); and a full validation
+  pass — typeshare drift, `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` (1613
+  passed), and `cargo build --release` — all ran clean (task 8). This completes a prior bail: the
+  first attempt stalled after task 7 on an unrelated `engine-rs` workspace compile break
+  (uncommitted `E0716` errors in `core/engine-rs/crates/engine-core`); that break was gone by this
+  run, so tasks 7–8 completed without further changes. Review verdict: PASS, no findings.
+- **Next:** Resume Phase 11/13/14 blocks per `state.json`'s regenerated `focus.next` ordering —
+  `BA.11.J` (cost read endpoint) is next up in Phase 11.
+
+```
+94fac54 docs: update docs for 11.R-epic-ranking-board-enrichment
+d8b2a4d chore: wrap up 11.R-epic-ranking-board-enrichment
+09498d4 feat: implement 11.R-epic-ranking-board-enrichment-task7
+fc81b1b fix: fix pass 1 for 11.R-epic-ranking-board-enrichment-task6
+e64b11a feat: implement 11.R-epic-ranking-board-enrichment-task6
+9292fe2 feat: implement 11.R-epic-ranking-board-enrichment-task5
+a60115b feat: implement 11.R-epic-ranking-board-enrichment-task4
+47e475d feat: implement 11.R-epic-ranking-board-enrichment-task3
+```
+
 ### 11.R-epic-ranking-board-enrichment — BAILED (attempt 2)
 
 - **What:** `/sdlc-flow` resumed spec `11.R-epic-ranking-board-enrichment` and ran tasks 1–8.
