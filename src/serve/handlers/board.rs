@@ -26,6 +26,7 @@
 //! - Malformed `scope`/`tier` query parsing is handled by actix's `web::Query`
 //!   extractor before the handler runs (surfaced as 400).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use actix_web::{HttpResponse, web};
@@ -43,7 +44,7 @@ use mev::brain::state::{
     load_state,
 };
 use mev::brain::sync::check_sync;
-use okf_core::StateFile;
+use okf_core::{BlockedBy, StateFile, TrackBlock};
 
 /// Default tier name used when `scope=tier`/`scope=project` omits `&tier=`.
 const DEFAULT_TIER: &str = "core";
@@ -99,6 +100,11 @@ pub fn resolve_scope(scope: BoardScope, tier_param: Option<&str>) -> (TierScope,
 /// Convert one rollup lane entry (`okf_core::Block`) into a [`BoardBlockDto`],
 /// tagging it with the owning `repo` slug (the rollup entries themselves don't carry
 /// their own repo — they're already scoped to one repo by [`RepoRollup`]).
+///
+/// `epics`/`wave`/`priority`/`due`/`track` start at their defaults —
+/// `derive_rollup` hard-codes these empty on the `okf_core::Block` it builds for
+/// now/next/blocked lane entries. Callers in [`build_board`] fill them in via
+/// [`enrich_block`] against a [`track_block_index`] built from `tracks[].blocks[]`.
 fn board_block_from(block: &okf_core::Block, repo: &str) -> BoardBlockDto {
     BoardBlockDto {
         id: block.id.clone(),
@@ -106,10 +112,6 @@ fn board_block_from(block: &okf_core::Block, repo: &str) -> BoardBlockDto {
         repo: repo.to_owned(),
         status: block.status.clone(),
         blocked_by: block.blocked_by.clone(),
-        // `derive_rollup` hard-codes these empty on the `okf_core::Block` it builds for
-        // now/next/blocked lane entries; joining them back from `tracks[].blocks[]` (plus
-        // `wave`/`track`, which aren't on `okf_core::Block` at all) is BA.11.R task 2+,
-        // not this task (DTO-surface only).
         epics: Vec::new(),
         wave: None,
         priority: None,
@@ -118,34 +120,120 @@ fn board_block_from(block: &okf_core::Block, repo: &str) -> BoardBlockDto {
     }
 }
 
-/// Derive the `finished` lane (blocks with `status == "closed"`) for one repo slug
-/// from the loaded `tracks[].blocks[]` in `files`.
+/// Build a per-repo `id -> (authoring TrackBlock, enclosing Track.title)` index
+/// from the loaded `(StateSource, StateFile)` pairs, for one `repo` slug.
 ///
 /// Looks up the `StateFile` whose `StateSource::repo_slug` matches `repo`; a repo
-/// with no loaded file (e.g. its `state.json` is missing/malformed) contributes an
-/// empty finished lane rather than erroring, matching [`derive_rollup`]'s own
-/// degrade-gracefully behavior for `now`/`next`/`blocked`.
-fn finished_blocks_for_repo(repo: &str, files: &[(StateSource, StateFile)]) -> Vec<BoardBlockDto> {
+/// with no loaded file contributes an empty index. If the same block id appears
+/// in more than one `tracks[]` entry (which shouldn't happen in well-formed
+/// state, but isn't rejected upstream either), the later entry wins — callers
+/// walk `file.tracks` in order and simply overwrite the map entry.
+fn track_block_index<'a>(
+    repo: &str,
+    files: &'a [(StateSource, StateFile)],
+) -> HashMap<&'a str, (&'a TrackBlock, &'a str)> {
+    let mut index = HashMap::new();
     let Some((_, file)) = files.iter().find(|(src, _)| src.repo_slug == repo) else {
-        return Vec::new();
+        return index;
     };
 
-    file.tracks
-        .iter()
-        .flat_map(|track| &track.blocks)
-        .filter(|block| block.status.as_deref() == Some(CLOSED_STATUS))
-        .map(|block| BoardBlockDto {
-            id: block.id.clone(),
-            title: block.title.clone(),
-            repo: repo.to_owned(),
-            status: block.status.clone(),
-            blocked_by: Vec::new(),
-            // See `board_block_from` — join-back to tracks[].blocks[] is a follow-on task.
-            epics: Vec::new(),
-            wave: None,
-            priority: None,
-            due: None,
-            track: None,
+    for track in &file.tracks {
+        for block in &track.blocks {
+            index.insert(block.id.as_str(), (block, track.title.as_str()));
+        }
+    }
+
+    index
+}
+
+/// Fill `epics`/`wave`/`priority`/`due`/`track` on `dto` from the authoring
+/// `TrackBlock` + enclosing track title, when `entry` matches. An unmatched id
+/// (no `tracks[]` entry with this block's id) leaves the DTO's existing
+/// defaults (`epics: []`, four `None`s) untouched.
+fn enrich_block(dto: &mut BoardBlockDto, entry: Option<(&TrackBlock, &str)>) {
+    let Some((track_block, track_title)) = entry else {
+        return;
+    };
+
+    dto.epics = track_block.epics.clone();
+    dto.wave = track_block.wave;
+    dto.priority = track_block.priority;
+    dto.due = track_block.due.clone();
+    dto.track = Some(track_title.to_owned());
+}
+
+/// Build a `"<repo>:<id>" -> Option<status>` map from the loaded `files`, the
+/// same key shape `mev::brain::state::derive_focus`'s private unmet-dependency
+/// filter uses, for [`unmet_deps`] to consult.
+fn block_status_map(files: &[(StateSource, StateFile)]) -> HashMap<String, Option<String>> {
+    let mut map = HashMap::new();
+    for (src, file) in files {
+        for track in &file.tracks {
+            for block in &track.blocks {
+                let key = format!("{}:{}", src.repo_slug, block.id);
+                map.insert(key, block.status.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Filter `deps` down to the unmet subset, reimplementing the private closure
+/// `mev::brain::state::derive_focus` uses internally (not exported — see
+/// `../mev/src/brain/state.rs:1795-1810`). An edge is unmet when it is
+/// [`BlockedBy::External`], or a [`BlockedBy::Block`] whose target's mapped
+/// authored status is not `Some("closed")` — including a target absent from
+/// `status_map` entirely (an unresolvable/missing dependency is unmet, not
+/// vacuously satisfied).
+fn unmet_deps(deps: &[BlockedBy], status_map: &HashMap<String, Option<String>>) -> Vec<BlockedBy> {
+    deps.iter()
+        .filter(|d| match d {
+            BlockedBy::External { .. } => true,
+            BlockedBy::Block { repo, id, .. } => {
+                let key = format!("{repo}:{id}");
+                status_map.get(&key).and_then(|s| s.as_deref()) != Some(CLOSED_STATUS)
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// Derive the `finished` lane (blocks with `status == "closed"`) for one repo
+/// slug from `index` (already built by [`track_block_index`] for this repo) and
+/// `status_map` (for [`unmet_deps`]).
+///
+/// Entries are sorted by block id for deterministic ordering (a `HashMap`'s
+/// iteration order is otherwise unspecified). A repo with no loaded file (e.g.
+/// its `state.json` is missing/malformed) has an empty `index` and contributes
+/// an empty finished lane rather than erroring, matching [`derive_rollup`]'s own
+/// degrade-gracefully behavior for `now`/`next`/`blocked`.
+fn finished_blocks_for_repo(
+    repo: &str,
+    index: &HashMap<&str, (&TrackBlock, &str)>,
+    status_map: &HashMap<String, Option<String>>,
+) -> Vec<BoardBlockDto> {
+    let mut entries: Vec<&(&TrackBlock, &str)> = index.values().collect();
+    entries.sort_by_key(|(block, _)| block.id.as_str());
+
+    entries
+        .into_iter()
+        .filter(|(block, _)| block.status.as_deref() == Some(CLOSED_STATUS))
+        .map(|&(block, track_title)| {
+            let mut dto = BoardBlockDto {
+                id: block.id.clone(),
+                title: block.title.clone(),
+                repo: repo.to_owned(),
+                status: block.status.clone(),
+                blocked_by: Vec::new(),
+                epics: Vec::new(),
+                wave: None,
+                priority: None,
+                due: None,
+                track: None,
+            };
+            enrich_block(&mut dto, Some((block, track_title)));
+            dto.blocked_by = unmet_deps(&block.depends_on, status_map);
+            dto
         })
         .collect()
 }
@@ -168,23 +256,54 @@ pub fn build_board(
     let mut agg_blocked = Vec::new();
     let mut agg_finished = Vec::new();
 
+    let status_map = block_status_map(files);
+
     for rollup in rollups {
+        let index = track_block_index(&rollup.repo, files);
+
+        // `now`/`next`: enrich fields from tracks[] and recompute blocked_by via
+        // `unmet_deps` when the id has a tracks[] match; an unmatched id keeps
+        // the rollup's existing (empty) blocked_by.
         let now: Vec<BoardBlockDto> = rollup
             .now
             .iter()
-            .map(|b| board_block_from(b, &rollup.repo))
+            .map(|b| {
+                let mut dto = board_block_from(b, &rollup.repo);
+                let entry = index.get(b.id.as_str()).copied();
+                enrich_block(&mut dto, entry);
+                if let Some((track_block, _)) = entry {
+                    dto.blocked_by = unmet_deps(&track_block.depends_on, &status_map);
+                }
+                dto
+            })
             .collect();
         let next: Vec<BoardBlockDto> = rollup
             .next
             .iter()
-            .map(|b| board_block_from(b, &rollup.repo))
+            .map(|b| {
+                let mut dto = board_block_from(b, &rollup.repo);
+                let entry = index.get(b.id.as_str()).copied();
+                enrich_block(&mut dto, entry);
+                if let Some((track_block, _)) = entry {
+                    dto.blocked_by = unmet_deps(&track_block.depends_on, &status_map);
+                }
+                dto
+            })
             .collect();
+        // `blocked` lane: enrich the other five fields only — `blocked_by`
+        // stays the rollup's already-computed `unmet` list so the two
+        // derivations (rollup's and this handler's) cannot drift apart.
         let blocked: Vec<BoardBlockDto> = rollup
             .blocked
             .iter()
-            .map(|b| board_block_from(b, &rollup.repo))
+            .map(|b| {
+                let mut dto = board_block_from(b, &rollup.repo);
+                let entry = index.get(b.id.as_str()).copied();
+                enrich_block(&mut dto, entry);
+                dto
+            })
             .collect();
-        let finished = finished_blocks_for_repo(&rollup.repo, files);
+        let finished = finished_blocks_for_repo(&rollup.repo, &index, &status_map);
 
         agg_now.extend(now.iter().cloned());
         agg_next.extend(next.iter().cloned());
@@ -418,16 +537,29 @@ mod tests {
     }
 
     fn sample_track_block(id: &str, status: Option<&str>) -> TrackBlock {
+        sample_track_block_full(id, status, Vec::new(), None, None, None, Vec::new())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sample_track_block_full(
+        id: &str,
+        status: Option<&str>,
+        depends_on: Vec<BlockedBy>,
+        wave: Option<i64>,
+        priority: Option<u8>,
+        due: Option<&str>,
+        epics: Vec<String>,
+    ) -> TrackBlock {
         TrackBlock {
-            epics: Vec::new(),
+            epics,
             id: id.to_owned(),
             title: format!("{id} title"),
             status: status.map(|s| s.to_owned()),
-            depends_on: Vec::new(),
-            wave: None,
+            depends_on,
+            wave,
             origin: None,
-            priority: None,
-            due: None,
+            priority,
+            due: due.map(|d| d.to_owned()),
             sdlc_workflow: None,
             model: None,
         }
@@ -450,8 +582,10 @@ mod tests {
             sample_track_block("BA.1.D", None),
         ]);
         let files = vec![(sample_source("bastion"), file)];
+        let index = track_block_index("bastion", &files);
+        let status_map = block_status_map(&files);
 
-        let finished = finished_blocks_for_repo("bastion", &files);
+        let finished = finished_blocks_for_repo("bastion", &index, &status_map);
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].id, "BA.1.A");
         assert_eq!(finished[0].repo, "bastion");
@@ -461,14 +595,213 @@ mod tests {
     #[test]
     fn finished_blocks_empty_when_repo_not_loaded() {
         let files: Vec<(StateSource, StateFile)> = Vec::new();
-        assert!(finished_blocks_for_repo("bastion", &files).is_empty());
+        let index = track_block_index("bastion", &files);
+        let status_map = block_status_map(&files);
+        assert!(finished_blocks_for_repo("bastion", &index, &status_map).is_empty());
     }
 
     #[test]
     fn finished_blocks_empty_when_no_closed_blocks() {
         let file = sample_state_file(vec![sample_track_block("BA.1.A", Some("open"))]);
         let files = vec![(sample_source("bastion"), file)];
-        assert!(finished_blocks_for_repo("bastion", &files).is_empty());
+        let index = track_block_index("bastion", &files);
+        let status_map = block_status_map(&files);
+        assert!(finished_blocks_for_repo("bastion", &index, &status_map).is_empty());
+    }
+
+    // ── track_block_index ─────────────────────────────────────────────────
+
+    #[test]
+    fn track_block_index_maps_id_to_block_and_track_title() {
+        let file = StateFile {
+            tracks: vec![
+                Track {
+                    title: "Phase 1".to_owned(),
+                    blocks: vec![sample_track_block("BA.1.A", Some("open"))],
+                },
+                Track {
+                    title: "Phase 2".to_owned(),
+                    blocks: vec![sample_track_block("BA.2.A", Some("open"))],
+                },
+            ],
+            ..sample_state_file(Vec::new())
+        };
+        let files = vec![(sample_source("bastion"), file)];
+
+        let index = track_block_index("bastion", &files);
+        assert_eq!(index.len(), 2);
+        let (block, track_title) = index["BA.1.A"];
+        assert_eq!(block.id, "BA.1.A");
+        assert_eq!(track_title, "Phase 1");
+        let (_, track_title2) = index["BA.2.A"];
+        assert_eq!(track_title2, "Phase 2");
+    }
+
+    #[test]
+    fn track_block_index_empty_when_repo_not_loaded() {
+        let files: Vec<(StateSource, StateFile)> = Vec::new();
+        assert!(track_block_index("bastion", &files).is_empty());
+    }
+
+    #[test]
+    fn track_block_index_last_wins_on_duplicate_id() {
+        let file = StateFile {
+            tracks: vec![
+                Track {
+                    title: "Phase 1".to_owned(),
+                    blocks: vec![sample_track_block("BA.1.A", Some("open"))],
+                },
+                Track {
+                    title: "Phase 2".to_owned(),
+                    blocks: vec![sample_track_block("BA.1.A", Some("closed"))],
+                },
+            ],
+            ..sample_state_file(Vec::new())
+        };
+        let files = vec![(sample_source("bastion"), file)];
+
+        let index = track_block_index("bastion", &files);
+        assert_eq!(index.len(), 1);
+        let (_, track_title) = index["BA.1.A"];
+        assert_eq!(track_title, "Phase 2");
+    }
+
+    // ── enrich_block ──────────────────────────────────────────────────────
+
+    #[test]
+    fn enrich_block_fills_all_five_fields_when_matched() {
+        let track_block = sample_track_block_full(
+            "BA.1.A",
+            Some("open"),
+            Vec::new(),
+            Some(3),
+            Some(1),
+            Some("2026-08-01"),
+            vec!["epic-alpha".to_owned()],
+        );
+        let mut dto =
+            board_block_from(&sample_block("BA.1.A", Some("open"), Vec::new()), "bastion");
+
+        enrich_block(&mut dto, Some((&track_block, "Phase 11")));
+
+        assert_eq!(dto.epics, vec!["epic-alpha".to_owned()]);
+        assert_eq!(dto.wave, Some(3));
+        assert_eq!(dto.priority, Some(1));
+        assert_eq!(dto.due, Some("2026-08-01".to_owned()));
+        assert_eq!(dto.track, Some("Phase 11".to_owned()));
+    }
+
+    #[test]
+    fn enrich_block_leaves_defaults_when_no_fields_authored() {
+        let track_block = sample_track_block("BA.1.A", Some("open"));
+        let mut dto =
+            board_block_from(&sample_block("BA.1.A", Some("open"), Vec::new()), "bastion");
+
+        enrich_block(&mut dto, Some((&track_block, "Phase 11")));
+
+        assert!(dto.epics.is_empty());
+        assert_eq!(dto.wave, None);
+        assert_eq!(dto.priority, None);
+        assert_eq!(dto.due, None);
+        assert_eq!(dto.track, Some("Phase 11".to_owned()));
+    }
+
+    #[test]
+    fn enrich_block_untouched_when_id_unmatched() {
+        let mut dto =
+            board_block_from(&sample_block("BA.1.A", Some("open"), Vec::new()), "bastion");
+
+        enrich_block(&mut dto, None);
+
+        assert!(dto.epics.is_empty());
+        assert_eq!(dto.wave, None);
+        assert_eq!(dto.priority, None);
+        assert_eq!(dto.due, None);
+        assert_eq!(dto.track, None);
+    }
+
+    // ── unmet_deps ────────────────────────────────────────────────────────
+
+    #[test]
+    fn unmet_deps_empty_when_no_deps() {
+        let status_map = HashMap::new();
+        assert!(unmet_deps(&[], &status_map).is_empty());
+    }
+
+    #[test]
+    fn unmet_deps_closed_target_is_met() {
+        let mut status_map = HashMap::new();
+        status_map.insert("bastion:BA.1.A".to_owned(), Some("closed".to_owned()));
+        let deps = vec![BlockedBy::Block {
+            repo: "bastion".to_owned(),
+            id: "BA.1.A".to_owned(),
+            what: None,
+        }];
+        assert!(unmet_deps(&deps, &status_map).is_empty());
+    }
+
+    #[test]
+    fn unmet_deps_non_closed_target_is_unmet() {
+        let mut status_map = HashMap::new();
+        status_map.insert("bastion:BA.1.A".to_owned(), Some("open".to_owned()));
+        let deps = vec![BlockedBy::Block {
+            repo: "bastion".to_owned(),
+            id: "BA.1.A".to_owned(),
+            what: None,
+        }];
+        assert_eq!(unmet_deps(&deps, &status_map), deps);
+    }
+
+    #[test]
+    fn unmet_deps_absent_target_is_unmet() {
+        let status_map: HashMap<String, Option<String>> = HashMap::new();
+        let deps = vec![BlockedBy::Block {
+            repo: "bastion".to_owned(),
+            id: "BA.1.A".to_owned(),
+            what: None,
+        }];
+        assert_eq!(unmet_deps(&deps, &status_map), deps);
+    }
+
+    #[test]
+    fn unmet_deps_external_always_unmet() {
+        let status_map = HashMap::new();
+        let deps = vec![BlockedBy::External {
+            what: "reviewer availability".to_owned(),
+        }];
+        assert_eq!(unmet_deps(&deps, &status_map), deps);
+    }
+
+    #[test]
+    fn unmet_deps_mixed_filters_to_unmet_subset() {
+        let mut status_map = HashMap::new();
+        status_map.insert("bastion:BA.1.A".to_owned(), Some("closed".to_owned()));
+        status_map.insert("bastion:BA.1.B".to_owned(), Some("open".to_owned()));
+        let closed_dep = BlockedBy::Block {
+            repo: "bastion".to_owned(),
+            id: "BA.1.A".to_owned(),
+            what: None,
+        };
+        let open_dep = BlockedBy::Block {
+            repo: "bastion".to_owned(),
+            id: "BA.1.B".to_owned(),
+            what: None,
+        };
+        let deps = vec![closed_dep, open_dep.clone()];
+        assert_eq!(unmet_deps(&deps, &status_map), vec![open_dep]);
+    }
+
+    // ── block_status_map ──────────────────────────────────────────────────
+
+    #[test]
+    fn block_status_map_keys_by_repo_and_id() {
+        let file = sample_state_file(vec![sample_track_block("BA.1.A", Some("closed"))]);
+        let files = vec![(sample_source("bastion"), file)];
+        let map = block_status_map(&files);
+        assert_eq!(
+            map.get("bastion:BA.1.A").cloned().flatten(),
+            Some("closed".to_owned())
+        );
     }
 
     // ── build_board ────────────────────────────────────────────────────────
@@ -562,6 +895,160 @@ mod tests {
         assert_eq!(dto.lanes.finished.len(), 1);
         assert_eq!(dto.lanes.finished[0].id, "BA.1.Z");
         assert_eq!(dto.repos[0].lanes.finished.len(), 1);
+    }
+
+    #[test]
+    fn build_board_enriches_now_next_finished_lanes_from_tracks() {
+        let rollups = vec![sample_rollup("bastion", "core")];
+        let file = StateFile {
+            tracks: vec![Track {
+                title: "Phase 11".to_owned(),
+                blocks: vec![
+                    sample_track_block_full(
+                        "BA.1.A",
+                        Some("in_progress"),
+                        Vec::new(),
+                        Some(2),
+                        Some(1),
+                        Some("2026-08-01"),
+                        vec!["epic-alpha".to_owned()],
+                    ),
+                    sample_track_block_full(
+                        "BA.1.B",
+                        None,
+                        Vec::new(),
+                        Some(3),
+                        Some(2),
+                        Some("2026-08-15"),
+                        vec!["epic-beta".to_owned()],
+                    ),
+                ],
+            }],
+            ..sample_state_file(Vec::new())
+        };
+        let files = vec![(sample_source("bastion"), file)];
+
+        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+
+        let now = &dto.lanes.now[0];
+        assert_eq!(now.epics, vec!["epic-alpha".to_owned()]);
+        assert_eq!(now.wave, Some(2));
+        assert_eq!(now.priority, Some(1));
+        assert_eq!(now.due, Some("2026-08-01".to_owned()));
+        assert_eq!(now.track, Some("Phase 11".to_owned()));
+
+        let next = &dto.lanes.next[0];
+        assert_eq!(next.epics, vec!["epic-beta".to_owned()]);
+        assert_eq!(next.wave, Some(3));
+        assert_eq!(next.track, Some("Phase 11".to_owned()));
+    }
+
+    #[test]
+    fn build_board_unmatched_block_yields_empty_epics_and_none_fields() {
+        let rollups = vec![sample_rollup("bastion", "core")];
+        let files: Vec<(StateSource, StateFile)> = Vec::new();
+
+        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+
+        let now = &dto.lanes.now[0];
+        assert!(now.epics.is_empty());
+        assert_eq!(now.wave, None);
+        assert_eq!(now.priority, None);
+        assert_eq!(now.due, None);
+        assert_eq!(now.track, None);
+    }
+
+    #[test]
+    fn build_board_next_lane_blocked_by_reflects_unmet_deps() {
+        let mut rollup = sample_rollup("bastion", "core");
+        rollup.next = vec![
+            sample_block("BA.1.B", None, Vec::new()),
+            sample_block("BA.1.E", None, Vec::new()),
+        ];
+        let rollups = vec![rollup];
+
+        let file = StateFile {
+            tracks: vec![Track {
+                title: "Phase 11".to_owned(),
+                blocks: vec![
+                    // BA.1.B depends on BA.1.X, which is not closed -> unmet.
+                    sample_track_block_full(
+                        "BA.1.B",
+                        None,
+                        vec![BlockedBy::Block {
+                            repo: "bastion".to_owned(),
+                            id: "BA.1.X".to_owned(),
+                            what: None,
+                        }],
+                        None,
+                        None,
+                        None,
+                        Vec::new(),
+                    ),
+                    sample_track_block("BA.1.X", Some("open")),
+                    // BA.1.E depends on BA.1.X too, but it's closed here in a
+                    // second scenario block — instead give it a closed dep.
+                    sample_track_block_full(
+                        "BA.1.E",
+                        None,
+                        vec![BlockedBy::Block {
+                            repo: "bastion".to_owned(),
+                            id: "BA.1.Y".to_owned(),
+                            what: None,
+                        }],
+                        None,
+                        None,
+                        None,
+                        Vec::new(),
+                    ),
+                    sample_track_block("BA.1.Y", Some("closed")),
+                ],
+            }],
+            ..sample_state_file(Vec::new())
+        };
+        let files = vec![(sample_source("bastion"), file)];
+
+        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+
+        let blocked_entry = dto.lanes.next.iter().find(|b| b.id == "BA.1.B").unwrap();
+        assert_eq!(blocked_entry.blocked_by.len(), 1);
+        let ready_entry = dto.lanes.next.iter().find(|b| b.id == "BA.1.E").unwrap();
+        assert!(ready_entry.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn build_board_blocked_lane_blocked_by_unchanged_by_enrichment() {
+        let rollups = vec![sample_rollup("bastion", "core")];
+        // Even if tracks[] authors a different depends_on for the same id, the
+        // blocked lane must keep the rollup's own `unmet` list untouched.
+        let file = StateFile {
+            tracks: vec![Track {
+                title: "Phase 11".to_owned(),
+                blocks: vec![sample_track_block_full(
+                    "BA.1.C",
+                    None,
+                    Vec::new(),
+                    None,
+                    None,
+                    None,
+                    vec!["epic-gamma".to_owned()],
+                )],
+            }],
+            ..sample_state_file(Vec::new())
+        };
+        let files = vec![(sample_source("bastion"), file)];
+
+        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+
+        let blocked = &dto.lanes.blocked[0];
+        assert_eq!(blocked.epics, vec!["epic-gamma".to_owned()]);
+        assert_eq!(blocked.blocked_by.len(), 1);
+        assert_eq!(
+            blocked.blocked_by[0],
+            BlockedBy::External {
+                what: "reviewer availability".to_owned()
+            }
+        );
     }
 
     #[test]
