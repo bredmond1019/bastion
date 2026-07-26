@@ -2295,6 +2295,11 @@ mod tests {
             blocked_by: vec![okf_core::BlockedBy::External {
                 what: "reviewer availability".to_owned(),
             }],
+            epics: vec!["bastion-surfaces".to_owned()],
+            wave: Some(3),
+            priority: Some(1),
+            due: Some("2026-07-15".to_owned()),
+            track: Some("Phase 11".to_owned()),
         }
     }
 
