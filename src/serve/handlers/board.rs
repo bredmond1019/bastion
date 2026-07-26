@@ -89,6 +89,10 @@ pub fn resolve_scope(scope: BoardScope, tier_param: Option<&str>) -> (TierScope,
             TierScope::Tier(BUSINESS_TIER.to_owned()),
             Some(BUSINESS_TIER.to_owned()),
         ),
+        // `Epic` is a cross-repo projection (`TierScope::All`, same as `Hq`) further
+        // filtered by `&epic=<slug>` — that filtering is not implemented by this task
+        // (BA.11.R task 1 is DTO-surface only); wired up in a follow-on task.
+        BoardScope::Epic => (TierScope::All, None),
     }
 }
 
@@ -102,6 +106,15 @@ fn board_block_from(block: &okf_core::Block, repo: &str) -> BoardBlockDto {
         repo: repo.to_owned(),
         status: block.status.clone(),
         blocked_by: block.blocked_by.clone(),
+        // `derive_rollup` hard-codes these empty on the `okf_core::Block` it builds for
+        // now/next/blocked lane entries; joining them back from `tracks[].blocks[]` (plus
+        // `wave`/`track`, which aren't on `okf_core::Block` at all) is BA.11.R task 2+,
+        // not this task (DTO-surface only).
+        epics: Vec::new(),
+        wave: None,
+        priority: None,
+        due: None,
+        track: None,
     }
 }
 
@@ -127,6 +140,12 @@ fn finished_blocks_for_repo(repo: &str, files: &[(StateSource, StateFile)]) -> V
             repo: repo.to_owned(),
             status: block.status.clone(),
             blocked_by: Vec::new(),
+            // See `board_block_from` — join-back to tracks[].blocks[] is a follow-on task.
+            epics: Vec::new(),
+            wave: None,
+            priority: None,
+            due: None,
+            track: None,
         })
         .collect()
 }

@@ -469,9 +469,13 @@ mod engine_mount_tests {
 
     #[test]
     fn build_engine_dispatcher_registers_sdlc_flow() {
+        // `register_builtin_workflows` is owned by the upstream `engine-serve` crate; it
+        // now registers additional built-in workflow types alongside `SDLC_FLOW`. This
+        // assertion only pins the contract this module relies on — `SDLC_FLOW` is
+        // present — rather than the full (and upstream-owned) registry contents, so it
+        // doesn't churn every time `engine-serve` adds another built-in workflow.
         let dispatcher = build_engine_dispatcher();
         assert!(dispatcher.is_registered("SDLC_FLOW"));
-        assert_eq!(dispatcher.registered_types(), vec!["SDLC_FLOW".to_string()]);
     }
 
     #[test]
