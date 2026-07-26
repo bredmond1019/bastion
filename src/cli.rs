@@ -55,6 +55,10 @@ pub enum Commands {
         /// Filter to a specific workflow ID (shows all active runs if omitted)
         #[arg(short, long)]
         workflow_id: Option<String>,
+        /// Headless, no-TTY plain-text summary loop instead of the ratatui TUI —
+        /// refreshes on the configured poll interval until interrupted
+        #[arg(long)]
+        watch: bool,
     },
     /// Static post-mortem graph view for a completed run
     Inspect {
@@ -1184,6 +1188,46 @@ mod tests {
                 assert!(watch);
             }
             other => panic!("expected Costs, got {other:?}"),
+        }
+    }
+
+    // ── Monitor subcommand — --watch flag (Part B) ────────────────────────────
+
+    #[test]
+    fn monitor_defaults_parse() {
+        let cli = Cli::try_parse_from(["bastion", "monitor"]).unwrap();
+        match cli.command {
+            Some(Commands::Monitor { workflow_id, watch }) => {
+                assert!(workflow_id.is_none());
+                assert!(!watch, "watch should default to false");
+            }
+            other => panic!("expected Monitor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn monitor_watch_flag_parses() {
+        let cli = Cli::try_parse_from(["bastion", "monitor", "--watch"]).unwrap();
+        match cli.command {
+            Some(Commands::Monitor { workflow_id, watch }) => {
+                assert!(workflow_id.is_none());
+                assert!(watch);
+            }
+            other => panic!("expected Monitor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn monitor_workflow_id_and_watch_together_parse() {
+        let cli =
+            Cli::try_parse_from(["bastion", "monitor", "--workflow-id", "run-123", "--watch"])
+                .unwrap();
+        match cli.command {
+            Some(Commands::Monitor { workflow_id, watch }) => {
+                assert_eq!(workflow_id, Some("run-123".to_string()));
+                assert!(watch);
+            }
+            other => panic!("expected Monitor, got {other:?}"),
         }
     }
 

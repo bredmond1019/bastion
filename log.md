@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-23T23:43:08Z
+timestamp: 2026-07-25T19:02:48Z
 ---
 
 # Log — bastion
@@ -10,6 +10,20 @@ timestamp: 2026-07-23T23:43:08Z
 *Append-only working log. One dated entry per session. Newest entries at the top.*
 
 ---
+
+## [2026-07-25]
+
+### bastion-web docs reader outage — fixed via workspace config
+
+- **What:** Diagnosed and fixed the bastion-web docs reader outage: authored the missing
+  `~/.config/bastion/config.toml` workspace registry (default_workspace + all 23 repo paths from
+  brain.toml) so bastion serve's GET /api/repos and GET /api/docs/{repo}/tree resolve workspaces
+  instead of returning empty/C005 unknown-workspace. Restarted bastion serve to pick up the new
+  config and verified /api/repos and /api/docs/bastion/tree against the live server. No bastion
+  source code changes — config-only fix.
+- **Why:** bastion-web's docs reader (BW.2.A) was returning empty repos list and 404 "unknown
+  workspace" for all docs API calls; root cause was a missing local config file, not a bastion
+  code defect.
 
 ## [run: 2026-07-24]
 

@@ -258,6 +258,12 @@ pub struct Config {
     /// `ServeConfig.token`; used by both `api::client` (sender) and the embedded
     /// engine's `AppState.api_key` (verifier).
     pub engine_api_key: Option<String>,
+    /// Desktop-notification toggle (Part B) — `BASTION_NOTIFY`. Opt-out, not
+    /// opt-in: defaults to `true` since the notification feature only exists
+    /// because it was asked for. Checked at the `monitor::events` /
+    /// `monitor::watch` call sites, not inside `notify::send_macos_notification`
+    /// itself (which stays a pure, config-agnostic shell over `osascript`).
+    pub notify_enabled: bool,
 }
 
 impl Config {
@@ -282,6 +288,7 @@ impl Config {
                 std::env::var("BASTION_MAX_TOTAL_TOKENS").ok(),
                 std::env::var("BASTION_MAX_COST_USD").ok(),
                 std::env::var("BASTION_ENGINE_API_KEY").ok(),
+                std::env::var("BASTION_NOTIFY").ok(),
             ),
             file_config,
         )
@@ -291,13 +298,19 @@ impl Config {
     /// (lowest). `DATABASE_URL` must be satisfied by at least one source.
     ///
     /// `env` is `(DATABASE_URL, BASTION_API_URL, BASTION_POLL_INTERVAL,
-    /// BASTION_MAX_TOTAL_TOKENS, BASTION_MAX_COST_USD, BASTION_ENGINE_API_KEY)`.
+    /// BASTION_MAX_TOTAL_TOKENS, BASTION_MAX_COST_USD, BASTION_ENGINE_API_KEY,
+    /// BASTION_NOTIFY)`.
     ///
     /// The three budget/key fields are absent-tolerant: `None` from both env and file is a
     /// valid, unchanged configuration (no gate, no alert). A present-but-unparseable
     /// `BASTION_MAX_TOTAL_TOKENS` or `BASTION_MAX_COST_USD` is a typed
     /// [`ConfigError::MalformedBudgetValue`], never a silent default — a value that fails to
     /// parse must not be treated the same as "no cap configured".
+    ///
+    /// `BASTION_NOTIFY` follows the same lenient-parse convention as
+    /// `BASTION_POLL_INTERVAL`: an unparseable value silently falls back to the
+    /// default (`true`, opt-out) rather than erroring — unlike the budget
+    /// values, a bad notify toggle isn't a "must fail loudly" config mistake.
     #[allow(clippy::type_complexity)]
     pub fn from_sources(
         env: (
@@ -307,10 +320,12 @@ impl Config {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
         ),
         file: FileConfig,
     ) -> Result<Self, ConfigError> {
-        let (env_db, env_api, env_poll, env_max_tokens, env_max_cost, env_engine_key) = env;
+        let (env_db, env_api, env_poll, env_max_tokens, env_max_cost, env_engine_key, env_notify) =
+            env;
 
         let database_url = env_db
             .or(file.database_url)
@@ -349,6 +364,10 @@ impl Config {
 
         let engine_api_key = env_engine_key.or(file.engine_api_key);
 
+        let notify_enabled = env_notify
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(true);
+
         Ok(Self {
             database_url,
             api_base_url,
@@ -356,18 +375,27 @@ impl Config {
             max_total_tokens,
             max_cost_usd,
             engine_api_key,
+            notify_enabled,
         })
     }
 
     /// Pure parser — no env access, so unit tests can call it directly.
-    /// Delegates to `from_sources` with an empty `FileConfig` and no budget/key values.
+    /// Delegates to `from_sources` with an empty `FileConfig` and no budget/key/notify values.
     pub fn from_vars(
         database_url: Option<String>,
         api_base_url: Option<String>,
         poll_interval: Option<String>,
     ) -> Result<Self, ConfigError> {
         Self::from_sources(
-            (database_url, api_base_url, poll_interval, None, None, None),
+            (
+                database_url,
+                api_base_url,
+                poll_interval,
+                None,
+                None,
+                None,
+                None,
+            ),
             FileConfig::default(),
         )
     }
@@ -487,6 +515,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             file,
         )
@@ -504,8 +533,8 @@ mod tests {
             poll_interval: Some(15),
             ..Default::default()
         };
-        let c =
-            Config::from_sources((None, None, None, None, None, None), file).expect("should parse");
+        let c = Config::from_sources((None, None, None, None, None, None, None), file)
+            .expect("should parse");
         assert_eq!(c.database_url, "postgres://file/db");
         assert_eq!(c.api_base_url, "http://file:7777");
         assert_eq!(c.poll_interval_secs, 15);
@@ -519,8 +548,8 @@ mod tests {
             poll_interval: None,
             ..Default::default()
         };
-        let c =
-            Config::from_sources((None, None, None, None, None, None), file).expect("should parse");
+        let c = Config::from_sources((None, None, None, None, None, None, None), file)
+            .expect("should parse");
         assert_eq!(c.api_base_url, "http://localhost:8080");
         assert_eq!(c.poll_interval_secs, 2);
     }
@@ -533,15 +562,18 @@ mod tests {
             poll_interval: None,
             ..Default::default()
         };
-        let c =
-            Config::from_sources((None, None, None, None, None, None), file).expect("should parse");
+        let c = Config::from_sources((None, None, None, None, None, None, None), file)
+            .expect("should parse");
         assert_eq!(c.database_url, "postgres://file-only/db");
     }
 
     #[test]
     fn missing_database_url_from_both_sources_is_error() {
-        let err = Config::from_sources((None, None, None, None, None, None), FileConfig::default())
-            .unwrap_err();
+        let err = Config::from_sources(
+            (None, None, None, None, None, None, None),
+            FileConfig::default(),
+        )
+        .unwrap_err();
         assert_eq!(err, ConfigError::MissingVar("DATABASE_URL"));
     }
 
@@ -999,11 +1031,13 @@ brain = "/Users/alice/brain"
 
     // ─── budget caps + engine_api_key (BA.7.C task 1) ─────────────────────────
 
+    #[allow(clippy::type_complexity)]
     fn budget_env(
         max_total_tokens: Option<&str>,
         max_cost_usd: Option<&str>,
         engine_api_key: Option<&str>,
     ) -> (
+        Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -1018,6 +1052,7 @@ brain = "/Users/alice/brain"
             max_total_tokens.map(String::from),
             max_cost_usd.map(String::from),
             engine_api_key.map(String::from),
+            None,
         )
     }
 
@@ -1138,6 +1173,96 @@ brain = "/Users/alice/brain"
         let sc = build_serve_config(None, Some("serve-secret".into()), None, None).unwrap();
         assert_eq!(sc.token, "serve-secret");
         assert_ne!(c.engine_api_key.as_deref(), Some(sc.token.as_str()));
+    }
+
+    // ─── notify_enabled (BASTION_NOTIFY, Part B) ─────────────────────────────
+    //
+    // Mirrors `poll_interval_secs`'s own parsing tests: opt-out (defaults to
+    // `true`), lenient parse (an unparseable value silently falls back to the
+    // default rather than erroring — unlike the budget values above).
+
+    #[test]
+    fn notify_enabled_defaults_to_true_when_unset() {
+        let c = Config::from_sources(
+            (
+                Some("postgres://localhost/db".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            FileConfig::default(),
+        )
+        .expect("should parse");
+        assert!(c.notify_enabled, "notify_enabled should default to true");
+    }
+
+    #[test]
+    fn notify_enabled_env_false_disables() {
+        let c = Config::from_sources(
+            (
+                Some("postgres://localhost/db".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("false".into()),
+            ),
+            FileConfig::default(),
+        )
+        .expect("should parse");
+        assert!(!c.notify_enabled);
+    }
+
+    #[test]
+    fn notify_enabled_env_true_enables() {
+        let c = Config::from_sources(
+            (
+                Some("postgres://localhost/db".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("true".into()),
+            ),
+            FileConfig::default(),
+        )
+        .expect("should parse");
+        assert!(c.notify_enabled);
+    }
+
+    #[test]
+    fn notify_enabled_unparseable_value_falls_back_to_default() {
+        // Lenient parse, matching BASTION_POLL_INTERVAL's own convention —
+        // not a hard ConfigError like the budget values.
+        let c = Config::from_sources(
+            (
+                Some("postgres://localhost/db".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("not-a-bool".into()),
+            ),
+            FileConfig::default(),
+        )
+        .expect("unparseable BASTION_NOTIFY should not error");
+        assert!(
+            c.notify_enabled,
+            "unparseable value should silently fall back to the true default"
+        );
+    }
+
+    #[test]
+    fn from_vars_notify_enabled_defaults_to_true() {
+        let c = Config::from_vars(Some("postgres://localhost/db".into()), None, None)
+            .expect("should parse");
+        assert!(c.notify_enabled);
     }
 
     // ─── parse_file: budget + engine_api_key TOML keys ───────────────────────

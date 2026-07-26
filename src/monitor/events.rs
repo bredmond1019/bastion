@@ -22,7 +22,7 @@ use tokio::time;
 
 use crate::api::client::ApiClient;
 use crate::db::workflows;
-use crate::monitor::{app::App, graph, ui};
+use crate::monitor::{alerts, app::App, graph, ui};
 
 /// Enter the live-TUI event loop.
 ///
@@ -34,15 +34,27 @@ use crate::monitor::{app::App, graph, ui};
 /// On exit (q / Esc / Ctrl-C, or the inner loop returning an error) the
 /// terminal is always restored before returning. The `workflow_id` filter
 /// is forwarded to the DB query on each tick.
+///
+/// Carries a local [`alerts::AlertState`] across ticks (Part B) — after each
+/// successful poll fetch, [`poll_and_update`] runs `alerts::detect_alerts`
+/// against it and dispatches any resulting events through
+/// `notify::send_macos_notification` (best-effort; failures are logged via
+/// `tracing::warn!`, never propagated — a notification failure must not kill
+/// the TUI, matching `costs::watch::run`'s posture on transient DB errors).
+/// `notify_enabled` gates the notification calls only — `AlertState` is
+/// updated regardless, so re-enabling notifications mid-session doesn't
+/// re-fire alerts for transitions that already happened while disabled.
 pub async fn run_event_loop(
     app: &mut App,
     db_url: &str,
     api_client: &ApiClient,
     poll_secs: u64,
     workflow_id: Option<&str>,
+    notify_enabled: bool,
 ) -> Result<()> {
     // ── Terminal setup ────────────────────────────────────────────────────────
     let mut terminal = setup_terminal()?;
+    let mut alert_state = alerts::AlertState::default();
 
     // ── Keyboard event channel ────────────────────────────────────────────────
     // A background OS thread polls crossterm events and forwards them over a
@@ -85,7 +97,15 @@ pub async fn run_event_loop(
                 }
 
                 _ = interval.tick() => {
-                    poll_and_update(app, db_url, api_client, workflow_id).await;
+                    poll_and_update(
+                        app,
+                        db_url,
+                        api_client,
+                        workflow_id,
+                        &mut alert_state,
+                        notify_enabled,
+                    )
+                    .await;
                 }
             }
 
@@ -148,11 +168,18 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 /// Re-fetch run state from the DB and rebuild the graph layout.
 /// Errors are surfaced as a banner on the App rather than propagated, so
 /// a transient DB hiccup does not kill the TUI.
+///
+/// Runs `alerts::detect_alerts` against `alert_state` for every successful
+/// fetch (Part B) and dispatches any resulting events through
+/// `notify::send_macos_notification` when `notify_enabled` — best-effort,
+/// logged via `tracing::warn!` on failure, never propagated.
 async fn poll_and_update(
     app: &mut App,
     db_url: &str,
     api_client: &ApiClient,
     workflow_id: Option<&str>,
+    alert_state: &mut alerts::AlertState,
+    notify_enabled: bool,
 ) {
     // Re-fetch runs
     let new_runs = match workflow_id {
@@ -171,6 +198,13 @@ async fn poll_and_update(
             }
         },
     };
+
+    // Alert detection + best-effort desktop notification (Part B). Runs
+    // before the mission-items rebuild below so a run that later drops out of
+    // `new_runs` (e.g. `list_active_runs` excluding a now-fully-terminal run)
+    // still gets its transition observed on this tick.
+    let alert_events = alerts::detect_alerts(alert_state, &new_runs);
+    alerts::dispatch_alerts(&alert_events, notify_enabled);
 
     // Re-fetch sessions
     let sessions = match crate::sessions::tmux::list_sessions_raw() {
