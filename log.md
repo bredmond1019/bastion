@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-23T23:43:08Z
+timestamp: 2026-07-25T19:02:48Z
 ---
 
 # Log — bastion
@@ -10,6 +10,143 @@ timestamp: 2026-07-23T23:43:08Z
 *Append-only working log. One dated entry per session. Newest entries at the top.*
 
 ---
+
+## [run: 2026-07-26]
+
+### 11.R-epic-ranking-board-enrichment — DONE
+
+- **What:** `/sdlc-flow` resumed spec `11.R-epic-ranking-board-enrichment` and ran all 8 tasks to
+  a PASS. `BoardBlockDto` gained five enrichment fields (`epics`/`wave`/`priority`/`due`/`track`,
+  `wave` typed `Option<i64>` per the documented deviation from the master plan's `Option<u32>`)
+  and a `BoardScope::Epic` variant (task 1); `src/serve/handlers/board.rs` now joins those fields
+  back from the owning repo's `tracks[].blocks[]` and populates `blocked_by` on all four lanes via
+  a pure `unmet_deps` filter (task 2); `GET /api/board?scope=epic&epic=<slug>` projects a single
+  epic's blocks across every repo, with 404/C005 for a missing or unknown slug (task 3); `GET
+  /api/epics` was completed end-to-end — pure `build_epics` mapper over the HQ registry plus an
+  `assemble_epics`/`get_epics` I/O shell mirroring `handlers/attention.rs`'s shape (task 4);
+  both routes were registered in the app factory and the test factory with integration coverage
+  for 401, enrichment, `blocked_by`, `scope=epic`, and both 404 branches (task 5); `types/serve.ts`
+  was regenerated, requiring a `#[typeshare(serialized_as = "number")]` annotation on
+  `BoardBlockDto.wave` since typeshare 1.13.4 doesn't support bare `Option<i64>` (task 6);
+  `docs/serve-api.md` picked up the enriched field table, a `blocked_by` correction, a new §17
+  Epics registry API section, and a version bump v0.10 → v0.11 (task 7); and a full validation
+  pass — typeshare drift, `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` (1613
+  passed), and `cargo build --release` — all ran clean (task 8). This completes a prior bail: the
+  first attempt stalled after task 7 on an unrelated `engine-rs` workspace compile break
+  (uncommitted `E0716` errors in `core/engine-rs/crates/engine-core`); that break was gone by this
+  run, so tasks 7–8 completed without further changes. Review verdict: PASS, no findings.
+- **Next:** Resume Phase 11/13/14 blocks per `state.json`'s regenerated `focus.next` ordering —
+  `BA.11.J` (cost read endpoint) is next up in Phase 11.
+
+```
+94fac54 docs: update docs for 11.R-epic-ranking-board-enrichment
+d8b2a4d chore: wrap up 11.R-epic-ranking-board-enrichment
+09498d4 feat: implement 11.R-epic-ranking-board-enrichment-task7
+fc81b1b fix: fix pass 1 for 11.R-epic-ranking-board-enrichment-task6
+e64b11a feat: implement 11.R-epic-ranking-board-enrichment-task6
+9292fe2 feat: implement 11.R-epic-ranking-board-enrichment-task5
+a60115b feat: implement 11.R-epic-ranking-board-enrichment-task4
+47e475d feat: implement 11.R-epic-ranking-board-enrichment-task3
+```
+
+### 11.R-epic-ranking-board-enrichment — BAILED (attempt 2)
+
+- **What:** `/sdlc-flow` resumed spec `11.R-epic-ranking-board-enrichment` and ran tasks 1–8.
+  Tasks 1–6 all passed: task 1 landed the five new `BoardBlockDto` fields (`epics`/`wave`/
+  `priority`/`due`/`track`) plus a `BoardScope::Epic` placeholder; task 2 wired
+  `src/serve/handlers/board.rs` to join epics/wave/priority/due/track back from
+  `tracks[].blocks[]` and populate `blocked_by` via a pure `unmet_deps` filter on all four lanes;
+  task 3 added `scope=epic&epic=<slug>` filtering plus 404/C005 handling and a first cut of
+  `src/serve/handlers/epics.rs`; task 4 completed `GET /api/epics` (pure `build_epics` mapper +
+  `assemble_epics`/`get_epics` I/O shell, full unit coverage); task 5 registered `GET /api/epics`
+  in both app factories and added integration tests for auth, enrichment, `blocked_by`,
+  `scope=epic`, and both 404 branches; task 6 fixed a stray emoji lint failure and confirmed
+  `types/serve.ts` regeneration (including a `#[typeshare(serialized_as = "number")]` annotation
+  needed for `Option<i64>`). Task 7 implemented `docs/serve-api.md`'s BA.11.R documentation
+  (enriched field table, `blocked_by` correction, new §17 Epics registry API section, sections
+  17–20 renumbered to 18–21, version bumped v0.10 → v0.11 with a dated Amendment Log entry), but
+  its test/build gate failed and the run **BAILED** rather than attempt task 7's fix. Task 8 never
+  ran.
+- **Why it bailed:** Compile failure originates outside bastion's task scope: uncommitted edits
+  in `core/engine-rs/crates/engine-core` (`review_router.rs`, `revise.rs`) break the shared
+  workspace build with `E0716` temporary-value-dropped-while-borrowed errors. This is another
+  repo's in-flight/broken code, not something task 7 introduced or can fix — needs a human to
+  stash/fix `engine-rs` or otherwise unblock the shared workspace build before bastion's tests can
+  run.
+- **Next:** A human (or a fresh agent once the workspace build is unblocked) needs to
+  stash/resolve the uncommitted `engine-rs` `E0716` breaks in `review_router.rs`/`revise.rs`
+  (outside this repo), then re-run `cargo test`/`cargo build --release` from a clean shared
+  workspace and resume the spec at task 7's validation (task 7's `docs/serve-api.md` content is
+  already committed and does not need to be redone) through task 8.
+
+```
+09498d4 feat: implement 11.R-epic-ranking-board-enrichment-task7
+fc81b1b fix: fix pass 1 for 11.R-epic-ranking-board-enrichment-task6
+e64b11a feat: implement 11.R-epic-ranking-board-enrichment-task6
+9292fe2 feat: implement 11.R-epic-ranking-board-enrichment-task5
+a60115b feat: implement 11.R-epic-ranking-board-enrichment-task4
+47e475d feat: implement 11.R-epic-ranking-board-enrichment-task3
+1874514 feat: implement 11.R-epic-ranking-board-enrichment-task2
+28fefc4 fix: fix pass 1 for 11.R-epic-ranking-board-enrichment-task1
+```
+
+---
+
+## [run: 2026-07-25]
+
+### 11.R-epic-ranking-board-enrichment — BAILED
+
+- **What:** `/sdlc-flow` attempted spec `11.R-epic-ranking-board-enrichment` (BA.11.R — carry
+  `epics`/`wave`/`priority`/`due`/`track` through `BoardBlockDto`, populate `blocked_by` on all
+  four lanes, add `GET /api/epics` and `scope=epic`). Only Task 1 executed, across two attempts:
+  attempt 1 added the five new fields to `BoardBlockDto` (`src/serve/dto.rs`) and updated the
+  `sample_board_block()` test helper, deliberately leaving `src/serve/handlers/board.rs`
+  untouched since its two `BoardBlockDto` construction sites and the `BoardScope::Epic` match arm
+  are Task 2/3's file scope; attempt 2 reproduced the identical compile errors from attempt 1
+  (`BoardBlockDto` missing fields `due`/`epics`/`priority`/`wave`/`track` at `board.rs:99,124`;
+  non-exhaustive `BoardScope::Epic` match at `board.rs:79`; closure-arity mismatch in
+  `tests/abort_contract.rs:95`) with no progress, indicating the fix did not address the
+  underlying DTO/enum mismatch. The pipeline **BAILED** rather than loop a third time. Tasks
+  2–8 never ran. Decisions from Task 1: kept the spec's documented type deviation
+  (`wave: Option<i64>`, mirroring `okf_core::TrackBlock.wave`, not the master-plan's
+  `Option<u32>`); confirmed `dto.rs` itself compiles and formats clean in isolation, with all
+  reported failures isolated to `board.rs` (Task 2/3 scope) and the unrelated
+  `tests/abort_contract.rs`.
+- **Why it bailed:** Attempt 2 reproduces the identical compile errors from attempt 1
+  (`BoardBlockDto` missing fields `due`/`epics`/`priority`/`wave`/`track` in `board.rs:99,124`;
+  non-exhaustive `BoardScope::Epic` match in `board.rs:79`; closure arg mismatch in
+  `tests/abort_contract.rs:95`) — no progress was made, indicating the fix did not address the
+  underlying DTO/enum mismatch.
+- **Next:** A fresh pass needs to actually wire `board.rs`'s two `BoardBlockDto` construction
+  sites (`board_block_from`, `finished_blocks_for_repo`) to populate the five new fields via the
+  per-repo join described in the spec, add the `BoardScope::Epic` match arm, and separately fix
+  the pre-existing `tests/abort_contract.rs:95` closure-arity break (unrelated to this spec but
+  blocking the gate) before re-running Task 1's validation and moving to Task 2.
+
+```
+59076c1 fix: fix pass 1 for 11.R-epic-ranking-board-enrichment-task1
+d5079a4 feat: implement 11.R-epic-ranking-board-enrichment-task1
+1caf2d3 monitor: add --watch headless loop, alert rules, and notify sink
+1b8a5a2 updated data contract
+6adf546 Merge pull request #27 from bredmond1019/11.Q-docs-read-endpoint-flow
+ba1a28f chore: wrap up 11.Q-docs-read-endpoint
+630a05d docs: update docs for 11.Q-docs-read-endpoint
+51ad38d docs: promote docs-read API to serve-api §16, bump v0.9 -> v0.10
+```
+
+## [2026-07-25]
+
+### bastion-web docs reader outage — fixed via workspace config
+
+- **What:** Diagnosed and fixed the bastion-web docs reader outage: authored the missing
+  `~/.config/bastion/config.toml` workspace registry (default_workspace + all 23 repo paths from
+  brain.toml) so bastion serve's GET /api/repos and GET /api/docs/{repo}/tree resolve workspaces
+  instead of returning empty/C005 unknown-workspace. Restarted bastion serve to pick up the new
+  config and verified /api/repos and /api/docs/bastion/tree against the live server. No bastion
+  source code changes — config-only fix.
+- **Why:** bastion-web's docs reader (BW.2.A) was returning empty repos list and 404 "unknown
+  workspace" for all docs API calls; root cause was a missing local config file, not a bastion
+  code defect.
 
 ## [run: 2026-07-24]
 
@@ -76,7 +213,7 @@ Next: BA.11.J (Cost read endpoint, GET /api/costs) is next in Phase 11's queue.
   warnings`, `cargo test`, `cargo build --release`, `./scripts/check-typeshare-drift.sh`) plus a
   real-binary smoke test of `bastion serve` against the live `agentic-portfolio` brain root,
   confirming exact item-for-item parity (same repos, slugs, order, `age_days`) with the
-  `## ⚠ Attention` board `mev emit-state` splices into `status.md` (task 5). One consolidated
+  `## Attention` board `mev emit-state` splices into `status.md` (task 5). One consolidated
   review passed with no findings. Notable decisions: tasks 2–4 were found already implemented
   and committed on this branch from a prior invocation of the pipeline, so this run verified
   acceptance criteria against the spec and re-ran validation rather than re-implementing; no

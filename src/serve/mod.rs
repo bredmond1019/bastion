@@ -396,6 +396,9 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                 web::resource("/docs/{repo}/file")
                     .route(web::get().to(handlers::docs::get_docs_file)),
             )
+            // ── Epic registry route (BA.11.R) ────────────────────────────────
+            // /epics — GET only (HQ cross-repo initiative registry)
+            .service(web::resource("/epics").route(web::get().to(handlers::epics::get_epics)))
             .app_data(live_data);
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
@@ -469,9 +472,13 @@ mod engine_mount_tests {
 
     #[test]
     fn build_engine_dispatcher_registers_sdlc_flow() {
+        // `register_builtin_workflows` is owned by the upstream `engine-serve` crate; it
+        // now registers additional built-in workflow types alongside `SDLC_FLOW`. This
+        // assertion only pins the contract this module relies on — `SDLC_FLOW` is
+        // present — rather than the full (and upstream-owned) registry contents, so it
+        // doesn't churn every time `engine-serve` adds another built-in workflow.
         let dispatcher = build_engine_dispatcher();
         assert!(dispatcher.is_registered("SDLC_FLOW"));
-        assert_eq!(dispatcher.registered_types(), vec!["SDLC_FLOW".to_string()]);
     }
 
     #[test]
@@ -632,6 +639,7 @@ mod tests {
                 web::resource("/docs/{repo}/file")
                     .route(web::get().to(handlers::docs::get_docs_file)),
             )
+            .service(web::resource("/epics").route(web::get().to(handlers::epics::get_epics)))
             .app_data(live_data);
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
@@ -1564,6 +1572,384 @@ heading = "bastion"
         assert!(body["stale"].is_boolean(), "stale must be a boolean");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── /api/epics + enriched /api/board — route registration (BA.11.R) ────
+
+    /// Temp brain root for the `/api/epics` + enriched `/api/board` tests.
+    ///
+    /// Two state files, unlike [`make_temp_board_brain_root`]'s single file:
+    /// - the root's own `<dir>/planning/state.json` — always the HQ file
+    ///   (`discover_state_files` step 1 discovers it unconditionally at that
+    ///   path regardless of `[[repos]]`) — `kind: "brain"`, carrying the
+    ///   `epics[]` registry.
+    /// - `<dir>/bastion/planning/state.json` — the "bastion" leaf project,
+    ///   `kind: "project"`, registered via a single `[[repos]]` entry with
+    ///   `repo_path = "bastion"` (deliberately *not* `"."`, so it doesn't
+    ///   collide with the HQ file's path and so `tier_scope_for` doesn't
+    ///   mistake the HQ file for a tier-container self-entry).
+    ///
+    /// The leaf's `tracks[]` authors four blocks exercising every enrichment
+    /// + `blocked_by` case: `BA.11.R` (in-progress, fully authored
+    /// epics/wave/priority/due), `BA.11.S` (open, depends on `BA.11.R` which
+    /// is not `closed` — unmet), `BA.11.T` (open, depends on `BA.11.K` which
+    /// is `closed` — met/ready), `BA.11.K` (closed — lands in `finished`).
+    fn make_temp_epics_brain_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-serve-epics-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let planning_dir = dir.join("planning");
+        std::fs::create_dir_all(&planning_dir).unwrap();
+        let leaf_planning_dir = dir.join("bastion").join("planning");
+        std::fs::create_dir_all(&leaf_planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"[vocab]
+layer = ["console"]
+status = ["active"]
+
+[crawl]
+skip_dirs = ["target", ".git"]
+
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "planning/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "bastion"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            planning_dir.join("state.json"),
+            r#"{
+  "repo": "hq",
+  "kind": "brain",
+  "updated": "2026-07-25",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": [],
+  "epics": [
+    {
+      "slug": "bastion-surfaces",
+      "title": "Bastion Surfaces",
+      "description": "Cross-surface work",
+      "status": "active",
+      "plan": "core/planning/master-plan.md",
+      "repos": ["bastion"]
+    },
+    {
+      "slug": "brain-rag",
+      "title": "Brain RAG"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            leaf_planning_dir.join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-25",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": [
+    {
+      "title": "Phase 11",
+      "blocks": [
+        {
+          "id": "BA.11.R",
+          "title": "Epic ranking enrichment",
+          "status": "in_progress",
+          "epics": ["bastion-surfaces"],
+          "wave": 3,
+          "priority": 1,
+          "due": "2026-07-15"
+        },
+        {
+          "id": "BA.11.S",
+          "title": "Downstream consumer",
+          "status": "open",
+          "depends_on": [{ "type": "block", "repo": "bastion", "id": "BA.11.R" }],
+          "epics": ["bastion-surfaces"]
+        },
+        {
+          "id": "BA.11.T",
+          "title": "Ready block",
+          "status": "open",
+          "depends_on": [{ "type": "block", "repo": "bastion", "id": "BA.11.K" }],
+          "epics": ["brain-rag"]
+        },
+        {
+          "id": "BA.11.K",
+          "title": "Prior closed block",
+          "status": "closed",
+          "epics": ["bastion-surfaces"]
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    /// Registry pointing `default_workspace` at the temp epics brain root —
+    /// mirrors [`registry_with_board_fixture`].
+    fn registry_with_epics_fixture(brain_root: &std::path::Path) -> FileConfig {
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("brain-root".to_string(), brain_root.to_path_buf());
+        FileConfig {
+            workspaces: Some(workspaces),
+            default_workspace: Some("brain-root".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn get_epics_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get().uri("/api/epics").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/epics without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_epics_returns_the_hq_registry() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/epics")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/epics with a valid token must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let entries = body.as_array().expect("body must be an array");
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected two registry entries; got {body:?}"
+        );
+        assert_eq!(entries[0]["slug"], "bastion-surfaces");
+        assert_eq!(entries[0]["title"], "Bastion Surfaces");
+        assert_eq!(entries[0]["status"], "active");
+        assert_eq!(entries[0]["plan"], "core/planning/master-plan.md");
+        assert_eq!(entries[0]["repos"][0], "bastion");
+        assert_eq!(entries[1]["slug"], "brain-rag");
+        assert!(
+            entries[1]["repos"].as_array().unwrap().is_empty(),
+            "minimal registry entry must default repos to []"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_returns_enrichment_fields() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let lanes = &body["lanes"];
+        let all_blocks = lanes["now"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(lanes["next"].as_array().unwrap())
+            .chain(lanes["blocked"].as_array().unwrap())
+            .chain(lanes["finished"].as_array().unwrap())
+            .collect::<Vec<_>>();
+
+        let entry = all_blocks
+            .iter()
+            .find(|b| b["id"] == "BA.11.R")
+            .unwrap_or_else(|| panic!("BA.11.R must appear in some lane; got {body:?}"));
+        assert_eq!(entry["epics"][0], "bastion-surfaces");
+        assert_eq!(entry["wave"], 3);
+        assert_eq!(entry["priority"], 1);
+        assert_eq!(entry["due"], "2026-07-15");
+        assert_eq!(entry["track"], "Phase 11");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_populates_blocked_by_outside_the_blocked_lane() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let lanes = &body["lanes"];
+
+        // `BA.11.K` is unambiguously in `finished` (closed status) — assert
+        // `blocked_by` enrichment reaches that lane too (per 5.4's sanity
+        // note: whichever lane `BA.11.S` actually lands in among
+        // now/next/blocked is derivation-dependent, but `finished` is not).
+        let finished = lanes["finished"].as_array().unwrap();
+        let k_entry = finished
+            .iter()
+            .find(|b| b["id"] == "BA.11.K")
+            .unwrap_or_else(|| panic!("BA.11.K must appear in finished; got {finished:?}"));
+        assert!(
+            k_entry["blocked_by"].is_array(),
+            "finished-lane entries must carry a blocked_by array"
+        );
+
+        // `BA.11.T` depends on the already-closed `BA.11.K`, so wherever it
+        // lands its dependency is met and `blocked_by` must be empty.
+        let all_blocks = lanes["now"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(lanes["next"].as_array().unwrap())
+            .chain(lanes["blocked"].as_array().unwrap())
+            .chain(lanes["finished"].as_array().unwrap())
+            .collect::<Vec<_>>();
+        let t_entry = all_blocks
+            .iter()
+            .find(|b| b["id"] == "BA.11.T")
+            .unwrap_or_else(|| panic!("BA.11.T must appear in some lane; got {body:?}"));
+        assert_eq!(
+            t_entry["blocked_by"],
+            serde_json::json!([]),
+            "BA.11.T's sole dependency is closed, so blocked_by must be empty"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_epic_scope_filters_to_that_epic() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=epic&epic=bastion-surfaces")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let lanes = &body["lanes"];
+        let allowed = ["BA.11.R", "BA.11.S", "BA.11.K"];
+        for lane_name in ["now", "next", "blocked", "finished"] {
+            for block in lanes[lane_name].as_array().unwrap() {
+                let id = block["id"].as_str().unwrap();
+                assert!(
+                    allowed.contains(&id),
+                    "unexpected block {id} in scope=epic&epic=bastion-surfaces lane {lane_name}"
+                );
+                assert_ne!(
+                    id, "BA.11.T",
+                    "BA.11.T is tagged brain-rag, not bastion-surfaces, and must not appear"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_epic_scope_unknown_slug_returns_404_c005() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=epic&epic=nope")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_epic_scope_without_epic_param_returns_404_c005() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=epic")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains("epic"),
+            "message must name the missing 'epic' param; got {body:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_epic_scope_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=epic&epic=bastion-surfaces")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/board?scope=epic without a token must return 401; got {}",
+            resp.status()
+        );
     }
 
     // ── Live run-state routes (BA.11.M) ───────────────────────────────────

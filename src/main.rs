@@ -15,6 +15,7 @@ mod inspect;
 mod man;
 mod momentum;
 mod monitor;
+mod notify;
 mod observ;
 mod overview;
 mod run;
@@ -151,7 +152,13 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Some(cmd) => match cmd {
             // Tui handled above — included to keep the match exhaustive.
             Commands::Tui => unreachable!(),
-            Commands::Monitor { workflow_id } => monitor::run(workflow_id).await,
+            Commands::Monitor { workflow_id, watch } => {
+                if watch {
+                    monitor::watch::run(workflow_id).await
+                } else {
+                    monitor::run(workflow_id).await
+                }
+            }
             Commands::Inspect { run_id } => inspect::run(run_id).await,
             Commands::Overview => overview::run(),
             Commands::Validate { path } => validate::run(path).await,
@@ -339,7 +346,10 @@ mod tests {
     #[test]
     fn command_name_monitor() {
         assert_eq!(
-            command_name(&Commands::Monitor { workflow_id: None }),
+            command_name(&Commands::Monitor {
+                workflow_id: None,
+                watch: false,
+            }),
             "monitor"
         );
     }

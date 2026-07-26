@@ -38,6 +38,7 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `DATABASE_URL` | Yes (unless set in config file) | — | PostgreSQL URL for the Python orchestrator's database |
 | `BASTION_API_URL` | No | `http://localhost:8080` | FastAPI orchestrator base URL |
 | `BASTION_POLL_INTERVAL` | No | `2` | Monitor poll cadence in seconds |
+| `BASTION_NOTIFY` | No | `true` | Desktop-notification toggle for `bastion monitor` (TUI and `--watch`) — opt-out, not opt-in. Parsed leniently: an unparseable value silently falls back to the default rather than erroring (unlike the budget values below). macOS-only regardless of setting — a no-op on other platforms. See [monitor.md](monitor.md#desktop-notifications). |
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | Bind address for `bastion serve` |
 | `BASTION_SERVE_TOKEN` | Yes (for `bastion serve`) | — | Bearer token enforced on all protected routes; also settable via `--token` |
 | `BASTION_PLANNING_ROOT` | No | `planning/` | Root directory for planning state and harnesses |

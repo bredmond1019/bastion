@@ -1,7 +1,9 @@
+pub mod alerts;
 pub mod app;
 pub mod events;
 pub mod graph;
 pub mod ui;
+pub mod watch;
 
 use anyhow::Result;
 
@@ -101,6 +103,7 @@ pub async fn run(workflow_id: Option<String>) -> Result<()> {
         &api_client,
         config.poll_interval_secs,
         workflow_id.as_deref(),
+        config.notify_enabled,
     )
     .await
 }

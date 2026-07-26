@@ -27,12 +27,41 @@ struct TriggerRequest {
     data: serde_json::Value,
 }
 
-/// Response body for `POST /` — `202 { "task_id": "...", "message": "..." }`.
+/// Response body for `POST /` — `202 { "task_id": "...", "message": "..." }`
+/// pre-v1.2.0, or `202 { "task_id": "...", "event_id": "...", "message": "..." }`
+/// per the current data contract (v1.2.0). `event_id` is `#[serde(default)]`
+/// so both shapes deserialize without error: an orchestrator response that
+/// predates the `event_id` field (or the field simply being absent from a
+/// given trigger path) leaves it `None` rather than failing to parse.
 #[derive(Debug, Deserialize)]
 struct TaskAccepted {
     task_id: String,
+    #[serde(default)]
+    event_id: Option<String>,
     #[allow(dead_code)]
     message: String,
+}
+
+/// The two ids a `trigger_workflow` call can hand back — `task_id` (the
+/// Celery task id) and, when the response carries it (data contract v1.2.0),
+/// `event_id` (the `events.id` row the engine/orchestrator actually writes
+/// execution state under). Handoff callers (e.g. `run::trigger`'s
+/// `--monitor` attach) should prefer `event_id` when present — `task_id` may
+/// not equal `events.id`, so attaching `monitor::run` to `task_id` can watch
+/// the wrong row when the two diverge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TriggerOutcome {
+    pub task_id: String,
+    pub event_id: Option<String>,
+}
+
+impl TriggerOutcome {
+    /// The id `monitor::run`'s `--workflow-id` filter should attach to:
+    /// `event_id` when the response carried one, falling back to `task_id`
+    /// otherwise. Pure — no I/O.
+    pub fn monitor_id(&self) -> &str {
+        self.event_id.as_deref().unwrap_or(&self.task_id)
+    }
 }
 
 /// Build a `TriggerRequest` from a workflow type and optional data payload.
@@ -230,9 +259,11 @@ impl ApiClient {
         &self,
         workflow_type: &str,
         data: Option<serde_json::Value>,
-    ) -> Result<String> {
+    ) -> Result<TriggerOutcome> {
         // Orchestrator's generic dispatcher: POST / with {workflow_type, data}
-        // → 202 {task_id, message} (data contract §7). Returns the task_id.
+        // → 202 {task_id, event_id?, message} (data contract §7, event_id per
+        // v1.2.0). Returns both ids — callers that only need `task_id` (the
+        // pre-v1.2.0 shape) can ignore `event_id`.
         let url = self.trigger_url();
         let body = trigger_body(workflow_type, data);
         self.client
@@ -247,7 +278,10 @@ impl ApiClient {
             .json::<TaskAccepted>()
             .await
             .context("decoding trigger response body")
-            .map(|accepted| accepted.task_id)
+            .map(|accepted| TriggerOutcome {
+                task_id: accepted.task_id,
+                event_id: accepted.event_id,
+            })
     }
 
     pub async fn rerun_node(&self, _run_id: &str, _node_id: &str) -> Result<()> {
@@ -455,6 +489,44 @@ mod tests {
     fn classify_unexpected_status_is_io_error() {
         let err = classify_abort_response(500, "boom").expect_err("500 should error");
         assert_eq!(err.code(), ErrorCode::IoError);
+    }
+
+    // ── TriggerOutcome::monitor_id — event_id vs task_id handoff ────────────────
+
+    #[test]
+    fn monitor_id_prefers_event_id_when_present() {
+        let outcome = TriggerOutcome {
+            task_id: "task-1".to_string(),
+            event_id: Some("event-1".to_string()),
+        };
+        assert_eq!(outcome.monitor_id(), "event-1");
+    }
+
+    #[test]
+    fn monitor_id_falls_back_to_task_id_when_event_id_absent() {
+        let outcome = TriggerOutcome {
+            task_id: "task-1".to_string(),
+            event_id: None,
+        };
+        assert_eq!(outcome.monitor_id(), "task-1");
+    }
+
+    // ── TaskAccepted deserialization — event_id is optional (v1.2.0) ────────────
+
+    #[test]
+    fn task_accepted_decodes_without_event_id() {
+        let body = r#"{"task_id": "t1", "message": "accepted"}"#;
+        let accepted: TaskAccepted = serde_json::from_str(body).unwrap();
+        assert_eq!(accepted.task_id, "t1");
+        assert!(accepted.event_id.is_none());
+    }
+
+    #[test]
+    fn task_accepted_decodes_with_event_id() {
+        let body = r#"{"task_id": "t1", "event_id": "e1", "message": "accepted"}"#;
+        let accepted: TaskAccepted = serde_json::from_str(body).unwrap();
+        assert_eq!(accepted.task_id, "t1");
+        assert_eq!(accepted.event_id.as_deref(), Some("e1"));
     }
 
     // ── abort_run — missing engine_api_key ──────────────────────────────────────

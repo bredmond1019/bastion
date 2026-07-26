@@ -55,8 +55,16 @@ fn value_type_name(v: &serde_json::Value) -> &'static str {
 
 /// Format the success output for a triggered workflow.
 /// Pure function — no I/O — so it is unit-testable.
-pub fn format_trigger_success(workflow: &str, task_id: &str) -> String {
-    format!("workflow: {workflow}\ntask_id: {task_id}\n")
+///
+/// `event_id` is `Some` per the current data contract (v1.2.0) when the
+/// trigger response carried one; printed on its own line when present so an
+/// operator can see, at a glance, which id `--monitor` will attach to (see
+/// [`crate::api::client::TriggerOutcome::monitor_id`]).
+pub fn format_trigger_success(workflow: &str, task_id: &str, event_id: Option<&str>) -> String {
+    match event_id {
+        Some(eid) => format!("workflow: {workflow}\ntask_id: {task_id}\nevent_id: {eid}\n"),
+        None => format!("workflow: {workflow}\ntask_id: {task_id}\n"),
+    }
 }
 
 // ── Pre-dispatch budget gate (task 8) ────────────────────────────────────────
@@ -152,15 +160,20 @@ pub async fn trigger(
     }
 
     let client = ApiClient::new(&config.api_base_url);
-    let task_id = client
+    let outcome = client
         .trigger_workflow(&workflow, data)
         .await
         .with_context(|| {
             format!("failed to trigger workflow '{workflow}' — is the orchestrator running?")
         })?;
-    print!("{}", format_trigger_success(&workflow, &task_id));
+    print!(
+        "{}",
+        format_trigger_success(&workflow, &outcome.task_id, outcome.event_id.as_deref())
+    );
     if monitor {
-        monitor::run(Some(task_id)).await?;
+        // Prefer `event_id` (the `events.id` row execution state is actually
+        // written under) over `task_id` — see `TriggerOutcome::monitor_id`.
+        monitor::run(Some(outcome.monitor_id().to_string())).await?;
     }
     Ok(())
 }
@@ -389,18 +402,31 @@ mod tests {
 
     #[test]
     fn format_trigger_success_contains_workflow_and_task_id() {
-        let out = format_trigger_success("research_workflow", "abc-123");
+        let out = format_trigger_success("research_workflow", "abc-123", None);
         assert!(out.contains("workflow: research_workflow"), "got: {out}");
         assert!(out.contains("task_id: abc-123"), "got: {out}");
+        assert!(
+            !out.contains("event_id"),
+            "no event_id line when None: {out}"
+        );
     }
 
     #[test]
     fn format_trigger_success_task_id_on_own_line() {
-        let out = format_trigger_success("wf", "tid-999");
+        let out = format_trigger_success("wf", "tid-999", None);
         // Each key should be on its own line
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines.contains(&"workflow: wf"), "lines: {lines:?}");
         assert!(lines.contains(&"task_id: tid-999"), "lines: {lines:?}");
+    }
+
+    #[test]
+    fn format_trigger_success_includes_event_id_when_present() {
+        let out = format_trigger_success("wf", "task-1", Some("event-1"));
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines.contains(&"workflow: wf"), "lines: {lines:?}");
+        assert!(lines.contains(&"task_id: task-1"), "lines: {lines:?}");
+        assert!(lines.contains(&"event_id: event-1"), "lines: {lines:?}");
     }
 
     // ── value_type_name ───────────────────────────────────────────────────────

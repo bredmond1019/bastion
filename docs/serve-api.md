@@ -1,23 +1,24 @@
 ---
 type: Guideline
-title: "serve-api contract v0.10"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), and the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q)."
+title: "serve-api contract v0.11"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.10 Contract
+# serve-api — v0.11 Contract
 
-**Version:** v0.10  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–16, 18, 19 — plus, when mounted,
-`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 17.  
-**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15, 18, 19; bastion-web
-(`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web (`BW.2.A`) for Section
-16; `bastion abort` (`src/run/abort.rs`, this repo) for Section 17's abort route.
+**Version:** v0.11  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–21 — plus, when mounted,
+`engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
+**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21;
+bastion-web (`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web
+(`BW.2.A`) for Section 16; `bastion abort` (`src/run/abort.rs`, this repo) for Section 18's abort
+route.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -44,7 +45,7 @@ transport security on the tailnet.
 ## 2. Authentication
 
 All routes **except** `GET /health` under bastion's own `/api` and `/ws` scopes are protected by
-mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 17,
+mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 18,
 mounted only when config allows) are a **separate, unmounted-at-`/api` surface with their own
 `X-API-Key` gate** — the two auth schemes coexist side by side and are never double-applied to the
 same request:
@@ -52,8 +53,8 @@ same request:
 | Route family | Scheme | Header |
 |---|---|---|
 | `/health`, `/api/*`, `/ws` (Sections 3–13) | Bearer | `Authorization: Bearer <BASTION_SERVE_TOKEN>` |
-| Engine routes (Section 17): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
-| Engine routes (Section 17): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
+| Engine routes (Section 18): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
+| Engine routes (Section 18): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
 
 The engine's own `GET /health` is shadowed by bastion's `/health` handler (first-registration-wins
 for duplicate exact-path routes — verified empirically, not a panic), so the process's `/health`
@@ -108,6 +109,7 @@ to verify the configured token.
 | `GET /api/attention` | Yes — `Authorization: Bearer <token>` |
 | `GET /api/docs/{repo}/tree` | Yes — `Authorization: Bearer <token>` |
 | `GET /api/docs/{repo}/file` | Yes — `Authorization: Bearer <token>` |
+| `GET /api/epics` | Yes — `Authorization: Bearer <token>` |
 
 ---
 
@@ -1039,7 +1041,7 @@ Execution-path failures (after validation passes) map as follows:
 
 ---
 
-## 13. Cross-brain board API (v0.6, BA.11.K)
+## 13. Cross-brain board API (v0.6, BA.11.K; enriched v0.11, BA.11.R)
 
 One read-only route projecting the cross-brain now/next/blocked/finished rollup — the same
 aggregate `bastion emit-state` / `bastion validate-brain --state` already compute from the
@@ -1053,8 +1055,9 @@ brain).
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `scope` | string | No | `"hq"` | One of `"hq"` \| `"tier"` \| `"project"` \| `"business"` (Section 13.2). An unrecognized value fails query deserialization and returns `400` (Section 13.4). |
-| `tier` | string | No | `"core"` | Tier name; only consulted when `scope` is `"tier"` or `"project"` (Section 13.2). Ignored for `"hq"`/`"business"`. |
+| `scope` | string | No | `"hq"` | One of `"hq"` \| `"tier"` \| `"project"` \| `"business"` \| `"epic"` (Section 13.2). An unrecognized value fails query deserialization and returns `400` (Section 13.4). |
+| `tier` | string | No | `"core"` | Tier name; only consulted when `scope` is `"tier"` or `"project"` (Section 13.2). Ignored for `"hq"`/`"business"`/`"epic"`. |
+| `epic` | string | Only for `scope=epic` | — | Epic slug (from the HQ `epics[]` registry, Section 17) to filter the board to. Required, and only consulted, when `scope=epic`; missing or unknown → `404`/`C005` (Section 13.4). Ignored for every other scope. |
 
 **Request:**
 
@@ -1063,19 +1066,29 @@ GET /api/board?scope=hq HTTP/1.1
 Authorization: Bearer <token>
 ```
 
+```
+GET /api/board?scope=epic&epic=bastion-surfaces HTTP/1.1
+Authorization: Bearer <token>
+```
+
 ### 13.2 Scope semantics
 
-| `scope` | Resolved walk scope | `tier` param | `BoardDto.tier` |
-|---|---|---|---|
-| `"hq"` (default) | `TierScope::All` — whole-brain aggregate | Ignored | `null` |
-| `"tier"` | `TierScope::Tier(<tier>)` — that tier's aggregate board | Optional, default `"core"` | Resolved tier name |
-| `"project"` | `TierScope::Tier(<tier>)`, same walk as `"tier"` — the client renders each project's board from `repos[]` | Optional, default `"core"` | Resolved tier name |
-| `"business"` | `TierScope::Tier("business")` — shortcut, ignores `tier` param | Ignored | `"business"` |
+| `scope` | Resolved walk scope | `tier` param | `epic` param | `BoardDto.tier` |
+|---|---|---|---|---|
+| `"hq"` (default) | `TierScope::All` — whole-brain aggregate | Ignored | Ignored | `null` |
+| `"tier"` | `TierScope::Tier(<tier>)` — that tier's aggregate board | Optional, default `"core"` | Ignored | Resolved tier name |
+| `"project"` | `TierScope::Tier(<tier>)`, same walk as `"tier"` — the client renders each project's board from `repos[]` | Optional, default `"core"` | Ignored | Resolved tier name |
+| `"business"` | `TierScope::Tier("business")` — shortcut, ignores `tier` param | Ignored | Ignored | `"business"` |
+| `"epic"` | `TierScope::All`, then pruned to blocks tagged with `epic` (Section 13.3's `epics` field) across every repo | Ignored | **Required** — missing or unknown slug → `404`/`C005` | `null` |
 
 An empty-string `tier` param (`?tier=`) is treated the same as an absent one — it falls back to the
 `"core"` default. An unknown `tier` name (no matching tier in `brain.toml`) is **not** an error: the
 brain walk simply finds no in-scope repos for that tier, and the response comes back with empty
 lanes and `repos: []` rather than a 4xx/5xx.
+
+For `scope=epic`, the filter is applied to both the aggregate `lanes` and every entry in `repos[]`;
+a repo contributing no member block for that epic is omitted from `repos[]` entirely (rather than
+appearing with four empty lanes).
 
 **Future refinement (not implemented in BA.11.K):** a context-aware default for `tier` — deriving
 the "current" tier from the serving repo's own location in the brain tree instead of the
@@ -1089,12 +1102,12 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
   "tier": null,
   "lanes": {
     "now": [
-      { "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [] }
+      { "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [], "epics": ["bastion-surfaces"], "wave": 3, "priority": 1, "due": "2026-07-15", "track": "Phase 11" }
     ],
     "next": [],
     "blocked": [],
     "finished": [
-      { "id": "BA.11.D", "title": "Repo status REST surface", "repo": "bastion", "status": "closed", "blocked_by": [] }
+      { "id": "BA.11.D", "title": "Repo status REST surface", "repo": "bastion", "status": "closed", "blocked_by": [], "epics": [], "wave": null, "priority": null, "due": null, "track": null }
     ]
   },
   "repos": [],
@@ -1104,10 +1117,10 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 
 | Field | Type | Description |
 |---|---|---|
-| `scope` | string | Echoes the resolved `scope` (`"hq"`, `"tier"`, `"project"`, or `"business"`). |
-| `tier` | string \| null | The resolved tier name for tier-scoped responses (`"tier"`/`"project"`/`"business"`); `null` for `"hq"`. |
-| `lanes` | `BoardLaneDto` | Aggregate now/next/blocked/finished lanes across every in-scope repo. |
-| `repos` | array of `RepoBoardDto` | Per-project lane breakdown for every in-scope repo (populated for all scopes — the client picks whether to render the aggregate `lanes` or the per-project `repos[]` breakdown). |
+| `scope` | string | Echoes the resolved `scope` (`"hq"`, `"tier"`, `"project"`, `"business"`, or `"epic"`). |
+| `tier` | string \| null | The resolved tier name for tier-scoped responses (`"tier"`/`"project"`/`"business"`); `null` for `"hq"`/`"epic"`. |
+| `lanes` | `BoardLaneDto` | Aggregate now/next/blocked/finished lanes across every in-scope repo (for `scope=epic`, pruned to that epic's member blocks). |
+| `repos` | array of `RepoBoardDto` | Per-project lane breakdown for every in-scope repo (populated for all scopes — the client picks whether to render the aggregate `lanes` or the per-project `repos[]` breakdown). For `scope=epic`, a repo contributing no member block is omitted. |
 | `stale` | boolean | `true` when any in-scope repo's `planning/status.md` cache lags its `state.json`, per `mev::brain::sync::check_sync`. |
 
 #### `BoardLaneDto`
@@ -1121,13 +1134,25 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 
 #### `BoardBlockDto`
 
-| Field | Type | Description |
-|---|---|---|
-| `id` | string | Canonical block ID (e.g. `"BA.11.K"`). |
-| `title` | string | Block title, looked up from the owning repo's `tracks[].blocks[]`. |
-| `repo` | string | Owning repo slug. |
-| `status` | string \| null | Lifecycle status when known (`"open"`/`"in_progress"`/`"closed"`). |
-| `blocked_by` | array | What this block is waiting on; populated for `blocked`-lane entries, empty elsewhere. |
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `id` | string | — | Canonical block ID (e.g. `"BA.11.K"`). |
+| `title` | string | — | Block title, looked up from the owning repo's `tracks[].blocks[]`. |
+| `repo` | string | — | Owning repo slug. |
+| `status` | string \| null | `null` | Lifecycle status when known (`"open"`/`"in_progress"`/`"closed"`). |
+| `blocked_by` | array | `[]` | What this block is waiting on. **Populated on all four lanes as of v0.11/BA.11.R** — earlier versions of this contract populated it for `blocked`-lane entries only; it is now the unmet-dependency set (any `BlockedBy::External`, or a `BlockedBy::Block{repo, id}` whose target's authored status is not `"closed"`) computed the same way for `now`/`next`/`finished` as it always was for `blocked`. A block with no unmet dependency comes back `blocked_by: []`. |
+| `epics` (v0.11) | array of string | `[]` | Cross-repo epic membership — slugs into the HQ `epics[]` registry (Section 17). Joined back from the owning repo's `tracks[].blocks[]`; a block whose id has no `tracks[]` match keeps `[]`. |
+| `wave` (v0.11) | number \| null | `null` | Execution-order rank ("what's next"), from the authoring `TrackBlock.wave`. Typed to mirror `okf_core::TrackBlock.wave` (`Option<i64>`) — see the Amendment Log deviation note below. |
+| `priority` (v0.11) | number \| null | `null` | Execution priority (e.g. `1`, `2`, `3`), from the authoring `TrackBlock.priority`. |
+| `due` (v0.11) | string \| null | `null` | Target due date or timing string (e.g. `"2026-07-15"`), from the authoring `TrackBlock.due`. |
+| `track` (v0.11) | string \| null | `null` | Title of the enclosing `tracks[]` phase/wave entry (`okf_core::Track.title`). |
+
+All five v0.11 fields are **additive and optional** — a JSON body written by the pre-v0.11 DTO
+shape (no `epics`/`wave`/`priority`/`due`/`track` keys) still deserializes into the current
+`BoardBlockDto`, so `bastion-ui` and the TUI, which do not read these fields, keep working
+unchanged against either shape. A lane entry whose id has no match in its repo's `tracks[].blocks[]`
+serializes with `epics: []` and the four `Option` fields absent/`null` rather than panicking or
+being dropped from the lane.
 
 #### `RepoBoardDto`
 
@@ -1143,6 +1168,8 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 |---|---|---|
 | Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
 | Unrecognized `scope` value (fails `BoardScope` query deserialization) | `400 Bad Request` | Plain text — actix's default `web::Query` extractor failure. `GET /api/board` has **no** `QueryConfig` error handler installed (unlike the `web::JsonConfig` handler that gives `POST /api/actions/command` its JSON `C006` body, Section 12.3) — a bad `scope` query value returns actix's stock `text/plain` 400, not an `ErrorPayload`. |
+| `scope=epic` with a missing/blank `&epic=` param | `404 Not Found` | JSON `ErrorPayload`, code `C005`, message naming the missing param (`"scope=epic requires a non-empty &epic=<slug> query param"`). |
+| `scope=epic` with an `&epic=<slug>` value absent from the HQ `epics[]` registry | `404 Not Found` | JSON `ErrorPayload`, code `C005`, message naming the unknown slug (`"unknown epic: <slug>"`). One uniform "no such epic board" response shape for both `scope=epic` miss cases, matching Section 11's registry-miss convention. |
 | Unresolvable brain root (no `brain.toml` walking up from the workspace root) or unparseable `brain.toml` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
 | `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
 
@@ -1172,12 +1199,12 @@ Two read-only routes projecting the embedded engine's in-memory `LiveStateStore`
 live_state::LiveStateStore`, `../engine-rs/crates/engine-serve/src/live_state.rs`) onto HTTP, so a
 remote client (bastion-web `BW.3.B` node drill-in) can read a run's current per-node state without
 polling Postgres. Live under the bearer-protected `/api` scope (Section 2) — same auth as Sections
-3–13, distinct from the Section 17 engine `X-API-Key` scheme.
+3–13, distinct from the Section 18 engine `X-API-Key` scheme.
 
 `LiveStateStore` is a single instance shared between the mounted engine's `on_progress` writer and
-these read handlers (`src/serve/mod.rs`): when the Section 17 engine mount is active, the engine
+these read handlers (`src/serve/mod.rs`): when the Section 18 engine mount is active, the engine
 records every node transition into this store as the run executes, and these routes read the same
-store. **When the engine is not mounted** (Section 17.1 — `DATABASE_URL` / `BASTION_ENGINE_API_KEY`
+store. **When the engine is not mounted** (Section 18.1 — `DATABASE_URL` / `BASTION_ENGINE_API_KEY`
 absent), the store still exists but stays empty for the lifetime of the process: `GET /api/runs`
 returns `200 []` and `GET /api/runs/{id}` returns `404` for every id — the same graceful-degradation
 posture as the rest of this contract, not an error.
@@ -1213,7 +1240,7 @@ No query parameters. No 404 case — an empty store is a normal 200.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `id` | string (UUID) | The run id, as returned by `GET /api/runs` or minted by the Section 17 `/events/` trigger. Must parse as a UUID. |
+| `id` | string (UUID) | The run id, as returned by `GET /api/runs` or minted by the Section 18 `/events/` trigger. Must parse as a UUID. |
 
 **Request:**
 
@@ -1637,7 +1664,77 @@ uniform rejection across traversal / bad-extension / absolute-path vectors, and 
 
 ---
 
-## 17. Embedded engine route table (v0.5, BA.7.C)
+## 17. Epics registry API (v0.11, BA.11.R)
+
+One read-only route projecting the HQ `epics[]` cross-repo initiative registry onto HTTP. Lives
+under the bearer-protected `/api` scope (Section 2). This route never mutates any tier's or repo's
+`state.json` (D25 — bastion is a read-only surface over the brain). The same registry backs
+`GET /api/board`'s `scope=epic&epic=<slug>` projection (Section 13.2/13.3) — this route exposes the
+registry itself so a client can list available epics before filtering the board to one.
+
+### 17.1 `GET /api/epics` — HQ cross-repo initiative registry
+
+**Query parameters:** none.
+
+**Request:**
+
+```
+GET /api/epics HTTP/1.1
+Authorization: Bearer <token>
+```
+
+### 17.2 Response (200 OK): `EpicDto[]`
+
+```json
+[
+  {
+    "slug": "bastion-surfaces",
+    "title": "Bastion Surfaces",
+    "description": "Cross-repo surfaces initiative",
+    "status": "active",
+    "plan": "core/planning/master-plan.md",
+    "repos": ["bastion", "bastion-ui"]
+  }
+]
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `slug` | string | — | Stable kebab-case key — the value blocks reference in their `epics[]`. |
+| `title` | string | — | Human-readable name (e.g. `"Bastion Surfaces"`). |
+| `description` | string \| null | `null` | One-line description of what the initiative covers. |
+| `status` | string \| null | `null` | Lifecycle: `"active"` · `"paused"` · `"complete"`. |
+| `plan` | string \| null | `null` | Repo-relative path to the owning master-plan / plan doc, when one exists. |
+| `repos` | array of string | `[]` | Repos the initiative is expected to touch — an authored hint, not the membership source of truth (membership is authored on the blocks via `epics[]`, not here). |
+
+The registry is HQ-only (same precedent as `backlog[]`, Section 15): the single `(source, file)`
+pair whose `kind == "brain"` **and** whose resolved [`TierScope`] is `All` (mirrors mev's private
+`epic_registry` helper). Order is preserved from the authoring `epics[]` list.
+
+### 17.3 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (Section 2.2) |
+| Unresolvable brain root (no `brain.toml` walking up from the workspace root) or unparseable `brain.toml` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
+| No HQ `kind:"brain"`/`TierScope::All` file found | `200 OK` | `[]` — an absent registry is **not** an error; the route reports the registry it found, and an absent HQ file is an operator-config problem the board route (Section 13) already surfaces. |
+
+### 17.4 Testing
+
+`hq_epic_registry` (HQ-file selection) and `build_epics` (registry → `EpicDto[]` projection) are
+pure and unit-tested with no filesystem access, covering: the HQ file found among non-matching
+files, a `kind:"brain"` file that is tier-scoped (not `All`) and therefore ignored, no files at
+all, multiple candidate files with the HQ one picked correctly, all six `EpicDto` fields mapped,
+minimal-entry defaults (`repos: []`, the four `Option` fields `None`), an empty registry, and
+order preservation. The thin `web::block` I/O shell (`get_epics`, `src/serve/handlers/epics.rs`)
+and route wiring in `src/serve/mod.rs` are covered by `#[actix_web::test]` integration tests
+against a temp brain-root fixture, asserting the bearer-auth `401` and a `200` registry listing
+with all fields populated.
+
+---
+
+## 18. Embedded engine route table (v0.5, BA.7.C)
 
 `bastion serve` embeds `engine-serve`'s route table (`engine_serve::http::configure`) at the
 **server root** — not under `/api` — per D48 ("the abort endpoint and the rest of the engine
@@ -1646,7 +1743,7 @@ growth (`planning/7.C-cost-budget-alerts-abort/tasks.md`, *Scope growth* section
 same `engine-serve` surface engine-rs's own `EN.1.C`/`EN.2.B` shipped as an embeddable library —
 `bastion serve` is the first (and, as of this writing, only) process that actually mounts it.
 
-### 17.1 Mount decision
+### 18.1 Mount decision
 
 The engine routes are mounted only when **both** `DATABASE_URL` and `BASTION_ENGINE_API_KEY` are
 set (non-empty) at boot — decided once, pure, by `serve::decide_engine_mount` (`src/serve/
@@ -1656,7 +1753,7 @@ stderr and emits a `tracing::warn!` `observ` event rather than failing to boot o
 that would 500 on every request. A `DATABASE_URL` present but unreachable (connection failure at
 boot) also leaves the engine routes unmounted, logged the same way.
 
-### 17.2 Routes
+### 18.2 Routes
 
 | Route | Method | Auth | Description |
 |---|---|---|---|
@@ -1670,7 +1767,7 @@ boot) also leaves the engine routes unmounted, logged the same way.
 an exact string match, entirely separate from bastion's own `BASTION_SERVE_TOKEN` Bearer check
 (Section 2). Neither scheme is layered on the other's routes.
 
-### 17.3 Testing
+### 18.3 Testing
 
 Covered by the in-process integration test `tests/abort_contract.rs`, which builds a real
 `engine-serve` `App` (via `AppState`) and asserts the 401 / 404 / 202 paths against it — the
@@ -1681,13 +1778,13 @@ including the empty-string-counts-as-absent case.
 
 ---
 
-## 18. Generated TypeScript types (v0.7, BA.11.L)
+## 19. Generated TypeScript types (v0.7, BA.11.L)
 
 The contract DTOs in `src/serve/dto.rs` are annotated with `#[typeshare]` and are the **single
 source of truth** for the TypeScript types consumed by BastionWeb (`BW.0.B`) and any other TS
 client of this contract. `bastion-ui` (Flutter) is unaffected — it has no TS surface.
 
-### 18.1 Generated artifact
+### 19.1 Generated artifact
 
 `types/serve.ts` (committed at the bastion package root) is the generated TypeScript output. It
 is produced by the `typeshare` CLI reading the `#[typeshare]`-annotated types in `src/serve/dto.rs`
@@ -1702,7 +1799,7 @@ Two exclusions from generation, both internal-only types that never cross the wi
 each carries a data variant with no serde representation for `typeshare` to mirror, so both are
 left unannotated rather than forced.
 
-### 18.2 Regenerating
+### 19.2 Regenerating
 
 Prerequisite: the `typeshare` CLI on `PATH` (`cargo install typeshare-cli --locked`).
 
@@ -1715,7 +1812,7 @@ typeshare src/serve --lang typescript --output-file types/serve.ts --config-file
 Run this after any change to `src/serve/dto.rs`'s public types (new field, new type, new enum
 variant, etc.) and commit the regenerated `types/serve.ts` alongside the `dto.rs` change.
 
-### 18.3 Drift check
+### 19.3 Drift check
 
 `scripts/check-typeshare-drift.sh` regenerates the types to a temp file (via the same invocation
 `gen-types.sh` uses, so the two scripts can never diverge on flags) and diffs it against the
@@ -1737,25 +1834,25 @@ documented in Sections 3, 5–13 is unchanged.
 
 ---
 
-## 19. Configuration reference
+## 20. Configuration reference
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | `host:port` to bind |
 | `BASTION_SERVE_TOKEN` | **Yes** | — | Bearer token for protected routes; absent token is a typed error at startup |
-| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 17 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
-| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 17) check. Absent leaves those routes unmounted. |
+| `DATABASE_URL` | No | — | Postgres URL for the engine's durable writer. Absent (or unreachable) leaves the Section 18 engine routes unmounted; bastion's own `/api`/`/ws` surface never needed this and still doesn't. |
+| `BASTION_ENGINE_API_KEY` | No | — | `X-API-Key` secret the engine routes (Section 18) check. Absent leaves those routes unmounted. |
 
 `bastion serve` loads config via `load_serve_config()` (`src/config.rs`), which
 is DB-free and does **not** require `DATABASE_URL` for its own `/api`/`/ws` surface. The
 `[workspaces]` registry consumed by Section 11's routes is loaded separately via
 `load_workspace_registry()` — also DB-free — once at server startup. `DATABASE_URL` and
-`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 17.1), not
+`BASTION_ENGINE_API_KEY` are read directly from the environment at boot (Section 18.1), not
 through `load_serve_config()`.
 
 ---
 
-## 20. Versioning policy
+## 21. Versioning policy
 
 This document follows a simple monotonic version scheme:
 
@@ -1764,11 +1861,31 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.10**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.11**.
 
 ---
 
 ## Amendment Log
+
+- **2026-07-25 — v0.10 → v0.11 (BA.11.R):** Additive `BoardBlockDto` fields
+  `epics: Vec<String>` (default `[]`), `wave: Option<i64>`, `priority: Option<u8>`,
+  `due: Option<String>`, `track: Option<String>` (Section 13.3) — a pre-v0.11 JSON body still
+  deserializes into the current struct, so `bastion-ui` and the TUI keep working unchanged.
+  **Deviation from the master plan:** `wave` is typed `Option<i64>` (mirroring
+  `okf_core::TrackBlock.wave` exactly) rather than the plan's `Option<u32>`; casting would
+  silently mangle out-of-range or negative authored values. Corrected the `blocked_by` prose
+  (Section 13.3) — it previously documented `blocked_by` as populated for the `blocked` lane only;
+  it is now populated on all four lanes (`now`/`next`/`blocked`/`finished`), computed as the same
+  unmet-dependency set `derive_focus` uses (any `BlockedBy::External`, or a `BlockedBy::Block`
+  whose target's authored status is not `"closed"`). Added `scope=epic` + the `&epic=<slug>` query
+  param to `GET /api/board` (Section 13.1/13.2), with the two 404/`C005` branches (missing param,
+  unknown slug) documented in Section 13.4. Added a new Section 17 (Epics registry API) —
+  `GET /api/epics`, returning the HQ `epics[]` registry as `EpicDto[]` (`slug`/`title`/
+  `description`/`status`/`plan`/`repos`), `200 []` when no HQ registry file is found (not an
+  error). Renumbered Embedded engine route table → Section 18 (subsections 18.1–18.3), Generated
+  TypeScript types → Section 19 (subsections 19.1–19.3), Configuration reference → Section 20,
+  Versioning policy → Section 21, and updated every in-document cross-reference to the moved
+  sections (Section 2.3's auth table gained a `GET /api/epics` row).
 
 - **2026-07-24 — v0.9 → v0.10 (BA.11.Q):** Added Section 16 (Docs read API) —
   `GET /api/docs/{repo}/tree?path=<rel-dir>` (allowlisted markdown tree, directories-first then by

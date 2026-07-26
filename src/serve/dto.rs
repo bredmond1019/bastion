@@ -569,9 +569,9 @@ pub struct WorkflowDonePayload {
 /// `scope` query param for `GET /api/board`.
 ///
 /// Deserializes from the lowercase wire values (`"hq"`, `"tier"`, `"project"`,
-/// `"business"`); missing/absent `scope` defaults to [`BoardScope::Hq`]. An
-/// unknown scope string fails to deserialize (surfaced as a 400 via the
-/// existing malformed-request `ErrorPayload` path).
+/// `"business"`, `"epic"`); missing/absent `scope` defaults to
+/// [`BoardScope::Hq`]. An unknown scope string fails to deserialize (surfaced
+/// as a 400 via the existing malformed-request `ErrorPayload` path).
 #[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -586,12 +586,16 @@ pub enum BoardScope {
     Project,
     /// Shortcut for `tier=business` (`TierScope::Tier("business")`).
     Business,
+    /// Cross-repo initiative projection — every block tagged with the
+    /// `&epic=<slug>` query param's epic, across every repo (`TierScope::All`).
+    /// `epic` is **required** for this scope; absent or unknown → 404/`C005`.
+    Epic,
 }
 
 /// One lane entry (a single now/next/blocked/finished block) in a board response.
 ///
 /// Wire format:
-/// `{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [] }`
+/// `{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [], "epics": ["bastion-surfaces"], "wave": 3, "priority": 1, "due": "2026-07-15", "track": "Phase 11" }`
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoardBlockDto {
@@ -607,6 +611,32 @@ pub struct BoardBlockDto {
     /// What this block is waiting on (populated for `blocked` lane entries).
     #[serde(default)]
     pub blocked_by: Vec<okf_core::BlockedBy>,
+    /// Cross-repo epic membership — slugs into the HQ `epics[]` registry.
+    ///
+    /// Joined back from the owning repo's `tracks[].blocks[]`: the rollup
+    /// entries `derive_rollup` produces hard-code this empty (see
+    /// `../mev/src/brain/state.rs` ~2212–2257). Unlike `okf_core`, this DTO does
+    /// **not** carry `skip_serializing_if` — the wire always shows `[]` so TS
+    /// clients get a stable array rather than an absent key.
+    #[serde(default)]
+    pub epics: Vec<String>,
+    /// Execution-order rank for "what's next", from the authoring `TrackBlock`.
+    ///
+    /// Typed `i64` to mirror `okf_core::TrackBlock.wave` exactly (the master plan
+    /// wrote `u32`; casting would mangle out-of-range authored values).
+    #[serde(default)]
+    #[typeshare(serialized_as = "number")]
+    pub wave: Option<i64>,
+    /// Execution priority (e.g. 1, 2, 3), from the authoring `TrackBlock`.
+    #[serde(default)]
+    pub priority: Option<u8>,
+    /// Target due date or timing string (e.g. `"2026-07-15"`), from the
+    /// authoring `TrackBlock`.
+    #[serde(default)]
+    pub due: Option<String>,
+    /// Title of the enclosing `tracks[]` phase/wave entry (`okf_core::Track.title`).
+    #[serde(default)]
+    pub track: Option<String>,
 }
 
 /// The four now/next/blocked/finished lanes for one board (aggregate or per-repo).
@@ -658,6 +688,39 @@ pub struct BoardDto {
     /// Freshness flag: `true` when any in-scope repo's `status.md` cache lags
     /// its `state.json` (derived from `mev::brain::sync::check_sync`).
     pub stale: bool,
+}
+
+// ── Epics (BA.11.R) ──────────────────────────────────────────────────────────
+
+/// One entry in the HQ brain's `epics[]` cross-repo initiative registry —
+/// the wire projection of `okf_core::Epic`.
+///
+/// The registry is HQ-only (D2 precedent, same as `backlog[]`): it is the closed
+/// vocabulary a block's `epics[]` membership is validated against by
+/// `mev validate-brain`. Membership itself is authored on the blocks, not here —
+/// `repos` is a human hint, not the source of truth.
+///
+/// Wire format:
+/// `{ "slug": "bastion-surfaces", "title": "Bastion Surfaces", "description": "…", "status": "active", "plan": "core/planning/master-plan.md", "repos": ["bastion", "bastion-web"] }`
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EpicDto {
+    /// Stable kebab-case key — the value blocks reference in their `epics[]`.
+    pub slug: String,
+    /// Human-readable name (e.g. `"Bastion OS"`).
+    pub title: String,
+    /// One-line description of what the initiative covers.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Lifecycle: `"active"` · `"paused"` · `"complete"`.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Repo-relative path to the owning master-plan / plan doc, when one exists.
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// Repos the initiative is expected to touch — an authored hint for readers.
+    #[serde(default)]
+    pub repos: Vec<String>,
 }
 
 // ── Attention (BA.11.P) ──────────────────────────────────────────────────────
@@ -2233,6 +2296,11 @@ mod tests {
             blocked_by: vec![okf_core::BlockedBy::External {
                 what: "reviewer availability".to_owned(),
             }],
+            epics: vec!["bastion-surfaces".to_owned()],
+            wave: Some(3),
+            priority: Some(1),
+            due: Some("2026-07-15".to_owned()),
+            track: Some("Phase 11".to_owned()),
         }
     }
 
@@ -2535,5 +2603,93 @@ mod tests {
         let raw = r#"{"repo":"bastion","path":"README.md","content":"hello","bytes":5}"#;
         let dto: DocFileDto = serde_json::from_str(raw).expect("modified should default");
         assert!(dto.modified.is_none());
+    }
+
+    // ── Board / Epics (BA.11.R) ─────────────────────────────────────────────
+
+    #[test]
+    fn board_block_dto_deserializes_pre_block_body() {
+        let raw = r#"{"id":"BA.11.K","title":"t","repo":"bastion","status":"in_progress","blocked_by":[]}"#;
+        let dto: BoardBlockDto = serde_json::from_str(raw).expect("pre-block body should decode");
+        assert_eq!(dto.epics, Vec::<String>::new());
+        assert!(dto.wave.is_none());
+        assert!(dto.priority.is_none());
+        assert!(dto.due.is_none());
+        assert!(dto.track.is_none());
+    }
+
+    #[test]
+    fn board_block_dto_round_trips_all_fields() {
+        let original = BoardBlockDto {
+            id: "BA.11.R".to_string(),
+            title: "Epic + ranking enrichment".to_string(),
+            repo: "bastion".to_string(),
+            status: Some("in_progress".to_string()),
+            blocked_by: Vec::new(),
+            epics: vec!["bastion-surfaces".to_string()],
+            wave: Some(3),
+            priority: Some(1),
+            due: Some("2026-07-15".to_string()),
+            track: Some("Phase 11".to_string()),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: BoardBlockDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, decoded, "round-trip must preserve all fields");
+    }
+
+    #[test]
+    fn board_block_dto_serializes_empty_epics_as_array() {
+        let dto = BoardBlockDto {
+            id: "BA.11.R".to_string(),
+            title: "t".to_string(),
+            repo: "bastion".to_string(),
+            status: None,
+            blocked_by: Vec::new(),
+            epics: Vec::new(),
+            wave: None,
+            priority: None,
+            due: None,
+            track: None,
+        };
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert!(v["epics"].is_array());
+        assert!(v["epics"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn epic_dto_round_trips() {
+        let original = EpicDto {
+            slug: "bastion-surfaces".to_string(),
+            title: "Bastion Surfaces".to_string(),
+            description: Some("Surfaces initiative".to_string()),
+            status: Some("active".to_string()),
+            plan: Some("core/planning/master-plan.md".to_string()),
+            repos: vec!["bastion".to_string(), "bastion-web".to_string()],
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: EpicDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, decoded, "round-trip must preserve all fields");
+    }
+
+    #[test]
+    fn epic_dto_defaults_optional_fields() {
+        let raw = r#"{"slug":"s","title":"T"}"#;
+        let dto: EpicDto = serde_json::from_str(raw).expect("minimal body should decode");
+        assert!(dto.description.is_none());
+        assert!(dto.status.is_none());
+        assert!(dto.plan.is_none());
+        assert!(dto.repos.is_empty());
+    }
+
+    #[test]
+    fn board_scope_deserializes_epic() {
+        let scope: BoardScope = serde_json::from_str("\"epic\"").expect("epic should decode");
+        assert_eq!(scope, BoardScope::Epic);
+    }
+
+    #[test]
+    fn board_scope_rejects_unknown_variant() {
+        let result: Result<BoardScope, _> = serde_json::from_str("\"bogus\"");
+        assert!(result.is_err());
     }
 }
