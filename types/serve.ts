@@ -78,9 +78,9 @@ export interface AttentionCarryoverDto {
  * `scope` query param for `GET /api/board`.
  * 
  * Deserializes from the lowercase wire values (`"hq"`, `"tier"`, `"project"`,
- * `"business"`); missing/absent `scope` defaults to [`BoardScope::Hq`]. An
- * unknown scope string fails to deserialize (surfaced as a 400 via the
- * existing malformed-request `ErrorPayload` path).
+ * `"business"`, `"epic"`); missing/absent `scope` defaults to
+ * [`BoardScope::Hq`]. An unknown scope string fails to deserialize (surfaced
+ * as a 400 via the existing malformed-request `ErrorPayload` path).
  */
 export enum BoardScope {
 	/** Whole-brain aggregate (`mev::brain::state::TierScope::All`). */
@@ -94,6 +94,12 @@ export enum BoardScope {
 	Project = "project",
 	/** Shortcut for `tier=business` (`TierScope::Tier("business")`). */
 	Business = "business",
+	/**
+	 * Cross-repo initiative projection — every block tagged with the
+	 * `&epic=<slug>` query param's epic, across every repo (`TierScope::All`).
+	 * `epic` is **required** for this scope; absent or unknown → 404/`C005`.
+	 */
+	Epic = "epic",
 }
 
 /** The three Attention board lanes. */
@@ -144,7 +150,7 @@ export interface AttentionDto {
  * One lane entry (a single now/next/blocked/finished block) in a board response.
  * 
  * Wire format:
- * `{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [] }`
+ * `{ "id": "BA.11.K", "title": "Cross-brain board read endpoint", "repo": "bastion", "status": "in_progress", "blocked_by": [], "epics": ["bastion-surfaces"], "wave": 3, "priority": 1, "due": "2026-07-15", "track": "Phase 11" }`
  */
 export interface BoardBlockDto {
 	/** Canonical block ID (e.g. `BA.11.K`). */
@@ -157,6 +163,32 @@ export interface BoardBlockDto {
 	status?: string;
 	/** What this block is waiting on (populated for `blocked` lane entries). */
 	blocked_by?: BlockedBy[];
+	/**
+	 * Cross-repo epic membership — slugs into the HQ `epics[]` registry.
+	 * 
+	 * Joined back from the owning repo's `tracks[].blocks[]`: the rollup
+	 * entries `derive_rollup` produces hard-code this empty (see
+	 * `../mev/src/brain/state.rs` ~2212–2257). Unlike `okf_core`, this DTO does
+	 * **not** carry `skip_serializing_if` — the wire always shows `[]` so TS
+	 * clients get a stable array rather than an absent key.
+	 */
+	epics?: string[];
+	/**
+	 * Execution-order rank for "what's next", from the authoring `TrackBlock`.
+	 * 
+	 * Typed `i64` to mirror `okf_core::TrackBlock.wave` exactly (the master plan
+	 * wrote `u32`; casting would mangle out-of-range authored values).
+	 */
+	wave?: number;
+	/** Execution priority (e.g. 1, 2, 3), from the authoring `TrackBlock`. */
+	priority?: number;
+	/**
+	 * Target due date or timing string (e.g. `"2026-07-15"`), from the
+	 * authoring `TrackBlock`.
+	 */
+	due?: string;
+	/** Title of the enclosing `tracks[]` phase/wave entry (`okf_core::Track.title`). */
+	track?: string;
 }
 
 /** The four now/next/blocked/finished lanes for one board (aggregate or per-repo). */
@@ -324,6 +356,33 @@ export interface DocTreeDto {
 	root: string;
 	/** Sorted directories-first, then by `name`. Only markdown-bearing entries appear. */
 	entries?: DocEntryDto[];
+}
+
+/**
+ * One entry in the HQ brain's `epics[]` cross-repo initiative registry —
+ * the wire projection of `okf_core::Epic`.
+ * 
+ * The registry is HQ-only (D2 precedent, same as `backlog[]`): it is the closed
+ * vocabulary a block's `epics[]` membership is validated against by
+ * `mev validate-brain`. Membership itself is authored on the blocks, not here —
+ * `repos` is a human hint, not the source of truth.
+ * 
+ * Wire format:
+ * `{ "slug": "bastion-surfaces", "title": "Bastion Surfaces", "description": "…", "status": "active", "plan": "core/planning/master-plan.md", "repos": ["bastion", "bastion-web"] }`
+ */
+export interface EpicDto {
+	/** Stable kebab-case key — the value blocks reference in their `epics[]`. */
+	slug: string;
+	/** Human-readable name (e.g. `"Bastion OS"`). */
+	title: string;
+	/** One-line description of what the initiative covers. */
+	description?: string;
+	/** Lifecycle: `"active"` · `"paused"` · `"complete"`. */
+	status?: string;
+	/** Repo-relative path to the owning master-plan / plan doc, when one exists. */
+	plan?: string;
+	/** Repos the initiative is expected to touch — an authored hint for readers. */
+	repos?: string[];
 }
 
 /**

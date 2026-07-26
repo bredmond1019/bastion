@@ -625,6 +625,7 @@ pub struct BoardBlockDto {
     /// Typed `i64` to mirror `okf_core::TrackBlock.wave` exactly (the master plan
     /// wrote `u32`; casting would mangle out-of-range authored values).
     #[serde(default)]
+    #[typeshare(serialized_as = "number")]
     pub wave: Option<i64>,
     /// Execution priority (e.g. 1, 2, 3), from the authoring `TrackBlock`.
     #[serde(default)]
