@@ -11,6 +11,51 @@ timestamp: 2026-07-25T19:02:48Z
 
 ---
 
+## [run: 2026-07-26]
+
+### 11.R-epic-ranking-board-enrichment — BAILED (attempt 2)
+
+- **What:** `/sdlc-flow` resumed spec `11.R-epic-ranking-board-enrichment` and ran tasks 1–8.
+  Tasks 1–6 all passed: task 1 landed the five new `BoardBlockDto` fields (`epics`/`wave`/
+  `priority`/`due`/`track`) plus a `BoardScope::Epic` placeholder; task 2 wired
+  `src/serve/handlers/board.rs` to join epics/wave/priority/due/track back from
+  `tracks[].blocks[]` and populate `blocked_by` via a pure `unmet_deps` filter on all four lanes;
+  task 3 added `scope=epic&epic=<slug>` filtering plus 404/C005 handling and a first cut of
+  `src/serve/handlers/epics.rs`; task 4 completed `GET /api/epics` (pure `build_epics` mapper +
+  `assemble_epics`/`get_epics` I/O shell, full unit coverage); task 5 registered `GET /api/epics`
+  in both app factories and added integration tests for auth, enrichment, `blocked_by`,
+  `scope=epic`, and both 404 branches; task 6 fixed a stray emoji lint failure and confirmed
+  `types/serve.ts` regeneration (including a `#[typeshare(serialized_as = "number")]` annotation
+  needed for `Option<i64>`). Task 7 implemented `docs/serve-api.md`'s BA.11.R documentation
+  (enriched field table, `blocked_by` correction, new §17 Epics registry API section, sections
+  17–20 renumbered to 18–21, version bumped v0.10 → v0.11 with a dated Amendment Log entry), but
+  its test/build gate failed and the run **BAILED** rather than attempt task 7's fix. Task 8 never
+  ran.
+- **Why it bailed:** Compile failure originates outside bastion's task scope: uncommitted edits
+  in `core/engine-rs/crates/engine-core` (`review_router.rs`, `revise.rs`) break the shared
+  workspace build with `E0716` temporary-value-dropped-while-borrowed errors. This is another
+  repo's in-flight/broken code, not something task 7 introduced or can fix — needs a human to
+  stash/fix `engine-rs` or otherwise unblock the shared workspace build before bastion's tests can
+  run.
+- **Next:** A human (or a fresh agent once the workspace build is unblocked) needs to
+  stash/resolve the uncommitted `engine-rs` `E0716` breaks in `review_router.rs`/`revise.rs`
+  (outside this repo), then re-run `cargo test`/`cargo build --release` from a clean shared
+  workspace and resume the spec at task 7's validation (task 7's `docs/serve-api.md` content is
+  already committed and does not need to be redone) through task 8.
+
+```
+09498d4 feat: implement 11.R-epic-ranking-board-enrichment-task7
+fc81b1b fix: fix pass 1 for 11.R-epic-ranking-board-enrichment-task6
+e64b11a feat: implement 11.R-epic-ranking-board-enrichment-task6
+9292fe2 feat: implement 11.R-epic-ranking-board-enrichment-task5
+a60115b feat: implement 11.R-epic-ranking-board-enrichment-task4
+47e475d feat: implement 11.R-epic-ranking-board-enrichment-task3
+1874514 feat: implement 11.R-epic-ranking-board-enrichment-task2
+28fefc4 fix: fix pass 1 for 11.R-epic-ranking-board-enrichment-task1
+```
+
+---
+
 ## [run: 2026-07-25]
 
 ### 11.R-epic-ranking-board-enrichment — BAILED
