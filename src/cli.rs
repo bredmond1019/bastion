@@ -369,6 +369,22 @@ pub enum Commands {
         /// Markdown file to edit
         path: PathBuf,
     },
+
+    /// Read-only repo diagnostic: OKF coverage, graph readiness, state readiness
+    ///
+    /// Computes three check families over the repo rooted at <path> (OKF-frontmatter
+    /// coverage, `related:` graph readiness, and `planning/state.json` readiness) and
+    /// prints either a human summary or a `--json` envelope. Writes nothing to the
+    /// filesystem — the ID-convention family is deferred until BA.15.6 and is
+    /// intentionally absent from both output modes.
+    Assess {
+        /// Path to the repo (or subtree) to assess
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Emit the machine-readable JSON envelope instead of a human summary
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1309,6 +1325,32 @@ mod tests {
         match kill.command {
             Some(Commands::Kill { session }) => assert_eq!(session, "session-1"),
             other => panic!("expected Kill, got {other:?}"),
+        }
+    }
+
+    // ── Assess subcommand ─────────────────────────────────────────────────────
+
+    #[test]
+    fn assess_defaults_parse() {
+        let cli = Cli::try_parse_from(["bastion", "assess"]).unwrap();
+        match cli.command {
+            Some(Commands::Assess { path, json }) => {
+                assert_eq!(path, PathBuf::from("."));
+                assert!(!json);
+            }
+            other => panic!("expected Assess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assess_path_and_json_flag_parse() {
+        let cli = Cli::try_parse_from(["bastion", "assess", "/some/root", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Assess { path, json }) => {
+                assert_eq!(path, PathBuf::from("/some/root"));
+                assert!(json);
+            }
+            other => panic!("expected Assess, got {other:?}"),
         }
     }
 }

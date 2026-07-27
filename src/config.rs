@@ -401,21 +401,33 @@ impl Config {
     }
 }
 
+/// Walk from `start` upward toward the filesystem root, returning the first
+/// existing `dir.join(target)` encountered, or `None` if never found.
+///
+/// Pure function — no environment or process-global access; the caller supplies
+/// `start` explicitly. Used both by `walk_up_for` (cwd-anchored) and by `assess`
+/// (path-anchored, per BA.15.9).
+pub fn walk_up_from(start: &std::path::Path, target: &str) -> Option<PathBuf> {
+    let mut curr = start;
+    loop {
+        let candidate = curr.join(target);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        match curr.parent() {
+            Some(parent) => curr = parent,
+            None => return None,
+        }
+    }
+}
+
 /// Helper: Walk up from the current directory looking for a target file/dir.
 /// Returns the absolute path if found, or `PathBuf::from(target)` if it hits the root without finding it.
 fn walk_up_for(target: &str) -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut curr = cwd.as_path();
-        loop {
-            let candidate = curr.join(target);
-            if candidate.exists() {
-                return candidate;
-            }
-            match curr.parent() {
-                Some(parent) => curr = parent,
-                None => break,
-            }
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(found) = walk_up_from(&cwd, target)
+    {
+        return found;
     }
     PathBuf::from(target)
 }
@@ -1263,6 +1275,77 @@ brain = "/Users/alice/brain"
         let c = Config::from_vars(Some("postgres://localhost/db".into()), None, None)
             .expect("should parse");
         assert!(c.notify_enabled);
+    }
+
+    // ─── walk_up_from (pure, path-anchored) ──────────────────────────────────
+
+    #[test]
+    fn walk_up_from_finds_target_in_start_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target_path = dir.path().join("brain.toml");
+        std::fs::write(&target_path, "").expect("write target");
+
+        let found = walk_up_from(dir.path(), "brain.toml");
+        assert_eq!(found, Some(target_path));
+    }
+
+    #[test]
+    fn walk_up_from_finds_target_several_levels_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target_path = dir.path().join("brain.toml");
+        std::fs::write(&target_path, "").expect("write target");
+
+        let nested = dir.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&nested).expect("create nested dirs");
+
+        let found = walk_up_from(&nested, "brain.toml");
+        assert_eq!(found, Some(target_path));
+    }
+
+    #[test]
+    fn walk_up_from_returns_none_when_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).expect("create nested dirs");
+
+        // A target that certainly does not exist anywhere up this isolated tempdir tree.
+        let found = walk_up_from(&nested, "definitely-not-a-real-target-file.toml");
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn walk_up_from_prefers_nearest_match_over_ancestor_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root_target = dir.path().join("planning");
+        std::fs::create_dir_all(&root_target).expect("create root target");
+
+        let nested = dir.path().join("child");
+        let nested_target = nested.join("planning");
+        std::fs::create_dir_all(&nested_target).expect("create nested target");
+
+        let found = walk_up_from(&nested, "planning");
+        assert_eq!(found, Some(nested_target));
+    }
+
+    // ─── walk_up_for regression (planning_root / brain_toml_path unchanged) ──
+
+    #[test]
+    fn planning_root_still_resolves_via_walk_up_for_when_env_absent() {
+        // Regression: planning_root(None) delegates to walk_up_for("planning"),
+        // which now delegates to walk_up_from(cwd, "planning"). Behavior must be
+        // unchanged: either it finds a real "planning" dir walking up from cwd,
+        // or it falls back to the bare relative PathBuf::from("planning").
+        let root = planning_root(None);
+        assert_eq!(root.file_name().and_then(|n| n.to_str()), Some("planning"));
+    }
+
+    #[test]
+    fn brain_toml_path_still_resolves_via_walk_up_for_when_env_absent() {
+        let path = brain_toml_path(None);
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("brain.toml")
+        );
     }
 
     // ─── parse_file: budget + engine_api_key TOML keys ───────────────────────
