@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [bastion, cli, operator reference, index, docs]
-related: [bastion-setup, monitor, brain, config, brainval, docview, workspace-contract, abort]
+related: [bastion-setup, monitor, brain, config, brainval, docview, workspace-contract, abort, assess]
 ---
 
 # bastion CLI — Docs
@@ -33,6 +33,7 @@ and `Bastion/docs/ownership.md`.
 | [sessions.md](sessions.md) | Unified Console (TUI Dashboard) and tmux session-control verbs |
 | [detect.md](detect.md) | Pure agent-state detection engine — TOML manifest schema, gate types, `detect()` API |
 | [claude-code-workflow.md](claude-code-workflow.md) | Hands-on walkthrough: spin up a tmux session, launch Claude Code, drive it |
+| [assess.md](assess.md) | `bastion assess` — read-only repo diagnostic: OKF coverage, graph readiness, state readiness |
 
 ## Knowledge graph
 
