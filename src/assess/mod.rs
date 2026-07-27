@@ -20,6 +20,7 @@ mod discover;
 mod graph;
 mod okf;
 mod render;
+pub mod run;
 mod state;
 
 // Re-exported for `assess::run` (task 7) to consume; unused until that shell is wired up.

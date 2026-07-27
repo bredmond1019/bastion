@@ -66,6 +66,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Serve { .. } => "serve",
         Commands::View { .. } => "view",
         Commands::Edit { .. } => "edit",
+        Commands::Assess { .. } => "assess",
     }
 }
 
@@ -289,6 +290,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
             // `bella` terminal markdown viewer/editor over bella-engine (D14/BA.15.2).
             Commands::View { path } => docview::view(path),
             Commands::Edit { path } => docview::edit(path),
+            // Assess is DB-free and synchronous (D5-style) and performs zero filesystem
+            // writes end to end — a read-only repo diagnostic (Phase 15, Block BA.15.9).
+            Commands::Assess { path, json } => assess::run::run(path, json),
         },
     }
 }
@@ -602,6 +606,17 @@ mod tests {
                 path: PathBuf::from("doc.md"),
             }),
             "edit"
+        );
+    }
+
+    #[test]
+    fn command_name_assess() {
+        assert_eq!(
+            command_name(&Commands::Assess {
+                path: PathBuf::from("."),
+                json: false,
+            }),
+            "assess"
         );
     }
 
