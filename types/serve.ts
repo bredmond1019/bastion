@@ -402,6 +402,27 @@ export interface EpicDto {
 	plan?: string;
 	/** Repos the initiative is expected to touch — an authored hint for readers. */
 	repos?: string[];
+	/** Member blocks with authored `status == "closed"`. */
+	closed?: number;
+	/** Member blocks with authored `status == "in_progress"`. */
+	in_progress?: number;
+	/** Member blocks that are open (authored `open`, or status absent). */
+	open?: number;
+	/** Member blocks with authored `status == "deferred"`. */
+	deferred?: number;
+	/** Every member block, in any state. `0` means the epic has no members yet. */
+	total?: number;
+	/**
+	 * Is this epic's remaining work entirely parked?
+	 * 
+	 * True iff it has at least one deferred member and no unfinished
+	 * non-deferred work. An epic whose members are all `closed` is *complete*,
+	 * not deferred, so this stays false for it.
+	 * 
+	 * Lets a Surface render "this whole initiative is parked" on load, instead
+	 * of drawing four empty lane columns and leaving the reader to infer it.
+	 */
+	fully_deferred?: boolean;
 }
 
 /**

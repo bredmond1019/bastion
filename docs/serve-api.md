@@ -1694,7 +1694,13 @@ Authorization: Bearer <token>
     "description": "Cross-repo surfaces initiative",
     "status": "active",
     "plan": "core/planning/master-plan.md",
-    "repos": ["bastion", "bastion-ui"]
+    "repos": ["bastion", "bastion-ui"],
+    "closed": 4,
+    "in_progress": 1,
+    "open": 7,
+    "deferred": 0,
+    "total": 12,
+    "fully_deferred": false
   }
 ]
 ```
@@ -1707,6 +1713,23 @@ Authorization: Bearer <token>
 | `status` | string \| null | `null` | Lifecycle: `"active"` · `"paused"` · `"complete"`. |
 | `plan` | string \| null | `null` | Repo-relative path to the owning master-plan / plan doc, when one exists. |
 | `repos` | array of string | `[]` | Repos the initiative is expected to touch — an authored hint, not the membership source of truth (membership is authored on the blocks via `epics[]`, not here). |
+| `closed` | number | `0` | Member blocks with authored `status == "closed"`. |
+| `in_progress` | number | `0` | Member blocks with authored `status == "in_progress"`. |
+| `open` | number | `0` | Member blocks that are open (authored `open`, or status absent). |
+| `deferred` | number | `0` | Member blocks with authored `status == "deferred"`. |
+| `total` | number | `0` | Every member block, in any state. `0` = no members yet. |
+| `fully_deferred` | boolean | `false` | Is the epic's remaining work entirely parked? True iff ≥1 deferred member **and** no unfinished non-deferred work. An all-`closed` epic is *complete*, not deferred, so this stays `false` for it. Lets a Surface say "this whole initiative is parked" on load instead of drawing four empty lane columns. |
+
+The six count fields are **derived**, joined from the corpus via mev's `epic_members` +
+`epic_progress` — the same predicate behind the collapsed markdown epic board and
+`mev sync-epics`, so the three cannot disagree about what a deferred epic is. They are *not*
+authored in `epics[]`.
+
+**Relationship to `status`.** `status` is authored human intent (`active`/`paused`/`complete`);
+`fully_deferred` is derived from the blocks. They normally agree — `mev defer-epic <slug>` sets
+both, and `mev sync-epics` reconciles drift — but a Surface should treat `status == "paused"` as
+the authoritative "is this parked" signal and `fully_deferred` as the corroborating detail. A
+`paused` epic with `fully_deferred: false` means some member work is still open or in flight.
 
 The registry is HQ-only (same precedent as `backlog[]`, Section 15): the single `(source, file)`
 pair whose `kind == "brain"` **and** whose resolved [`TierScope`] is `All` (mirrors mev's private

@@ -38,7 +38,10 @@ use crate::config::{FileConfig, resolve_workspace_root};
 use crate::serve::dto::EpicDto;
 
 use mev::brain::config::{BrainConfig, find_brain_root, load_brain_config};
-use mev::brain::state::{StateSource, TierScope, discover_state_files, load_state, tier_scope_for};
+use mev::brain::emit::{epic_members, epic_progress};
+use mev::brain::state::{
+    StateSource, TierScope, build_state_graph, discover_state_files, load_state, tier_scope_for,
+};
 use okf_core::{Epic, StateFile};
 
 // ── Pure core ────────────────────────────────────────────────────────────────
@@ -66,16 +69,34 @@ pub fn hq_epic_registry<'a>(
 
 /// Project the selected HQ registry slice into the wire [`EpicDto`] shape,
 /// one-for-one, preserving order. An empty registry yields an empty `Vec`.
-pub fn build_epics(registry: &[Epic]) -> Vec<EpicDto> {
+///
+/// Each entry is joined against the corpus for its member-block tallies, so a
+/// Surface can render an epic's shape — and in particular whether it is entirely
+/// parked — without fetching a board per epic. Counts come from
+/// [`epic_progress`], the same predicate that drives the collapsed markdown
+/// board and `mev sync-epics`, so the three cannot disagree about what a
+/// deferred epic is.
+pub fn build_epics(registry: &[Epic], files: &[(StateSource, StateFile)]) -> Vec<EpicDto> {
+    let graph = build_state_graph(files);
     registry
         .iter()
-        .map(|epic| EpicDto {
-            slug: epic.slug.clone(),
-            title: epic.title.clone(),
-            description: epic.description.clone(),
-            status: epic.status.clone(),
-            plan: epic.plan.clone(),
-            repos: epic.repos.clone(),
+        .map(|epic| {
+            let members = epic_members(&graph, files, &epic.slug);
+            let p = epic_progress(&members);
+            EpicDto {
+                slug: epic.slug.clone(),
+                title: epic.title.clone(),
+                description: epic.description.clone(),
+                status: epic.status.clone(),
+                plan: epic.plan.clone(),
+                repos: epic.repos.clone(),
+                closed: p.closed as u32,
+                in_progress: p.in_progress as u32,
+                open: p.open as u32,
+                deferred: p.deferred as u32,
+                total: p.total() as u32,
+                fully_deferred: p.is_fully_deferred(),
+            }
         })
         .collect()
 }
@@ -139,7 +160,7 @@ pub async fn get_epics(registry: web::Data<FileConfig>) -> HttpResponse {
         let root = find_brain_root(&start)
             .map_err(|e| format!("could not resolve brain root from {}: {e}", start.display()))?;
         let (config, files) = assemble_epics(&root)?;
-        Ok(build_epics(hq_epic_registry(&config, &files)))
+        Ok(build_epics(hq_epic_registry(&config, &files), &files))
     })
     .await
     {
@@ -276,6 +297,115 @@ mod tests {
 
     // ── build_epics ──────────────────────────────────────────────────────────
 
+    /// Build a project file whose blocks carry `(id, status)` in epic `slug`.
+    fn member_file(slug: &str, blocks: &[(&str, &str)]) -> StateFile {
+        StateFile {
+            repo: "alpha".to_owned(),
+            kind: "project".to_owned(),
+            tracks: vec![Track {
+                title: "P1".to_owned(),
+                blocks: blocks
+                    .iter()
+                    .map(|(id, status)| okf_core::TrackBlock {
+                        id: (*id).to_owned(),
+                        title: (*id).to_owned(),
+                        status: Some((*status).to_owned()),
+                        depends_on: Vec::new(),
+                        wave: None,
+                        origin: None,
+                        priority: None,
+                        due: None,
+                        sdlc_workflow: None,
+                        model: None,
+                        epics: vec![slug.to_owned()],
+                    })
+                    .collect(),
+            }],
+            ..sample_state_file("project", Vec::new())
+        }
+    }
+
+    #[test]
+    fn build_epics_tallies_member_blocks_and_flags_a_fully_deferred_epic() {
+        let epic = Epic {
+            slug: "tui".to_owned(),
+            title: "Bastion TUI".to_owned(),
+            description: None,
+            status: Some("paused".to_owned()),
+            plan: None,
+            repos: Vec::new(),
+        };
+        // Remaining work is entirely deferred; one member is already closed.
+        let files = vec![(
+            sample_source("alpha"),
+            member_file(
+                "tui",
+                &[
+                    ("AL.1.A", "deferred"),
+                    ("AL.1.B", "deferred"),
+                    ("AL.1.C", "closed"),
+                ],
+            ),
+        )];
+
+        let dtos = build_epics(std::slice::from_ref(&epic), &files);
+        let dto = &dtos[0];
+
+        assert_eq!(dto.deferred, 2);
+        assert_eq!(dto.closed, 1);
+        assert_eq!(dto.open, 0);
+        assert_eq!(dto.in_progress, 0);
+        assert_eq!(dto.total, 3);
+        assert!(
+            dto.fully_deferred,
+            "a Surface needs this to say 'whole epic parked' on load"
+        );
+    }
+
+    #[test]
+    fn build_epics_does_not_flag_an_epic_with_live_work_as_fully_deferred() {
+        let epic = Epic {
+            slug: "tui".to_owned(),
+            title: "Bastion TUI".to_owned(),
+            description: None,
+            status: Some("active".to_owned()),
+            plan: None,
+            repos: Vec::new(),
+        };
+        let files = vec![(
+            sample_source("alpha"),
+            member_file("tui", &[("AL.1.A", "deferred"), ("AL.1.B", "open")]),
+        )];
+
+        let dto = &build_epics(std::slice::from_ref(&epic), &files)[0];
+        assert_eq!(dto.deferred, 1);
+        assert_eq!(dto.open, 1);
+        assert!(!dto.fully_deferred);
+    }
+
+    #[test]
+    fn build_epics_does_not_flag_a_fully_closed_epic_as_deferred() {
+        let epic = Epic {
+            slug: "tui".to_owned(),
+            title: "Done Initiative".to_owned(),
+            description: None,
+            status: Some("complete".to_owned()),
+            plan: None,
+            repos: Vec::new(),
+        };
+        let files = vec![(
+            sample_source("alpha"),
+            member_file("tui", &[("AL.1.A", "closed"), ("AL.1.B", "closed")]),
+        )];
+
+        let dto = &build_epics(std::slice::from_ref(&epic), &files)[0];
+        assert_eq!(dto.closed, 2);
+        assert!(
+            !dto.fully_deferred,
+            "all-closed is COMPLETE, not deferred — the two must not be conflated"
+        );
+    }
+
     #[test]
     fn build_epics_maps_all_six_fields() {
         let epic = Epic {
@@ -287,7 +417,7 @@ mod tests {
             repos: vec!["bastion".to_owned(), "bastion-ui".to_owned()],
         };
 
-        let dtos = build_epics(std::slice::from_ref(&epic));
+        let dtos = build_epics(std::slice::from_ref(&epic), &[]);
         assert_eq!(dtos.len(), 1);
         let dto = &dtos[0];
         assert_eq!(dto.slug, "bastion-surfaces");
@@ -307,7 +437,7 @@ mod tests {
     #[test]
     fn build_epics_minimal_entry_defaults_repos_to_empty() {
         let epic = sample_epic("minimal");
-        let dtos = build_epics(std::slice::from_ref(&epic));
+        let dtos = build_epics(std::slice::from_ref(&epic), &[]);
         assert_eq!(dtos.len(), 1);
         assert_eq!(dtos[0].slug, "minimal");
         assert_eq!(dtos[0].title, "minimal title");
@@ -320,13 +450,13 @@ mod tests {
     #[test]
     fn build_epics_empty_registry_yields_empty_vec() {
         let registry: Vec<Epic> = Vec::new();
-        assert!(build_epics(&registry).is_empty());
+        assert!(build_epics(&registry, &[]).is_empty());
     }
 
     #[test]
     fn build_epics_preserves_registry_order() {
         let registry = vec![sample_epic("first"), sample_epic("second")];
-        let dtos = build_epics(&registry);
+        let dtos = build_epics(&registry, &[]);
         assert_eq!(dtos[0].slug, "first");
         assert_eq!(dtos[1].slug, "second");
     }

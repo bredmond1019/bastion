@@ -732,6 +732,31 @@ pub struct EpicDto {
     /// Repos the initiative is expected to touch — an authored hint for readers.
     #[serde(default)]
     pub repos: Vec<String>,
+    /// Member blocks with authored `status == "closed"`.
+    #[serde(default)]
+    pub closed: u32,
+    /// Member blocks with authored `status == "in_progress"`.
+    #[serde(default)]
+    pub in_progress: u32,
+    /// Member blocks that are open (authored `open`, or status absent).
+    #[serde(default)]
+    pub open: u32,
+    /// Member blocks with authored `status == "deferred"`.
+    #[serde(default)]
+    pub deferred: u32,
+    /// Every member block, in any state. `0` means the epic has no members yet.
+    #[serde(default)]
+    pub total: u32,
+    /// Is this epic's remaining work entirely parked?
+    ///
+    /// True iff it has at least one deferred member and no unfinished
+    /// non-deferred work. An epic whose members are all `closed` is *complete*,
+    /// not deferred, so this stays false for it.
+    ///
+    /// Lets a Surface render "this whole initiative is parked" on load, instead
+    /// of drawing four empty lane columns and leaving the reader to infer it.
+    #[serde(default)]
+    pub fully_deferred: bool,
 }
 
 // ── Attention (BA.11.P) ──────────────────────────────────────────────────────
@@ -2852,6 +2877,12 @@ mod tests {
             status: Some("active".to_string()),
             plan: Some("core/planning/master-plan.md".to_string()),
             repos: vec!["bastion".to_string(), "bastion-web".to_string()],
+            closed: 3,
+            in_progress: 1,
+            open: 0,
+            deferred: 2,
+            total: 6,
+            fully_deferred: false,
         };
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: EpicDto = serde_json::from_str(&json).expect("deserialize");
