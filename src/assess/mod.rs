@@ -17,18 +17,15 @@
 //! - `run` (task 7) — the CLI-facing read-only shell.
 
 mod discover;
+mod okf;
 
 // Re-exported for `assess::run` (task 7) to consume; unused until that shell is wired up.
 #[allow(unused_imports)]
 pub use discover::{AssessContext, resolve_context};
+#[allow(unused_imports)]
+pub use okf::{InvalidFrontmatterFinding, MissingRequiredFinding, OkfFamily, assess_okf};
 
 use serde::{Deserialize, Serialize};
-
-/// OKF-coverage family shape. Empty-but-typed placeholder — task 3 (`assess::okf`) fills
-/// in the fields (missing-required-field findings, invalid-frontmatter findings, optional-
-/// field coverage tally).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct OkfFamily {}
 
 /// Graph-readiness family shape. Empty-but-typed placeholder — task 4 (`assess::graph`)
 /// fills in the fields (node/edge counts, resolved/leaf counts, dangling-edge findings).
