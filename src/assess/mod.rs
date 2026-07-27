@@ -19,6 +19,7 @@
 mod discover;
 mod graph;
 mod okf;
+mod render;
 mod state;
 
 // Re-exported for `assess::run` (task 7) to consume; unused until that shell is wired up.
@@ -28,6 +29,8 @@ pub use discover::{AssessContext, resolve_context};
 pub use graph::{DanglingEdgeFinding, GraphFamily, assess_graph};
 #[allow(unused_imports)]
 pub use okf::{InvalidFrontmatterFinding, MissingRequiredFinding, OkfFamily, assess_okf};
+#[allow(unused_imports)]
+pub use render::{Gap, render_human, render_json, top_gaps};
 #[allow(unused_imports)]
 pub use state::{StateFamily, StateFinding, assess_state, classify_state};
 
