@@ -656,6 +656,13 @@ pub struct BoardLaneDto {
     /// Blocks waiting on something.
     #[serde(default)]
     pub blocked: Vec<BoardBlockDto>,
+    /// Blocks deliberately parked on the back burner (authored `status == "deferred"`).
+    ///
+    /// Real roadmap work that is not being surfaced as next. Never overlaps
+    /// `next` — a deferred block is structurally excluded from ready-order — and
+    /// never overlaps `blocked`, even when it carries unmet deps.
+    #[serde(default)]
+    pub deferred: Vec<BoardBlockDto>,
     /// Blocks whose `status == "closed"`.
     #[serde(default)]
     pub finished: Vec<BoardBlockDto>,
@@ -2488,6 +2495,7 @@ mod tests {
             now: vec![sample_board_block()],
             next: vec![],
             blocked: vec![],
+            deferred: vec![],
             finished: vec![],
         };
         BoardDto {

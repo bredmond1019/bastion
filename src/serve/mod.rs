@@ -1582,6 +1582,10 @@ heading = "bastion"
             "lanes.blocked must be an array"
         );
         assert!(
+            lanes["deferred"].is_array(),
+            "lanes.deferred must be an array"
+        );
+        assert!(
             lanes["finished"].is_array(),
             "lanes.finished must be an array"
         );

@@ -199,6 +199,14 @@ export interface BoardLaneDto {
 	next?: BoardBlockDto[];
 	/** Blocks waiting on something. */
 	blocked?: BoardBlockDto[];
+	/**
+	 * Blocks deliberately parked on the back burner (authored `status == "deferred"`).
+	 * 
+	 * Real roadmap work that is not being surfaced as next. Never overlaps
+	 * `next` — a deferred block is structurally excluded from ready-order — and
+	 * never overlaps `blocked`, even when it carries unmet deps.
+	 */
+	deferred?: BoardBlockDto[];
 	/** Blocks whose `status == "closed"`. */
 	finished?: BoardBlockDto[];
 }

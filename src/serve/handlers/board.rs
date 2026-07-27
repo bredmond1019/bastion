@@ -267,6 +267,7 @@ pub fn build_board(
     let mut agg_now = Vec::new();
     let mut agg_next = Vec::new();
     let mut agg_blocked = Vec::new();
+    let mut agg_deferred = Vec::new();
     let mut agg_finished = Vec::new();
 
     let status_map = block_status_map(files);
@@ -316,11 +317,28 @@ pub fn build_board(
                 dto
             })
             .collect();
+        // `deferred` lane: same enrich + recompute path as `now`/`next`. A
+        // deferred block CAN carry real unmet deps worth showing in the detail
+        // drawer — deferral suppresses attention, it does not erase the DAG.
+        let deferred: Vec<BoardBlockDto> = rollup
+            .deferred
+            .iter()
+            .map(|b| {
+                let mut dto = board_block_from(b, &rollup.repo);
+                let entry = index.get(b.id.as_str()).copied();
+                enrich_block(&mut dto, entry);
+                if let Some((track_block, _)) = entry {
+                    dto.blocked_by = unmet_deps(&track_block.depends_on, &status_map);
+                }
+                dto
+            })
+            .collect();
         let finished = finished_blocks_for_repo(&rollup.repo, &index, &status_map);
 
         agg_now.extend(now.iter().cloned());
         agg_next.extend(next.iter().cloned());
         agg_blocked.extend(blocked.iter().cloned());
+        agg_deferred.extend(deferred.iter().cloned());
         agg_finished.extend(finished.iter().cloned());
 
         repos.push(RepoBoardDto {
@@ -330,6 +348,7 @@ pub fn build_board(
                 now,
                 next,
                 blocked,
+                deferred,
                 finished,
             },
         });
@@ -342,6 +361,7 @@ pub fn build_board(
             now: agg_now,
             next: agg_next,
             blocked: agg_blocked,
+            deferred: agg_deferred,
             finished: agg_finished,
         },
         repos,
@@ -367,16 +387,21 @@ pub fn filter_board_to_epic(mut board: BoardDto, slug: &str) -> BoardDto {
     board.lanes.now.retain(keep);
     board.lanes.next.retain(keep);
     board.lanes.blocked.retain(keep);
+    board.lanes.deferred.retain(keep);
     board.lanes.finished.retain(keep);
 
     board.repos.retain_mut(|repo| {
         repo.lanes.now.retain(keep);
         repo.lanes.next.retain(keep);
         repo.lanes.blocked.retain(keep);
+        repo.lanes.deferred.retain(keep);
         repo.lanes.finished.retain(keep);
+        // Every lane must be listed here: a repo whose only surviving blocks in
+        // this epic are deferred still belongs on the board.
         !(repo.lanes.now.is_empty()
             && repo.lanes.next.is_empty()
             && repo.lanes.blocked.is_empty()
+            && repo.lanes.deferred.is_empty()
             && repo.lanes.finished.is_empty())
     });
 
@@ -963,6 +988,7 @@ mod tests {
                     what: "reviewer availability".to_owned(),
                 }],
             )],
+            deferred: Vec::new(),
         }
     }
 
@@ -987,9 +1013,38 @@ mod tests {
         assert_eq!(dto.lanes.now[0].repo, "bastion");
         assert_eq!(dto.lanes.next[0].id, "BA.1.B");
         assert_eq!(dto.lanes.blocked[0].id, "BA.1.C");
+        assert!(
+            dto.lanes.deferred.is_empty(),
+            "no deferred blocks in the fixture"
+        );
         assert_eq!(dto.repos.len(), 1);
         assert_eq!(dto.repos[0].repo, "bastion");
         assert_eq!(dto.repos[0].tier, Some("core".to_owned()));
+    }
+
+    #[test]
+    fn build_board_maps_the_deferred_lane_and_keeps_it_out_of_next() {
+        let mut rollup = sample_rollup("bastion", "core");
+        rollup.deferred = vec![sample_block("BA.9.A", Some("deferred"), Vec::new())];
+        let files: Vec<(StateSource, StateFile)> = Vec::new();
+
+        let dto = build_board(
+            BoardScope::Tier,
+            Some("core".to_owned()),
+            &[rollup],
+            &files,
+            false,
+        );
+
+        assert_eq!(dto.lanes.deferred.len(), 1);
+        assert_eq!(dto.lanes.deferred[0].id, "BA.9.A");
+        assert_eq!(dto.lanes.deferred[0].repo, "bastion");
+        assert_eq!(dto.lanes.deferred[0].status.as_deref(), Some("deferred"));
+        assert!(
+            !dto.lanes.next.iter().any(|b| b.id == "BA.9.A"),
+            "deferred work must never appear in the next lane"
+        );
+        assert_eq!(dto.repos[0].lanes.deferred.len(), 1);
     }
 
     #[test]
@@ -1269,6 +1324,54 @@ mod tests {
         assert!(filtered.lanes.now.iter().any(|b| b.repo == "bastion"));
         assert!(filtered.lanes.now.iter().any(|b| b.repo == "bella"));
         assert!(!filtered.lanes.now.iter().any(|b| b.repo == "mev"));
+    }
+
+    #[test]
+    fn filter_board_to_epic_keeps_a_repo_whose_only_member_is_deferred() {
+        // Trap guard: the drop predicate is an all-lanes-empty conjunction. If
+        // `deferred` is filtered but left out of that check, a repo whose only
+        // blocks in this epic are deferred silently vanishes from repos[].
+        let mut rollup = sample_rollup("mev", "core");
+        rollup.now.clear();
+        rollup.next.clear();
+        rollup.blocked.clear();
+        rollup.deferred = vec![sample_block("MV.9.A", Some("deferred"), Vec::new())];
+
+        let file = StateFile {
+            repo: "mev".to_owned(),
+            tracks: vec![Track {
+                title: "Phase 9".to_owned(),
+                blocks: vec![sample_track_block_full(
+                    "MV.9.A",
+                    Some("deferred"),
+                    Vec::new(),
+                    None,
+                    None,
+                    None,
+                    vec!["epic-alpha".to_owned()],
+                )],
+            }],
+            ..sample_state_file(Vec::new())
+        };
+
+        let board = build_board(
+            BoardScope::Epic,
+            None,
+            &[rollup],
+            &[(sample_source("mev"), file)],
+            false,
+        );
+        let filtered = filter_board_to_epic(board, "epic-alpha");
+
+        assert_eq!(
+            filtered.repos.len(),
+            1,
+            "a deferred-only repo must stay on the epic board"
+        );
+        assert_eq!(filtered.repos[0].repo, "mev");
+        assert_eq!(filtered.repos[0].lanes.deferred.len(), 1);
+        assert_eq!(filtered.lanes.deferred.len(), 1);
+        assert_eq!(filtered.lanes.deferred[0].id, "MV.9.A");
     }
 
     #[test]

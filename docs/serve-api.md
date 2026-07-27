@@ -1130,7 +1130,8 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 | `now` | array of `BoardBlockDto` | Blocks currently in progress. |
 | `next` | array of `BoardBlockDto` | Blocks queued next (ordered). |
 | `blocked` | array of `BoardBlockDto` | Blocks waiting on something; each entry's `blocked_by` is populated. |
-| `finished` | array of `BoardBlockDto` | Blocks whose `status == "closed"` — the terminal value in `mev::brain::state`'s `VALID_TRACK_BLOCK_STATUSES` (`open`/`in_progress`/`closed`). |
+| `deferred` | array of `BoardBlockDto` | Blocks deliberately parked on the back burner (authored `status == "deferred"`). Real roadmap work that is not being surfaced as next. **Never overlaps `next`** — a deferred block is structurally excluded from ready-order — and **never overlaps `blocked`**, even when it carries unmet deps (deferral is a terminal lane assignment). `blocked_by` *is* populated, since a deferred block can still have real unmet deps worth showing in a detail view. Absent/`[]` for repos that defer nothing. |
+| `finished` | array of `BoardBlockDto` | Blocks whose `status == "closed"` — the terminal value in `mev::brain::state`'s `VALID_TRACK_BLOCK_STATUSES` (`open`/`in_progress`/`deferred`/`closed`). |
 
 #### `BoardBlockDto`
 
@@ -1139,7 +1140,7 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 | `id` | string | — | Canonical block ID (e.g. `"BA.11.K"`). |
 | `title` | string | — | Block title, looked up from the owning repo's `tracks[].blocks[]`. |
 | `repo` | string | — | Owning repo slug. |
-| `status` | string \| null | `null` | Lifecycle status when known (`"open"`/`"in_progress"`/`"closed"`). |
+| `status` | string \| null | `null` | Lifecycle status when known (`"open"`/`"in_progress"`/`"deferred"`/`"closed"`). |
 | `blocked_by` | array | `[]` | What this block is waiting on. **Populated on all four lanes as of v0.11/BA.11.R** — earlier versions of this contract populated it for `blocked`-lane entries only; it is now the unmet-dependency set (any `BlockedBy::External`, or a `BlockedBy::Block{repo, id}` whose target's authored status is not `"closed"`) computed the same way for `now`/`next`/`finished` as it always was for `blocked`. A block with no unmet dependency comes back `blocked_by: []`. |
 | `epics` (v0.11) | array of string | `[]` | Cross-repo epic membership — slugs into the HQ `epics[]` registry (Section 17). Joined back from the owning repo's `tracks[].blocks[]`; a block whose id has no `tracks[]` match keeps `[]`. |
 | `wave` (v0.11) | number \| null | `null` | Execution-order rank ("what's next"), from the authoring `TrackBlock.wave`. Typed to mirror `okf_core::TrackBlock.wave` (`Option<i64>`) — see the Amendment Log deviation note below. |
