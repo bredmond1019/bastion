@@ -19,6 +19,7 @@
 mod discover;
 mod graph;
 mod okf;
+mod state;
 
 // Re-exported for `assess::run` (task 7) to consume; unused until that shell is wired up.
 #[allow(unused_imports)]
@@ -27,14 +28,10 @@ pub use discover::{AssessContext, resolve_context};
 pub use graph::{DanglingEdgeFinding, GraphFamily, assess_graph};
 #[allow(unused_imports)]
 pub use okf::{InvalidFrontmatterFinding, MissingRequiredFinding, OkfFamily, assess_okf};
+#[allow(unused_imports)]
+pub use state::{StateFamily, StateFinding, assess_state, classify_state};
 
 use serde::{Deserialize, Serialize};
-
-/// State-readiness family shape. Empty-but-typed placeholder — task 5 (`assess::state`)
-/// fills in the fields (missing/unparseable/empty-focus/empty-tracks findings, track and
-/// block counts when healthy).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct StateFamily {}
 
 /// Top-level `bastion assess` report, following the mev envelope convention
 /// (`assessor` + `root` + counts + per-family objects) rather than reusing
