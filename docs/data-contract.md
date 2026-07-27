@@ -6,13 +6,13 @@ doc_id: data-contract
 layer: [console, engine]
 project: bastion
 status: active
-keywords: [data contract, orchestrator, PostgreSQL, node_runs, field mappings, v1.3.0, cancellation, abort, budget gate, event read api, ingest]
+keywords: [data contract, orchestrator, PostgreSQL, node_runs, field mappings, v1.4.0, cancellation, abort, budget gate, event read api, ingest, recall, walk, pulse]
 related: [monitor, costs, inspect, run]
 ---
 
 # Data Contract (Consumer View)
 
-**Pinned Contract Version: 1.3.0**
+**Pinned Contract Version: 1.4.0**
 
 The **canonical, authoritative** contract is owned by the orchestrator:
 `python-orchestration-system/docs/data-contract.md`. This file is bastion's *consumer* view — it
@@ -183,3 +183,4 @@ Every branch is unit-tested element-by-element in `src/run/abort.rs` (`render_ou
 | 1.1.0 | 2026-07-16 | Mapping change against the same pinned version (`BA.7.C`, no canonical bump) — the two v1.1.0 additions registered above are now consumed: the abort endpoint by `api::client::abort_run` / `bastion abort <run>`, served by `engine-serve` embedded in `bastion serve` (D48); the `metadata.cancellation` / `metadata.budget` annotations by `db::workflows::derive_run_status` into `WorkflowRun.status`/`budget_halt`. |
 | 1.2.0 | 2026-07-24 | Re-pin from 1.1.0 to 1.2.0 (`OR.Y`). Registers the canonical's v1.2.0 additions, none yet consumed by bastion Rust types: the orchestrator's own `GET /events/{event_id}` read route (§ Monitor / Inspect above — no longer reserved), `event_id` on the `POST /events/` 202 body (§ Trigger above), and the `metadata.failure` run-level annotation (§ Run-level `metadata` annotations above). Wiring any of these into `db::workflows`/`api::client` is future work. |
 | 1.3.0 | 2026-07-24 | Re-pin from 1.2.0 to 1.3.0 (`OR.Q`). Registers the canonical's v1.3.0 additions: `POST /ingest/proposal` and `POST /ingest/artifact` (canonical § 7 HTTP surface) — the ingest seam engine-rs hybrid workflows POST finished artifacts through into `brain_documents`. No mapping or Rust-type change here: `bastion` is a **read-only Postgres observer** (§ above) with no artifacts to ingest, so it never calls either route and consumes neither. |
+| 1.4.0 | 2026-07-27 | Re-pin from 1.3.0 to 1.4.0 (`OR.Q2`). Registers the canonical's v1.4.0 additions: `GET /recall`, `GET /walk`, `GET /pulse` (canonical § 7 HTTP surface) — the read half of the D51 HTTP adapter whose write half (`POST /ingest/*`) landed in v1.3.0, thin authenticated adapters over the orchestrator's `app/brain/` read core (`retrieval.recall` / `graph.walk` / `pulse.pulse`). No mapping or Rust-type change here: bastion's monitor/inspect/costs surfaces read `events`/`task_context` only (§ Read paths above) and have no corpus-query or health-snapshot use case today, so none of the three routes is called or consumed by any bastion Rust type; wiring bastion to any of them (e.g. a `bastion recall`/`bastion pulse` subcommand) is future work, not this re-pin. |
