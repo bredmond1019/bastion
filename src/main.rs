@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 mod api;
+mod assess;
 mod brain;
 mod brainval;
 mod cli;
