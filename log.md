@@ -11,6 +11,44 @@ timestamp: 2026-07-25T19:02:48Z
 
 ---
 
+## [run: 2026-07-27]
+
+### 15.9-bastion-assess-v1 — DONE
+
+- **What:** `/sdlc-flow` ran spec `15.9-bastion-assess-v1` end-to-end across 9 tasks, all PASS.
+  Task 1 extracted a pure, path-anchored `walk_up_from(start, target)` beneath `config.rs`'s
+  existing cwd-only `walk_up_for`. Task 2 landed the `assess` module skeleton — `AssessContext` +
+  `resolve_context` (over `brain.toml`/planning/markdown discovery) and the `AssessReport`/
+  `OkfFamily`/`GraphFamily`/`StateFamily` report shape following the mev envelope convention, with
+  no id-convention field (that family stays deferred to BA.15.6). Task 3 shipped
+  `assess::okf::assess_okf`, computing invalid-frontmatter, missing-required, and
+  optional-field-coverage findings purely over `(path, content)` pairs. Task 4 shipped
+  `assess::graph::assess_graph`, constructing an `okf_core::graph::GraphArtifact` from `doc_id`/
+  `related` frontmatter and resolving edges via `resolve_edge` to tally node/edge/resolved/leaf/
+  dangling counts. Task 5 shipped `assess::state::assess_state`, distinguishing
+  no-planning-root / absent / unparseable / empty-focus / empty-tracks state findings from a
+  healthy state with track/block counts. Task 6 added `assess::render` (`render_human`,
+  `render_json`, and a severity-ranked `top_gaps` capped at three). Task 7 wired
+  `bastion assess <path> [--json]` end-to-end (CLI dispatch plus the thin `assess::run` I/O
+  shell) and was manually smoke-tested read-only against `../bella` per rule 6, confirming zero
+  filesystem writes and no id-convention output in either mode. Task 8 added `docs/assess.md` and
+  registered it in `docs/index.md`. Task 9 re-ran the full validation suite clean (`cargo fmt
+  --check`, `cargo clippy -D warnings`, `cargo test` — 1710 passed, `cargo build --release`).
+  Review verdict: PASS, no findings. No amendments were needed — every task landed as specced.
+- **Next:** Resume Phase 11/13/14 blocks per `state.json`'s regenerated `focus.next` ordering —
+  `BA.11.J` (cost read endpoint) is next up in Phase 11.
+
+```
+0845d7e feat: implement 15.9-bastion-assess-v1-task8
+242687d feat: implement 15.9-bastion-assess-v1-task7
+98a6cb2 feat: implement 15.9-bastion-assess-v1-task6
+3eaaf38 feat: implement 15.9-bastion-assess-v1-task5
+395e5b7 feat: implement 15.9-bastion-assess-v1-task4
+177f6ed feat: implement 15.9-bastion-assess-v1-task3
+c626623 feat: implement 15.9-bastion-assess-v1-task2
+ffaebce feat: implement 15.9-bastion-assess-v1-task1
+```
+
 ## [run: 2026-07-26]
 
 ### 11.R-epic-ranking-board-enrichment — DONE
