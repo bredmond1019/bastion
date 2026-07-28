@@ -1193,6 +1193,8 @@ dependencies = [
  "claude-code-rs",
  "engine-contract",
  "futures",
+ "mev",
+ "okf-core",
  "regex",
  "reqwest",
  "serde",

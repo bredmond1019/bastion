@@ -183,7 +183,7 @@ pub fn run_graph(path: std::path::PathBuf) -> Result<()> {
 pub fn run_emit_state(path: std::path::PathBuf, write: bool) -> Result<()> {
     let root = mev::brain::config::find_brain_root(&path)
         .map_err(|e| anyhow::anyhow!("error resolving brain root: {e}"))?;
-    let report = mev::emit_state(&root, write)?;
+    let report = mev::emit_state(&root, write, None)?;
 
     for d in &report.diagnostics {
         println!(
