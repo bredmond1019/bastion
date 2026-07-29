@@ -1984,6 +1984,261 @@ heading = "bastion"
         );
     }
 
+    // ── /api/blocks/graph — route registration (BA.17.A) ─────────────────────
+
+    #[actix_web::test]
+    async fn get_blocks_graph_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=hq")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/blocks/graph without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_blocks_graph_hq_scope_returns_200_with_well_formed_body() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/blocks/graph?scope=hq with a valid token must return 200"
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["scope"], "hq");
+        assert!(body["version"].is_string(), "version must be a string");
+        assert!(body["root"].is_string(), "root must be a string");
+        assert!(body["nodes"].is_array(), "nodes must be an array");
+        assert!(body["edges"].is_array(), "edges must be an array");
+        assert!(body["cycles"].is_array(), "cycles must be an array");
+        assert!(
+            body["total_nodes"].is_number(),
+            "total_nodes must be a number"
+        );
+        assert!(
+            body["truncated"].is_boolean(),
+            "truncated must be a boolean"
+        );
+        assert!(body["stale"].is_boolean(), "stale must be a boolean");
+        let nodes = body["nodes"].as_array().unwrap();
+        assert_eq!(
+            nodes.len(),
+            1,
+            "the single fixture block must appear as one node"
+        );
+        assert_eq!(nodes[0]["key"], "bastion:BA.11.K");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_blocks_graph_epic_scope_without_epic_param_returns_404_c005_same_shape_as_board() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let graph_req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=epic")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let graph_resp = test::call_service(&app, graph_req).await;
+        assert_eq!(graph_resp.status(), 404);
+        let graph_body: serde_json::Value = test::read_body_json(graph_resp).await;
+
+        let board_req = test::TestRequest::get()
+            .uri("/api/board?scope=epic")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let board_resp = test::call_service(&app, board_req).await;
+        assert_eq!(board_resp.status(), 404);
+        let board_body: serde_json::Value = test::read_body_json(board_resp).await;
+
+        assert_eq!(graph_body["code"], "C005");
+        assert_eq!(
+            graph_body["code"], board_body["code"],
+            "scope=epic with a missing &epic= must return the same code shape on both routes"
+        );
+        assert!(
+            graph_body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains("epic"),
+            "message must name the missing 'epic' param; got {graph_body:?}"
+        );
+        assert_eq!(
+            graph_body.as_object().map(|o| {
+                let mut keys: Vec<&String> = o.keys().collect();
+                keys.sort();
+                keys
+            }),
+            board_body.as_object().map(|o| {
+                let mut keys: Vec<&String> = o.keys().collect();
+                keys.sort();
+                keys
+            }),
+            "the 404/C005 payload shape (field set) must be byte-identical between the two routes"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_blocks_graph_epic_scope_unknown_slug_returns_404_c005_same_shape_as_board() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let graph_req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=epic&epic=nope")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let graph_resp = test::call_service(&app, graph_req).await;
+        assert_eq!(graph_resp.status(), 404);
+        let graph_body: serde_json::Value = test::read_body_json(graph_resp).await;
+
+        let board_req = test::TestRequest::get()
+            .uri("/api/board?scope=epic&epic=nope")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let board_resp = test::call_service(&app, board_req).await;
+        assert_eq!(board_resp.status(), 404);
+        let board_body: serde_json::Value = test::read_body_json(board_resp).await;
+
+        assert_eq!(graph_body["code"], "C005");
+        assert_eq!(graph_body["code"], board_body["code"]);
+        assert_eq!(
+            graph_body.as_object().map(|o| {
+                let mut keys: Vec<&String> = o.keys().collect();
+                keys.sort();
+                keys
+            }),
+            board_body.as_object().map(|o| {
+                let mut keys: Vec<&String> = o.keys().collect();
+                keys.sort();
+                keys
+            }),
+            "the 404/C005 payload shape (field set) must be byte-identical between the two routes"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_blocks_graph_max_nodes_truncates_end_to_end() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        // Baseline: default max_nodes (400) — three non-closed blocks
+        // (BA.11.R/S/T; BA.11.K is closed and excluded by default), not
+        // truncated.
+        let baseline_req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let baseline_resp = test::call_service(&app, baseline_req).await;
+        assert_eq!(baseline_resp.status(), 200);
+        let baseline_body: serde_json::Value = test::read_body_json(baseline_resp).await;
+        assert_eq!(baseline_body["total_nodes"], 3);
+        assert_eq!(baseline_body["nodes"].as_array().unwrap().len(), 3);
+        assert_eq!(baseline_body["truncated"], false);
+
+        // max_nodes=1 — total_nodes still reports the pre-truncation count,
+        // but the returned node list is capped.
+        let truncated_req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=hq&max_nodes=1")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let truncated_resp = test::call_service(&app, truncated_req).await;
+        assert_eq!(truncated_resp.status(), 200);
+        let truncated_body: serde_json::Value = test::read_body_json(truncated_resp).await;
+        assert_eq!(truncated_body["total_nodes"], 3);
+        let returned = truncated_body["nodes"].as_array().unwrap();
+        assert_eq!(returned.len(), 1);
+        assert_eq!(truncated_body["truncated"], true);
+        assert!(
+            (returned.len() as u64) < truncated_body["total_nodes"].as_u64().unwrap(),
+            "truncated response must return fewer nodes than total_nodes"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_blocks_graph_include_closed_and_repo_are_threaded_into_scope() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        // Default include_closed=false: BA.11.K (closed) is excluded.
+        let default_req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let default_resp = test::call_service(&app, default_req).await;
+        let default_body: serde_json::Value = test::read_body_json(default_resp).await;
+        let default_keys: Vec<&str> = default_body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["key"].as_str().unwrap())
+            .collect();
+        assert!(
+            !default_keys.contains(&"bastion:BA.11.K"),
+            "include_closed=false (default) must exclude the closed block; got {default_keys:?}"
+        );
+
+        // include_closed=true: BA.11.K reappears.
+        let included_req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=hq&include_closed=true")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let included_resp = test::call_service(&app, included_req).await;
+        let included_body: serde_json::Value = test::read_body_json(included_resp).await;
+        let included_keys: Vec<&str> = included_body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["key"].as_str().unwrap())
+            .collect();
+        assert!(
+            included_keys.contains(&"bastion:BA.11.K"),
+            "include_closed=true must thread through and include the closed block; got {included_keys:?}"
+        );
+
+        // repo=nonexistent-repo: no repo matches, so the node list is empty —
+        // proves `repo` narrows `BlockGraphScope.repo` rather than being
+        // ignored.
+        let repo_req = test::TestRequest::get()
+            .uri("/api/blocks/graph?scope=hq&repo=nonexistent-repo")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let repo_resp = test::call_service(&app, repo_req).await;
+        let repo_body: serde_json::Value = test::read_body_json(repo_resp).await;
+        assert!(
+            repo_body["nodes"].as_array().unwrap().is_empty(),
+            "repo=nonexistent-repo must exclude every node; got {:?}",
+            repo_body["nodes"]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ── Live run-state routes (BA.11.M) ───────────────────────────────────
 
     #[actix_web::test]

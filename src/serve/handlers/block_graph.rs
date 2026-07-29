@@ -578,4 +578,163 @@ mod tests {
         let resp = board::epic_error_response("unknown epic");
         assert_eq!(resp.status(), actix_web::http::StatusCode::NOT_FOUND);
     }
+
+    // ── one-derivation cross-check (BA.17.A task 5) ──────────────────────────
+    //
+    // Mechanically enforces "one derivation": builds one fixture corpus on
+    // disk, runs it through `assemble_board` once, then feeds the *same*
+    // `(config, files, graph)` triple into both `build_block_graph_export` →
+    // `block_graph_dto` and `build_board`. Any divergence in node count, edge
+    // count, or per-node lane between the two independent read paths fails
+    // the test.
+
+    /// Build a temp brain root with one repo and five blocks covering every
+    /// `BlockLane` the board also classifies (now/next/blocked/deferred/
+    /// closed): `BA.1` (`in_progress` → now), `BA.2` (`closed` → finished),
+    /// `BA.3` (`open`, depends on the already-closed `BA.2` → next, met dep),
+    /// `BA.4` (`open`, depends on the still-open `BA.3` → blocked, unmet dep),
+    /// `BA.5` (`deferred` → deferred). Deliberately avoids any block that
+    /// would land in `BlockLane::Other` — `board::build_board` has no lane for
+    /// it, so it would break the count comparison below for a reason that
+    /// isn't a real divergence between the two derivations.
+    fn make_cross_check_brain_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-block-graph-cross-check-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let planning_dir = dir.join("bastion").join("planning");
+        std::fs::create_dir_all(&planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "Bastion"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            planning_dir.join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-28",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "BA.1", "title": "In progress", "status": "in_progress"},
+        {"id": "BA.2", "title": "Closed", "status": "closed"},
+        {"id": "BA.3", "title": "Ready", "status": "open", "depends_on": [{"type": "block", "repo": "bastion", "id": "BA.2"}]},
+        {"id": "BA.4", "title": "Waiting", "status": "open", "depends_on": [{"type": "block", "repo": "bastion", "id": "BA.3"}]},
+        {"id": "BA.5", "title": "Parked", "status": "deferred"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn export_to_dto_matches_build_board_node_count_edge_count_and_lanes() {
+        let dir = make_cross_check_brain_root();
+
+        let assembly = board::assemble_board(&dir, &TierScope::All)
+            .expect("fixture corpus should assemble cleanly");
+
+        // Same corpus (config, files, graph) feeds both independent read paths.
+        let block_graph_scope = BlockGraphScope {
+            tier: TierScope::All,
+            epic: None,
+            repo: None,
+            include_closed: true,
+            include_boundary: false,
+            max_nodes: 2000,
+        };
+        let export = mev::build_block_graph_export(
+            &dir,
+            &assembly.config,
+            &assembly.graph,
+            &assembly.files,
+            &block_graph_scope,
+        );
+        let dto = block_graph_dto(&export, BoardScope::Hq, assembly.stale);
+
+        let board_dto = board::build_board(
+            BoardScope::Hq,
+            None,
+            &assembly.rollups,
+            &assembly.files,
+            assembly.stale,
+        );
+
+        // ── node count ───────────────────────────────────────────────────
+        let board_node_count = board_dto.lanes.now.len()
+            + board_dto.lanes.next.len()
+            + board_dto.lanes.blocked.len()
+            + board_dto.lanes.deferred.len()
+            + board_dto.lanes.finished.len();
+        assert_eq!(dto.nodes.len(), 5, "fixture authors exactly five blocks");
+        assert_eq!(
+            dto.nodes.len(),
+            board_node_count,
+            "block-graph node count must equal build_board's total across all five lanes"
+        );
+
+        // ── edge count ───────────────────────────────────────────────────
+        // BA.3 -> BA.2 and BA.4 -> BA.3 are the only two authored BlockedBy
+        // deps; both survive the scope pipeline (both endpoints in scope).
+        assert_eq!(dto.edges.len(), 2);
+
+        // ── per-node lane ────────────────────────────────────────────────
+        let mut board_lane_of: std::collections::HashMap<String, BlockLaneDto> =
+            std::collections::HashMap::new();
+        for b in &board_dto.lanes.now {
+            board_lane_of.insert(format!("{}:{}", b.repo, b.id), BlockLaneDto::Now);
+        }
+        for b in &board_dto.lanes.next {
+            board_lane_of.insert(format!("{}:{}", b.repo, b.id), BlockLaneDto::Next);
+        }
+        for b in &board_dto.lanes.blocked {
+            board_lane_of.insert(format!("{}:{}", b.repo, b.id), BlockLaneDto::Blocked);
+        }
+        for b in &board_dto.lanes.deferred {
+            board_lane_of.insert(format!("{}:{}", b.repo, b.id), BlockLaneDto::Deferred);
+        }
+        for b in &board_dto.lanes.finished {
+            board_lane_of.insert(format!("{}:{}", b.repo, b.id), BlockLaneDto::Closed);
+        }
+
+        assert_eq!(
+            board_lane_of.len(),
+            5,
+            "every fixture block must land in exactly one build_board lane"
+        );
+
+        for node in &dto.nodes {
+            let expected = board_lane_of
+                .get(&node.key)
+                .unwrap_or_else(|| panic!("{} missing from every build_board lane", node.key));
+            assert_eq!(
+                &node.lane, expected,
+                "lane mismatch for {}: block_graph says {:?}, build_board says {:?}",
+                node.key, node.lane, expected
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
