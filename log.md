@@ -11,6 +11,52 @@ timestamp: 2026-07-25T19:02:48Z
 
 ---
 
+## [run: 2026-07-28]
+
+### 17.A-block-graph-endpoint — DONE
+
+- **What:** `/sdlc-flow` ran spec `17.A-block-graph-endpoint` end-to-end across 8 tasks, all
+  PASS. Task 1 converted `assemble_board`'s tuple alias into a named `pub(crate)`
+  `BoardAssembly` struct carrying the `StateGraph`, and made its supporting helpers
+  (`epic_param_missing`/`epic_known`/`epic_error_response`/`brain_root_error_response`/
+  `blocking_error_response`) `pub(crate)` so the new handler could reuse them, with a new unit
+  test asserting the returned `StateGraph`'s node keys against a real fixture corpus. Task 2
+  added the five typeshared block-graph DTOs (`BlockGraphDto`/`BlockGraphNodeDto`/
+  `BlockGraphEdgeDto`/`BlockLaneDto`/`BlockEdgeKindDto`) to `src/serve/dto.rs`, defining
+  `BlockEdgeKindDto` as a local enum rather than reusing `okf_core::StateEdgeKind` per spec.
+  Task 3 shipped `src/serve/handlers/block_graph.rs` — `BlockGraphQuery`, pure
+  `resolve_max_nodes`/`block_graph_scope_from_query` helpers, a mechanical `block_graph_dto`
+  projection, and the `get_block_graph` handler reusing `board::assemble_board` +
+  `mev::build_block_graph_export`, backed by 32 unit tests. Task 4 registered the module and
+  wired `GET /api/blocks/graph` into both the real and test app factories, alongside `/board`
+  inside the protected `/api` scope. Task 5 added the one-derivation cross-check test (node
+  count/edge count/lane parity between the block-graph export and the board) plus route-level
+  401/200/404-shape/`max_nodes`-truncation/scope-threading integration tests in `serve/mod.rs`,
+  and recorded a manual smoke test against a live `bastion serve` (real HQ brain root,
+  `max_nodes=5` truncation confirmed end-to-end) in the spec's Notes. Task 6 regenerated
+  `types/serve.ts` via `scripts/gen-types.sh`, confirmed clean against
+  `scripts/check-typeshare-drift.sh`. Task 7 documented the endpoint in `docs/serve-api.md`
+  (new §23, modeled on the board/epics sections, contract bumped to v0.13, dated Amendment Log
+  entry appended). Task 8 re-ran the full gated validation suite clean (`cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test` — 1756 passed, `cargo build --release`,
+  `scripts/check-typeshare-drift.sh`) and confirmed only the new route was added with
+  `/api/board`'s response shape unchanged. Task 2's one flaky-test report (a SIGTERM/timeout on
+  a full-suite run) did not reproduce on retry or in isolation and required no code change.
+  Review verdict: PASS, no findings.
+- **Next:** Resume Phase 11/13/14 blocks per `state.json`'s regenerated `focus.next` ordering —
+  `BA.11.J` (cost read endpoint) is next up in Phase 11.
+
+```
+0cd16cc docs: update docs for 17.A-block-graph-endpoint
+72fd8ad feat: implement 17.A-block-graph-endpoint-task7
+3f3760e feat: implement 17.A-block-graph-endpoint-task6
+77ca748 feat: implement 17.A-block-graph-endpoint-task5
+dd6b018 feat: implement 17.A-block-graph-endpoint-task4
+d8f6420 feat: implement 17.A-block-graph-endpoint-task3
+5bf935c feat: implement 17.A-block-graph-endpoint-task2
+a154724 feat: convert assemble_board's tuple alias to a named BoardAssembly struct
+```
+
 ## [run: 2026-07-27]
 
 ### 15.9-bastion-assess-v1 — DONE
