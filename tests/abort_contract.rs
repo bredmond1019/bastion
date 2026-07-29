@@ -247,6 +247,25 @@ async fn aborting_a_live_run_returns_202_then_repeat_abort_returns_404() {
         .expect("trigger request should complete");
     assert_eq!(trigger_resp.status(), 202);
 
+    // `trigger_resp` only confirms the *initial* trigger's HTTP response,
+    // which returns immediately once `post_events` spawns the background
+    // run task — it is not a handle on that task's completion. The actual
+    // "run is over" edge is `RunRegistry::deregister`, called from the
+    // spawned task after `mark_terminal`, which is also what drops the run
+    // out of `live.list_active()`. Poll for that instead of assuming the
+    // trigger response implies it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if !live.list_active().contains(&run_id) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "run {run_id} never left live.list_active() after cancellation"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
     // Aborting again now that the run has ended (and been deregistered)
     // reads as unknown, not as a stale success.
     let repeat_outcome = client
