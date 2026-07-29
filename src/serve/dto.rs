@@ -24,6 +24,10 @@
 //!   [`ContactDto`] / [`OpportunityActionDto`] / [`ResearchBriefDto`] /
 //!   [`ProspectLeadDto`] — `GET /api/pipeline` + `GET /api/pipeline/{slug}` read
 //!   projection over the business sub-brain's opportunity markdown files (BW.3.A).
+//! - [`BlockGraphDto`] / [`BlockGraphNodeDto`] / [`BlockGraphEdgeDto`] / [`BlockLaneDto`] /
+//!   [`BlockEdgeKindDto`] — `GET /api/blocks/graph` mechanical projection of
+//!   `mev::brain::block_graph::BlockGraphExport` (BA.17.A). Pure data only — no
+//!   conversion logic lives here (see `handlers/block_graph.rs::block_graph_dto`).
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -1238,6 +1242,192 @@ pub struct ProspectLeadDto {
     pub outreach_hook: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+}
+
+// ── Block graph (BA.17.A) ──────────────────────────────────────────────────────
+//
+// Mechanical projection of `mev::brain::block_graph::BlockGraphExport` for
+// `GET /api/blocks/graph`. Bastion performs zero derivation of its own — every
+// field here is copied straight across from the upstream mev type by
+// `handlers/block_graph.rs::block_graph_dto`. `BlockEdgeKindDto` is declared
+// locally rather than reusing `okf_core::StateEdgeKind` because typeshare only
+// scans `src/serve` — an okf-core type would never reach `types/serve.ts`.
+
+/// Mirrors `mev::brain::block_graph::BlockLane`'s six variants. Serialises
+/// `snake_case` to match upstream (`"now"`, `"next"`, `"blocked"`, `"deferred"`,
+/// `"closed"`, `"other"`).
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockLaneDto {
+    /// Authored `status == "in_progress"`.
+    Now,
+    /// Ready — open, no external deps, all block deps closed.
+    Next,
+    /// Open with at least one unmet dependency.
+    Blocked,
+    /// Authored `status == "deferred"`.
+    Deferred,
+    /// Authored `status == "closed"`.
+    Closed,
+    /// An authored status that matches none of the above.
+    Other,
+}
+
+/// Mirrors `okf_core::state::StateEdgeKind`'s two variants. Serialises
+/// `snake_case` to match upstream (`"blocked_by"`, `"cross_repo"`). Declared
+/// locally rather than reusing `okf_core::StateEdgeKind` — see the module note
+/// above.
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockEdgeKindDto {
+    /// A `blocked_by` dependency (a block is waiting on another block).
+    BlockedBy,
+    /// An explicit cross-repo dependency declared in a brain file's `cross_repo[]`.
+    CrossRepo,
+}
+
+/// Mirrors `mev::brain::block_graph::BlockGraphNode` field-for-field.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "key": "bastion:BA.17.A", "repo": "bastion", "id": "BA.17.A",
+///   "title": "GET /api/blocks/graph endpoint", "status": "in_progress",
+///   "lane": "now", "track": "Phase 17", "wave": 1, "priority": 1,
+///   "effective_priority": 1, "due": null, "epics": ["bastion-surfaces"],
+///   "layer": 0, "topo_index": 4, "ready": true, "in_cycle": false,
+///   "in_scope": true, "external_deps": [], "unmet_count": 0, "dependent_count": 0
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlockGraphNodeDto {
+    /// Canonical `"repo:id"` key.
+    pub key: String,
+    /// Owning repo slug.
+    pub repo: String,
+    /// Canonical block ID.
+    pub id: String,
+    /// Brief human description.
+    pub title: String,
+    /// Authored lifecycle status (`open`/`in_progress`/`deferred`/`closed`), if any.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Derived attention lane.
+    pub lane: BlockLaneDto,
+    /// Title of the containing `tracks[]` phase/wave, if resolvable.
+    #[serde(default)]
+    pub track: Option<String>,
+    /// Authored execution-order rank.
+    #[serde(default)]
+    #[typeshare(serialized_as = "number")]
+    pub wave: Option<i64>,
+    /// Authored own priority.
+    #[serde(default)]
+    pub priority: Option<u8>,
+    /// Effective priority — absent when it never lands in the real `0..=3` range.
+    #[serde(default)]
+    pub effective_priority: Option<u8>,
+    /// Authored due date/timing string.
+    #[serde(default)]
+    pub due: Option<String>,
+    /// Cross-repo epic membership.
+    #[serde(default)]
+    pub epics: Vec<String>,
+    /// Longest path over resolved `depends_on` edges (`0` = no resolved prerequisites).
+    #[typeshare(serialized_as = "number")]
+    pub layer: u32,
+    /// Position in the full-corpus topological order.
+    #[typeshare(serialized_as = "number")]
+    pub topo_index: u32,
+    /// Membership in the ready-order set.
+    pub ready: bool,
+    /// Whether this node participates in a `depends_on` cycle.
+    pub in_cycle: bool,
+    /// Whether this node survives the scope pipeline's tier/repo/epic/closed stages.
+    pub in_scope: bool,
+    /// `what` strings from this block's `{type:"external"}` `depends_on` entries.
+    #[serde(default)]
+    pub external_deps: Vec<String>,
+    /// Count of unmet dependencies for a `Blocked` node — `0` for every other lane.
+    #[typeshare(serialized_as = "number")]
+    pub unmet_count: u32,
+    /// Corpus-wide count of in-corpus blocks whose `BlockedBy` edges point at this node.
+    #[typeshare(serialized_as = "number")]
+    pub dependent_count: u32,
+}
+
+/// Mirrors `mev::brain::block_graph::BlockGraphEdge` field-for-field.
+///
+/// Wire format:
+/// ```json
+/// { "from": "bastion:BA.17.A", "to_ref": "mev:MV.10.B", "kind": "blocked_by",
+///   "target_node_id": "mev:MV.10.B", "blocking": false }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlockGraphEdgeDto {
+    /// `"repo:id"` key of the source (dependent) block.
+    pub from: String,
+    /// Raw, as-authored `"repo:id"` reference.
+    pub to_ref: String,
+    /// Edge discriminant.
+    pub kind: BlockEdgeKindDto,
+    /// `Some(to_ref)` when it resolves to a node in this export; `None` when dangling.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
+    /// `false` when either endpoint is `closed`.
+    pub blocking: bool,
+}
+
+/// JSON response for `GET /api/blocks/graph?scope=...&tier=...&epic=...&repo=...
+/// &include_closed=...&include_boundary=...&max_nodes=...`.
+///
+/// A mechanical projection of `mev::brain::block_graph::BlockGraphExport` plus the
+/// response-level `scope` echo (reusing [`BoardScope`]) and `stale` flag, matching
+/// `BoardDto`'s convention.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlockGraphDto {
+    /// Schema version — currently `"1"`.
+    pub version: String,
+    /// Display path of the brain root used for the build.
+    pub root: String,
+    /// The resolved scope this response was projected under.
+    #[serde(default)]
+    pub scope: BoardScope,
+    /// The resolved tier name, when `scope` is tier-scoped (`None` for `hq`).
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// The resolved `&epic=` slug, when `scope=epic`.
+    #[serde(default)]
+    pub epic: Option<String>,
+    /// The resolved `&repo=` restriction, when present.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Whether `Closed`-lane nodes were retained.
+    pub include_closed: bool,
+    /// Whether direct neighbours of the in-scope set were re-added as boundary nodes.
+    pub include_boundary: bool,
+    /// Nodes, emitted in `topo_index` order.
+    #[serde(default)]
+    pub nodes: Vec<BlockGraphNodeDto>,
+    /// Edges — one per surviving scoped edge.
+    #[serde(default)]
+    pub edges: Vec<BlockGraphEdgeDto>,
+    /// Cycles found over the full corpus (never the scoped subgraph).
+    #[serde(default)]
+    pub cycles: Vec<Vec<String>>,
+    /// Node count before any `max_nodes` truncation.
+    #[typeshare(serialized_as = "number")]
+    pub total_nodes: u32,
+    /// Whether `max_nodes` truncated the node list.
+    pub truncated: bool,
+    /// Freshness flag: `true` when any in-scope repo's `status.md` cache lags its
+    /// `state.json` (same posture as `BoardDto::stale`).
+    pub stale: bool,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -2909,5 +3099,284 @@ mod tests {
     fn board_scope_rejects_unknown_variant() {
         let result: Result<BoardScope, _> = serde_json::from_str("\"bogus\"");
         assert!(result.is_err());
+    }
+
+    // ── BlockLaneDto ───────────────────────────────────────────────────────
+
+    #[test]
+    fn block_lane_dto_serializes_snake_case() {
+        let cases = [
+            (BlockLaneDto::Now, "now"),
+            (BlockLaneDto::Next, "next"),
+            (BlockLaneDto::Blocked, "blocked"),
+            (BlockLaneDto::Deferred, "deferred"),
+            (BlockLaneDto::Closed, "closed"),
+            (BlockLaneDto::Other, "other"),
+        ];
+        for (variant, expected) in cases {
+            let v = serde_json::to_value(variant).expect("serialize BlockLaneDto");
+            assert_eq!(
+                v,
+                json!(expected),
+                "variant {variant:?} must serialize to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn block_lane_dto_deserializes_snake_case() {
+        let cases = [
+            ("\"now\"", BlockLaneDto::Now),
+            ("\"next\"", BlockLaneDto::Next),
+            ("\"blocked\"", BlockLaneDto::Blocked),
+            ("\"deferred\"", BlockLaneDto::Deferred),
+            ("\"closed\"", BlockLaneDto::Closed),
+            ("\"other\"", BlockLaneDto::Other),
+        ];
+        for (raw, expected) in cases {
+            let decoded: BlockLaneDto =
+                serde_json::from_str(raw).expect("deserialize BlockLaneDto");
+            assert_eq!(decoded, expected);
+        }
+    }
+
+    #[test]
+    fn block_lane_dto_rejects_unknown_variant() {
+        let result: Result<BlockLaneDto, _> = serde_json::from_str("\"bogus\"");
+        assert!(result.is_err());
+    }
+
+    // ── BlockEdgeKindDto ───────────────────────────────────────────────────
+
+    #[test]
+    fn block_edge_kind_dto_serializes_snake_case() {
+        let cases = [
+            (BlockEdgeKindDto::BlockedBy, "blocked_by"),
+            (BlockEdgeKindDto::CrossRepo, "cross_repo"),
+        ];
+        for (variant, expected) in cases {
+            let v = serde_json::to_value(variant).expect("serialize BlockEdgeKindDto");
+            assert_eq!(
+                v,
+                json!(expected),
+                "variant {variant:?} must serialize to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn block_edge_kind_dto_deserializes_snake_case() {
+        let cases = [
+            ("\"blocked_by\"", BlockEdgeKindDto::BlockedBy),
+            ("\"cross_repo\"", BlockEdgeKindDto::CrossRepo),
+        ];
+        for (raw, expected) in cases {
+            let decoded: BlockEdgeKindDto =
+                serde_json::from_str(raw).expect("deserialize BlockEdgeKindDto");
+            assert_eq!(decoded, expected);
+        }
+    }
+
+    #[test]
+    fn block_edge_kind_dto_rejects_unknown_variant() {
+        let result: Result<BlockEdgeKindDto, _> = serde_json::from_str("\"bogus\"");
+        assert!(result.is_err());
+    }
+
+    // ── BlockGraphNodeDto ──────────────────────────────────────────────────
+
+    fn sample_node() -> BlockGraphNodeDto {
+        BlockGraphNodeDto {
+            key: "bastion:BA.17.A".to_owned(),
+            repo: "bastion".to_owned(),
+            id: "BA.17.A".to_owned(),
+            title: "GET /api/blocks/graph endpoint".to_owned(),
+            status: Some("in_progress".to_owned()),
+            lane: BlockLaneDto::Now,
+            track: Some("Phase 17".to_owned()),
+            wave: Some(1),
+            priority: Some(1),
+            effective_priority: Some(1),
+            due: None,
+            epics: vec!["bastion-surfaces".to_owned()],
+            layer: 0,
+            topo_index: 4,
+            ready: true,
+            in_cycle: false,
+            in_scope: true,
+            external_deps: vec![],
+            unmet_count: 0,
+            dependent_count: 2,
+        }
+    }
+
+    #[test]
+    fn block_graph_node_dto_round_trip() {
+        let node = sample_node();
+        let json = serde_json::to_string(&node).expect("serialize BlockGraphNodeDto");
+        let decoded: BlockGraphNodeDto =
+            serde_json::from_str(&json).expect("deserialize BlockGraphNodeDto");
+        assert_eq!(node, decoded);
+    }
+
+    #[test]
+    fn block_graph_node_dto_serializes_expected_field_names() {
+        let node = sample_node();
+        let v = serde_json::to_value(&node).expect("serialize BlockGraphNodeDto");
+        for field in [
+            "key",
+            "repo",
+            "id",
+            "title",
+            "status",
+            "lane",
+            "track",
+            "wave",
+            "priority",
+            "effective_priority",
+            "due",
+            "epics",
+            "layer",
+            "topo_index",
+            "ready",
+            "in_cycle",
+            "in_scope",
+            "external_deps",
+            "unmet_count",
+            "dependent_count",
+        ] {
+            assert!(
+                v.get(field).is_some(),
+                "BlockGraphNodeDto JSON must contain field {field:?}, got {v}"
+            );
+        }
+        assert_eq!(v["lane"], "now");
+    }
+
+    #[test]
+    fn block_graph_node_dto_defaults_optional_fields() {
+        let raw = r#"{
+            "key":"bastion:BA.1","repo":"bastion","id":"BA.1","title":"T",
+            "lane":"next","layer":0,"topo_index":0,"ready":true,"in_cycle":false,
+            "in_scope":true,"unmet_count":0,"dependent_count":0
+        }"#;
+        let node: BlockGraphNodeDto =
+            serde_json::from_str(raw).expect("minimal body should decode");
+        assert!(node.status.is_none());
+        assert!(node.track.is_none());
+        assert!(node.wave.is_none());
+        assert!(node.priority.is_none());
+        assert!(node.effective_priority.is_none());
+        assert!(node.due.is_none());
+        assert!(node.epics.is_empty());
+        assert!(node.external_deps.is_empty());
+    }
+
+    // ── BlockGraphEdgeDto ──────────────────────────────────────────────────
+
+    #[test]
+    fn block_graph_edge_dto_round_trip() {
+        let edge = BlockGraphEdgeDto {
+            from: "bastion:BA.17.A".to_owned(),
+            to_ref: "mev:MV.10.B".to_owned(),
+            kind: BlockEdgeKindDto::BlockedBy,
+            target_node_id: Some("mev:MV.10.B".to_owned()),
+            blocking: false,
+        };
+        let json = serde_json::to_string(&edge).expect("serialize BlockGraphEdgeDto");
+        let decoded: BlockGraphEdgeDto =
+            serde_json::from_str(&json).expect("deserialize BlockGraphEdgeDto");
+        assert_eq!(edge, decoded);
+    }
+
+    #[test]
+    fn block_graph_edge_dto_dangling_target_is_none() {
+        let edge = BlockGraphEdgeDto {
+            from: "bastion:BA.17.A".to_owned(),
+            to_ref: "unknown:XX.1".to_owned(),
+            kind: BlockEdgeKindDto::CrossRepo,
+            target_node_id: None,
+            blocking: true,
+        };
+        let v = serde_json::to_value(&edge).expect("serialize BlockGraphEdgeDto");
+        assert_eq!(v["target_node_id"], serde_json::Value::Null);
+        assert_eq!(v["kind"], "cross_repo");
+    }
+
+    // ── BlockGraphDto ──────────────────────────────────────────────────────
+
+    fn sample_graph_dto() -> BlockGraphDto {
+        BlockGraphDto {
+            version: "1".to_owned(),
+            root: "/repo/hq".to_owned(),
+            scope: BoardScope::Hq,
+            tier: None,
+            epic: None,
+            repo: None,
+            include_closed: false,
+            include_boundary: false,
+            nodes: vec![sample_node()],
+            edges: vec![BlockGraphEdgeDto {
+                from: "bastion:BA.17.A".to_owned(),
+                to_ref: "mev:MV.10.B".to_owned(),
+                kind: BlockEdgeKindDto::BlockedBy,
+                target_node_id: Some("mev:MV.10.B".to_owned()),
+                blocking: false,
+            }],
+            cycles: vec![],
+            total_nodes: 1,
+            truncated: false,
+            stale: false,
+        }
+    }
+
+    #[test]
+    fn block_graph_dto_round_trip() {
+        let dto = sample_graph_dto();
+        let json = serde_json::to_string(&dto).expect("serialize BlockGraphDto");
+        let decoded: BlockGraphDto =
+            serde_json::from_str(&json).expect("deserialize BlockGraphDto");
+        assert_eq!(dto, decoded);
+    }
+
+    #[test]
+    fn block_graph_dto_serializes_expected_top_level_fields() {
+        let dto = sample_graph_dto();
+        let v = serde_json::to_value(&dto).expect("serialize BlockGraphDto");
+        for field in [
+            "version",
+            "root",
+            "scope",
+            "tier",
+            "epic",
+            "repo",
+            "include_closed",
+            "include_boundary",
+            "nodes",
+            "edges",
+            "cycles",
+            "total_nodes",
+            "truncated",
+            "stale",
+        ] {
+            assert!(
+                v.get(field).is_some(),
+                "BlockGraphDto JSON must contain field {field:?}, got {v}"
+            );
+        }
+        assert_eq!(v["scope"], "hq");
+    }
+
+    #[test]
+    fn block_graph_dto_defaults_scope_to_hq_when_absent() {
+        let raw = r#"{
+            "version":"1","root":"/repo","include_closed":false,"include_boundary":false,
+            "total_nodes":0,"truncated":false,"stale":false
+        }"#;
+        let dto: BlockGraphDto = serde_json::from_str(raw).expect("minimal body should decode");
+        assert_eq!(dto.scope, BoardScope::Hq);
+        assert!(dto.nodes.is_empty());
+        assert!(dto.edges.is_empty());
+        assert!(dto.cycles.is_empty());
     }
 }
