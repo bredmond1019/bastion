@@ -1885,7 +1885,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.12**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.13**.
 
 ---
 
