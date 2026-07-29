@@ -1,24 +1,24 @@
 ---
 type: Guideline
-title: "serve-api contract v0.12"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), and the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A)."
+title: "serve-api contract v0.13"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), and the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.12 Contract
+# serve-api — v0.13 Contract
 
-**Version:** v0.12  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–21 — plus, when mounted,
+**Version:** v0.13  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–23 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21;
 bastion-web (`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web
 (`BW.2.A`) for Section 16; `bastion abort` (`src/run/abort.rs`, this repo) for Section 18's abort
-route.
+route; bastion-web (`BW.9.B`) for Section 23.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -2004,7 +2004,203 @@ unknown-slug branch.
 
 ---
 
+## 23. Block-graph API (v0.13, BA.17.A, program block BA.2.A)
+
+One read-only route (D25) projecting mev's enriched block-graph export — the same
+nodes/edges/cycles/topo-order data `mev block-graph` computes from a `depends_on`-edge walk of the
+brain — onto HTTP, so a client can render the whole dependency graph rather than only the four
+flattened board lanes (Section 13). Lives under the bearer-protected `/api` scope (Section 2).
+Backing handler: `src/serve/handlers/block_graph.rs`.
+
+**Bastion performs zero derivation of its own here.** The handler reuses `board::assemble_board`
+(Section 13) for the brain-walk — config, loaded files, the `StateGraph`, and `stale` — so the
+graph and the board read one corpus in one request shape, then calls
+`mev::build_block_graph_export` directly and copies every field of the resulting
+`BlockGraphExport` straight across into the wire DTO. This is the one-derivation contract
+bastion-web's node-graph view (`BW.9.B`) relies on: the graph the client renders and the board the
+client also renders are guaranteed to agree on node count, edge count, and per-node lane, because
+both are read off the same corpus by the same brain-walk.
+
+### 23.1 `GET /api/blocks/graph` — cross-brain block dependency graph
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `scope` | string | No | `"hq"` | One of `"hq"` \| `"tier"` \| `"project"` \| `"business"` \| `"epic"`. Resolved to a `TierScope` identically to `GET /api/board` (Section 13.2) via the shared `board::resolve_scope`. An unrecognized value fails query deserialization and returns `400` (Section 23.3), same as Section 13.4's `scope=` case. |
+| `tier` | string | No | `"core"` | Tier name; only consulted when `scope` is `"tier"` or `"project"`. Ignored for `"hq"`/`"business"`/`"epic"`. An empty-string or unknown tier behaves exactly as documented in Section 13.2 — no in-scope repos rather than an error. |
+| `epic` | string | Only for `scope=epic` | — | Epic slug (from the HQ `epics[]` registry, Section 17) to filter the graph to. Required, and only consulted, when `scope=epic`; missing/blank or unknown → `404`/`C005` (Section 23.3). Ignored for every other scope. |
+| `repo` | string | No | — | Narrows the export to a single repo slug. Absent means every in-scope repo. |
+| `include_closed` | bool | No | `false` | Whether nodes whose lane is `"closed"` are retained in the export. |
+| `include_boundary` | bool | No | `false` | Whether direct dependency neighbours of the in-scope node set are re-added as boundary nodes (visible context outside the strict scope, e.g. a cross-repo blocker). |
+| `max_nodes` | number | No | `400` | Cap on returned nodes. Any value (including `0` and any value above the clamp) is clamped to at most `2000` — `resolve_max_nodes` in the handler. |
+
+**Request:**
+
+```
+GET /api/blocks/graph?scope=hq HTTP/1.1
+Authorization: Bearer <token>
+```
+
+```
+GET /api/blocks/graph?scope=epic&epic=bastion-surfaces&max_nodes=200 HTTP/1.1
+Authorization: Bearer <token>
+```
+
+### 23.2 Response (200 OK): `BlockGraphDto`
+
+```json
+{
+  "version": "1",
+  "root": "/Users/brandon/Dev/agentic-portfolio",
+  "scope": "hq",
+  "tier": null,
+  "epic": null,
+  "repo": null,
+  "include_closed": false,
+  "include_boundary": false,
+  "nodes": [
+    {
+      "key": "bastion:BA.17.A",
+      "repo": "bastion",
+      "id": "BA.17.A",
+      "title": "GET /api/blocks/graph endpoint",
+      "status": "in_progress",
+      "lane": "now",
+      "track": "Phase 17",
+      "wave": 1,
+      "priority": 1,
+      "effective_priority": 1,
+      "due": null,
+      "epics": ["bastion-surfaces"],
+      "layer": 0,
+      "topo_index": 4,
+      "ready": true,
+      "in_cycle": false,
+      "in_scope": true,
+      "external_deps": [],
+      "unmet_count": 0,
+      "dependent_count": 0
+    }
+  ],
+  "edges": [
+    { "from": "bastion:BA.17.A", "to_ref": "mev:MV.10.B", "kind": "blocked_by",
+      "target_node_id": "mev:MV.10.B", "blocking": false }
+  ],
+  "cycles": [],
+  "total_nodes": 115,
+  "truncated": true,
+  "stale": false
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `version` | string | Schema version of the underlying mev export — currently `"1"`. |
+| `root` | string | Display path of the brain root used for the build. |
+| `scope` | string | Echoes the resolved response-level scope (`"hq"`/`"tier"`/`"project"`/`"business"`/`"epic"`) — the same `BoardScope` enum Section 13.3 uses. |
+| `tier` | string \| null | Resolved tier name for tier-scoped responses; `null` for `"hq"`/`"epic"`. |
+| `epic` | string \| null | The resolved `&epic=` slug, echoed from `mev`'s scope, when `scope=epic`. |
+| `repo` | string \| null | The resolved `&repo=` restriction, when present. |
+| `include_closed` | boolean | Echoes the resolved `include_closed` param. |
+| `include_boundary` | boolean | Echoes the resolved `include_boundary` param. |
+| `nodes` | array of `BlockGraphNodeDto` | Nodes, emitted in `topo_index` order (see below). |
+| `edges` | array of `BlockGraphEdgeDto` | One entry per surviving scoped `depends_on` edge (see below). |
+| `cycles` | array of array of string | Dependency cycles found over the **full corpus**, not the scoped subgraph — each inner array is a cycle's member node keys. `[]` when the corpus is acyclic. |
+| `total_nodes` | number | Node count before any `max_nodes` truncation — lets a client tell "showing 400 of 115" from "showing all 115". |
+| `truncated` | boolean | Whether `max_nodes` cut the node list short. |
+| `stale` | boolean | Freshness flag: `true` when any in-scope repo's `planning/status.md` cache lags its `state.json` — same posture and same `mev::brain::sync::check_sync` source as `BoardDto.stale` (Section 13.3). |
+
+#### `BlockGraphNodeDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `key` | string | Canonical `"repo:id"` key. |
+| `repo` | string | Owning repo slug. |
+| `id` | string | Canonical block ID (e.g. `"BA.17.A"`). |
+| `title` | string | Brief human description. |
+| `status` | string \| null | Authored lifecycle status (`"open"`/`"in_progress"`/`"deferred"`/`"closed"`), if any. |
+| `lane` | string | One of `"now"` \| `"next"` \| `"blocked"` \| `"deferred"` \| `"closed"` \| `"other"` — same six-value lane vocabulary as `BoardBlockDto`'s lane placement, computed identically (Section 23's one-derivation cross-check test enforces this). |
+| `track` | string \| null | Title of the containing `tracks[]` phase/wave, if resolvable. |
+| `wave` | number \| null | Authored execution-order rank (`TrackBlock.wave`). |
+| `priority` | number \| null | Authored own priority. |
+| `effective_priority` | number \| null | Effective priority; absent when it never lands in the real `0..=3` range. |
+| `due` | string \| null | Authored due date/timing string. |
+| `epics` | array of string | Cross-repo epic membership (`[]` when none). |
+| `layer` | number | Longest path over resolved `depends_on` edges (`0` = no resolved prerequisites). |
+| `topo_index` | number | Position in the full-corpus topological order. |
+| `ready` | boolean | Membership in the ready-order set. |
+| `in_cycle` | boolean | Whether this node participates in a `depends_on` cycle. |
+| `in_scope` | boolean | Whether this node survives the scope pipeline's tier/repo/epic/closed stages. |
+| `external_deps` | array of string | `what` strings from this block's `{type:"external"}` `depends_on` entries. |
+| `unmet_count` | number | Count of unmet dependencies for a `"blocked"` node — `0` for every other lane. |
+| `dependent_count` | number | Corpus-wide count of in-corpus blocks whose `blocked_by` edges point at this node. |
+
+#### `BlockGraphEdgeDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `from` | string | `"repo:id"` key of the source (dependent) block. |
+| `to_ref` | string | Raw, as-authored `"repo:id"` reference. |
+| `kind` | string | `"blocked_by"` \| `"cross_repo"`. |
+| `target_node_id` | string \| null | `Some(to_ref)` when it resolves to a node in this export; `null` when dangling. |
+| `blocking` | boolean | `false` when either endpoint is `"closed"`. |
+
+### 23.3 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Unrecognized `scope` value (fails `BoardScope` query deserialization) | `400 Bad Request` | Plain text — same actix stock extractor failure as `GET /api/board` (Section 13.4); no `QueryConfig` error handler is installed for this route either. |
+| `scope=epic` with a missing/blank `&epic=` param | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_param_missing` / `board::epic_error_response` verbatim, same message shape as Section 13.4. |
+| `scope=epic` with an `&epic=<slug>` value absent from the HQ `epics[]` registry (Section 17) | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_known` / `board::epic_error_response` verbatim, message naming the unknown slug (`"unknown epic: <slug>"`). |
+| Unresolvable brain root (no `brain.toml` walking up from the workspace root) or unparseable `brain.toml` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, via `board::brain_root_error_response`. |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, via `board::blocking_error_response`. |
+
+Individual malformed/unreadable `state.json` files under an otherwise-resolvable brain root are
+skipped (degrade gracefully) rather than failing the whole request — same posture as
+`board::assemble_board` (Section 13.4).
+
+### 23.4 Testing
+
+`resolve_max_nodes`, `block_graph_scope_from_query`, and `block_graph_dto` (the export → DTO
+mechanical projection, including the six-variant `BlockLane`/`BlockLaneDto` mapping and the
+two-variant `StateEdgeKind`/`BlockEdgeKindDto` mapping) are pure and unit-tested with no filesystem
+access. A dedicated **cross-check test** builds one fixture brain root covering all five real
+board lanes (now/next/blocked/deferred/finished), feeds the same `(config, files, graph)` triple
+assembled once by `board::assemble_board` into both `mev::build_block_graph_export` →
+`block_graph_dto` and `board::build_board`, and asserts the two independent read paths agree on
+node count, edge count, and every node's lane — mechanically enforcing the one-derivation
+contract. The thin `web::block` I/O shell (`get_block_graph`) and route wiring in
+`src/serve/mod.rs` are covered by `#[actix_web::test]` integration tests asserting the bearer-auth
+`401`, the `scope=epic` 404/`C005` pair, and a `200` body against both a real and a fixture brain
+root, plus manually smoke-tested end-to-end against a running `bastion serve` with the real HQ
+brain root (recorded in `planning/17.A-block-graph-endpoint/tasks.md`'s `## Notes`).
+
+---
+
 ## Amendment Log
+
+- **2026-07-28 — v0.12 → v0.13 (BA.17.A, program block BA.2.A):** Added Section 23 (Block-graph
+  API) — `GET /api/blocks/graph?scope=hq|tier|project|business|epic[&tier=<name>][&epic=<slug>]
+  [&repo=<slug>][&include_closed=bool][&include_boundary=bool][&max_nodes=<n>]` (`max_nodes`
+  default `400`, clamped to `2000`), a mechanical projection of mev's enriched block-graph export
+  (`mev::build_block_graph_export`) onto HTTP, reusing `board::assemble_board`'s brain-walk
+  (Section 13) so the graph and the board read one corpus in one request shape. Bastion performs
+  **zero derivation** of its own — every `BlockGraphDto`/`BlockGraphNodeDto`/`BlockGraphEdgeDto`/
+  `BlockLaneDto`/`BlockEdgeKindDto` field is copied straight across from the upstream mev type —
+  the one-derivation contract bastion-web's node-graph view (`BW.9.B`) relies on, mechanically
+  enforced by a cross-check test comparing this route's output against `GET /api/board`'s for the
+  same fixture corpus (node count, edge count, per-node lane). Error mapping mirrors
+  `GET /api/board` (Section 13.4) verbatim: `400` plain-text for an unrecognized `scope`, `404`/
+  `C005` for the two `scope=epic` registry-miss cases (missing/blank param, unknown slug, via the
+  same `board::epic_param_missing`/`board::epic_known`/`board::epic_error_response` helpers), and
+  `500`/`C010` for an unresolvable brain root or a `web::block` failure. No write path, no UI, and
+  no bastion-side derivation is introduced (D25). Appended as Section 23 (after Pipeline /
+  opportunities API) — no existing endpoint's documented contract changed; the auth policy table
+  (Section 2.3) already covers `/api/*` routes generically (per the v0.12 precedent) and is not
+  amended here. Updated frontmatter title, description, and `keywords`; updated the
+  **Consumed by** line to add bastion-web (`BW.9.B`) for Section 23.
 
 - **2026-07-26 — v0.11 → v0.12 (BW.3.A):** Added Section 22 (Pipeline /
   opportunities API) — `GET /api/pipeline` (canonical stage vocabulary parsed
