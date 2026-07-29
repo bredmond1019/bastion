@@ -374,6 +374,12 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // ── Cross-brain board route (BA.11.K) ───────────────────────────
             // /board — GET only (now/next/blocked/finished rollup)
             .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
+            // ── Block-graph read route (BA.17.A) ─────────────────────────────
+            // /blocks/graph — GET only (mev's enriched block-graph export)
+            .service(
+                web::resource("/blocks/graph")
+                    .route(web::get().to(handlers::block_graph::get_block_graph)),
+            )
             // ── Live run-state read routes (BA.11.M) ────────────────────────
             // /runs — GET (currently-tracked run ids)
             .service(web::resource("/runs").route(web::get().to(handlers::runs::list_runs)))
@@ -635,6 +641,11 @@ mod tests {
                 web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
             )
             .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
+            // ── Block-graph read route (BA.17.A) ─────────────────────────────
+            .service(
+                web::resource("/blocks/graph")
+                    .route(web::get().to(handlers::block_graph::get_block_graph)),
+            )
             .service(web::resource("/runs").route(web::get().to(handlers::runs::list_runs)))
             .service(web::resource("/runs/{id}").route(web::get().to(handlers::runs::get_run)))
             .service(
