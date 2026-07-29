@@ -42,6 +42,12 @@ Personal Rust CLI — unified control panel for monitoring, validating, and oper
    a bastion regression. Do not add `default-features = false` to the `bella-engine` dependency —
    bastion deliberately stays open to features bella adds (e.g. images) rather than excluded by a
    bella-only default.
+8. **Use `cargo nextest run`, never plain `cargo test`, for any test run you invoke yourself
+   during a task** (scoped: `cargo nextest run <module::path>`; full fast pass: `cargo nextest run
+   --lib`). This is a 2000+-test suite — plain `cargo test`'s serial-per-binary model is slow. The
+   one exception is the task explicitly designated to own full-suite validation for a spec — that
+   task runs the real `cargo test` / `cargo build --release` gates, per `planning/harness.json`'s
+   `command` (not `fastCommand`). See "Build / test / run" below for the full rationale.
 
 ## Known bugs
 
@@ -50,14 +56,30 @@ None known at initialization.
 ## Build / test / run
 
 ```bash
-cargo fmt --check          # format gate
-cargo clippy -- -D warnings  # lint gate
-cargo test                 # test suite
-cargo build --release      # release build
-cargo run -- --help        # verify CLI help
-cargo run -- status        # smoke test (Phase 0+)
+cargo fmt --check              # format gate
+cargo clippy -- -D warnings    # lint gate
+cargo nextest run --lib --bins        # fast — use this, not plain `cargo test`
+cargo build --release          # release build
+cargo run -- --help            # verify CLI help
+cargo run -- status            # smoke test (Phase 0+)
 ```
 
+> **Always prefer `cargo nextest run --lib --bins` over plain `cargo test` in this repo.** With 2000+
+> unit tests, plain `cargo test`'s serial-per-binary libtest model is slow; `nextest` runs tests
+> as parallel OS processes instead, cutting wall-clock dramatically. This is wired as the
+> `fastCommand` on the `test` check in `planning/harness.json`, which the SDLC engines use for
+> per-task (`testDepth: "fast"`) runs — reach for it manually too whenever iterating outside the
+> harness. Requires `cargo-nextest` on PATH (`brew install cargo-nextest`); `cargo test` remains
+> the authoritative full-suite gate.
+>
+> **Scope even narrower while mid-task**: `cargo nextest run <module::path>` for just the touched
+> module. Only the task(s) explicitly owning full-suite validation for a spec should run the
+> full `cargo test` / `cargo build --release` gates.
+>
+> **`sccache` is wired in via `.cargo/config.toml`** (`rustc-wrapper = "sccache"`) — caches
+> compiled object code across builds so repeated compiles within an SDLC spec reuse work instead
+> of recompiling from scratch. Requires `sccache` on PATH (`brew install sccache`).
+>
 > The SDLC pipeline reads its validation suite from `planning/harness.json` (not from this
 > block). Keep the `<test>`/`<build>` commands here in sync with that file's
 > `validation.checks[]` so humans and the pipeline run the same thing.
