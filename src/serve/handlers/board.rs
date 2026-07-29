@@ -49,8 +49,8 @@ use crate::serve::handlers::epics::hq_epic_registry;
 use mev::Diagnostic;
 use mev::brain::config::{BrainConfig, find_brain_root, load_brain_config};
 use mev::brain::state::{
-    RepoRollup, StateSource, TierScope, build_state_graph, derive_rollup, discover_state_files,
-    load_state,
+    RepoRollup, StateGraph, StateSource, TierScope, build_state_graph, derive_rollup,
+    discover_state_files, load_state,
 };
 use mev::brain::sync::check_sync;
 use okf_core::{BlockedBy, StateFile, TrackBlock};
@@ -410,15 +410,17 @@ pub fn filter_board_to_epic(mut board: BoardDto, slug: &str) -> BoardDto {
 
 /// Is `&epic=` absent or blank on a `scope=epic` request? Pulled out of
 /// [`get_board`] as its own pure fn so the missing-param error branch is
-/// unit-testable without spinning up actix.
-fn epic_param_missing(epic: Option<&str>) -> bool {
+/// unit-testable without spinning up actix. `pub(crate)` so sibling handler
+/// modules (e.g. `block_graph`) can reuse the same registry-miss convention.
+pub(crate) fn epic_param_missing(epic: Option<&str>) -> bool {
     epic.map(str::trim).unwrap_or("").is_empty()
 }
 
 /// Is `slug` present in the HQ `epics[]` registry? Pulled out of [`get_board`]
 /// as its own pure fn so the unknown-slug error branch is unit-testable
-/// without spinning up actix.
-fn epic_known(slug: &str, registry: &[okf_core::Epic]) -> bool {
+/// without spinning up actix. `pub(crate)` so sibling handler modules can
+/// reuse the same registry-miss convention.
+pub(crate) fn epic_known(slug: &str, registry: &[okf_core::Epic]) -> bool {
     registry.iter().any(|e| e.slug == slug)
 }
 
@@ -438,8 +440,9 @@ pub fn is_stale_for_scope(diagnostics: &[Diagnostic], in_scope_repos: &[String])
 // ── I/O shell ──────────────────────────────────────────────────────────────────
 
 /// Build a 500 response from a `BlockingError` (thread panic / runtime shutdown),
-/// mirroring `handlers/status.rs::blocking_error_response`.
-fn blocking_error_response(err: actix_web::error::BlockingError) -> HttpResponse {
+/// mirroring `handlers/status.rs::blocking_error_response`. `pub(crate)` so
+/// sibling handler modules can reuse the same error shape.
+pub(crate) fn blocking_error_response(err: actix_web::error::BlockingError) -> HttpResponse {
     HttpResponse::InternalServerError().json(ErrorPayload {
         code: "C010".to_owned(),
         message: format!("blocking thread error: {err}"),
@@ -449,8 +452,9 @@ fn blocking_error_response(err: actix_web::error::BlockingError) -> HttpResponse
 /// Build a 404 response for `scope=epic`'s two registry-miss cases: a missing
 /// `&epic=` param, or a value not present in the HQ `epics[]` registry — one
 /// uniform "no such epic board" shape (matching §11's registry-miss
-/// convention), `message` naming which of the two happened.
-fn epic_error_response(message: impl std::fmt::Display) -> HttpResponse {
+/// convention), `message` naming which of the two happened. `pub(crate)` so
+/// sibling handler modules can reuse the same registry-miss response shape.
+pub(crate) fn epic_error_response(message: impl std::fmt::Display) -> HttpResponse {
     HttpResponse::NotFound().json(ErrorPayload {
         code: "C005".to_owned(),
         message: message.to_string(),
@@ -461,34 +465,43 @@ fn epic_error_response(message: impl std::fmt::Display) -> HttpResponse {
 /// found walking up from the resolved workspace root, or the file failed to
 /// parse). This is an operator-configuration problem, not a per-request one —
 /// mirrored on the same `C010` code used for other I/O-shell failures since
-/// there is no dedicated brain-root C-code.
-fn brain_root_error_response(message: impl std::fmt::Display) -> HttpResponse {
+/// there is no dedicated brain-root C-code. `pub(crate)` so sibling handler
+/// modules can reuse the same 500/`C010` response shape.
+pub(crate) fn brain_root_error_response(message: impl std::fmt::Display) -> HttpResponse {
     HttpResponse::InternalServerError().json(ErrorPayload {
         code: "C010".to_owned(),
         message: message.to_string(),
     })
 }
 
-/// The loaded [`BrainConfig`], `(StateSource, StateFile)` pairs, the in-scope
-/// `RepoRollup`s for a resolved [`TierScope`], and the `stale` freshness flag —
-/// the inputs [`build_board`] (plus, for `scope=epic`, [`hq_epic_registry`])
-/// needs, assembled by [`assemble_board`].
-type BoardAssembly = (
-    BrainConfig,
-    Vec<RepoRollup>,
-    Vec<(StateSource, StateFile)>,
-    bool,
-);
+/// The loaded [`BrainConfig`], the in-scope `RepoRollup`s for a resolved
+/// [`TierScope`], the loaded `(StateSource, StateFile)` pairs, the built
+/// [`StateGraph`], and the `stale` freshness flag — the inputs [`build_board`]
+/// (plus, for `scope=epic`, [`hq_epic_registry`]) needs, assembled by
+/// [`assemble_board`]. `pub(crate)` (and each field `pub(crate)`) so sibling
+/// handler modules (e.g. `block_graph`) can reuse the same brain-walk
+/// assembly instead of re-plumbing discover → load → build-graph →
+/// derive-rollup themselves — the graph and the board must read one corpus in
+/// one request shape.
+pub(crate) struct BoardAssembly {
+    pub(crate) config: BrainConfig,
+    pub(crate) rollups: Vec<RepoRollup>,
+    pub(crate) files: Vec<(StateSource, StateFile)>,
+    pub(crate) graph: StateGraph,
+    pub(crate) stale: bool,
+}
 
 /// Assemble the brain-walk inputs `build_board` needs: the loaded
-/// [`BrainConfig`], the loaded `(StateSource, StateFile)` pairs, the in-scope
-/// `RepoRollup`s for `tier_scope`, and the `stale` flag. Reuses the exact
-/// discover → load → build-graph → derive-rollup pipeline
-/// `mev::validate_brain_state` runs (see `src/brainval/mod.rs`) instead of
-/// re-plumbing it. Malformed/unreadable individual `state.json` files are
-/// skipped (degrade gracefully) rather than failing the whole request — only an
-/// unresolvable brain root is a hard error.
-fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<BoardAssembly, String> {
+/// [`BrainConfig`], the loaded `(StateSource, StateFile)` pairs, the built
+/// [`StateGraph`], the in-scope `RepoRollup`s for `tier_scope`, and the
+/// `stale` flag. Reuses the exact discover → load → build-graph →
+/// derive-rollup pipeline `mev::validate_brain_state` runs (see
+/// `src/brainval/mod.rs`) instead of re-plumbing it. Malformed/unreadable
+/// individual `state.json` files are skipped (degrade gracefully) rather than
+/// failing the whole request — only an unresolvable brain root is a hard
+/// error. `pub(crate)` so sibling handler modules can call it directly rather
+/// than duplicating this pipeline.
+pub(crate) fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<BoardAssembly, String> {
     let config = load_brain_config(&root.join("brain.toml"))
         .map_err(|e| format!("could not load brain.toml at {}: {e}", root.display()))?;
 
@@ -508,7 +521,13 @@ fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<BoardAssembly, 
     let sync_diags = check_sync(root, &config);
     let stale = is_stale_for_scope(&sync_diags, &in_scope_repos);
 
-    Ok((config, rollups, loaded, stale))
+    Ok(BoardAssembly {
+        config,
+        rollups,
+        files: loaded,
+        graph,
+        stale,
+    })
 }
 
 /// The two error shapes [`get_board`]'s `web::block` closure can fail with:
@@ -549,8 +568,13 @@ pub async fn get_board(
                 start.display()
             ))
         })?;
-        let (config, rollups, files, stale) =
-            assemble_board(&root, &tier_scope).map_err(BoardError::BrainRoot)?;
+        let BoardAssembly {
+            config,
+            rollups,
+            files,
+            graph: _graph,
+            stale,
+        } = assemble_board(&root, &tier_scope).map_err(BoardError::BrainRoot)?;
         let board = build_board(scope, resolved_tier, &rollups, &files, stale);
 
         if scope != BoardScope::Epic {
@@ -1525,6 +1549,65 @@ mod tests {
             result.is_err(),
             "expected an error with no brain.toml present"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assemble_board_returns_graph_matching_loaded_fixture_corpus() {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-board-assemble-graph-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo_planning_dir = dir.join("bastion").join("planning");
+        std::fs::create_dir_all(&repo_planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "bastion"
+tier = "primary"
+repo_path = "bastion"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "Bastion"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            repo_planning_dir.join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-28",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "BA.1.A", "title": "BA.1.A title", "status": "open"},
+        {"id": "BA.1.B", "title": "BA.1.B title", "status": "closed"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let assembly =
+            assemble_board(&dir, &TierScope::All).expect("fixture corpus should assemble cleanly");
+
+        let mut node_keys: Vec<String> =
+            assembly.graph.nodes.iter().map(|n| n.key.clone()).collect();
+        node_keys.sort();
+        assert_eq!(node_keys, vec!["bastion:BA.1.A", "bastion:BA.1.B"]);
+        assert_eq!(assembly.rollups.len(), 1);
+        assert_eq!(assembly.files.len(), 1);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

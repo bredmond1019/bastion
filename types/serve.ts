@@ -147,6 +147,161 @@ export interface AttentionDto {
 }
 
 /**
+ * Mirrors `mev::brain::block_graph::BlockLane`'s six variants. Serialises
+ * `snake_case` to match upstream (`"now"`, `"next"`, `"blocked"`, `"deferred"`,
+ * `"closed"`, `"other"`).
+ */
+export enum BlockLaneDto {
+	/** Authored `status == "in_progress"`. */
+	Now = "now",
+	/** Ready — open, no external deps, all block deps closed. */
+	Next = "next",
+	/** Open with at least one unmet dependency. */
+	Blocked = "blocked",
+	/** Authored `status == "deferred"`. */
+	Deferred = "deferred",
+	/** Authored `status == "closed"`. */
+	Closed = "closed",
+	/** An authored status that matches none of the above. */
+	Other = "other",
+}
+
+/**
+ * Mirrors `mev::brain::block_graph::BlockGraphNode` field-for-field.
+ * 
+ * Wire format:
+ * ```json
+ * {
+ * "key": "bastion:BA.17.A", "repo": "bastion", "id": "BA.17.A",
+ * "title": "GET /api/blocks/graph endpoint", "status": "in_progress",
+ * "lane": "now", "track": "Phase 17", "wave": 1, "priority": 1,
+ * "effective_priority": 1, "due": null, "epics": ["bastion-surfaces"],
+ * "layer": 0, "topo_index": 4, "ready": true, "in_cycle": false,
+ * "in_scope": true, "external_deps": [], "unmet_count": 0, "dependent_count": 0
+ * }
+ * ```
+ */
+export interface BlockGraphNodeDto {
+	/** Canonical `"repo:id"` key. */
+	key: string;
+	/** Owning repo slug. */
+	repo: string;
+	/** Canonical block ID. */
+	id: string;
+	/** Brief human description. */
+	title: string;
+	/** Authored lifecycle status (`open`/`in_progress`/`deferred`/`closed`), if any. */
+	status?: string;
+	/** Derived attention lane. */
+	lane: BlockLaneDto;
+	/** Title of the containing `tracks[]` phase/wave, if resolvable. */
+	track?: string;
+	/** Authored execution-order rank. */
+	wave?: number;
+	/** Authored own priority. */
+	priority?: number;
+	/** Effective priority — absent when it never lands in the real `0..=3` range. */
+	effective_priority?: number;
+	/** Authored due date/timing string. */
+	due?: string;
+	/** Cross-repo epic membership. */
+	epics?: string[];
+	/** Longest path over resolved `depends_on` edges (`0` = no resolved prerequisites). */
+	layer: number;
+	/** Position in the full-corpus topological order. */
+	topo_index: number;
+	/** Membership in the ready-order set. */
+	ready: boolean;
+	/** Whether this node participates in a `depends_on` cycle. */
+	in_cycle: boolean;
+	/** Whether this node survives the scope pipeline's tier/repo/epic/closed stages. */
+	in_scope: boolean;
+	/** `what` strings from this block's `{type:"external"}` `depends_on` entries. */
+	external_deps?: string[];
+	/** Count of unmet dependencies for a `Blocked` node — `0` for every other lane. */
+	unmet_count: number;
+	/** Corpus-wide count of in-corpus blocks whose `BlockedBy` edges point at this node. */
+	dependent_count: number;
+}
+
+/**
+ * Mirrors `okf_core::state::StateEdgeKind`'s two variants. Serialises
+ * `snake_case` to match upstream (`"blocked_by"`, `"cross_repo"`). Declared
+ * locally rather than reusing `okf_core::StateEdgeKind` — see the module note
+ * above.
+ */
+export enum BlockEdgeKindDto {
+	/** A `blocked_by` dependency (a block is waiting on another block). */
+	BlockedBy = "blocked_by",
+	/** An explicit cross-repo dependency declared in a brain file's `cross_repo[]`. */
+	CrossRepo = "cross_repo",
+}
+
+/**
+ * Mirrors `mev::brain::block_graph::BlockGraphEdge` field-for-field.
+ * 
+ * Wire format:
+ * ```json
+ * { "from": "bastion:BA.17.A", "to_ref": "mev:MV.10.B", "kind": "blocked_by",
+ * "target_node_id": "mev:MV.10.B", "blocking": false }
+ * ```
+ */
+export interface BlockGraphEdgeDto {
+	/** `"repo:id"` key of the source (dependent) block. */
+	from: string;
+	/** Raw, as-authored `"repo:id"` reference. */
+	to_ref: string;
+	/** Edge discriminant. */
+	kind: BlockEdgeKindDto;
+	/** `Some(to_ref)` when it resolves to a node in this export; `None` when dangling. */
+	target_node_id?: string;
+	/** `false` when either endpoint is `closed`. */
+	blocking: boolean;
+}
+
+/**
+ * JSON response for `GET /api/blocks/graph?scope=...&tier=...&epic=...&repo=...
+ * &include_closed=...&include_boundary=...&max_nodes=...`.
+ * 
+ * A mechanical projection of `mev::brain::block_graph::BlockGraphExport` plus the
+ * response-level `scope` echo (reusing [`BoardScope`]) and `stale` flag, matching
+ * `BoardDto`'s convention.
+ */
+export interface BlockGraphDto {
+	/** Schema version — currently `"1"`. */
+	version: string;
+	/** Display path of the brain root used for the build. */
+	root: string;
+	/** The resolved scope this response was projected under. */
+	scope?: BoardScope;
+	/** The resolved tier name, when `scope` is tier-scoped (`None` for `hq`). */
+	tier?: string;
+	/** The resolved `&epic=` slug, when `scope=epic`. */
+	epic?: string;
+	/** The resolved `&repo=` restriction, when present. */
+	repo?: string;
+	/** Whether `Closed`-lane nodes were retained. */
+	include_closed: boolean;
+	/** Whether direct neighbours of the in-scope set were re-added as boundary nodes. */
+	include_boundary: boolean;
+	/** Nodes, emitted in `topo_index` order. */
+	nodes?: BlockGraphNodeDto[];
+	/** Edges — one per surviving scoped edge. */
+	edges?: BlockGraphEdgeDto[];
+	/** Cycles found over the full corpus (never the scoped subgraph). */
+	cycles?: string[][];
+	/** Node count before any `max_nodes` truncation. */
+	total_nodes: number;
+	/** Whether `max_nodes` truncated the node list. */
+	truncated: boolean;
+	/**
+	 * Freshness flag: `true` when any in-scope repo's `status.md` cache lags its
+	 * `state.json` (same posture as `BoardDto::stale`).
+	 */
+	stale: boolean;
+}
+
+/**
  * One lane entry (a single now/next/blocked/finished block) in a board response.
  * 
  * Wire format:

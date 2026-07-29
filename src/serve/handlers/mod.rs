@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod attention;
+pub mod block_graph;
 pub mod board;
 pub mod docs;
 pub mod epics;
