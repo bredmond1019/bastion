@@ -214,6 +214,28 @@ pub(crate) fn ensure_session_with_claude(
     dir: Option<&str>,
     launch_cmd: &str,
 ) -> Result<(), AskError> {
+    ensure_session_with_claude_with_timeout(
+        session,
+        dir,
+        launch_cmd,
+        READINESS_TIMEOUT_SECS,
+        READINESS_POLL_MS,
+    )
+}
+
+/// Same as [`ensure_session_with_claude`] but with the readiness-wait timeout
+/// and poll interval as explicit parameters, so tests can exercise the full
+/// create+launch+wait path without paying the full production timeout
+/// (`READINESS_TIMEOUT_SECS`). Production callers go through the public
+/// `ensure_session_with_claude` wrapper, which always uses the real
+/// timeout/interval constants.
+fn ensure_session_with_claude_with_timeout(
+    session: &str,
+    dir: Option<&str>,
+    launch_cmd: &str,
+    timeout_secs: u64,
+    interval_ms: u64,
+) -> Result<(), AskError> {
     if !has_session(session) {
         // Create a new detached session.
         tmux::new_session(session, dir).map_err(|e| AskError::Tmux {
@@ -228,7 +250,7 @@ pub(crate) fn ensure_session_with_claude(
         })?;
 
         // Wait for Claude to become the foreground process.
-        wait_for_claude(session, READINESS_TIMEOUT_SECS, READINESS_POLL_MS)?;
+        wait_for_claude(session, timeout_secs, interval_ms)?;
     } else {
         // Session exists — check whether Claude is already the foreground process.
         // Use `classify_state` rather than checking for `"claude"` by name: modern
@@ -241,7 +263,7 @@ pub(crate) fn ensure_session_with_claude(
                 op: "send-keys (launch into existing session)".to_string(),
                 source: e,
             })?;
-            wait_for_claude(session, READINESS_TIMEOUT_SECS, READINESS_POLL_MS)?;
+            wait_for_claude(session, timeout_secs, interval_ms)?;
         }
         // else: Claude is already running → skip launch.
     }
@@ -585,8 +607,15 @@ mod tests {
         // and maps to `AskError::Launch`. Either way this exercises the
         // helper's error-branch wiring end-to-end without asserting on a
         // live external process.
+        //
+        // Uses the timeout-parameterized variant with a small
+        // timeout/interval (poll_plan(1, 200) = 5 attempts) so this test
+        // stays fast instead of paying the full production
+        // `READINESS_TIMEOUT_SECS` (30s) when the readiness wait is
+        // exercised — same rationale as
+        // `wait_for_claude_times_out_for_nonexistent_session` above.
         let session = "bastion-test-ensure-session-with-claude-xyz";
-        let result = ensure_session_with_claude(session, None, "true");
+        let result = ensure_session_with_claude_with_timeout(session, None, "true", 1, 200);
 
         match result {
             Err(AskError::Launch { session: s, .. }) => assert_eq!(s, session),
