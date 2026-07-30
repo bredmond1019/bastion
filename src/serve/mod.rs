@@ -1837,6 +1837,128 @@ heading = "bastion"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ── /api/board — `last_touched` route-level coverage (BA.11.S task 4) ──
+
+    /// [`make_temp_epics_brain_root`]'s corpus, plus an on-disk SDLC spec
+    /// folder for `BA.11.R` only
+    /// (`bastion/planning/BA.11.R-epic-ranking-enrichment/sdlc/sdlc-flow-state.json`)
+    /// carrying `updated_at`. `BA.11.K` (and every other authored block)
+    /// deliberately gets no spec folder, so `derive_last_touched` — and
+    /// therefore the board response — must omit `last_touched` for it
+    /// entirely rather than reporting `None`-as-`null`.
+    fn make_temp_epics_brain_root_with_last_touched() -> std::path::PathBuf {
+        let dir = make_temp_epics_brain_root();
+        let ba_11_r_sdlc_dir = dir
+            .join("bastion")
+            .join("planning")
+            .join("BA.11.R-epic-ranking-enrichment")
+            .join("sdlc");
+        std::fs::create_dir_all(&ba_11_r_sdlc_dir).unwrap();
+        std::fs::write(
+            ba_11_r_sdlc_dir.join("sdlc-flow-state.json"),
+            r#"{"updated_at": "2026-07-29T09:00:00Z"}"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    /// Collect every lane entry (all five lanes) into one flat `Vec` for
+    /// lookup-by-id assertions, mirroring [`get_board_returns_enrichment_fields`]'s
+    /// `all_blocks` pattern but including `deferred` too.
+    fn all_board_lane_entries(body: &serde_json::Value) -> Vec<&serde_json::Value> {
+        let lanes = &body["lanes"];
+        lanes["now"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(lanes["next"].as_array().unwrap())
+            .chain(lanes["blocked"].as_array().unwrap())
+            .chain(lanes["deferred"].as_array().unwrap())
+            .chain(lanes["finished"].as_array().unwrap())
+            .collect::<Vec<_>>()
+    }
+
+    #[actix_web::test]
+    async fn get_board_route_reports_last_touched_verbatim_for_matched_block() {
+        let dir = make_temp_epics_brain_root_with_last_touched();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/board?scope=hq with a valid token must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let all_blocks = all_board_lane_entries(&body);
+
+        let ba_11_r = all_blocks
+            .iter()
+            .find(|b| b["id"] == "BA.11.R")
+            .unwrap_or_else(|| panic!("BA.11.R must appear in some lane; got {body:?}"));
+        assert_eq!(
+            ba_11_r["last_touched"], "2026-07-29T09:00:00Z",
+            "BA.11.R's spec folder carries an updated_at that must surface verbatim on the board DTO"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_route_omits_last_touched_key_for_unmatched_block() {
+        let dir = make_temp_epics_brain_root_with_last_touched();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let all_blocks = all_board_lane_entries(&body);
+
+        let ba_11_k = all_blocks
+            .iter()
+            .find(|b| b["id"] == "BA.11.K")
+            .unwrap_or_else(|| panic!("BA.11.K must appear in some lane; got {body:?}"));
+        assert!(
+            ba_11_k.get("last_touched").is_none(),
+            "BA.11.K has no SDLC spec folder, so last_touched must be an absent key, not null: {ba_11_k:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_route_rejects_missing_token_with_401_even_with_last_touched_fixture() {
+        let dir = make_temp_epics_brain_root_with_last_touched();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/board without a token must still return 401 with the last_touched fixture; got {}",
+            resp.status()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[actix_web::test]
     async fn get_board_populates_blocked_by_outside_the_blocked_lane() {
         let dir = make_temp_epics_brain_root();
