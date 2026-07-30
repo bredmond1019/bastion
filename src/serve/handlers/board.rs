@@ -48,6 +48,7 @@ use crate::serve::handlers::epics::hq_epic_registry;
 
 use mev::Diagnostic;
 use mev::brain::config::{BrainConfig, find_brain_root, load_brain_config};
+use mev::brain::last_touched::derive_last_touched;
 use mev::brain::state::{
     RepoRollup, StateGraph, StateSource, TierScope, build_state_graph, derive_rollup,
     discover_state_files, load_state,
@@ -118,7 +119,18 @@ pub fn resolve_scope(scope: BoardScope, tier_param: Option<&str>) -> (TierScope,
 /// `derive_rollup` hard-codes these empty on the `okf_core::Block` it builds for
 /// now/next/blocked lane entries. Callers in [`build_board`] fill them in via
 /// [`enrich_block`] against a [`track_block_index`] built from `tracks[].blocks[]`.
-fn board_block_from(block: &okf_core::Block, repo: &str) -> BoardBlockDto {
+///
+/// `last_touched` is looked up by `"{repo}:{id}"` in `last_touched` (mev's
+/// `derive_last_touched` map, threaded through from [`BoardAssembly`]) — a
+/// missing key yields `None` ("never worked", never a sentinel). This is the
+/// *only* place `board_block_from`'s callers populate the field; `serve`
+/// derives nothing itself.
+fn board_block_from(
+    block: &okf_core::Block,
+    repo: &str,
+    last_touched: &HashMap<String, String>,
+) -> BoardBlockDto {
+    let key = format!("{repo}:{}", block.id);
     BoardBlockDto {
         id: block.id.clone(),
         title: block.title.clone(),
@@ -130,6 +142,7 @@ fn board_block_from(block: &okf_core::Block, repo: &str) -> BoardBlockDto {
         priority: None,
         due: None,
         track: None,
+        last_touched: last_touched.get(&key).cloned(),
     }
 }
 
@@ -224,6 +237,7 @@ fn finished_blocks_for_repo(
     repo: &str,
     index: &HashMap<&str, (&TrackBlock, &str)>,
     status_map: &HashMap<String, Option<String>>,
+    last_touched: &HashMap<String, String>,
 ) -> Vec<BoardBlockDto> {
     let mut entries: Vec<&(&TrackBlock, &str)> = index.values().collect();
     entries.sort_by_key(|(block, _)| block.id.as_str());
@@ -232,6 +246,7 @@ fn finished_blocks_for_repo(
         .into_iter()
         .filter(|(block, _)| block.status.as_deref() == Some(CLOSED_STATUS))
         .map(|&(block, track_title)| {
+            let key = format!("{repo}:{}", block.id);
             let mut dto = BoardBlockDto {
                 id: block.id.clone(),
                 title: block.title.clone(),
@@ -243,6 +258,7 @@ fn finished_blocks_for_repo(
                 priority: None,
                 due: None,
                 track: None,
+                last_touched: last_touched.get(&key).cloned(),
             };
             enrich_block(&mut dto, Some((block, track_title)));
             dto.blocked_by = unmet_deps(&block.depends_on, status_map);
@@ -262,6 +278,7 @@ pub fn build_board(
     rollups: &[RepoRollup],
     files: &[(StateSource, StateFile)],
     stale: bool,
+    last_touched: &HashMap<String, String>,
 ) -> BoardDto {
     let mut repos: Vec<RepoBoardDto> = Vec::new();
     let mut agg_now = Vec::new();
@@ -282,7 +299,7 @@ pub fn build_board(
             .now
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -295,7 +312,7 @@ pub fn build_board(
             .next
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -311,7 +328,7 @@ pub fn build_board(
             .blocked
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 dto
@@ -324,7 +341,7 @@ pub fn build_board(
             .deferred
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -333,7 +350,7 @@ pub fn build_board(
                 dto
             })
             .collect();
-        let finished = finished_blocks_for_repo(&rollup.repo, &index, &status_map);
+        let finished = finished_blocks_for_repo(&rollup.repo, &index, &status_map, last_touched);
 
         agg_now.extend(now.iter().cloned());
         agg_next.extend(next.iter().cloned());
@@ -489,6 +506,12 @@ pub(crate) struct BoardAssembly {
     pub(crate) files: Vec<(StateSource, StateFile)>,
     pub(crate) graph: StateGraph,
     pub(crate) stale: bool,
+    /// `"{repo}:{id}" -> updated_at` — mev's derived per-block SDLC recency
+    /// (`MV.10.D`, `mev::brain::last_touched::derive_last_touched`), computed
+    /// exactly once per request here and threaded into [`build_board`]. A
+    /// block absent from this map has no resolvable SDLC run — never a
+    /// sentinel, never backfilled from `StateFile.updated`.
+    pub(crate) last_touched: HashMap<String, String>,
 }
 
 /// Assemble the brain-walk inputs `build_board` needs: the loaded
@@ -521,12 +544,15 @@ pub(crate) fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<Boar
     let sync_diags = check_sync(root, &config);
     let stale = is_stale_for_scope(&sync_diags, &in_scope_repos);
 
+    let last_touched = derive_last_touched(root, &config, &loaded);
+
     Ok(BoardAssembly {
         config,
         rollups,
         files: loaded,
         graph,
         stale,
+        last_touched,
     })
 }
 
@@ -574,8 +600,9 @@ pub async fn get_board(
             files,
             graph: _graph,
             stale,
+            last_touched,
         } = assemble_board(&root, &tier_scope).map_err(BoardError::BrainRoot)?;
-        let board = build_board(scope, resolved_tier, &rollups, &files, stale);
+        let board = build_board(scope, resolved_tier, &rollups, &files, stale, &last_touched);
 
         if scope != BoardScope::Epic {
             return Ok(board);
@@ -764,7 +791,7 @@ mod tests {
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
 
-        let finished = finished_blocks_for_repo("bastion", &index, &status_map);
+        let finished = finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new());
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].id, "BA.1.A");
         assert_eq!(finished[0].repo, "bastion");
@@ -776,7 +803,9 @@ mod tests {
         let files: Vec<(StateSource, StateFile)> = Vec::new();
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
-        assert!(finished_blocks_for_repo("bastion", &index, &status_map).is_empty());
+        assert!(
+            finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new()).is_empty()
+        );
     }
 
     #[test]
@@ -785,7 +814,9 @@ mod tests {
         let files = vec![(sample_source("bastion"), file)];
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
-        assert!(finished_blocks_for_repo("bastion", &index, &status_map).is_empty());
+        assert!(
+            finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new()).is_empty()
+        );
     }
 
     // ── track_block_index ─────────────────────────────────────────────────
@@ -858,8 +889,11 @@ mod tests {
             Some("2026-08-01"),
             vec!["epic-alpha".to_owned()],
         );
-        let mut dto =
-            board_block_from(&sample_block("BA.1.A", Some("open"), Vec::new()), "bastion");
+        let mut dto = board_block_from(
+            &sample_block("BA.1.A", Some("open"), Vec::new()),
+            "bastion",
+            &HashMap::new(),
+        );
 
         enrich_block(&mut dto, Some((&track_block, "Phase 11")));
 
@@ -873,8 +907,11 @@ mod tests {
     #[test]
     fn enrich_block_leaves_defaults_when_no_fields_authored() {
         let track_block = sample_track_block("BA.1.A", Some("open"));
-        let mut dto =
-            board_block_from(&sample_block("BA.1.A", Some("open"), Vec::new()), "bastion");
+        let mut dto = board_block_from(
+            &sample_block("BA.1.A", Some("open"), Vec::new()),
+            "bastion",
+            &HashMap::new(),
+        );
 
         enrich_block(&mut dto, Some((&track_block, "Phase 11")));
 
@@ -887,8 +924,11 @@ mod tests {
 
     #[test]
     fn enrich_block_untouched_when_id_unmatched() {
-        let mut dto =
-            board_block_from(&sample_block("BA.1.A", Some("open"), Vec::new()), "bastion");
+        let mut dto = board_block_from(
+            &sample_block("BA.1.A", Some("open"), Vec::new()),
+            "bastion",
+            &HashMap::new(),
+        );
 
         enrich_block(&mut dto, None);
 
@@ -1027,6 +1067,7 @@ mod tests {
             &rollups,
             &files,
             false,
+            &HashMap::new(),
         );
 
         assert_eq!(dto.scope, BoardScope::Tier);
@@ -1058,6 +1099,7 @@ mod tests {
             &[rollup],
             &files,
             false,
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.deferred.len(), 1);
@@ -1082,6 +1124,7 @@ mod tests {
             &rollups,
             &files,
             false,
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.blocked[0].blocked_by.len(), 1);
@@ -1099,7 +1142,14 @@ mod tests {
         let file = sample_state_file(vec![sample_track_block("BA.1.Z", Some("closed"))]);
         let files = vec![(sample_source("bastion"), file)];
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        );
 
         assert_eq!(dto.lanes.finished.len(), 1);
         assert_eq!(dto.lanes.finished[0].id, "BA.1.Z");
@@ -1137,7 +1187,14 @@ mod tests {
         };
         let files = vec![(sample_source("bastion"), file)];
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        );
 
         let now = &dto.lanes.now[0];
         assert_eq!(now.epics, vec!["epic-alpha".to_owned()]);
@@ -1157,7 +1214,14 @@ mod tests {
         let rollups = vec![sample_rollup("bastion", "core")];
         let files: Vec<(StateSource, StateFile)> = Vec::new();
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        );
 
         let now = &dto.lanes.now[0];
         assert!(now.epics.is_empty());
@@ -1217,7 +1281,14 @@ mod tests {
         };
         let files = vec![(sample_source("bastion"), file)];
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        );
 
         let blocked_entry = dto.lanes.next.iter().find(|b| b.id == "BA.1.B").unwrap();
         assert_eq!(blocked_entry.blocked_by.len(), 1);
@@ -1247,7 +1318,14 @@ mod tests {
         };
         let files = vec![(sample_source("bastion"), file)];
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        );
 
         let blocked = &dto.lanes.blocked[0];
         assert_eq!(blocked.epics, vec!["epic-gamma".to_owned()]);
@@ -1260,9 +1338,140 @@ mod tests {
         );
     }
 
+    // ── last_touched (BA.11.S task 2) ────────────────────────────────────────
+
+    /// A rollup with the same block id (`BA.1.A`) surfaced on all five lanes
+    /// (`now`/`next`/`blocked`/`deferred`/`finished`), so one `last_touched`
+    /// test can assert the map is consulted on every lane, not just one.
+    fn all_lanes_rollup(repo: &str) -> RepoRollup {
+        RepoRollup {
+            repo: repo.to_owned(),
+            tier: Some("core".to_owned()),
+            now: vec![sample_block("BA.1.A", Some("in_progress"), Vec::new())],
+            next: vec![sample_block("BA.1.A", Some("open"), Vec::new())],
+            blocked: vec![sample_block("BA.1.A", Some("open"), Vec::new())],
+            deferred: vec![sample_block("BA.1.A", Some("deferred"), Vec::new())],
+        }
+    }
+
+    /// `finished` isn't sourced from the rollup — it comes from `files`'
+    /// `tracks[].blocks[]` via `finished_blocks_for_repo`, so a closed
+    /// `BA.1.A` in the fixture file drives that lane.
+    fn all_lanes_files(repo: &str) -> Vec<(StateSource, StateFile)> {
+        vec![(
+            sample_source(repo),
+            sample_state_file(vec![sample_track_block("BA.1.A", Some("closed"))]),
+        )]
+    }
+
+    #[test]
+    fn build_board_populates_last_touched_on_every_lane_when_key_matches() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+        let mut last_touched = HashMap::new();
+        last_touched.insert(
+            "bastion:BA.1.A".to_owned(),
+            "2026-07-28T12:00:00Z".to_owned(),
+        );
+
+        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+
+        assert_eq!(
+            dto.lanes.now[0].last_touched.as_deref(),
+            Some("2026-07-28T12:00:00Z"),
+            "now lane"
+        );
+        assert_eq!(
+            dto.lanes.next[0].last_touched.as_deref(),
+            Some("2026-07-28T12:00:00Z"),
+            "next lane"
+        );
+        assert_eq!(
+            dto.lanes.blocked[0].last_touched.as_deref(),
+            Some("2026-07-28T12:00:00Z"),
+            "blocked lane"
+        );
+        assert_eq!(
+            dto.lanes.deferred[0].last_touched.as_deref(),
+            Some("2026-07-28T12:00:00Z"),
+            "deferred lane"
+        );
+        assert_eq!(
+            dto.lanes.finished[0].last_touched.as_deref(),
+            Some("2026-07-28T12:00:00Z"),
+            "finished lane"
+        );
+    }
+
+    #[test]
+    fn build_board_leaves_last_touched_none_when_key_absent() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+        // A populated map that simply has no entry for this block/repo.
+        let mut last_touched = HashMap::new();
+        last_touched.insert(
+            "bastion:BA.9.Z".to_owned(),
+            "2026-07-28T12:00:00Z".to_owned(),
+        );
+
+        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+
+        assert_eq!(dto.lanes.now[0].last_touched, None);
+        assert_eq!(dto.lanes.next[0].last_touched, None);
+        assert_eq!(dto.lanes.blocked[0].last_touched, None);
+        assert_eq!(dto.lanes.deferred[0].last_touched, None);
+        assert_eq!(dto.lanes.finished[0].last_touched, None);
+    }
+
+    #[test]
+    fn build_board_last_touched_does_not_leak_across_repos_with_same_block_id() {
+        let rollups = vec![all_lanes_rollup("bastion"), all_lanes_rollup("bella")];
+        let mut files = all_lanes_files("bastion");
+        files.extend(all_lanes_files("bella"));
+        // Only `bella:BA.1.A` has a recorded timestamp; `bastion:BA.1.A` (same
+        // block id, different repo) must not pick it up.
+        let mut last_touched = HashMap::new();
+        last_touched.insert("bella:BA.1.A".to_owned(), "2026-07-28T12:00:00Z".to_owned());
+
+        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+
+        let bastion_now = dto.lanes.now.iter().find(|b| b.repo == "bastion").unwrap();
+        assert_eq!(
+            bastion_now.last_touched, None,
+            "bastion must not leak bella's value"
+        );
+
+        let bella_now = dto.lanes.now.iter().find(|b| b.repo == "bella").unwrap();
+        assert_eq!(
+            bella_now.last_touched.as_deref(),
+            Some("2026-07-28T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn build_board_empty_last_touched_map_leaves_every_lane_none() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        );
+
+        assert_eq!(dto.lanes.now[0].last_touched, None);
+        assert_eq!(dto.lanes.next[0].last_touched, None);
+        assert_eq!(dto.lanes.blocked[0].last_touched, None);
+        assert_eq!(dto.lanes.deferred[0].last_touched, None);
+        assert_eq!(dto.lanes.finished[0].last_touched, None);
+    }
+
     #[test]
     fn build_board_empty_rollups_yields_empty_board() {
-        let dto = build_board(BoardScope::Hq, None, &[], &[], false);
+        let dto = build_board(BoardScope::Hq, None, &[], &[], false, &HashMap::new());
         assert!(dto.lanes.now.is_empty());
         assert!(dto.lanes.next.is_empty());
         assert!(dto.lanes.blocked.is_empty());
@@ -1272,7 +1481,7 @@ mod tests {
 
     #[test]
     fn build_board_threads_stale_flag() {
-        let dto = build_board(BoardScope::Hq, None, &[], &[], true);
+        let dto = build_board(BoardScope::Hq, None, &[], &[], true, &HashMap::new());
         assert!(dto.stale);
     }
 
@@ -1335,7 +1544,14 @@ mod tests {
             (sample_source("mev"), mev_file),
         ];
 
-        build_board(BoardScope::Epic, None, &rollups, &files, false)
+        build_board(
+            BoardScope::Epic,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        )
     }
 
     #[test]
@@ -1384,6 +1600,7 @@ mod tests {
             &[rollup],
             &[(sample_source("mev"), file)],
             false,
+            &HashMap::new(),
         );
         let filtered = filter_board_to_epic(board, "epic-alpha");
 

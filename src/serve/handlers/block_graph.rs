@@ -238,6 +238,7 @@ pub async fn get_block_graph(
             files,
             graph,
             stale,
+            last_touched: _last_touched,
         } = board::assemble_board(&root, &block_graph_scope.tier)
             .map_err(BlockGraphError::BrainRoot)?;
 
@@ -430,6 +431,7 @@ mod tests {
                 external_deps: Vec::new(),
                 unmet_count: 0,
                 dependent_count: 1,
+                last_touched: None,
             }],
             edges: vec![BlockGraphEdge {
                 from: "bastion:BA.2".to_owned(),
@@ -679,6 +681,7 @@ heading = "Bastion"
             &assembly.rollups,
             &assembly.files,
             assembly.stale,
+            &assembly.last_touched,
         );
 
         // ── node count ───────────────────────────────────────────────────
