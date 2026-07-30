@@ -172,10 +172,11 @@ fn track_block_index<'a>(
     index
 }
 
-/// Fill `epics`/`wave`/`priority`/`due`/`track` on `dto` from the authoring
-/// `TrackBlock` + enclosing track title, when `entry` matches. An unmatched id
-/// (no `tracks[]` entry with this block's id) leaves the DTO's existing
-/// defaults (`epics: []`, four `None`s) untouched.
+/// Fill `epics`/`wave`/`priority`/`due`/`track`/`status` on `dto` from the
+/// authoring `TrackBlock` + enclosing track title, when `entry` matches. An
+/// unmatched id (no `tracks[]` entry with this block's id) leaves the DTO's
+/// existing defaults (`epics: []`, four `None`s, and the rollup-fabricated
+/// `status`) untouched.
 fn enrich_block(dto: &mut BoardBlockDto, entry: Option<(&TrackBlock, &str)>) {
     let Some((track_block, track_title)) = entry else {
         return;
@@ -186,6 +187,7 @@ fn enrich_block(dto: &mut BoardBlockDto, entry: Option<(&TrackBlock, &str)>) {
     dto.priority = track_block.priority;
     dto.due = track_block.due.clone();
     dto.track = Some(track_title.to_owned());
+    dto.status = track_block.status.clone();
 }
 
 /// Build a `"<repo>:<id>" -> Option<status>` map from the loaded `files`, the
@@ -879,7 +881,7 @@ mod tests {
     // ── enrich_block ──────────────────────────────────────────────────────
 
     #[test]
-    fn enrich_block_fills_all_five_fields_when_matched() {
+    fn enrich_block_fills_all_six_fields_when_matched() {
         let track_block = sample_track_block_full(
             "BA.1.A",
             Some("open"),
@@ -902,11 +904,12 @@ mod tests {
         assert_eq!(dto.priority, Some(1));
         assert_eq!(dto.due, Some("2026-08-01".to_owned()));
         assert_eq!(dto.track, Some("Phase 11".to_owned()));
+        assert_eq!(dto.status, Some("open".to_owned()));
     }
 
     #[test]
     fn enrich_block_leaves_defaults_when_no_fields_authored() {
-        let track_block = sample_track_block("BA.1.A", Some("open"));
+        let track_block = sample_track_block("BA.1.A", None);
         let mut dto = board_block_from(
             &sample_block("BA.1.A", Some("open"), Vec::new()),
             "bastion",
@@ -920,6 +923,7 @@ mod tests {
         assert_eq!(dto.priority, None);
         assert_eq!(dto.due, None);
         assert_eq!(dto.track, Some("Phase 11".to_owned()));
+        assert_eq!(dto.status, None);
     }
 
     #[test]
@@ -937,6 +941,7 @@ mod tests {
         assert_eq!(dto.priority, None);
         assert_eq!(dto.due, None);
         assert_eq!(dto.track, None);
+        assert_eq!(dto.status, Some("open".to_owned()));
     }
 
     // ── unmet_deps ────────────────────────────────────────────────────────
