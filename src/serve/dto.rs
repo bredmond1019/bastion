@@ -645,6 +645,16 @@ pub struct BoardBlockDto {
     /// Title of the enclosing `tracks[]` phase/wave entry (`okf_core::Track.title`).
     #[serde(default)]
     pub track: Option<String>,
+    /// mev's derived per-block SDLC recency (`MV.10.D`), carried verbatim from
+    /// `mev::brain::last_touched::derive_last_touched` — `serve` derives nothing
+    /// itself. **Absence means "never worked", not "worked long ago"**: a block
+    /// with no resolvable SDLC run has no entry in mev's map and this field is
+    /// `None`. Unlike the v0.11 sibling fields above (`wave`/`priority`/`due`/
+    /// `track`, which serialise as `null`), this field deliberately carries
+    /// `skip_serializing_if` so `None` serialises as an **absent key** rather
+    /// than `null` — the block's stated backward-compatibility contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_touched: Option<String>,
 }
 
 /// The four now/next/blocked/finished lanes for one board (aggregate or per-repo).
@@ -2702,6 +2712,7 @@ mod tests {
             priority: Some(1),
             due: Some("2026-07-15".to_owned()),
             track: Some("Phase 11".to_owned()),
+            last_touched: None,
         }
     }
 
@@ -3018,6 +3029,31 @@ mod tests {
         assert!(dto.priority.is_none());
         assert!(dto.due.is_none());
         assert!(dto.track.is_none());
+        assert!(dto.last_touched.is_none());
+    }
+
+    #[test]
+    fn board_block_dto_last_touched_round_trips_some() {
+        let mut original = sample_board_block();
+        original.last_touched = Some("2026-07-28T12:00:00Z".to_string());
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: BoardBlockDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            decoded.last_touched.as_deref(),
+            Some("2026-07-28T12:00:00Z"),
+            "last_touched must round-trip verbatim"
+        );
+    }
+
+    #[test]
+    fn board_block_dto_last_touched_none_omits_key_from_json() {
+        let mut dto = sample_board_block();
+        dto.last_touched = None;
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert!(
+            v.get("last_touched").is_none(),
+            "last_touched must be an absent key when None, not null: {v:?}"
+        );
     }
 
     #[test]
@@ -3033,6 +3069,7 @@ mod tests {
             priority: Some(1),
             due: Some("2026-07-15".to_string()),
             track: Some("Phase 11".to_string()),
+            last_touched: Some("2026-07-28T12:00:00Z".to_string()),
         };
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: BoardBlockDto = serde_json::from_str(&json).expect("deserialize");
@@ -3052,6 +3089,7 @@ mod tests {
             priority: None,
             due: None,
             track: None,
+            last_touched: None,
         };
         let v = serde_json::to_value(&dto).expect("serialize");
         assert!(v["epics"].is_array());
