@@ -11,6 +11,43 @@ timestamp: 2026-07-25T19:02:48Z
 
 ---
 
+## [run: 2026-07-29]
+
+### 11.S-last-touched-board-dto — DONE
+
+- **What:** `/sdlc-flow` ran spec `11.S-last-touched-board-dto` end-to-end across 7 tasks, all
+  PASS. Task 1 added `BoardBlockDto.last_touched: Option<String>` to `src/serve/dto.rs`
+  (typeshare-visible, `#[serde(skip_serializing_if = "Option::is_none")]`, doc comment stating
+  absence means "never worked" per mev's `MV.10.D` recency-honesty constraint), with three
+  existing struct literals updated and three new tests (back-compat `None`-default, `Some`
+  round-trip, `None`-omits-key serialization). Task 2 wired `assemble_board` to derive
+  `mev::brain::last_touched::derive_last_touched` exactly once per request into a
+  `BoardAssembly.last_touched: HashMap<String, String>`, threading it by `"{repo}:{id}"` through
+  `build_board`/`board_block_from`/`finished_blocks_for_repo` across all five board lanes. Task 3
+  extended the `BA.17.A` one-derivation cross-check test in `block_graph.rs` to also assert
+  `build_board` and `mev::build_block_graph_export` agree on `last_touched` (value and absence)
+  for every fixture block. Task 4 added route-level tests to `serve/mod.rs` proving `GET
+  /api/board?scope=hq` returns `last_touched` verbatim for a block with an SDLC spec folder, omits
+  it entirely for one without, and still 401s without a token, plus a manual smoke test against the
+  live HQ brain root recorded in the spec's Notes (358 lane entries, 127 with `last_touched`).
+  Task 5 regenerated `types/serve.ts` via `scripts/gen-types.sh`, confirmed clean against
+  `scripts/check-typeshare-drift.sh`. Task 6 documented the field in `docs/serve-api.md` §13
+  (contract bumped v0.13 → v0.14 in header/frontmatter/current-contract note/section title, dated
+  Amendment Log entry). Task 7 re-ran the full gated validation suite (`cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test` 1765 passed, `cargo build --release`, typeshare drift
+  check) confirming `BoardBlockDto.last_touched` is the only additive wire-level change. Review
+  verdict PASS, no findings.
+- **Next:** Resume Phase 11 with BA.11.J — Cost read endpoint (`GET /api/costs`).
+
+```
+e49575e docs: document last_touched field in serve-api contract (v0.13 -> v0.14)
+12f6497 feat: implement 11.S-last-touched-board-dto-task5
+7ad9e26 feat: implement 11.S-last-touched-board-dto-task4
+cd0c8a7 feat: implement 11.S-last-touched-board-dto-task3
+3dbfa94 feat: implement 11.S-last-touched-board-dto-task2
+bb09451 feat: implement 11.S-last-touched-board-dto-task1
+```
+
 ## [run: 2026-07-28]
 
 ### 17.A-block-graph-endpoint — DONE
