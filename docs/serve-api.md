@@ -1,21 +1,21 @@
 ---
 type: Guideline
-title: "serve-api contract v0.14"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), and the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S)."
+title: "serve-api contract v0.15"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), and the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.14 Contract
+# serve-api — v0.15 Contract
 
-**Version:** v0.14  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–23 — plus, when mounted,
+**Version:** v0.15  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–24 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
-**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21;
+**Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
 bastion-web (`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web
 (`BW.2.A`) for Section 16; `bastion abort` (`src/run/abort.rs`, this repo) for Section 18's abort
 route; bastion-web (`BW.9.B`) for Section 23.
@@ -1893,7 +1893,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.14**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.15**.
 
 ---
 
@@ -2187,7 +2187,158 @@ brain root (recorded in `planning/17.A-block-graph-endpoint/tasks.md`'s `## Note
 
 ---
 
+## 24. Cost read API (v0.15, BA.11.J)
+
+One read-only route projecting the existing `src/costs/` module — BA.7.B's exact per-workflow
+token/cost aggregation and BA.7.C's budget-gate evaluation — onto HTTP, so `bastion-ui` and any web
+dashboard can render spend and budget state without shelling to the CLI. Lives under the
+bearer-protected `/api` scope (Section 2). Backing handler: `src/serve/handlers/costs.rs`.
+
+**Read-only.** Nothing over HTTP mutates the configured budget caps — cap mutation stays CLI/D48.
+There is no streaming/push variant; the response is a point-in-time snapshot for the resolved
+window, computed fresh on every request.
+
+**Mounts unconditionally.** Unlike the embedded engine routes (Section 18, gated on
+`DATABASE_URL` + the engine API key being present), `/api/costs` is always registered on both
+`serve` app factories. A missing or unreachable database is answered as a typed error response
+(below), never a `404` — this keeps the route's presence a stable contract fact for clients, and
+matches how `bastion costs` itself degrades (an actionable message, never a panic).
+
+**No `?repo=` filter.** The block definition named an optional `?repo=` query param, but the
+`events` contract carries no repo dimension to filter on: `db::costs::fetch_all_runs` reads
+`WorkflowRun { id, workflow_name, status, budget_halt, nodes, started_at, elapsed_secs }` rows —
+no `repo` field — and `costs::aggregate` groups by `workflow_name` only. This is a deliberate
+deviation from the block definition, decided with the owner 2026-07-29 (see
+`planning/11.J-cost-read-endpoint/tasks.md`'s Amendment Log); `repo` is **not** silently aliased
+onto `workflow_name`.
+
+### 24.1 `GET /api/costs` — cost + budget-state summary
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `window` | string | No | `"7d"` | One of `"7d"` \| `"30d"` \| `"all"`, case-insensitive, parsed by `costs::parse_window`. Missing or empty/whitespace-only applies the default (matching `bastion costs`' own `--last` default). An unparseable value returns `400`/`C006` (Section 24.3). |
+
+**Request:**
+
+```
+GET /api/costs HTTP/1.1
+Authorization: Bearer <token>
+```
+
+```
+GET /api/costs?window=30d HTTP/1.1
+Authorization: Bearer <token>
+```
+
+### 24.2 Response (200 OK): `CostSummaryDto`
+
+```json
+{
+  "window": "7d",
+  "rows": [
+    { "workflow_name": "content-pipeline", "runs": 12, "tokens_in": 48000, "tokens_out": 9000, "usd": 1.32 },
+    { "workflow_name": "research-pipeline", "runs": 3, "tokens_in": 5000, "tokens_out": 700, "usd": 0.18 }
+  ],
+  "totals": { "workflow_name": "TOTAL", "runs": 15, "tokens_in": 53000, "tokens_out": 9700, "usd": 1.50 },
+  "unpriced_models": ["some-unpriced-model"],
+  "budget": {
+    "max_total_tokens": null,
+    "max_cost_usd": null,
+    "total_tokens": 62700,
+    "total_cost_usd": 1.50,
+    "breached": false,
+    "breach": null
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `window` | string | The resolved window, echoed back (`"7d"` / `"30d"` / `"all"`), independent of the case the caller sent. |
+| `rows` | array of `WorkflowCostDto` | One row per distinct `workflow_name`, sorted by `usd` descending — same order `costs::aggregate` produces, carried through verbatim. |
+| `totals` | `WorkflowCostDto` | Sum across all rows; `workflow_name` is `"TOTAL"`. |
+| `unpriced_models` | array of string | Model IDs seen in the data with no price entry — spend for these is under-reported rather than silently omitted, so a client can surface the gap. |
+| `budget` | `BudgetStateDto` | Configured caps + current gate state for this window (below). |
+
+#### `WorkflowCostDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `workflow_name` | string | Workflow name this row aggregates (or `"TOTAL"` for the totals row). |
+| `runs` | number | Count of contributing runs. |
+| `tokens_in` | number | Summed input tokens. |
+| `tokens_out` | number | Summed output tokens. |
+| `usd` | number | Summed USD cost. |
+
+#### `BudgetStateDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `max_total_tokens` | number \| null | Configured token cap (`Config::max_total_tokens`), when set; `null` when no cap is configured. |
+| `max_cost_usd` | number \| null | Configured USD cost cap (`Config::max_cost_usd`), when set; `null` when no cap is configured. |
+| `total_tokens` | number | `tokens_in + tokens_out` from `totals` — the current spend reading against `max_total_tokens`. |
+| `total_cost_usd` | number | `totals.usd` — the current spend reading against `max_cost_usd`. |
+| `breached` | boolean | Whether any configured cap has been **reached** (`>=`, not merely approached) — `costs::budget::evaluate`'s documented boundary. Always `false` when no caps are configured (`Budget::default()`). |
+| `breach` | `BudgetBreachDto` \| null | Present only when `breached` is `true`. |
+
+#### `BudgetBreachDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `cap` | string | Which cap was breached — exactly `"max_total_tokens"` or `"max_cost_usd"`, `Cap::as_str`'s wire strings (matching what the embedded engine stamps into `metadata.budget.reason.cap`). |
+| `spent` | number | The spend value that tripped the cap. |
+| `limit` | number | The configured limit that was reached. |
+
+### 24.3 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) — the handler is never reached. |
+| Unparseable `?window=` value | `400 Bad Request` | JSON `ErrorPayload`, code `C006`, message names the bad value. |
+| `DATABASE_URL` unset (`Config::load` fails) | `503 Service Unavailable` | JSON `ErrorPayload`, code `C005` — the route is present but degrades; not a `404`. |
+| Postgres unreachable, or the `events` query fails | `503 Service Unavailable` | JSON `ErrorPayload`, code `C009`. |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, mirroring `handlers/board.rs::blocking_error_response`. |
+
+### 24.4 Testing
+
+`resolve_window`, `budget_from_config`, `budget_state_dto`, and `cost_summary_dto` (the whole
+projection, including the window-label echo and the `Cap::as_str` mapping) are pure and
+unit-tested with no I/O — covering the default/case-insensitive/garbage `window` cases, the
+no-caps/tokens-cap/cost-cap/at-limit-boundary budget cases, and a **CLI-parity check** that runs
+`costs::aggregate` over the same `src/db/fixtures/*.json` runs `src/db/workflows.rs` already uses
+and asserts the DTO's rows/totals equal `CostSummary`'s fields verbatim, so the endpoint and
+`bastion costs` cannot drift apart. The thin `web::block` I/O shell (`get_costs`) and route wiring
+in `src/serve/mod.rs` are covered by `#[actix_web::test]` integration tests asserting the
+bearer-auth `401`, the `DATABASE_URL`-unset `503`/`C005` case (no live Postgres required), the
+database-connect-failure `503`/`C009` case (`DATABASE_URL` set to a syntactically-invalid
+connection string, so `db::costs::fetch_all_runs`'s `PgPoolOptions::connect` fails fast at parse
+time — exercising the same `Err` -> `db_error_response` branch a genuinely unreachable Postgres
+takes, without incurring sqlx's ~30s default `acquire_timeout` retry/backoff on an actually-refused
+TCP connection), the `?window=nonsense` `400`/`C006` case (short-circuits before any database
+access), and reachability on both app factories — plus manually smoke-tested end-to-end against a
+running `bastion serve`
+and a real Postgres, comparing the returned totals against `bastion costs --last 7d` for the same
+window (recorded in `planning/11.J-cost-read-endpoint/tasks.md`'s `## Notes`).
+
+---
+
 ## Amendment Log
+
+- **2026-07-29 — v0.14 → v0.15 (BA.11.J):** Added Section 24, `GET /api/costs` — a read-only
+  projection of the existing `src/costs/` module (BA.7.B's exact per-workflow token/cost
+  aggregation and BA.7.C's budget-gate evaluation) over HTTP, so `bastion-ui` and any web
+  dashboard can render spend/budget without shelling to the CLI. The route accepts `?window=`
+  (`"7d"`/`"30d"`/`"all"`, case-insensitive, default `"7d"`) only — it deliberately drops the
+  block definition's optional `?repo=` param, because the `events` contract carries no repo
+  dimension to filter on (`WorkflowRun` has no repo field; `costs::aggregate` groups by
+  `workflow_name` only); `repo` is not silently aliased onto `workflow_name`. The route mounts
+  unconditionally on both `serve` app factories (unlike the gated engine routes) and degrades to
+  typed errors — `503`/`C005` when `DATABASE_URL` is unset, `503`/`C009` on database
+  unreachability — rather than being absent. Nothing over HTTP mutates the configured budget caps;
+  mutation stays CLI/D48. New DTOs: `CostSummaryDto`, `WorkflowCostDto`, `BudgetStateDto`,
+  `BudgetBreachDto`.
 
 - **2026-07-29 — v0.13 → v0.14 (BA.11.S):** Added `last_touched: Option<String>` to
   `BoardBlockDto` (Section 13.3) — mev's derived per-block SDLC recency

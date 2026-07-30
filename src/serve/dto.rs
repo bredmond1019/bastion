@@ -28,6 +28,10 @@
 //!   [`BlockEdgeKindDto`] — `GET /api/blocks/graph` mechanical projection of
 //!   `mev::brain::block_graph::BlockGraphExport` (BA.17.A). Pure data only — no
 //!   conversion logic lives here (see `handlers/block_graph.rs::block_graph_dto`).
+//! - [`CostSummaryDto`] / [`WorkflowCostDto`] / [`BudgetStateDto`] / [`BudgetBreachDto`] —
+//!   `GET /api/costs` read-only projection of `costs::CostSummary` + the BA.7.C budget
+//!   state (BA.11.J). Caps are reported as configured; nothing here mutates them (mutation
+//!   stays CLI/D48). Conversion logic lives in `handlers/costs.rs`, not here.
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -1438,6 +1442,105 @@ pub struct BlockGraphDto {
     /// Freshness flag: `true` when any in-scope repo's `status.md` cache lags its
     /// `state.json` (same posture as `BoardDto::stale`).
     pub stale: bool,
+}
+
+// ── Cost read API (BA.11.J) ─────────────────────────────────────────────────────
+
+/// One per-workflow aggregated cost row — mirrors `costs::WorkflowCost` exactly.
+///
+/// Wire format:
+/// `{ "workflow_name": "content-pipeline", "runs": 12, "tokens_in": 48000, "tokens_out": 9000, "usd": 1.32 }`
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowCostDto {
+    /// Distinct workflow name this row aggregates.
+    pub workflow_name: String,
+    /// Number of runs contributing to this row.
+    #[typeshare(serialized_as = "number")]
+    pub runs: u64,
+    /// Total input tokens across the contributing runs.
+    #[typeshare(serialized_as = "number")]
+    pub tokens_in: u64,
+    /// Total output tokens across the contributing runs.
+    #[typeshare(serialized_as = "number")]
+    pub tokens_out: u64,
+    /// Total USD cost across the contributing runs.
+    pub usd: f64,
+}
+
+/// Detail of a breached budget cap — mirrors `costs::budget::BreachReason`.
+///
+/// `cap` carries `Cap::as_str`'s exact strings (`"max_total_tokens"` /
+/// `"max_cost_usd"`), matching what the Engine stamps into
+/// `metadata.budget.reason.cap` (contract v1.1.0 §5).
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetBreachDto {
+    /// Which cap was breached: `"max_total_tokens"` or `"max_cost_usd"`.
+    pub cap: String,
+    /// The spend value that tripped the cap.
+    pub spent: f64,
+    /// The configured limit that was reached.
+    pub limit: f64,
+}
+
+/// Budget configuration + current gate state for the aggregated window.
+///
+/// Read-only projection: caps are reported as configured (from `Config`), not
+/// mutated over HTTP — budget mutation stays CLI/D48. A run with no caps
+/// configured (`Budget::default()`) always reports `breached: false`.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetStateDto {
+    /// Configured token cap, when set.
+    #[serde(default)]
+    #[typeshare(serialized_as = "number")]
+    pub max_total_tokens: Option<u64>,
+    /// Configured USD cost cap, when set.
+    #[serde(default)]
+    pub max_cost_usd: Option<f64>,
+    /// Current total tokens spent (`tokens_in + tokens_out`) for the window.
+    #[typeshare(serialized_as = "number")]
+    pub total_tokens: u64,
+    /// Current total USD cost for the window.
+    pub total_cost_usd: f64,
+    /// Whether any configured cap has been reached (`>=`, per `evaluate`'s
+    /// documented boundary).
+    pub breached: bool,
+    /// Which cap was breached and by how much, when `breached` is `true`.
+    #[serde(default)]
+    pub breach: Option<BudgetBreachDto>,
+}
+
+/// `GET /api/costs` response body — read-only projection of `costs::CostSummary`
+/// plus the BA.7.C budget state for the resolved window.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "window": "7d",
+///   "rows": [{ "workflow_name": "content-pipeline", "runs": 12, "tokens_in": 48000, "tokens_out": 9000, "usd": 1.32 }],
+///   "totals": { "workflow_name": "TOTAL", "runs": 12, "tokens_in": 48000, "tokens_out": 9000, "usd": 1.32 },
+///   "unpriced_models": [],
+///   "budget": { "max_total_tokens": null, "max_cost_usd": null, "total_tokens": 57000, "total_cost_usd": 1.32, "breached": false, "breach": null }
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostSummaryDto {
+    /// The resolved window echoed back to the client (`"7d"` / `"30d"` / `"all"`).
+    pub window: String,
+    /// One row per distinct `workflow_name`, sorted by `usd` descending.
+    #[serde(default)]
+    pub rows: Vec<WorkflowCostDto>,
+    /// Totals across all rows.
+    pub totals: WorkflowCostDto,
+    /// Model IDs that appeared in the data but have no price entry — spend is
+    /// under-reported for these rather than silently omitted.
+    #[serde(default)]
+    pub unpriced_models: Vec<String>,
+    /// Budget configuration + current gate state for this window.
+    pub budget: BudgetStateDto,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -3416,5 +3519,102 @@ mod tests {
         assert!(dto.nodes.is_empty());
         assert!(dto.edges.is_empty());
         assert!(dto.cycles.is_empty());
+    }
+
+    // ── Cost read API DTOs (BA.11.J) ────────────────────────────────────────
+
+    fn sample_workflow_cost_dto(name: &str, usd: f64) -> WorkflowCostDto {
+        WorkflowCostDto {
+            workflow_name: name.to_owned(),
+            runs: 3,
+            tokens_in: 1000,
+            tokens_out: 200,
+            usd,
+        }
+    }
+
+    #[test]
+    fn cost_summary_dto_round_trips_with_breached_budget() {
+        let dto = CostSummaryDto {
+            window: "7d".to_owned(),
+            rows: vec![
+                sample_workflow_cost_dto("content-pipeline", 1.32),
+                sample_workflow_cost_dto("research-pipeline", 0.44),
+            ],
+            totals: sample_workflow_cost_dto("TOTAL", 1.76),
+            unpriced_models: vec!["some-unpriced-model".to_owned()],
+            budget: BudgetStateDto {
+                max_total_tokens: Some(100_000),
+                max_cost_usd: Some(1.5),
+                total_tokens: 3600,
+                total_cost_usd: 1.76,
+                breached: true,
+                breach: Some(BudgetBreachDto {
+                    cap: "max_cost_usd".to_owned(),
+                    spent: 1.76,
+                    limit: 1.5,
+                }),
+            },
+        };
+
+        let json = serde_json::to_string(&dto).expect("serialize CostSummaryDto");
+        let decoded: CostSummaryDto =
+            serde_json::from_str(&json).expect("deserialize CostSummaryDto");
+        assert_eq!(dto, decoded);
+
+        let breach = decoded.budget.breach.expect("breach present");
+        assert_eq!(breach.cap, "max_cost_usd");
+    }
+
+    #[test]
+    fn cost_summary_dto_round_trips_with_absent_caps() {
+        let dto = CostSummaryDto {
+            window: "all".to_owned(),
+            rows: vec![],
+            totals: WorkflowCostDto {
+                workflow_name: "TOTAL".to_owned(),
+                runs: 0,
+                tokens_in: 0,
+                tokens_out: 0,
+                usd: 0.0,
+            },
+            unpriced_models: vec![],
+            budget: BudgetStateDto {
+                max_total_tokens: None,
+                max_cost_usd: None,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
+                breached: false,
+                breach: None,
+            },
+        };
+
+        let json = serde_json::to_string(&dto).expect("serialize CostSummaryDto");
+        let decoded: CostSummaryDto =
+            serde_json::from_str(&json).expect("deserialize CostSummaryDto");
+        assert_eq!(dto, decoded);
+        assert!(decoded.budget.max_total_tokens.is_none());
+        assert!(decoded.budget.max_cost_usd.is_none());
+        assert!(!decoded.budget.breached);
+        assert!(decoded.budget.breach.is_none());
+    }
+
+    #[test]
+    fn budget_breach_dto_cap_strings_match_cap_as_str_exactly() {
+        use crate::costs::budget::Cap;
+
+        let tokens_breach = BudgetBreachDto {
+            cap: Cap::MaxTotalTokens.as_str().to_owned(),
+            spent: 100_000.0,
+            limit: 100_000.0,
+        };
+        let cost_breach = BudgetBreachDto {
+            cap: Cap::MaxCostUsd.as_str().to_owned(),
+            spent: 5.0,
+            limit: 5.0,
+        };
+
+        assert_eq!(tokens_breach.cap, "max_total_tokens");
+        assert_eq!(cost_breach.cap, "max_cost_usd");
     }
 }

@@ -13,6 +13,44 @@ timestamp: 2026-07-25T19:02:48Z
 
 ## [run: 2026-07-29]
 
+### 11.J-cost-read-endpoint — DONE
+
+- **What:** `/sdlc-flow` ran spec `11.J-cost-read-endpoint` end-to-end across 6 tasks, all PASS.
+  Task 1 added typeshare DTOs (`WorkflowCostDto`, `BudgetBreachDto`, `BudgetStateDto`,
+  `CostSummaryDto`) to `src/serve/dto.rs` mirroring `costs::CostSummary` and the BA.7.C budget
+  state, with serde round-trip tests covering breached/absent-cap cases and `Cap::as_str` string
+  parity. Task 2 shipped `src/serve/handlers/costs.rs` (window parsing via `costs::parse_window`,
+  `costs::aggregate` projection, budget evaluation via `Config::load` mirroring
+  `costs::watch::run`'s construction), and along the way fixed a pre-existing flaky
+  SIGTERM/timeout test in `src/sessions/ask.rs` (unrelated to this block's scope but the actual
+  reported failing check) by extracting a timeout-parameterized helper. Task 3 registered `GET
+  /api/costs` (unconditional, GET-only, under the Bearer gate) in both the production app factory
+  and the test `build_app` mirror, with route-level tests for 401 (missing/wrong token), 400/C006
+  (unparseable window), and 503/C005 (`DATABASE_URL` unset), plus a manual smoke test against a
+  live `bastion serve` + Postgres confirming the endpoint and `bastion costs --last 7d` agree
+  exactly, recorded in the spec's Notes. Task 4 regenerated `types/serve.ts` via
+  `scripts/gen-types.sh`, clean against `scripts/check-typeshare-drift.sh`. Task 5 documented the
+  endpoint in `docs/serve-api.md` §24 (contract bumped v0.14 → v0.15, dated Amendment Log entry
+  recording the dropped `?repo=` param — the `events` contract carries no repo dimension). Task 6
+  re-ran the full gated validation suite (typeshare drift, `cargo fmt --check`,
+  `cargo clippy -- -D warnings`, `cargo test` 1787 passed, `cargo build --release`) confirming
+  `src/costs/` and `src/db/` stayed untouched and only `src/serve/mod.rs` gained the new route
+  registration. Review verdict PASS, no findings.
+- **Next:** Resume Phase 11 with BA.11.O — Brain-rag CLI bridge (`GET /api/brain/recall`, `/walk`,
+  `/pulse`).
+
+```
+c1cfcaf fix: review pass 1 for 11.J-cost-read-endpoint
+8eedd73 docs: document cost read API in serve-api contract (v0.14 -> v0.15)
+bb746a5 feat: implement 11.J-cost-read-endpoint-task4
+5ea420f feat: implement 11.J-cost-read-endpoint-task3
+25a5207 fix: fix pass 1 for 11.J-cost-read-endpoint-task2
+e3457eb feat: implement 11.J-cost-read-endpoint-task2
+a51125a feat: implement 11.J-cost-read-endpoint-task1
+```
+
+## [run: 2026-07-29]
+
 ### 11.S-last-touched-board-dto — DONE
 
 - **What:** `/sdlc-flow` ran spec `11.S-last-touched-board-dto` end-to-end across 7 tasks, all

@@ -405,6 +405,47 @@ export interface BoardDto {
 }
 
 /**
+ * Detail of a breached budget cap — mirrors `costs::budget::BreachReason`.
+ * 
+ * `cap` carries `Cap::as_str`'s exact strings (`"max_total_tokens"` /
+ * `"max_cost_usd"`), matching what the Engine stamps into
+ * `metadata.budget.reason.cap` (contract v1.1.0 §5).
+ */
+export interface BudgetBreachDto {
+	/** Which cap was breached: `"max_total_tokens"` or `"max_cost_usd"`. */
+	cap: string;
+	/** The spend value that tripped the cap. */
+	spent: number;
+	/** The configured limit that was reached. */
+	limit: number;
+}
+
+/**
+ * Budget configuration + current gate state for the aggregated window.
+ * 
+ * Read-only projection: caps are reported as configured (from `Config`), not
+ * mutated over HTTP — budget mutation stays CLI/D48. A run with no caps
+ * configured (`Budget::default()`) always reports `breached: false`.
+ */
+export interface BudgetStateDto {
+	/** Configured token cap, when set. */
+	max_total_tokens?: number;
+	/** Configured USD cost cap, when set. */
+	max_cost_usd?: number;
+	/** Current total tokens spent (`tokens_in + tokens_out`) for the window. */
+	total_tokens: number;
+	/** Current total USD cost for the window. */
+	total_cost_usd: number;
+	/**
+	 * Whether any configured cap has been reached (`>=`, per `evaluate`'s
+	 * documented boundary).
+	 */
+	breached: boolean;
+	/** Which cap was breached and by how much, when `breached` is `true`. */
+	breach?: BudgetBreachDto;
+}
+
+/**
  * Dispatch mode for `POST /actions/command`.
  * 
  * Serializes/deserializes as the lowercase wire string (`"inject"` / `"spawn"`).
@@ -467,6 +508,56 @@ export interface ContactDto {
 	phones?: string[];
 	links?: string[];
 	note?: string;
+}
+
+/**
+ * One per-workflow aggregated cost row — mirrors `costs::WorkflowCost` exactly.
+ * 
+ * Wire format:
+ * `{ "workflow_name": "content-pipeline", "runs": 12, "tokens_in": 48000, "tokens_out": 9000, "usd": 1.32 }`
+ */
+export interface WorkflowCostDto {
+	/** Distinct workflow name this row aggregates. */
+	workflow_name: string;
+	/** Number of runs contributing to this row. */
+	runs: number;
+	/** Total input tokens across the contributing runs. */
+	tokens_in: number;
+	/** Total output tokens across the contributing runs. */
+	tokens_out: number;
+	/** Total USD cost across the contributing runs. */
+	usd: number;
+}
+
+/**
+ * `GET /api/costs` response body — read-only projection of `costs::CostSummary`
+ * plus the BA.7.C budget state for the resolved window.
+ * 
+ * Wire format:
+ * ```json
+ * {
+ * "window": "7d",
+ * "rows": [{ "workflow_name": "content-pipeline", "runs": 12, "tokens_in": 48000, "tokens_out": 9000, "usd": 1.32 }],
+ * "totals": { "workflow_name": "TOTAL", "runs": 12, "tokens_in": 48000, "tokens_out": 9000, "usd": 1.32 },
+ * "unpriced_models": [],
+ * "budget": { "max_total_tokens": null, "max_cost_usd": null, "total_tokens": 57000, "total_cost_usd": 1.32, "breached": false, "breach": null }
+ * }
+ * ```
+ */
+export interface CostSummaryDto {
+	/** The resolved window echoed back to the client (`"7d"` / `"30d"` / `"all"`). */
+	window: string;
+	/** One row per distinct `workflow_name`, sorted by `usd` descending. */
+	rows?: WorkflowCostDto[];
+	/** Totals across all rows. */
+	totals: WorkflowCostDto;
+	/**
+	 * Model IDs that appeared in the data but have no price entry — spend is
+	 * under-reported for these rather than silently omitted.
+	 */
+	unpriced_models?: string[];
+	/** Budget configuration + current gate state for this window. */
+	budget: BudgetStateDto;
 }
 
 /**
