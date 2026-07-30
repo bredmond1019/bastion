@@ -226,17 +226,20 @@ fn unknown_run_response(id: Uuid) -> HttpResponse {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-/// `GET /api/runs` — the run ids currently tracked by the shared `LiveStateStore`.
+/// `GET /api/runs` — the projected `RunSummaryDto` for every run currently
+/// tracked by the shared `LiveStateStore` (BA.11.T).
 ///
-/// Returns 200 with a JSON array of run-id strings; `[]` when the store is
-/// empty (including when the engine is not mounted).
+/// Returns 200 with a JSON array; `[]` when the store is empty (including
+/// when the engine is not mounted). Any run id that races out of the store
+/// between `list_active()` and `get()` (evicted by `mark_terminal`) is
+/// silently dropped from the response rather than erroring.
 pub async fn list_runs(live: web::Data<LiveStateStore>) -> HttpResponse {
-    let ids: Vec<String> = live
+    let summaries: Vec<RunSummaryDto> = live
         .list_active()
         .into_iter()
-        .map(|id| id.to_string())
+        .filter_map(|id| live.get(id).map(|ctx| project_run_summary(id, &ctx)))
         .collect();
-    HttpResponse::Ok().json(ids)
+    HttpResponse::Ok().json(summaries)
 }
 
 /// `GET /api/runs/{id}` — the projected `RunStateDto` snapshot for one run.
@@ -465,10 +468,14 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn list_runs_empty_store_returns_empty_array() {
+    async fn list_runs_empty_store_returns_200_empty_array() {
         let live = web::Data::new(LiveStateStore::new());
         let resp = list_runs(live).await;
         assert_eq!(resp.status(), 200);
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!([]));
     }
 
     #[actix_web::test]
@@ -488,6 +495,107 @@ mod tests {
 
         let resp = list_runs(live).await;
         assert_eq!(resp.status(), 200);
+    }
+
+    #[actix_web::test]
+    async fn list_runs_spec_slug_bearing_run_returns_summary_with_real_slug_and_status() {
+        let store = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        let mut node_runs = HashMap::new();
+        node_runs.insert(
+            "PlanNode".to_string(),
+            node_run_with_times(
+                NodeRunStatus::Success,
+                Some("2026-01-01T00:00:00Z"),
+                Some("2026-01-01T00:05:00Z"),
+            ),
+        );
+        store.record(
+            run_id,
+            &TaskContext {
+                event: serde_json::json!({ "spec_slug": "11.T-run-summary-projection" }),
+                nodes: HashMap::new(),
+                metadata: serde_json::json!({}),
+                node_runs,
+            },
+        );
+        let live = web::Data::new(store);
+
+        let resp = list_runs(live).await;
+        assert_eq!(resp.status(), 200);
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().expect("array body");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0].get("spec_slug").and_then(serde_json::Value::as_str),
+            Some("11.T-run-summary-projection")
+        );
+        assert_eq!(
+            arr[0].get("status").and_then(serde_json::Value::as_str),
+            Some("success")
+        );
+        assert_eq!(
+            arr[0].get("run_id").and_then(serde_json::Value::as_str),
+            Some(run_id.to_string().as_str())
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_runs_run_without_spec_slug_omits_field_from_raw_json() {
+        let store = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        store.record(
+            run_id,
+            &TaskContext {
+                event: serde_json::json!({ "ticket_id": "T-1" }),
+                nodes: HashMap::new(),
+                metadata: serde_json::json!({}),
+                node_runs: HashMap::new(),
+            },
+        );
+        let live = web::Data::new(store);
+
+        let resp = list_runs(live).await;
+        assert_eq!(resp.status(), 200);
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().expect("array body");
+        assert_eq!(arr.len(), 1);
+        let entry = arr[0].as_object().expect("object entry");
+        assert!(
+            !entry.contains_key("spec_slug"),
+            "spec_slug must be an absent key, not present as null: {entry:?}"
+        );
+        assert!(
+            !entry.contains_key("workflow_type"),
+            "workflow_type must be an absent key today: {entry:?}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_runs_excludes_terminal_run() {
+        let store = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: HashMap::new(),
+        };
+        store.record(run_id, &ctx);
+        let now = chrono::Utc::now();
+        store.mark_terminal(run_id, &ctx, "SDLC_FLOW", now, now);
+        let live = web::Data::new(store);
+
+        let resp = list_runs(live).await;
+        assert_eq!(resp.status(), 200);
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!([]));
     }
 
     // ── RunSummaryDto projection (BA.11.T) ────────────────────────────────────
