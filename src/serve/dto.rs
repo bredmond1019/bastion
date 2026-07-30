@@ -32,6 +32,9 @@
 //!   `GET /api/costs` read-only projection of `costs::CostSummary` + the BA.7.C budget
 //!   state (BA.11.J). Caps are reported as configured; nothing here mutates them (mutation
 //!   stays CLI/D48). Conversion logic lives in `handlers/costs.rs`, not here.
+//! - [`RunSummaryDto`] — `GET /api/runs` widened live-runs summary projection (BA.11.T),
+//!   alongside [`RunStateDto`]/[`NodeTransitionDto`]/[`RunUsageDto`] (BA.11.M). Conversion
+//!   logic lives in `handlers/runs.rs`, not here.
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -1006,6 +1009,61 @@ pub struct RunStateDto {
     pub metadata: serde_json::Value,
     /// Per-node projected states, one entry per class name in `TaskContext::node_runs`.
     pub nodes: Vec<NodeTransitionDto>,
+}
+
+/// One live run's summary projection — `GET /api/runs` (BA.11.T).
+///
+/// A widened successor to the bare-UUID `Vec<String>` `GET /api/runs` used to return: each
+/// entry now carries enough to render a live-runs band (spec slug, derived status, timing)
+/// without an N+1 `GET /api/runs/{id}` fetch per run.
+///
+/// Wire format (both variants — `spec_slug` present vs. omitted):
+/// ```json
+/// {
+///   "run_id": "b6a1c1e0-0000-4000-8000-000000000000",
+///   "status": "running",
+///   "spec_slug": "11.T-run-summary-projection",
+///   "started_at": "2026-07-24T12:00:00Z",
+///   "updated_at": "2026-07-24T12:00:01Z"
+/// }
+/// ```
+/// ```json
+/// {
+///   "run_id": "c7b2d2f1-0000-4000-8000-000000000000",
+///   "status": "pending",
+///   "started_at": null,
+///   "updated_at": null
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunSummaryDto {
+    /// The run's UUID as a string.
+    pub run_id: String,
+    /// Workflow identity (e.g. `"sdlc-flow"`). **Always absent today** — no production code
+    /// stamps a workflow-identity key anywhere `bastion` can read it from a live `TaskContext`;
+    /// `engine-serve` only tracks it in a process-local, `pub(crate)`-scoped side table. Tracked
+    /// by the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type`
+    /// (`core/engine-rs/planning/ticket-expose-live-run-workflow-type/`); this DTO does not
+    /// fabricate a value in the meantime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_type: Option<String>,
+    /// Lifecycle status as the lowercase wire string, derived via
+    /// `db::workflows::derive_run_status`: `pending`/`running`/`success`/`failed`/
+    /// `cancelled`/`budget_halted`.
+    pub status: String,
+    /// The triggering event's `spec_slug` field, when present. Omitted (not `null`) when the
+    /// run's event carries no `spec_slug` key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_slug: Option<String>,
+    /// Earliest non-null `node_runs[*].started_at` across all tracked nodes, as RFC3339.
+    /// `null` when the run has no recorded node transitions yet.
+    #[serde(default)]
+    pub started_at: Option<String>,
+    /// Latest non-null `node_runs[*].started_at` **or** `completed_at` across all tracked
+    /// nodes, as RFC3339. `null` when the run has no recorded node transitions yet.
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 // ── Docs read API (BA.11.Q) ─────────────────────────────────────────────────────
@@ -3035,6 +3093,73 @@ mod tests {
         assert!(v["nodes"][0]["usage"].is_null());
         assert!(v["nodes"][0]["output"].is_object());
         assert!(v["nodes"][1]["output"].is_null());
+    }
+
+    // ── RunSummaryDto (BA.11.T) ──────────────────────────────────────────────
+
+    fn sample_run_summary_dto() -> RunSummaryDto {
+        RunSummaryDto {
+            run_id: "b6a1c1e0-0000-4000-8000-000000000000".to_owned(),
+            workflow_type: Some("sdlc-flow".to_owned()),
+            status: "running".to_owned(),
+            spec_slug: Some("11.T-run-summary-projection".to_owned()),
+            started_at: Some("2026-07-24T12:00:00Z".to_owned()),
+            updated_at: Some("2026-07-24T12:00:01Z".to_owned()),
+        }
+    }
+
+    #[test]
+    fn run_summary_dto_round_trips_fully_populated() {
+        let dto = sample_run_summary_dto();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: RunSummaryDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn run_summary_dto_optional_fields_serialize_as_expected() {
+        let dto = RunSummaryDto {
+            run_id: "c7b2d2f1-0000-4000-8000-000000000000".to_owned(),
+            workflow_type: None,
+            status: "pending".to_owned(),
+            spec_slug: None,
+            started_at: None,
+            updated_at: None,
+        };
+        let v = serde_json::to_value(&dto).expect("serialize");
+
+        // workflow_type / spec_slug: `None` -> absent key, not `null`.
+        assert!(
+            !v.as_object().expect("object").contains_key("workflow_type"),
+            "workflow_type should be an absent key when None, got: {v}"
+        );
+        assert!(
+            !v.as_object().expect("object").contains_key("spec_slug"),
+            "spec_slug should be an absent key when None, got: {v}"
+        );
+
+        // started_at / updated_at: `None` -> explicit `null`, key present.
+        assert!(v.as_object().expect("object").contains_key("started_at"));
+        assert!(v["started_at"].is_null());
+        assert!(v.as_object().expect("object").contains_key("updated_at"));
+        assert!(v["updated_at"].is_null());
+
+        // round-trip still works with the absent/null mix.
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: RunSummaryDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn run_summary_dto_populated_fields_serialize_present() {
+        let dto = sample_run_summary_dto();
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(v["run_id"], "b6a1c1e0-0000-4000-8000-000000000000");
+        assert_eq!(v["workflow_type"], "sdlc-flow");
+        assert_eq!(v["status"], "running");
+        assert_eq!(v["spec_slug"], "11.T-run-summary-projection");
+        assert_eq!(v["started_at"], "2026-07-24T12:00:00Z");
+        assert_eq!(v["updated_at"], "2026-07-24T12:00:01Z");
     }
 
     // ── DocTreeDto / DocEntryDto / DocFileDto (BA.11.Q) ────────────────────
