@@ -2,12 +2,52 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-25T19:02:48Z
+timestamp: 2026-07-30T21:55:00Z
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [run: 2026-07-30]
+
+### ticket-enrich-block-authored-status — DONE
+
+- **What:** `/sdlc-task` ran ticket `ticket-enrich-block-authored-status` across 4 tasks, all PASS
+  (tasks 2–4 completed manually in-session after the automated pipeline false-bailed — see below).
+  Task 1 fixed `enrich_block` (`src/serve/handlers/board.rs`) to copy the authored
+  `TrackBlock.status` onto `BoardBlockDto.status`, alongside the five fields it already enriched
+  (`epics`/`wave`/`priority`/`due`/`track`). This replaces `mev::brain::state::derive_rollup`'s
+  lane-fabricated status (`Some("in_progress")` for every `now` entry, `None` for every
+  `next`/`blocked`/`deferred` entry, regardless of the block's real authored status) with the true
+  value everywhere `enrich_block` runs. Task 2 added two `build_board`-level regression tests
+  (`build_board_next_lane_reports_authored_status_not_fabricated_null`,
+  `build_board_now_lane_reports_authored_status_not_fabricated_in_progress`) proving the fix
+  survives the full assembly path, and confirmed `build_board_derives_finished_lane_from_files`
+  passes unmodified — the `finished` lane already read authored status directly and is untouched.
+  Task 3 corrected `docs/serve-api.md`'s `BoardBlockDto.status` field description and added a dated
+  Amendment Log entry (no version bump — no wire-shape change, semantics-only). Task 4 ran the
+  full gated validation suite: `cargo fmt --check` clean, `cargo clippy -D warnings` clean, `cargo
+  nextest run --lib --bins` 1833/1833 passed, the authoritative `cargo test` full suite all green.
+  `cargo build --release` failed, but on a pre-existing, unrelated `engine-core` compile error in
+  the `engine-rs` sibling repo (`workflows/research_agent/policy.rs` — undeclared
+  `PartialGrounding` type / missing `grounding` field) — confirmed via `git stash` to reproduce
+  identically on the pre-ticket commit, tied to `engine-rs`'s in-flight `EN.6.E-research-ingress-
+  dispatch-task1` work, not a regression from this ticket.
+- **Why:** `bastion-web`'s `/business` surface rendered every open block as `UNKNOWN` and its
+  header as `0 READY BLOCKS` (a count of `status === "open"`, a value that never arrived) — root-
+  caused 2026-07-30 against `bastiel`'s 28 blocks (8 authored `open`, all rendering `UNKNOWN`) and
+  captured directly in `master-plan.md` as `BA.ticket.enrich-block-authored-status`.
+- **Note:** the automated `/sdlc-task` pipeline itself bailed after task 1, citing a failing test
+  (`get_costs_missing_database_url_returns_503_c005`) as an unfixable environment dependency. This
+  was verified correct — re-running that test alone, and the full 1833-test suite, both passed
+  cleanly outside the pipeline's sandbox, confirming a `DATABASE_URL`-leak specific to that
+  process, not a real regression. Tasks 2–4 were then completed manually against the same
+  `tasks.json` rather than re-invoking the pipeline into the same false bail.
+- **Refs:** `planning/ticket-enrich-block-authored-status/tasks.md`, commits `3002264` (task 1),
+  `e467076` (tasks 2+3).
 
 ---
 
