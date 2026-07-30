@@ -344,6 +344,17 @@ export interface BoardBlockDto {
 	due?: string;
 	/** Title of the enclosing `tracks[]` phase/wave entry (`okf_core::Track.title`). */
 	track?: string;
+	/**
+	 * mev's derived per-block SDLC recency (`MV.10.D`), carried verbatim from
+	 * `mev::brain::last_touched::derive_last_touched` — `serve` derives nothing
+	 * itself. **Absence means "never worked", not "worked long ago"**: a block
+	 * with no resolvable SDLC run has no entry in mev's map and this field is
+	 * `None`. Unlike the v0.11 sibling fields above (`wave`/`priority`/`due`/
+	 * `track`, which serialise as `null`), this field deliberately carries
+	 * `skip_serializing_if` so `None` serialises as an **absent key** rather
+	 * than `null` — the block's stated backward-compatibility contract.
+	 */
+	last_touched?: string;
 }
 
 /** The four now/next/blocked/finished lanes for one board (aggregate or per-repo). */
