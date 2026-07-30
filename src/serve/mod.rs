@@ -374,6 +374,9 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // ── Cross-brain board route (BA.11.K) ───────────────────────────
             // /board — GET only (now/next/blocked/finished rollup)
             .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
+            // ── Cost read route (BA.11.J) ────────────────────────────────────
+            // /costs — GET only (exact-count spend + budget-gate state)
+            .service(web::resource("/costs").route(web::get().to(handlers::costs::get_costs)))
             // ── Block-graph read route (BA.17.A) ─────────────────────────────
             // /blocks/graph — GET only (mev's enriched block-graph export)
             .service(
@@ -641,6 +644,8 @@ mod tests {
                 web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
             )
             .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
+            // ── Cost read route (BA.11.J) ────────────────────────────────────
+            .service(web::resource("/costs").route(web::get().to(handlers::costs::get_costs)))
             // ── Block-graph read route (BA.17.A) ─────────────────────────────
             .service(
                 web::resource("/blocks/graph")
@@ -1604,6 +1609,121 @@ heading = "bastion"
         assert!(body["stale"].is_boolean(), "stale must be a boolean");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── /api/costs — route registration (BA.11.J) ───────────────────────────
+    //
+    // The route mounts unconditionally (Load-bearing decision 2 in
+    // `planning/11.J-cost-read-endpoint/tasks.md`): a missing/unreachable
+    // database is a typed error response from the handler, never a 404.
+
+    /// Serializes tests that mutate the process-wide `DATABASE_URL` env var.
+    /// `cargo test`'s default in-process thread parallelism means two tests
+    /// racing to set/unset the same env var can observe each other's state;
+    /// `cargo nextest` isolates each test in its own process and would not
+    /// need this, but the lock keeps both runners correct.
+    static DATABASE_URL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[actix_web::test]
+    async fn get_costs_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get().uri("/api/costs").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/costs without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_costs_wrong_token_returns_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/costs")
+            .insert_header(("authorization", "Bearer not-the-token"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/costs with an invalid token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_costs_invalid_window_returns_400_c006_before_db_access() {
+        // No DATABASE_URL manipulation here on purpose: `resolve_window` runs
+        // before `Config::load`, so this must short-circuit with no Postgres
+        // running and regardless of whatever DATABASE_URL happens to be set
+        // to in the ambient environment.
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/costs?window=nonsense")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            400,
+            "GET /api/costs?window=nonsense must return 400; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C006");
+    }
+
+    #[actix_web::test]
+    async fn get_costs_missing_database_url_returns_503_c005() {
+        let _guard = DATABASE_URL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("DATABASE_URL").ok();
+
+        // `Config::load` calls `dotenvy::dotenv()`, which repopulates
+        // DATABASE_URL from this repo's dev `.env` the moment we remove it
+        // from the process env (dotenvy only sets vars that are absent) —
+        // so a bare `remove_var` isn't enough to simulate "unset" in a dev
+        // checkout that has a working local Postgres. Shadow the file too,
+        // for the lifetime of this guard.
+        let env_path = std::path::Path::new(".env");
+        let env_backup_path = std::path::Path::new(".env.get_costs_test_bak");
+        let env_file_moved =
+            env_path.exists() && std::fs::rename(env_path, env_backup_path).is_ok();
+
+        // Safety: serialized by DATABASE_URL_ENV_LOCK above — no other test
+        // reads or writes this env var while the guard is held.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/costs")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        let status = resp.status();
+        let body: serde_json::Value = test::read_body_json(resp).await;
+
+        // Safety: still under DATABASE_URL_ENV_LOCK.
+        unsafe {
+            match &previous {
+                Some(v) => std::env::set_var("DATABASE_URL", v),
+                None => std::env::remove_var("DATABASE_URL"),
+            }
+        }
+        if env_file_moved {
+            let _ = std::fs::rename(env_backup_path, env_path);
+        }
+
+        assert_eq!(
+            status, 503,
+            "GET /api/costs with DATABASE_URL unset must return 503; got {status}"
+        );
+        assert_eq!(body["code"], "C005");
     }
 
     // ── /api/epics + enriched /api/board — route registration (BA.11.R) ────
