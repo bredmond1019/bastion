@@ -1,18 +1,18 @@
 ---
 type: Guideline
-title: "serve-api contract v0.13"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), and the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B)."
+title: "serve-api contract v0.14"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), and the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.13 Contract
+# serve-api — v0.14 Contract
 
-**Version:** v0.13  
+**Version:** v0.14  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–23 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21;
@@ -1041,7 +1041,7 @@ Execution-path failures (after validation passes) map as follows:
 
 ---
 
-## 13. Cross-brain board API (v0.6, BA.11.K; enriched v0.11, BA.11.R)
+## 13. Cross-brain board API (v0.6, BA.11.K; enriched v0.11, BA.11.R; last_touched v0.14, BA.11.S)
 
 One read-only route projecting the cross-brain now/next/blocked/finished rollup — the same
 aggregate `bastion emit-state` / `bastion validate-brain --state` already compute from the
@@ -1147,6 +1147,7 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 | `priority` (v0.11) | number \| null | `null` | Execution priority (e.g. `1`, `2`, `3`), from the authoring `TrackBlock.priority`. |
 | `due` (v0.11) | string \| null | `null` | Target due date or timing string (e.g. `"2026-07-15"`), from the authoring `TrackBlock.due`. |
 | `track` (v0.11) | string \| null | `null` | Title of the enclosing `tracks[]` phase/wave entry (`okf_core::Track.title`). |
+| `last_touched` (v0.14) | string \| absent | absent | mev's derived per-block SDLC recency (`MV.10.D`, `mev::brain::last_touched::derive_last_touched`) carried verbatim — the newest `updated_at` across the block's spec-folder `sdlc/sdlc-{flow,task,run,}-state.json` files. Bastion performs **zero derivation** of its own. **Absence means "never worked" — a block with no resolvable SDLC run — not "worked long ago"**; no sentinel date or epoch is ever substituted, and `state.json.updated` is explicitly never substituted either. Unlike the v0.11 fields above (which serialize as `null` when unknown), this field is **omitted from the JSON body entirely** when unknown (`#[serde(skip_serializing_if = "Option::is_none")]`) — a deliberate divergence from the v0.11 sibling fields' `null` convention. |
 
 All five v0.11 fields are **additive and optional** — a JSON body written by the pre-v0.11 DTO
 shape (no `epics`/`wave`/`priority`/`due`/`track` keys) still deserializes into the current
@@ -1154,6 +1155,13 @@ shape (no `epics`/`wave`/`priority`/`due`/`track` keys) still deserializes into 
 unchanged against either shape. A lane entry whose id has no match in its repo's `tracks[].blocks[]`
 serializes with `epics: []` and the four `Option` fields absent/`null` rather than panicking or
 being dropped from the lane.
+
+`last_touched` (v0.14) is likewise **additive and optional** — a JSON body written before this
+block (no `last_touched` key) still deserializes into the current `BoardBlockDto`, yielding `None`.
+It is computed exactly once per request, inside `assemble_board`, by the same call to
+`mev::brain::last_touched::derive_last_touched` that populates `mev::build_block_graph_export`'s
+node field of the same name (Section 23's one-derivation contract extends to this field too — the
+two read paths are cross-checked to agree, including both being absent for the same block).
 
 #### `RepoBoardDto`
 
@@ -1885,7 +1893,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.13**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.14**.
 
 ---
 
@@ -2180,6 +2188,29 @@ brain root (recorded in `planning/17.A-block-graph-endpoint/tasks.md`'s `## Note
 ---
 
 ## Amendment Log
+
+- **2026-07-29 — v0.13 → v0.14 (BA.11.S):** Added `last_touched: Option<String>` to
+  `BoardBlockDto` (Section 13.3) — mev's derived per-block SDLC recency
+  (`MV.10.D`, `mev::brain::last_touched::derive_last_touched`) carried verbatim onto the board,
+  populated on all five lanes (`now`/`next`/`blocked`/`deferred`/`finished`). Bastion performs
+  **zero derivation** of its own: the field is computed exactly once per request, inside
+  `assemble_board`, from the same `config` + loaded `files` that fn already walks, and looked up by
+  the `"{repo}:{id}"` key mev owns — the same one-derivation guarantee Section 23 established for
+  `GET /api/blocks/graph`, now extended (and cross-checked) to include this field: the two read
+  paths (`build_board` and `mev::build_block_graph_export`) are asserted to agree on `last_touched`
+  for every block, including both being absent for the same block. Additive and backward
+  compatible — a JSON body written before this block (no `last_touched` key) still deserializes
+  into the current `BoardBlockDto`, yielding `None`. **Absence means "never worked", not "worked
+  long ago"** — a block with no resolvable SDLC run gets no entry in mev's map and no key in the
+  serialized DTO; no sentinel date, epoch, or the file-level `state.json.updated` is ever
+  substituted. Serialization deliberately **diverges** from the v0.11 sibling fields
+  (`epics`/`wave`/`priority`/`due`/`track`, which serialize as `[]`/`null` when unknown):
+  `last_touched` carries `#[serde(skip_serializing_if = "Option::is_none")]`, so an unknown value
+  is **omitted from the JSON body entirely** rather than emitted as `null`. `types/serve.ts`
+  regenerated (`last_touched?: string` on `BoardBlockDto`); `scripts/check-typeshare-drift.sh`
+  passes. No other `/api/board` field, `/api/epics`, or `/api/blocks/graph` response shape
+  changed. Updated frontmatter title, description, keywords, and the current-contract version
+  note.
 
 - **2026-07-28 — v0.12 → v0.13 (BA.17.A, program block BA.2.A):** Added Section 23 (Block-graph
   API) — `GET /api/blocks/graph?scope=hq|tier|project|business|epic[&tier=<name>][&epic=<slug>]
