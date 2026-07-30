@@ -2312,8 +2312,13 @@ and asserts the DTO's rows/totals equal `CostSummary`'s fields verbatim, so the 
 `bastion costs` cannot drift apart. The thin `web::block` I/O shell (`get_costs`) and route wiring
 in `src/serve/mod.rs` are covered by `#[actix_web::test]` integration tests asserting the
 bearer-auth `401`, the `DATABASE_URL`-unset `503`/`C005` case (no live Postgres required), the
-`?window=nonsense` `400`/`C006` case (short-circuits before any database access), and reachability
-on both app factories — plus manually smoke-tested end-to-end against a running `bastion serve`
+database-connect-failure `503`/`C009` case (`DATABASE_URL` set to a syntactically-invalid
+connection string, so `db::costs::fetch_all_runs`'s `PgPoolOptions::connect` fails fast at parse
+time — exercising the same `Err` -> `db_error_response` branch a genuinely unreachable Postgres
+takes, without incurring sqlx's ~30s default `acquire_timeout` retry/backoff on an actually-refused
+TCP connection), the `?window=nonsense` `400`/`C006` case (short-circuits before any database
+access), and reachability on both app factories — plus manually smoke-tested end-to-end against a
+running `bastion serve`
 and a real Postgres, comparing the returned totals against `bastion costs --last 7d` for the same
 window (recorded in `planning/11.J-cost-read-endpoint/tasks.md`'s `## Notes`).
 

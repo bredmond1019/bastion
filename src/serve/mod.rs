@@ -1726,6 +1726,60 @@ heading = "bastion"
         assert_eq!(body["code"], "C005");
     }
 
+    #[actix_web::test]
+    async fn get_costs_unreachable_database_returns_503_c009() {
+        let _guard = DATABASE_URL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("DATABASE_URL").ok();
+
+        // Same `.env` shadowing as the C005 test above — `Config::load`
+        // would otherwise repopulate DATABASE_URL from the repo's dev
+        // `.env` via `dotenvy::dotenv()` before we get to set our own
+        // (present-but-unreachable) value.
+        let env_path = std::path::Path::new(".env");
+        let env_backup_path = std::path::Path::new(".env.get_costs_c009_test_bak");
+        let env_file_moved =
+            env_path.exists() && std::fs::rename(env_path, env_backup_path).is_ok();
+
+        // Safety: serialized by DATABASE_URL_ENV_LOCK above — no other test
+        // reads or writes this env var while the guard is held. A
+        // syntactically-invalid connection string fails `PgPoolOptions::
+        // connect` at URL-parse time, before any TCP attempt — so this
+        // exercises the same `fetch_all_runs` `Err` -> `db_error_response`
+        // path as a genuinely unreachable Postgres, without incurring
+        // sqlx's ~30s default `acquire_timeout` retry/backoff on an
+        // actually-refused connection.
+        unsafe { std::env::set_var("DATABASE_URL", "not-a-valid-postgres-url") };
+
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/costs")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        let status = resp.status();
+        let body: serde_json::Value = test::read_body_json(resp).await;
+
+        // Safety: still under DATABASE_URL_ENV_LOCK.
+        unsafe {
+            match &previous {
+                Some(v) => std::env::set_var("DATABASE_URL", v),
+                None => std::env::remove_var("DATABASE_URL"),
+            }
+        }
+        if env_file_moved {
+            let _ = std::fs::rename(env_backup_path, env_path);
+        }
+
+        assert_eq!(
+            status, 503,
+            "GET /api/costs with an unreachable database must return 503; got {status}"
+        );
+        assert_eq!(body["code"], "C009");
+    }
+
     // ── /api/epics + enriched /api/board — route registration (BA.11.R) ────
 
     /// Temp brain root for the `/api/epics` + enriched `/api/board` tests.
