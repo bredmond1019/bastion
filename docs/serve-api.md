@@ -1,18 +1,18 @@
 ---
 type: Guideline
-title: "serve-api contract v0.15"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), and the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J)."
+title: "serve-api contract v0.16"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.15 Contract
+# serve-api — v0.16 Contract
 
-**Version:** v0.15  
+**Version:** v0.16  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–24 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -1224,7 +1224,7 @@ token / transition-by-transition) is split into a follow-on block (proposed `BA.
 `tokio::sync::broadcast` tee added to `engine-serve`'s `on_progress` closure. Until that ships,
 `BW.3.A`'s ~2s client polling against these two routes is the standing fallback.
 
-### 14.1 `GET /api/runs` — currently-tracked run ids
+### 14.1 `GET /api/runs` — currently-tracked run summaries (v0.16, BA.11.T)
 
 **Request:**
 
@@ -1233,15 +1233,48 @@ GET /api/runs HTTP/1.1
 Authorization: Bearer <token>
 ```
 
-**Response (200 OK):** a JSON array of run-id strings (UUIDs), one per run currently tracked by the
-shared `LiveStateStore` (`list_active()`). `[]` when no run is tracked, including when the engine is
-not mounted.
+**Response (200 OK): `Vec<RunSummaryDto>`** — one entry per run currently tracked by the shared
+`LiveStateStore` (`list_active()`), each projected via `project_run_summary` (`src/serve/handlers/
+runs.rs`). A run that races out of the store between `list_active()` and the per-id `get()` fetch is
+silently dropped rather than erroring. `[]` when no run is tracked, including when the engine is not
+mounted. A run that has gone terminal (evicted from the live map by `mark_terminal`) no longer
+appears in this response.
 
 ```json
-["b6a1c1e0-0000-4000-8000-000000000000"]
+[
+  {
+    "run_id": "b6a1c1e0-0000-4000-8000-000000000000",
+    "status": "running",
+    "spec_slug": "11.T-run-summary-projection",
+    "started_at": "2026-07-24T12:00:00Z",
+    "updated_at": "2026-07-24T12:00:01Z"
+  },
+  {
+    "run_id": "c7b2d2f1-0000-4000-8000-000000000000",
+    "status": "pending",
+    "started_at": null,
+    "updated_at": null
+  }
+]
 ```
 
+The second entry above shows the omitted-key cases: its triggering event carried no `spec_slug`, so
+the field is absent (not `null`) from the JSON body, and it has no recorded node transitions yet, so
+`started_at`/`updated_at` are explicit `null`. `workflow_type` is likewise absent from both entries —
+see the field table below.
+
 No query parameters. No 404 case — an empty store is a normal 200.
+
+#### `RunSummaryDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `run_id` | string | The run's UUID as a string. |
+| `workflow_type` | string \| absent | Workflow identity (e.g. `"sdlc-flow"`). **Always absent today** — no production code stamps a workflow-identity key anywhere `bastion` can read it from a live `TaskContext`; `engine-serve` only tracks it in a process-local, `pub(crate)`-scoped side table (`http.rs::live_run_metadata()`). Tracked by the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (`core/engine-rs/planning/ticket-expose-live-run-workflow-type/`); this DTO does not fabricate a value in the meantime. |
+| `status` | string | Lowercase wire status, derived via `db::workflows::derive_run_status` over the run's current `node_runs` (mapped to minimal `NodeState`s) and `metadata`: `pending`/`running`/`success`/`failed`/`cancelled`/`budget_halted`. |
+| `spec_slug` | string \| absent | The triggering event's `spec_slug` field, when present. Omitted (not `null`) when the run's event carries no `spec_slug` key. |
+| `started_at` | string \| null | Earliest non-null `node_runs[*].started_at` across all tracked nodes, as RFC3339. `null` when the run has no recorded node transitions yet. |
+| `updated_at` | string \| null | Latest non-null `node_runs[*].started_at` **or** `completed_at` across all tracked nodes, as RFC3339. `null` when the run has no recorded node transitions yet. |
 
 ### 14.2 `GET /api/runs/{id}` — one run's per-node snapshot
 
@@ -1343,12 +1376,17 @@ workflow surfaces (`BA.11.G`) are likewise out of scope.
 
 `project_run` (`src/serve/handlers/runs.rs`) is the pure `TaskContext` → `RunStateDto` projection —
 exhaustively unit-tested with no I/O (multi-node mixed statuses, failed-node error+input, LLM-node
-usage vs. non-LLM `None`, empty `node_runs`, output joined by class name). The async handlers
-(`list_runs`/`get_run`) and the `LiveStateStore`-sharing wiring in `src/serve/mod.rs` are the thin
-I/O shell — covered by `#[actix_web::test]` handler-level tests plus `src/serve/mod.rs` integration
-tests asserting the bearer-auth 401, the empty-store `200 []`, and the unknown-id `404` against a
-real `App`, and manually smoke-tested end-to-end against a running `bastion serve` with the engine
-mounted (recorded in `planning/11.M-live-run-read-endpoint/tasks.md`'s `## Notes`).
+usage vs. non-LLM `None`, empty `node_runs`, output joined by class name). `project_run_summary`
+(alongside its `node_states_from`/`run_status_str`/`spec_slug_from_event`/`run_timestamps` helpers,
+same file) is the equivalent pure `TaskContext` → `RunSummaryDto` projection backing Section 14.1 —
+likewise exhaustively unit-tested with no I/O against representative fixtures (spec_slug present/
+absent, cancelled/budget-halted metadata cases). The async handlers (`list_runs`/`get_run`) and the
+`LiveStateStore`-sharing wiring in `src/serve/mod.rs` are the thin I/O shell — covered by
+`#[actix_web::test]` handler-level tests plus `src/serve/mod.rs` integration tests asserting the
+bearer-auth 401, the empty-store `200 []`, the unknown-id `404`, and (BA.11.T) a terminal run's
+absence from `GET /api/runs` against a real `App`, and manually smoke-tested end-to-end against a
+running `bastion serve` with the engine mounted (recorded in `planning/11.M-live-run-read-endpoint/
+tasks.md`'s `## Notes`).
 
 ---
 
@@ -1893,7 +1931,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.15**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.16**.
 
 ---
 
@@ -2325,6 +2363,25 @@ window (recorded in `planning/11.J-cost-read-endpoint/tasks.md`'s `## Notes`).
 ---
 
 ## Amendment Log
+
+- **2026-07-30 — v0.15 → v0.16 (BA.11.T):** Widened Section 14.1 (`GET /api/runs`) from
+  `Vec<String>` (bare run-id UUIDs) to `Vec<RunSummaryDto>` (`run_id`, `workflow_type`, `status`,
+  `spec_slug`, `started_at`, `updated_at`), scoped strictly to `LiveStateStore::list_active()` —
+  live runs only. `status` reuses the existing `db::workflows::derive_run_status` (no new status
+  derivation) over a `TaskContext::node_runs` mapped into minimal `NodeState`s. `spec_slug` is read
+  straight off the triggering event's `spec_slug` key and is **omitted** (`skip_serializing_if`,
+  not `null`) when absent. `started_at`/`updated_at` are derived purely from
+  `node_runs[*].started_at`/`completed_at` (earliest/latest respectively across all tracked nodes),
+  both `null` when the run has no recorded node transitions yet. `workflow_type` is
+  `Option<String>`, always `None` on the wire today — no production code stamps a workflow-identity
+  key anywhere `bastion` can read it from a live `TaskContext`; `engine-serve` only tracks it in a
+  process-local, `pub(crate)`-scoped side table (`http.rs::live_run_metadata()`). Tracked by the
+  engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type`
+  (`core/engine-rs/planning/ticket-expose-live-run-workflow-type/`); this block does not fabricate a
+  value or block on that ticket landing. A run evicted from the live map by `mark_terminal` is
+  absent from the response. No engine-side change, no new route, and no `GET /api/runs/{id}`
+  (Section 14.2) change are part of this block. New DTO: `RunSummaryDto`. `types/serve.ts`
+  regenerated; `scripts/check-typeshare-drift.sh` passes.
 
 - **2026-07-30 — `BoardBlockDto.status` semantics correction (BA.ticket.enrich-block-authored-status,
   no version bump):** `enrich_block` (Section 13's `board.rs`) now copies the authored

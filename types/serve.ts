@@ -1017,6 +1017,67 @@ export interface RunStateDto {
 }
 
 /**
+ * One live run's summary projection — `GET /api/runs` (BA.11.T).
+ * 
+ * A widened successor to the bare-UUID `Vec<String>` `GET /api/runs` used to return: each
+ * entry now carries enough to render a live-runs band (spec slug, derived status, timing)
+ * without an N+1 `GET /api/runs/{id}` fetch per run.
+ * 
+ * Wire format (both variants — `spec_slug` present vs. omitted):
+ * ```json
+ * {
+ * "run_id": "b6a1c1e0-0000-4000-8000-000000000000",
+ * "status": "running",
+ * "spec_slug": "11.T-run-summary-projection",
+ * "started_at": "2026-07-24T12:00:00Z",
+ * "updated_at": "2026-07-24T12:00:01Z"
+ * }
+ * ```
+ * ```json
+ * {
+ * "run_id": "c7b2d2f1-0000-4000-8000-000000000000",
+ * "status": "pending",
+ * "started_at": null,
+ * "updated_at": null
+ * }
+ * ```
+ */
+export interface RunSummaryDto {
+	/** The run's UUID as a string. */
+	run_id: string;
+	/**
+	 * Workflow identity (e.g. `"sdlc-flow"`). **Always absent today** — no production code
+	 * stamps a workflow-identity key anywhere `bastion` can read it from a live `TaskContext`;
+	 * `engine-serve` only tracks it in a process-local, `pub(crate)`-scoped side table. Tracked
+	 * by the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type`
+	 * (`core/engine-rs/planning/ticket-expose-live-run-workflow-type/`); this DTO does not
+	 * fabricate a value in the meantime.
+	 */
+	workflow_type?: string;
+	/**
+	 * Lifecycle status as the lowercase wire string, derived via
+	 * `db::workflows::derive_run_status`: `pending`/`running`/`success`/`failed`/
+	 * `cancelled`/`budget_halted`.
+	 */
+	status: string;
+	/**
+	 * The triggering event's `spec_slug` field, when present. Omitted (not `null`) when the
+	 * run's event carries no `spec_slug` key.
+	 */
+	spec_slug?: string;
+	/**
+	 * Earliest non-null `node_runs[*].started_at` across all tracked nodes, as RFC3339.
+	 * `null` when the run has no recorded node transitions yet.
+	 */
+	started_at?: string;
+	/**
+	 * Latest non-null `node_runs[*].started_at` **or** `completed_at` across all tracked
+	 * nodes, as RFC3339. `null` when the run has no recorded node transitions yet.
+	 */
+	updated_at?: string;
+}
+
+/**
  * Request body for `POST /api/sessions/{name}/send`.
  * 
  * Sends a literal string of keystrokes to the session followed by `Enter`.
