@@ -1140,7 +1140,7 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 | `id` | string | — | Canonical block ID (e.g. `"BA.11.K"`). |
 | `title` | string | — | Block title, looked up from the owning repo's `tracks[].blocks[]`. |
 | `repo` | string | — | Owning repo slug. |
-| `status` | string \| null | `null` | Lifecycle status when known (`"open"`/`"in_progress"`/`"deferred"`/`"closed"`). |
+| `status` | string \| null | `null` | Authored lifecycle status from `tracks[].blocks[].status` (`"open"`/`"in_progress"`/`"deferred"`/`"closed"`), on **every** lane — `now`/`next`/`blocked`/`deferred`/`finished` alike. `null` means the block's id has no `tracks[].blocks[]` match, not that its status is unknown-but-real. (Corrected 2026-07-30 — see the Amendment Log; before this, `now`/`next`/`blocked`/`deferred` reported a lane-fabricated placeholder instead of the authored value.) |
 | `blocked_by` | array | `[]` | What this block is waiting on. **Populated on all four lanes as of v0.11/BA.11.R** — earlier versions of this contract populated it for `blocked`-lane entries only; it is now the unmet-dependency set (any `BlockedBy::External`, or a `BlockedBy::Block{repo, id}` whose target's authored status is not `"closed"`) computed the same way for `now`/`next`/`finished` as it always was for `blocked`. A block with no unmet dependency comes back `blocked_by: []`. |
 | `epics` (v0.11) | array of string | `[]` | Cross-repo epic membership — slugs into the HQ `epics[]` registry (Section 17). Joined back from the owning repo's `tracks[].blocks[]`; a block whose id has no `tracks[]` match keeps `[]`. |
 | `wave` (v0.11) | number \| null | `null` | Execution-order rank ("what's next"), from the authoring `TrackBlock.wave`. Typed to mirror `okf_core::TrackBlock.wave` (`Option<i64>`) — see the Amendment Log deviation note below. |
@@ -2325,6 +2325,19 @@ window (recorded in `planning/11.J-cost-read-endpoint/tasks.md`'s `## Notes`).
 ---
 
 ## Amendment Log
+
+- **2026-07-30 — `BoardBlockDto.status` semantics correction (BA.ticket.enrich-block-authored-status,
+  no version bump):** `enrich_block` (Section 13's `board.rs`) now copies the authored
+  `tracks[].blocks[].status` onto `status` alongside the five fields it already enriched
+  (`epics`/`wave`/`priority`/`due`/`track`), on every lane. Previously, `status` on the
+  `now`/`next`/`blocked`/`deferred` lanes came straight from `mev::brain::state::derive_rollup`'s
+  lane rollup, which **fabricates** a status per lane rather than reading the real one:
+  `Some("in_progress")` for every `now` entry, `None` for every `next`/`blocked`/`deferred` entry,
+  regardless of the block's actual authored status. Only `finished` ever reported the true value.
+  This caused `bastion-web`'s `/business` surface to render every open block as `UNKNOWN` and its
+  header as `0 READY BLOCKS` (a count of `status === "open"`, which never arrived). No `BoardBlockDto`
+  field was added or removed — this is a semantics-only fix to an existing field, so no version bump
+  and no `types/serve.ts` regeneration were needed.
 
 - **2026-07-29 — v0.14 → v0.15 (BA.11.J):** Added Section 24, `GET /api/costs` — a read-only
   projection of the existing `src/costs/` module (BA.7.B's exact per-workflow token/cost

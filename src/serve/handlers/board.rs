@@ -1215,6 +1215,49 @@ mod tests {
     }
 
     #[test]
+    fn build_board_next_lane_reports_authored_status_not_fabricated_null() {
+        // Regression test for BA.ticket.enrich-block-authored-status: derive_rollup
+        // fabricates `None` for every `next`-lane block regardless of its authored
+        // status. `enrich_block` must overwrite that with the real tracks[] value.
+        let rollups = vec![sample_rollup("bastion", "core")];
+        let file = sample_state_file(vec![sample_track_block("BA.1.B", Some("open"))]);
+        let files = vec![(sample_source("bastion"), file)];
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        );
+
+        assert_eq!(dto.lanes.next[0].status, Some("open".to_owned()));
+    }
+
+    #[test]
+    fn build_board_now_lane_reports_authored_status_not_fabricated_in_progress() {
+        // Regression test for BA.ticket.enrich-block-authored-status: derive_rollup
+        // fabricates `Some("in_progress")` for every `now`-lane block regardless of
+        // its authored status. `enrich_block` must overwrite that with the real
+        // tracks[] value, even when it disagrees with the fabricated placeholder.
+        let rollups = vec![sample_rollup("bastion", "core")];
+        let file = sample_state_file(vec![sample_track_block("BA.1.A", Some("open"))]);
+        let files = vec![(sample_source("bastion"), file)];
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+        );
+
+        assert_eq!(dto.lanes.now[0].status, Some("open".to_owned()));
+    }
+
+    #[test]
     fn build_board_unmatched_block_yields_empty_epics_and_none_fields() {
         let rollups = vec![sample_rollup("bastion", "core")];
         let files: Vec<(StateSource, StateFile)> = Vec::new();
