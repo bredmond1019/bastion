@@ -25,7 +25,8 @@ use actix_web::{HttpResponse, web};
 use engine_serve::live_state::LiveStateStore;
 use uuid::Uuid;
 
-use crate::serve::dto::{ErrorPayload, NodeTransitionDto, RunStateDto, RunUsageDto};
+use crate::db::workflows::{self, NodeState, RunStatus};
+use crate::serve::dto::{ErrorPayload, NodeTransitionDto, RunStateDto, RunSummaryDto, RunUsageDto};
 use engine_contract::task_context::{NodeRunStatus, TaskContext};
 
 // ── Pure projection ──────────────────────────────────────────────────────────
@@ -76,6 +77,132 @@ pub fn project_run(run_id: Uuid, ctx: &TaskContext) -> RunStateDto {
         event: ctx.event.clone(),
         metadata: ctx.metadata.clone(),
         nodes,
+    }
+}
+
+// ── RunSummaryDto projection (BA.11.T) ───────────────────────────────────────
+
+/// Map an `engine_contract` `NodeRunStatus` onto the shared `db::workflows`
+/// `RunStatus` for the four variants both enums carry. `RunStatus` also has
+/// `Cancelled`/`BudgetHalted`, which are run-level-only and never produced
+/// from a single node's wire status — so this mapping is total and exhaustive
+/// over `NodeRunStatus`.
+fn node_run_status_to_run_status(status: NodeRunStatus) -> RunStatus {
+    match status {
+        NodeRunStatus::Pending => RunStatus::Pending,
+        NodeRunStatus::Running => RunStatus::Running,
+        NodeRunStatus::Success => RunStatus::Success,
+        NodeRunStatus::Failed => RunStatus::Failed,
+    }
+}
+
+/// Map `ctx.node_runs` into the minimal `NodeState` values `derive_run_status`
+/// needs. Only `status` is load-bearing for the aggregate logic; the rest are
+/// cheap per-class defaults (`depends_on: vec![]`, everything else `None`)
+/// except `started_at`, carried through as RFC3339 for parity with the wire
+/// shape even though `derive_run_status` itself does not read it.
+///
+/// Pure — no I/O.
+fn node_states_from(ctx: &TaskContext) -> Vec<NodeState> {
+    ctx.node_runs
+        .iter()
+        .map(|(class, run)| NodeState {
+            id: class.clone(),
+            name: class.clone(),
+            status: node_run_status_to_run_status(run.status),
+            depends_on: vec![],
+            input: None,
+            output: None,
+            error: None,
+            tokens_in: None,
+            tokens_out: None,
+            model: None,
+            started_at: run.started_at.map(|t| t.to_rfc3339()),
+            elapsed_secs: None,
+        })
+        .collect()
+}
+
+/// Lowercase wire string for a `db::workflows::RunStatus` (contract §6
+/// casing), mirroring [`status_str`]'s style for the run-level enum, which
+/// additionally carries the two run-level-only variants.
+fn run_status_str(status: RunStatus) -> String {
+    match status {
+        RunStatus::Pending => "pending",
+        RunStatus::Running => "running",
+        RunStatus::Success => "success",
+        RunStatus::Failed => "failed",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::BudgetHalted => "budget_halted",
+    }
+    .to_owned()
+}
+
+/// Read `event.spec_slug` when present as a string. `None` when the key is
+/// absent, non-string, or `event` is not an object.
+///
+/// Pure — no I/O.
+fn spec_slug_from_event(event: &serde_json::Value) -> Option<String> {
+    event
+        .get("spec_slug")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Derive `(started_at, updated_at)` from `ctx.node_runs[*]` timestamps.
+///
+/// `started_at` is the earliest non-null `started_at` across all tracked
+/// nodes; `updated_at` is the latest non-null `started_at` **or**
+/// `completed_at` across all tracked nodes. Both are `None` when
+/// `node_runs` is empty or carries no timestamps at all (the window between
+/// `post_events` registering the run and its first `on_progress` callback).
+///
+/// Pure — no I/O. Comparison is lexicographic over RFC3339 strings, which is
+/// timestamp-order-preserving for a fixed offset representation (`to_rfc3339`
+/// always renders UTC `DateTime<Utc>` with a `+00:00`/`Z`-equivalent offset).
+fn run_timestamps(ctx: &TaskContext) -> (Option<String>, Option<String>) {
+    let mut started_at: Option<String> = None;
+    let mut updated_at: Option<String> = None;
+
+    for run in ctx.node_runs.values() {
+        if let Some(s) = run.started_at.map(|t| t.to_rfc3339()) {
+            if started_at.as_deref().is_none_or(|cur| s.as_str() < cur) {
+                started_at = Some(s.clone());
+            }
+            if updated_at.as_deref().is_none_or(|cur| s.as_str() > cur) {
+                updated_at = Some(s);
+            }
+        }
+        if let Some(c) = run.completed_at.map(|t| t.to_rfc3339())
+            && updated_at.as_deref().is_none_or(|cur| c.as_str() > cur)
+        {
+            updated_at = Some(c);
+        }
+    }
+
+    (started_at, updated_at)
+}
+
+/// Project a `TaskContext` snapshot into the wire `RunSummaryDto` (BA.11.T).
+///
+/// Reuses `db::workflows::derive_run_status` for `status` rather than
+/// reimplementing the aggregate/cancellation/budget-halt priority order.
+/// `workflow_type` is always `None` today — see `RunSummaryDto`'s doc comment
+/// and the task spec's Notes for why.
+///
+/// Pure — no I/O.
+pub fn project_run_summary(run_id: Uuid, ctx: &TaskContext) -> RunSummaryDto {
+    let nodes = node_states_from(ctx);
+    let (status, _budget_halt) = workflows::derive_run_status(&nodes, &ctx.metadata);
+    let (started_at, updated_at) = run_timestamps(ctx);
+
+    RunSummaryDto {
+        run_id: run_id.to_string(),
+        workflow_type: None,
+        status: run_status_str(status),
+        spec_slug: spec_slug_from_event(&ctx.event),
+        started_at,
+        updated_at,
     }
 }
 
@@ -361,5 +488,328 @@ mod tests {
 
         let resp = list_runs(live).await;
         assert_eq!(resp.status(), 200);
+    }
+
+    // ── RunSummaryDto projection (BA.11.T) ────────────────────────────────────
+
+    fn ts(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    fn node_run_with_times(
+        status: NodeRunStatus,
+        started_at: Option<&str>,
+        completed_at: Option<&str>,
+    ) -> NodeRun {
+        NodeRun {
+            status,
+            started_at: started_at.map(ts),
+            completed_at: completed_at.map(ts),
+            error: None,
+            input: None,
+            usage: None,
+        }
+    }
+
+    // -- node_states_from --
+
+    #[test]
+    fn node_states_from_empty_node_runs_yields_empty_vec() {
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: HashMap::new(),
+        };
+        assert!(node_states_from(&ctx).is_empty());
+    }
+
+    #[test]
+    fn node_states_from_single_node_maps_status_and_started_at() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert(
+            "NodeA".to_string(),
+            node_run_with_times(NodeRunStatus::Success, Some("2026-01-01T00:00:00Z"), None),
+        );
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        };
+
+        let states = node_states_from(&ctx);
+        assert_eq!(states.len(), 1);
+        let node = &states[0];
+        assert_eq!(node.id, "NodeA");
+        assert_eq!(node.name, "NodeA");
+        assert_eq!(node.status, RunStatus::Success);
+        assert!(node.depends_on.is_empty());
+        assert!(node.input.is_none());
+        assert!(node.output.is_none());
+        assert!(node.error.is_none());
+        assert!(node.tokens_in.is_none());
+        assert!(node.tokens_out.is_none());
+        assert!(node.model.is_none());
+        assert_eq!(
+            node.started_at.as_deref(),
+            Some("2026-01-01T00:00:00+00:00")
+        );
+        assert!(node.elapsed_secs.is_none());
+    }
+
+    #[test]
+    fn node_states_from_many_nodes_mixed_statuses() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("NodeA".to_string(), node_run(NodeRunStatus::Pending));
+        node_runs.insert("NodeB".to_string(), node_run(NodeRunStatus::Running));
+        node_runs.insert("NodeC".to_string(), node_run(NodeRunStatus::Success));
+        node_runs.insert("NodeD".to_string(), node_run(NodeRunStatus::Failed));
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        };
+
+        let states = node_states_from(&ctx);
+        assert_eq!(states.len(), 4);
+        let by_id: HashMap<&str, &NodeState> = states.iter().map(|n| (n.id.as_str(), n)).collect();
+        assert_eq!(by_id["NodeA"].status, RunStatus::Pending);
+        assert_eq!(by_id["NodeB"].status, RunStatus::Running);
+        assert_eq!(by_id["NodeC"].status, RunStatus::Success);
+        assert_eq!(by_id["NodeD"].status, RunStatus::Failed);
+    }
+
+    // -- run_status_str --
+
+    #[test]
+    fn run_status_str_covers_all_six_variants() {
+        assert_eq!(run_status_str(RunStatus::Pending), "pending");
+        assert_eq!(run_status_str(RunStatus::Running), "running");
+        assert_eq!(run_status_str(RunStatus::Success), "success");
+        assert_eq!(run_status_str(RunStatus::Failed), "failed");
+        assert_eq!(run_status_str(RunStatus::Cancelled), "cancelled");
+        assert_eq!(run_status_str(RunStatus::BudgetHalted), "budget_halted");
+    }
+
+    // -- spec_slug_from_event --
+
+    #[test]
+    fn spec_slug_from_event_present_string() {
+        let event = serde_json::json!({ "spec_slug": "11.T-run-summary-projection" });
+        assert_eq!(
+            spec_slug_from_event(&event),
+            Some("11.T-run-summary-projection".to_string())
+        );
+    }
+
+    #[test]
+    fn spec_slug_from_event_absent_key() {
+        let event = serde_json::json!({ "ticket_id": "T-1" });
+        assert_eq!(spec_slug_from_event(&event), None);
+    }
+
+    #[test]
+    fn spec_slug_from_event_non_string_value() {
+        let event = serde_json::json!({ "spec_slug": 42 });
+        assert_eq!(spec_slug_from_event(&event), None);
+    }
+
+    // -- run_timestamps --
+
+    #[test]
+    fn run_timestamps_empty_node_runs_yields_none_none() {
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: HashMap::new(),
+        };
+        assert_eq!(run_timestamps(&ctx), (None, None));
+    }
+
+    #[test]
+    fn run_timestamps_single_node_started_only() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert(
+            "NodeA".to_string(),
+            node_run_with_times(NodeRunStatus::Running, Some("2026-01-01T00:00:00Z"), None),
+        );
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        };
+
+        let (started, updated) = run_timestamps(&ctx);
+        assert_eq!(started.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+        assert_eq!(updated.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+    }
+
+    #[test]
+    fn run_timestamps_single_node_started_and_completed() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert(
+            "NodeA".to_string(),
+            node_run_with_times(
+                NodeRunStatus::Success,
+                Some("2026-01-01T00:00:00Z"),
+                Some("2026-01-01T00:05:00Z"),
+            ),
+        );
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        };
+
+        let (started, updated) = run_timestamps(&ctx);
+        assert_eq!(started.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+        assert_eq!(updated.as_deref(), Some("2026-01-01T00:05:00+00:00"));
+    }
+
+    #[test]
+    fn run_timestamps_multi_node_min_max_across_started_and_completed() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert(
+            "NodeA".to_string(),
+            node_run_with_times(
+                NodeRunStatus::Success,
+                Some("2026-01-01T00:02:00Z"),
+                Some("2026-01-01T00:04:00Z"),
+            ),
+        );
+        node_runs.insert(
+            "NodeB".to_string(),
+            node_run_with_times(NodeRunStatus::Running, Some("2026-01-01T00:00:00Z"), None),
+        );
+        node_runs.insert(
+            "NodeC".to_string(),
+            node_run_with_times(
+                NodeRunStatus::Success,
+                Some("2026-01-01T00:01:00Z"),
+                Some("2026-01-01T00:10:00Z"),
+            ),
+        );
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        };
+
+        let (started, updated) = run_timestamps(&ctx);
+        // Earliest started_at across all nodes is NodeB's 00:00:00.
+        assert_eq!(started.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+        // Latest started_at-or-completed_at across all nodes is NodeC's completed_at 00:10:00.
+        assert_eq!(updated.as_deref(), Some("2026-01-01T00:10:00+00:00"));
+    }
+
+    #[test]
+    fn run_timestamps_node_with_no_timestamps_ignored() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("NodeA".to_string(), node_run(NodeRunStatus::Pending));
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        };
+        assert_eq!(run_timestamps(&ctx), (None, None));
+    }
+
+    // -- project_run_summary --
+
+    #[test]
+    fn project_run_summary_sdlc_flow_event_with_spec_slug() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert(
+            "PlanNode".to_string(),
+            node_run_with_times(
+                NodeRunStatus::Success,
+                Some("2026-01-01T00:00:00Z"),
+                Some("2026-01-01T00:05:00Z"),
+            ),
+        );
+        let ctx = TaskContext {
+            event: serde_json::json!({ "spec_slug": "11.T-run-summary-projection" }),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        };
+        let run_id = Uuid::new_v4();
+
+        let dto = project_run_summary(run_id, &ctx);
+
+        assert_eq!(dto.run_id, run_id.to_string());
+        assert_eq!(dto.workflow_type, None);
+        assert_eq!(dto.status, "success");
+        assert_eq!(
+            dto.spec_slug,
+            Some("11.T-run-summary-projection".to_string())
+        );
+        assert_eq!(dto.started_at.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+        assert_eq!(dto.updated_at.as_deref(), Some("2026-01-01T00:05:00+00:00"));
+    }
+
+    #[test]
+    fn project_run_summary_event_with_no_spec_slug_omits_field() {
+        let ctx = TaskContext {
+            event: serde_json::json!({ "ticket_id": "T-1" }),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: HashMap::new(),
+        };
+
+        let dto = project_run_summary(Uuid::new_v4(), &ctx);
+
+        assert_eq!(dto.spec_slug, None);
+        assert_eq!(dto.status, "success");
+        assert_eq!(dto.started_at, None);
+        assert_eq!(dto.updated_at, None);
+    }
+
+    #[test]
+    fn project_run_summary_cancelled_metadata_yields_cancelled_status() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("NodeA".to_string(), node_run(NodeRunStatus::Running));
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({ "cancellation": { "cancelled": true } }),
+            node_runs,
+        };
+
+        let dto = project_run_summary(Uuid::new_v4(), &ctx);
+        assert_eq!(dto.status, "cancelled");
+    }
+
+    #[test]
+    fn project_run_summary_budget_halted_metadata_yields_budget_halted_status() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("NodeA".to_string(), node_run(NodeRunStatus::Running));
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({
+                "budget": {
+                    "halted": true,
+                    "reason": {
+                        "cap": "max_total_tokens",
+                        "spent": 1000,
+                        "limit": 500
+                    }
+                }
+            }),
+            node_runs,
+        };
+
+        let dto = project_run_summary(Uuid::new_v4(), &ctx);
+        assert_eq!(dto.status, "budget_halted");
     }
 }
