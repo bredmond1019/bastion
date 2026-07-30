@@ -599,6 +599,13 @@ mod tests {
     /// would land in `BlockLane::Other` — `board::build_board` has no lane for
     /// it, so it would break the count comparison below for a reason that
     /// isn't a real divergence between the two derivations.
+    ///
+    /// `BA.1` additionally gets an on-disk spec folder
+    /// (`bastion/planning/BA.1-in-progress/sdlc/sdlc-flow-state.json`) with an
+    /// `updated_at`, so `mev::brain::last_touched::derive_last_touched` has
+    /// exactly one resolvable block (BA.11.S task 3) — `BA.5` is deliberately
+    /// left with no spec folder at all, so it must come back `None` on both
+    /// read paths.
     fn make_cross_check_brain_root() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "bastion-block-graph-cross-check-{}-{}",
@@ -644,6 +651,17 @@ heading = "Bastion"
     }
   ]
 }"#,
+        )
+        .unwrap();
+
+        // A resolvable SDLC spec folder for BA.1 only — BA.5 (and every other
+        // block) deliberately has no spec folder, so `derive_last_touched`
+        // must report `None` for it on both read paths.
+        let ba1_sdlc_dir = planning_dir.join("BA.1-in-progress").join("sdlc");
+        std::fs::create_dir_all(&ba1_sdlc_dir).unwrap();
+        std::fs::write(
+            ba1_sdlc_dir.join("sdlc-flow-state.json"),
+            r#"{"updated_at": "2026-07-28T12:00:00Z"}"#,
         )
         .unwrap();
 
@@ -737,6 +755,77 @@ heading = "Bastion"
                 node.key, node.lane, expected
             );
         }
+
+        // ── last_touched one-derivation cross-check (BA.11.S task 3) ─────
+        //
+        // Both `build_board` (via `board::board_block_from` /
+        // `finished_blocks_for_repo`) and `mev::build_block_graph_export`
+        // (via `BlockGraphNode.last_touched`) source their per-block value
+        // from the very same `derive_last_touched` map computed once inside
+        // `assemble_board`. Compare the two independent read paths directly
+        // — a divergence in either direction (mismatched value, or one side
+        // populating what the other omits) must fail this test.
+        let mut board_last_touched: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        for b in &board_dto.lanes.now {
+            board_last_touched.insert(format!("{}:{}", b.repo, b.id), b.last_touched.clone());
+        }
+        for b in &board_dto.lanes.next {
+            board_last_touched.insert(format!("{}:{}", b.repo, b.id), b.last_touched.clone());
+        }
+        for b in &board_dto.lanes.blocked {
+            board_last_touched.insert(format!("{}:{}", b.repo, b.id), b.last_touched.clone());
+        }
+        for b in &board_dto.lanes.deferred {
+            board_last_touched.insert(format!("{}:{}", b.repo, b.id), b.last_touched.clone());
+        }
+        for b in &board_dto.lanes.finished {
+            board_last_touched.insert(format!("{}:{}", b.repo, b.id), b.last_touched.clone());
+        }
+        assert_eq!(
+            board_last_touched.len(),
+            5,
+            "every fixture block must appear exactly once across build_board's lanes"
+        );
+
+        let mut graph_last_touched: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        for node in &export.nodes {
+            graph_last_touched.insert(node.key.clone(), node.last_touched.clone());
+        }
+        assert_eq!(
+            graph_last_touched.len(),
+            5,
+            "every fixture block must appear exactly once across build_block_graph_export's nodes"
+        );
+
+        assert_eq!(
+            board_last_touched, graph_last_touched,
+            "last_touched must agree between build_board and build_block_graph_export for every block"
+        );
+
+        // Concrete, non-vacuous assertions: BA.1 has a resolvable spec folder,
+        // BA.5 has none.
+        assert_eq!(
+            board_last_touched.get("bastion:BA.1").cloned().flatten(),
+            Some("2026-07-28T12:00:00Z".to_owned()),
+            "BA.1 must report its spec folder's updated_at verbatim on build_board's side"
+        );
+        assert_eq!(
+            graph_last_touched.get("bastion:BA.1").cloned().flatten(),
+            Some("2026-07-28T12:00:00Z".to_owned()),
+            "BA.1 must report its spec folder's updated_at verbatim on build_block_graph_export's side"
+        );
+        assert_eq!(
+            board_last_touched.get("bastion:BA.5").cloned().flatten(),
+            None,
+            "BA.5 has no spec folder and must be None on build_board's side"
+        );
+        assert_eq!(
+            graph_last_touched.get("bastion:BA.5").cloned().flatten(),
+            None,
+            "BA.5 has no spec folder and must be None on build_block_graph_export's side"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
