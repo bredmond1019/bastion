@@ -72,6 +72,14 @@ pub enum AlertEvent {
         run_id: String,
         workflow_name: String,
     },
+    /// A run transitioned into `RunStatus::Suspended` (a real, resumable
+    /// pause — `metadata.suspension.suspended == true`). Not terminal: a
+    /// later resume transitions the run away from `Suspended` like any other
+    /// status change, and re-alerts if it is suspended again later.
+    RunSuspended {
+        run_id: String,
+        workflow_name: String,
+    },
     /// A run transitioned into `RunStatus::Success`. Run-level only — there
     /// is no equivalent "node done" event (a node reaching `Success` is the
     /// unremarkable common case, not alert-worthy on its own).
@@ -133,6 +141,10 @@ pub fn detect_alerts(state: &mut AlertState, runs: &[WorkflowRun]) -> Vec<AlertE
                     run_id: run.id.clone(),
                     workflow_name: run.workflow_name.clone(),
                 }),
+                RunStatus::Suspended => events.push(AlertEvent::RunSuspended {
+                    run_id: run.id.clone(),
+                    workflow_name: run.workflow_name.clone(),
+                }),
                 RunStatus::Running | RunStatus::Pending => {}
             }
         }
@@ -165,7 +177,9 @@ pub fn detect_alerts(state: &mut AlertState, runs: &[WorkflowRun]) -> Vec<AlertE
 /// bash sibling uses): `Basso` for failures (node or run), `Sosumi` for
 /// operator-initiated-or-adjacent terminal states that aren't outright
 /// failures (`Cancelled`, `BudgetHalted` — both stop a run short of success
-/// but neither is "something broke"), `Glass` for a clean success.
+/// but neither is "something broke"), `Pop` for `Suspended` — a mild,
+/// non-alarming cue since a pause is expected/benign and, unlike the other
+/// two, not terminal — `Glass` for a clean success.
 pub fn alert_notification(event: &AlertEvent) -> (String, String, &'static str) {
     match event {
         AlertEvent::NodeFailed {
@@ -200,6 +214,14 @@ pub fn alert_notification(event: &AlertEvent) -> (String, String, &'static str) 
             "bastion: run budget-halted".to_string(),
             format!("{workflow_name} (run {run_id}) halted by a budget cap"),
             "Sosumi",
+        ),
+        AlertEvent::RunSuspended {
+            run_id,
+            workflow_name,
+        } => (
+            "bastion: run suspended".to_string(),
+            format!("{workflow_name} (run {run_id}) is suspended, awaiting resume"),
+            "Pop",
         ),
         AlertEvent::RunDone {
             run_id,
@@ -366,6 +388,35 @@ mod tests {
             run_id: "r2".to_string(),
             workflow_name: "pipeline".to_string(),
         }));
+    }
+
+    #[test]
+    fn run_suspended_alerts_once_then_resume_realerts_on_re_suspend() {
+        let mut state = AlertState::default();
+        let t1 = detect_alerts(&mut state, &[run("r1", RunStatus::Suspended, vec![])]);
+        assert_eq!(
+            t1,
+            vec![AlertEvent::RunSuspended {
+                run_id: "r1".to_string(),
+                workflow_name: "pipeline".to_string(),
+            }]
+        );
+
+        // Sustained suspension does not re-alert (same rule as every other status).
+        let t2 = detect_alerts(&mut state, &[run("r1", RunStatus::Suspended, vec![])]);
+        assert!(t2.is_empty());
+
+        // Resume, then a later re-suspend, alerts fresh again.
+        let t3 = detect_alerts(&mut state, &[run("r1", RunStatus::Running, vec![])]);
+        assert!(t3.is_empty());
+        let t4 = detect_alerts(&mut state, &[run("r1", RunStatus::Suspended, vec![])]);
+        assert_eq!(
+            t4,
+            vec![AlertEvent::RunSuspended {
+                run_id: "r1".to_string(),
+                workflow_name: "pipeline".to_string(),
+            }]
+        );
     }
 
     // ── node-level: first-tick-already-terminal alerts ──────────────────────
@@ -596,6 +647,17 @@ mod tests {
         assert!(title.contains("budget-halted"), "got: {title}");
         assert!(message.contains("budget"), "got: {message}");
         assert_eq!(sound, "Sosumi");
+    }
+
+    #[test]
+    fn notification_run_suspended() {
+        let (title, message, sound) = alert_notification(&AlertEvent::RunSuspended {
+            run_id: "r1".to_string(),
+            workflow_name: "pipeline".to_string(),
+        });
+        assert!(title.contains("suspended"), "got: {title}");
+        assert!(message.contains("awaiting resume"), "got: {message}");
+        assert_eq!(sound, "Pop");
     }
 
     #[test]

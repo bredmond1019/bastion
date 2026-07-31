@@ -1050,7 +1050,8 @@ pub struct RunSummaryDto {
     pub workflow_type: Option<String>,
     /// Lifecycle status as the lowercase wire string, derived via
     /// `db::workflows::derive_run_status`: `pending`/`running`/`success`/`failed`/
-    /// `cancelled`/`budget_halted`.
+    /// `cancelled`/`budget_halted`/`suspended` (v0.17). `suspended` is not
+    /// terminal — a resumed run falls back through to the other rules.
     pub status: String,
     /// The triggering event's `spec_slug` field, when present. Omitted (not `null`) when the
     /// run's event carries no `spec_slug` key.

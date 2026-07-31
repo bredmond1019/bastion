@@ -194,6 +194,22 @@ pub(crate) fn parse_task_context(task_context: &serde_json::Value) -> Result<Vec
     Ok(result)
 }
 
+/// Reads `metadata.suspension.suspended` (engine-rs `suspend.rs`'s
+/// `SUSPENSION_METADATA_KEY` shape: `{ suspended, at, resume_at, reason,
+/// origin_identity, ledger, resume_count, requested }`). Absent-tolerant by
+/// the same reasoning as `metadata_is_cancelled`: a missing `suspension` key,
+/// a non-object `suspension`, or a missing/non-bool `suspended` field all read
+/// as "not suspended". `stamp_resumed` never deletes the key on resume — it
+/// flips `suspended: false` — so a run that was paused and has since resumed
+/// correctly reads as not-suspended here, not stuck.
+fn metadata_is_suspended(metadata: &serde_json::Value) -> bool {
+    metadata
+        .get("suspension")
+        .and_then(|s| s.get("suspended"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// Reads `metadata.cancellation.cancelled` (contract v1.1.0 §5). Absent-tolerant:
 /// a missing `cancellation` key, a `cancellation` that isn't an object, or a
 /// missing/non-bool `cancelled` field all read as "not cancelled" rather than
@@ -251,7 +267,8 @@ fn metadata_budget_halt(metadata: &serde_json::Value) -> Option<BudgetHalt> {
 /// 1. `metadata.budget.halted == true` (with a decodable `reason`) → `BudgetHalted`,
 ///    carrying the breached cap/spent/limit.
 /// 2. `metadata.cancellation.cancelled == true`                    → `Cancelled`.
-/// 3. Otherwise, the existing node-aggregate rules:
+/// 3. `metadata.suspension.suspended == true`                      → `Suspended`.
+/// 4. Otherwise, the existing node-aggregate rules:
 ///    - any node `running`                        → `Running`
 ///    - any node `pending`, none `running`         → `Pending`
 ///    - all nodes terminal, at least one `failed`  → `Failed`
@@ -261,6 +278,13 @@ fn metadata_budget_halt(metadata: &serde_json::Value) -> Option<BudgetHalt> {
 /// pre-dispatch budget gate before the operator has a chance to cancel it, so
 /// on the rare run where both markers are present, the budget halt is the
 /// more informative — and, timeline-wise, likely the causal — terminal state.
+/// Suspension is checked last of the three metadata annotations, and before
+/// the node-aggregate fallback: unlike a budget halt or a cancellation, a
+/// suspended run is never final (`stamp_resumed` clears it), so it must not
+/// be mistaken for one of those two terminal states — but left unchecked, a
+/// paused run's boundary node (still `Pending`, per engine-rs's suspend
+/// mechanics) would otherwise fall through to the generic `Pending` bucket,
+/// silently indistinguishable from a run that simply hasn't started.
 pub(crate) fn derive_run_status(
     nodes: &[NodeState],
     metadata: &serde_json::Value,
@@ -270,6 +294,9 @@ pub(crate) fn derive_run_status(
     }
     if metadata_is_cancelled(metadata) {
         return (RunStatus::Cancelled, None);
+    }
+    if metadata_is_suspended(metadata) {
+        return (RunStatus::Suspended, None);
     }
 
     let mut has_running = false;
@@ -281,7 +308,10 @@ pub(crate) fn derive_run_status(
             RunStatus::Running => has_running = true,
             RunStatus::Pending => has_pending = true,
             RunStatus::Failed => has_failed = true,
-            RunStatus::Success | RunStatus::Cancelled | RunStatus::BudgetHalted => {}
+            RunStatus::Success
+            | RunStatus::Cancelled
+            | RunStatus::BudgetHalted
+            | RunStatus::Suspended => {}
         }
     }
 
@@ -317,11 +347,11 @@ pub struct WorkflowRun {
 /// deserialize directly from `pending|running|success|failed` — §6's
 /// `NodeRunStatus` gains no new variants (contract v1.1.0).
 ///
-/// `Cancelled` and `BudgetHalted` are **run-level-only** states: they are never
-/// produced by deserializing an individual node's wire status (there is no
-/// such string on the wire), only by [`derive_run_status`] reading
-/// `task_context.metadata`'s v1.1.0 annotations. Keeping them in the same enum
-/// as the per-node states lets `WorkflowRun.status` and `NodeState.status`
+/// `Cancelled`, `BudgetHalted`, and `Suspended` are **run-level-only** states:
+/// they are never produced by deserializing an individual node's wire status
+/// (there is no such string on the wire), only by [`derive_run_status`]
+/// reading `task_context.metadata`'s annotations. Keeping them in the same
+/// enum as the per-node states lets `WorkflowRun.status` and `NodeState.status`
 /// share one type, matching how the rest of this module already treats
 /// run-level status as "the same shape as a node's, aggregated".
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -339,6 +369,11 @@ pub enum RunStatus {
     /// so `RunStatus` stays a plain, comparable/copyable-shaped enum.
     #[serde(skip_deserializing)]
     BudgetHalted,
+    /// Run-level only — derived from `metadata.suspension.suspended == true`.
+    /// Unlike `Cancelled`/`BudgetHalted`, not terminal: `stamp_resumed` clears
+    /// it on resume, so a run reads `Suspended` only while genuinely paused.
+    #[serde(skip_deserializing)]
+    Suspended,
 }
 
 /// The breach detail behind `WorkflowRun.status == RunStatus::BudgetHalted`,
@@ -395,6 +430,7 @@ mod tests {
         include_str!("fixtures/budget_halted_tokens_run.json");
     const BUDGET_HALTED_COST_FIXTURE: &str = include_str!("fixtures/budget_halted_cost_run.json");
     const MALFORMED_METADATA_FIXTURE: &str = include_str!("fixtures/malformed_metadata_run.json");
+    const SUSPENDED_FIXTURE: &str = include_str!("fixtures/suspended_run.json");
 
     // ── RunStatus deserialization ─────────────────────────────────────────────
 
@@ -785,6 +821,65 @@ mod tests {
     }
 
     #[test]
+    fn suspended_fixture_derives_suspended_status() {
+        // Mirrors engine-rs's `SUSPENSION_METADATA_KEY` shape
+        // (`crates/engine-core/src/suspend.rs`): an operator-pause boundary
+        // node (`resume_at`) is genuinely `Pending`, not falsely `Success` —
+        // confirm the metadata annotation still overrides the node-aggregate
+        // `Pending` fallback that would otherwise apply.
+        let tc: serde_json::Value = serde_json::from_str(SUSPENDED_FIXTURE).unwrap();
+        let nodes = parse_task_context(&tc).unwrap();
+        let metadata = tc.get("metadata").cloned().unwrap();
+        let (status, budget_halt) = derive_run_status(&nodes, &metadata);
+        assert_eq!(status, RunStatus::Suspended);
+        assert!(
+            budget_halt.is_none(),
+            "a suspended run carries no budget_halt detail"
+        );
+    }
+
+    #[test]
+    fn suspended_status_is_distinct_from_pending_and_cancelled() {
+        // Without the metadata check, the fixture's lone pending node
+        // (nothing running, nothing failed) would derive to `Pending` —
+        // confirm `Suspended` is a real, distinct status, not just an alias.
+        assert_ne!(RunStatus::Suspended, RunStatus::Pending);
+        assert_ne!(RunStatus::Suspended, RunStatus::Cancelled);
+        assert_ne!(RunStatus::Suspended, RunStatus::Running);
+    }
+
+    #[test]
+    fn cancellation_takes_priority_over_suspension() {
+        // A run that is both marked suspended and cancelled (e.g. an
+        // operator cancels a paused run) reads as Cancelled -- the more
+        // final of the two, matching budget-before-cancellation's same
+        // "more final wins" reasoning.
+        let tc: serde_json::Value = serde_json::from_str(SUSPENDED_FIXTURE).unwrap();
+        let nodes = parse_task_context(&tc).unwrap();
+        let mut metadata = tc.get("metadata").cloned().unwrap();
+        metadata["cancellation"] = serde_json::json!({ "cancelled": true, "at": "2026-07-16T10:06:00Z" });
+        let (status, _) = derive_run_status(&nodes, &metadata);
+        assert_eq!(status, RunStatus::Cancelled);
+    }
+
+    #[test]
+    fn resumed_run_no_longer_reads_suspended() {
+        // `stamp_resumed` flips `suspended: false` but never deletes the key
+        // -- confirm a resumed run's metadata reads as not-suspended, not
+        // stuck, once the boolean is false.
+        let tc: serde_json::Value = serde_json::from_str(SUSPENDED_FIXTURE).unwrap();
+        let nodes = parse_task_context(&tc).unwrap();
+        let mut metadata = tc.get("metadata").cloned().unwrap();
+        metadata["suspension"]["suspended"] = serde_json::json!(false);
+        metadata["suspension"]["resume_count"] = serde_json::json!(1);
+        let (status, _) = derive_run_status(&nodes, &metadata);
+        // DataIngestionNode/EmbeddingNode success, LLMSummaryNode pending ->
+        // Pending by the ordinary node-aggregate rules, exactly as if the
+        // suspension key were absent.
+        assert_eq!(status, RunStatus::Pending);
+    }
+
+    #[test]
     fn neither_key_present_derives_exactly_as_before() {
         // The in-progress / completed fixtures carry no `metadata` key at
         // all (pre-v1.1.0 shape) — confirm the empty-object default used by
@@ -866,15 +961,31 @@ mod tests {
         let metadata = serde_json::json!({});
         assert!(!metadata_is_cancelled(&metadata));
         assert!(metadata_budget_halt(&metadata).is_none());
+        assert!(!metadata_is_suspended(&metadata));
     }
 
     #[test]
-    fn run_status_cancelled_and_budget_halted_do_not_deserialize_from_wire() {
+    fn suspension_false_is_not_suspended() {
+        let metadata = serde_json::json!({
+            "suspension": { "suspended": false, "resume_count": 1 }
+        });
+        assert!(!metadata_is_suspended(&metadata));
+    }
+
+    #[test]
+    fn malformed_suspension_is_absent_tolerant() {
+        let metadata = serde_json::json!({ "suspension": "not-an-object" });
+        assert!(!metadata_is_suspended(&metadata));
+    }
+
+    #[test]
+    fn run_status_cancelled_budget_halted_and_suspended_do_not_deserialize_from_wire() {
         // These are run-level-only, derived states — the wire never spells a
-        // node status as "cancelled" or "budget_halted" (contract §6 keeps
-        // `NodeRunStatus` at exactly pending|running|success|failed).
+        // node status as "cancelled"/"budget_halted"/"suspended" (contract §6
+        // keeps `NodeRunStatus` at exactly pending|running|success|failed).
         assert!(serde_json::from_str::<RunStatus>("\"cancelled\"").is_err());
         assert!(serde_json::from_str::<RunStatus>("\"budget_halted\"").is_err());
+        assert!(serde_json::from_str::<RunStatus>("\"suspended\"").is_err());
     }
 
     // Helper: build a minimal NodeState for derive_run_status tests.
