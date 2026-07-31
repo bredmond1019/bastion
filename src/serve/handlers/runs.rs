@@ -125,7 +125,7 @@ fn node_states_from(ctx: &TaskContext) -> Vec<NodeState> {
 
 /// Lowercase wire string for a `db::workflows::RunStatus` (contract §6
 /// casing), mirroring [`status_str`]'s style for the run-level enum, which
-/// additionally carries the two run-level-only variants.
+/// additionally carries the three run-level-only variants.
 fn run_status_str(status: RunStatus) -> String {
     match status {
         RunStatus::Pending => "pending",
@@ -134,6 +134,7 @@ fn run_status_str(status: RunStatus) -> String {
         RunStatus::Failed => "failed",
         RunStatus::Cancelled => "cancelled",
         RunStatus::BudgetHalted => "budget_halted",
+        RunStatus::Suspended => "suspended",
     }
     .to_owned()
 }
@@ -694,13 +695,14 @@ mod tests {
     // -- run_status_str --
 
     #[test]
-    fn run_status_str_covers_all_six_variants() {
+    fn run_status_str_covers_all_seven_variants() {
         assert_eq!(run_status_str(RunStatus::Pending), "pending");
         assert_eq!(run_status_str(RunStatus::Running), "running");
         assert_eq!(run_status_str(RunStatus::Success), "success");
         assert_eq!(run_status_str(RunStatus::Failed), "failed");
         assert_eq!(run_status_str(RunStatus::Cancelled), "cancelled");
         assert_eq!(run_status_str(RunStatus::BudgetHalted), "budget_halted");
+        assert_eq!(run_status_str(RunStatus::Suspended), "suspended");
     }
 
     // -- spec_slug_from_event --
@@ -919,5 +921,23 @@ mod tests {
 
         let dto = project_run_summary(Uuid::new_v4(), &ctx);
         assert_eq!(dto.status, "budget_halted");
+    }
+
+    #[test]
+    fn project_run_summary_suspended_metadata_yields_suspended_status() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("NodeA".to_string(), node_run(NodeRunStatus::Success));
+        node_runs.insert("NodeB".to_string(), node_run(NodeRunStatus::Pending));
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({
+                "suspension": { "suspended": true, "resume_at": "NodeB" }
+            }),
+            node_runs,
+        };
+
+        let dto = project_run_summary(Uuid::new_v4(), &ctx);
+        assert_eq!(dto.status, "suspended");
     }
 }

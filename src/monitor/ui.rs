@@ -24,11 +24,15 @@ pub fn status_color(status: &RunStatus) -> Color {
         RunStatus::Success => Color::Green,
         RunStatus::Failed => Color::Red,
         RunStatus::Pending => Color::DarkGray,
-        // Run-level-only states (v1.1.0 metadata annotations, BA.7.C) never
-        // appear on an individual `NodeState`, but this fn is generic over
+        // Run-level-only states (metadata annotations, BA.7.C) never appear
+        // on an individual `NodeState`, but this fn is generic over
         // `RunStatus` so the match must stay exhaustive.
         RunStatus::Cancelled => Color::Magenta,
         RunStatus::BudgetHalted => Color::Red,
+        // Distinct from Running's Yellow — a paused run is deliberately not
+        // "busy" colored, and distinct from Cancelled's Magenta since it can
+        // still resume.
+        RunStatus::Suspended => Color::Cyan,
     }
 }
 
@@ -41,6 +45,7 @@ pub fn status_symbol(status: &RunStatus) -> &'static str {
         RunStatus::Pending => ".",
         RunStatus::Cancelled => "x",
         RunStatus::BudgetHalted => "$",
+        RunStatus::Suspended => "=",
     }
 }
 
@@ -475,6 +480,13 @@ mod tests {
     #[test]
     fn status_color_pending_is_dark_gray() {
         assert_eq!(status_color(&RunStatus::Pending), Color::DarkGray);
+    }
+
+    #[test]
+    fn status_color_suspended_is_cyan_and_distinct_from_running_and_cancelled() {
+        assert_eq!(status_color(&RunStatus::Suspended), Color::Cyan);
+        assert_ne!(status_color(&RunStatus::Suspended), status_color(&RunStatus::Running));
+        assert_ne!(status_color(&RunStatus::Suspended), status_color(&RunStatus::Cancelled));
     }
 
     // ── status_symbol ─────────────────────────────────────────────────────────
