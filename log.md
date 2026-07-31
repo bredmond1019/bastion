@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-07-30T21:55:00Z
+timestamp: 2026-07-30T22:45:00Z
 ---
 
 # Log — bastion
@@ -12,6 +12,27 @@ timestamp: 2026-07-30T21:55:00Z
 ---
 
 ## [run: 2026-07-30]
+
+### 11.T-run-summary-projection — DONE, close-out complete
+
+- **What:** `/sdlc-task` shipped BA.11.T across 5 tasks, all PASS, in-place on `main`. Widened
+  `GET /api/runs` from `Vec<String>` (bare run-id UUIDs) to `Vec<RunSummaryDto>` (`run_id`,
+  `workflow_type`, `status`, `spec_slug`, `started_at`, `updated_at`), unblocking `bastion-web`'s
+  `BW.3.E` live-runs band without an N+1 per-run fetch. `status` reuses
+  `db::workflows::derive_run_status`; `spec_slug` reads straight off the triggering event and is
+  omitted (not `null`) when absent; `started_at`/`updated_at` derive from `node_runs[*]`
+  timestamps; `workflow_type` stays always-`None` pending the `engine-rs` follow-up ticket
+  `EN.ticket.expose-live-run-workflow-type`. `docs/serve-api.md` bumped v0.15 → v0.16 with a
+  dated Amendment Log entry; `types/serve.ts` regenerated clean. Followed by `/close-out
+  --no-review`: full validation suite re-confirmed green (fmt, clippy, `cargo nextest run --lib
+  --bins` 1855/1855, release build), a coverage gap scan found no blocking gaps (dto.rs/runs.rs
+  already exhaustively unit-tested by the workflow), and a docs patch fixed one pre-existing
+  stale reference in `docs/index.md` (serve-api.md row listed "v0.13", three versions behind).
+- **Why:** `bastion-web`'s planned live-runs UI (`BW.3.E`) needs enough per-run context (spec
+  slug, status, timing) to render a runs band without hammering `GET /api/runs/{id}` once per
+  run — the bare-UUID list from the prior contract couldn't support that.
+- **Refs:** `planning/11.T-run-summary-projection/`, `docs/serve-api.md` §14.1, Amendment Log
+  2026-07-30 entry.
 
 ### ticket-enrich-block-authored-status — DONE
 
