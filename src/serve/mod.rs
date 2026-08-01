@@ -2423,6 +2423,176 @@ heading = "bastion"
         );
     }
 
+    // ── /api/board — block_graph enrichment route-level coverage
+    //    (`plan-board-graph-enrichment` task 6, A5) ──────────────────────────
+
+    /// `make_temp_epics_brain_root`'s four-block corpus (`BA.11.R`/`S`/`T`/`K`,
+    /// see its own doc comment) exercises every enrichment case at once when
+    /// requested with `?graph=true`: `BA.11.R` (now) has one corpus-wide
+    /// dependent (`BA.11.S`) and is not itself ready (its own dependency graph
+    /// membership aside, mev's `ready` reports it `false` here because it sits
+    /// mid-DAG, not a leaf); `BA.11.T` (next) has zero dependents and IS ready
+    /// (its sole dependency, `BA.11.K`, is closed); `BA.11.S` (blocked) is the
+    /// only entry carrying `unmet_count` (`1`, from its unmet dependency on
+    /// `BA.11.R`); `BA.11.K` (finished) has one corpus-wide dependent
+    /// (`BA.11.T`). These exact values were captured from a live run of this
+    /// fixture through the route and are asserted verbatim below so a
+    /// regression in any of `board.rs`'s five lane branches is caught at the
+    /// wire, not just at the `build_board` unit level (task 4/5 already cover
+    /// that layer).
+    #[actix_web::test]
+    async fn get_board_route_with_graph_true_returns_dependent_count_and_ready_across_lanes() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq&graph=true")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/board?scope=hq&graph=true with a valid token must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let lanes = &body["lanes"];
+
+        let now_r = &lanes["now"].as_array().unwrap()[0];
+        assert_eq!(now_r["id"], "BA.11.R");
+        assert_eq!(
+            now_r["dependent_count"],
+            serde_json::json!(1),
+            "BA.11.R has one corpus-wide dependent (BA.11.S); got {now_r:?}"
+        );
+        assert_eq!(now_r["ready"], serde_json::json!(false), "{now_r:?}");
+
+        let next_t = &lanes["next"].as_array().unwrap()[0];
+        assert_eq!(next_t["id"], "BA.11.T");
+        assert_eq!(
+            next_t["dependent_count"],
+            serde_json::json!(0),
+            "BA.11.T has zero corpus-wide dependents; got {next_t:?}"
+        );
+        assert_eq!(
+            next_t["ready"],
+            serde_json::json!(true),
+            "BA.11.T's sole dependency is closed, so it is ready; got {next_t:?}"
+        );
+
+        let finished_k = &lanes["finished"].as_array().unwrap()[0];
+        assert_eq!(finished_k["id"], "BA.11.K");
+        assert_eq!(
+            finished_k["dependent_count"],
+            serde_json::json!(1),
+            "BA.11.K has one corpus-wide dependent (BA.11.T); got {finished_k:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_route_with_graph_true_scopes_unmet_count_to_blocked_lane_only() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq&graph=true")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let lanes = &body["lanes"];
+
+        let blocked_s = &lanes["blocked"].as_array().unwrap()[0];
+        assert_eq!(blocked_s["id"], "BA.11.S");
+        assert_eq!(
+            blocked_s["unmet_count"],
+            serde_json::json!(1),
+            "the only blocked-lane entry must carry mev's raw unmet_count; got {blocked_s:?}"
+        );
+
+        // `now`/`next`/`finished` each have exactly one entry in this fixture
+        // (`deferred` is empty) — every one of them must OMIT the
+        // `unmet_count` key entirely, not carry a `null` or a fabricated `0`.
+        for (lane_name, entry) in [
+            ("now", &lanes["now"].as_array().unwrap()[0]),
+            ("next", &lanes["next"].as_array().unwrap()[0]),
+            ("finished", &lanes["finished"].as_array().unwrap()[0]),
+        ] {
+            let obj = entry.as_object().unwrap();
+            assert!(
+                !obj.contains_key("unmet_count"),
+                "{lane_name} lane entry {entry:?} must not carry an unmet_count key at all"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_route_without_graph_param_omits_all_three_enrichment_keys() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        // No `?graph=true` — task 1's gating decision means `assemble_board`
+        // never calls `mev::build_block_graph_export` at all, so every block
+        // on the board has "no graph entry" and must omit all three keys.
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let all_blocks = all_board_lane_entries(&body);
+        assert!(
+            !all_blocks.is_empty(),
+            "fixture must produce at least one board entry to make this assertion meaningful"
+        );
+
+        for entry in all_blocks {
+            let obj = entry.as_object().unwrap();
+            for key in ["dependent_count", "ready", "unmet_count"] {
+                assert!(
+                    !obj.contains_key(key),
+                    "without ?graph=true, entry {entry:?} must omit `{key}` entirely \
+                     (an absent key, not `null` or a fabricated zero/false)"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_board_route_rejects_missing_token_with_401_even_with_graph_true() {
+        let dir = make_temp_epics_brain_root();
+        let registry = registry_with_epics_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/board?scope=hq&graph=true")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/board?graph=true without a token must still return 401; got {}",
+            resp.status()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ── /api/blocks/graph — route registration (BA.17.A) ─────────────────────
 
     #[actix_web::test]

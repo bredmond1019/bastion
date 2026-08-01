@@ -47,6 +47,7 @@ use crate::serve::dto::{
 use crate::serve::handlers::epics::hq_epic_registry;
 
 use mev::Diagnostic;
+use mev::brain::block_graph::{BlockGraphScope, build_block_graph_export};
 use mev::brain::config::{BrainConfig, find_brain_root, load_brain_config};
 use mev::brain::last_touched::derive_last_touched;
 use mev::brain::state::{
@@ -78,6 +79,14 @@ pub struct BoardQuery {
     /// unknown → 404/`C005` (see [`epic_error_response`]).
     #[serde(default)]
     pub epic: Option<String>,
+    /// `graph=true`; gates the A5 `dependent_count`/`ready`/`unmet_count`
+    /// enrichment (`plan-board-graph-enrichment`) — defaults to `false` since
+    /// task 1 measured the added `mev::build_block_graph_export` call as
+    /// roughly doubling per-request board-assembly time on the live HQ
+    /// corpus. Absent/`false` yields the three fields omitted (not nulled)
+    /// from every `BoardBlockDto` on the wire.
+    #[serde(default)]
+    pub graph: bool,
 }
 
 // ── Pure core ────────────────────────────────────────────────────────────────────
@@ -125,12 +134,22 @@ pub fn resolve_scope(scope: BoardScope, tier_param: Option<&str>) -> (TierScope,
 /// missing key yields `None` ("never worked", never a sentinel). This is the
 /// *only* place `board_block_from`'s callers populate the field; `serve`
 /// derives nothing itself.
+///
+/// `dependent_count`/`ready` are looked up the same way in `block_graph`
+/// (mev's corpus-wide `BlockEnrichment` map, threaded through from
+/// [`BoardAssembly::block_graph`]) — a missing key yields `None` for both,
+/// never a fabricated `0`/`false`. `unmet_count` is **never** populated here:
+/// mev defines it as `0` for every non-`Blocked` lane, so surfacing it
+/// unqualified on every lane would read as falsely-ready; only the `blocked`
+/// lane branch in [`build_board`] sets it, from the same `block_graph` entry.
 fn board_block_from(
     block: &okf_core::Block,
     repo: &str,
     last_touched: &HashMap<String, String>,
+    block_graph: &HashMap<String, BlockEnrichment>,
 ) -> BoardBlockDto {
     let key = format!("{repo}:{}", block.id);
+    let enrichment = block_graph.get(&key);
     BoardBlockDto {
         id: block.id.clone(),
         title: block.title.clone(),
@@ -143,6 +162,9 @@ fn board_block_from(
         due: None,
         track: None,
         last_touched: last_touched.get(&key).cloned(),
+        dependent_count: enrichment.map(|e| e.dependent_count),
+        ready: enrichment.map(|e| e.ready),
+        unmet_count: None,
     }
 }
 
@@ -240,6 +262,7 @@ fn finished_blocks_for_repo(
     index: &HashMap<&str, (&TrackBlock, &str)>,
     status_map: &HashMap<String, Option<String>>,
     last_touched: &HashMap<String, String>,
+    block_graph: &HashMap<String, BlockEnrichment>,
 ) -> Vec<BoardBlockDto> {
     let mut entries: Vec<&(&TrackBlock, &str)> = index.values().collect();
     entries.sort_by_key(|(block, _)| block.id.as_str());
@@ -249,6 +272,7 @@ fn finished_blocks_for_repo(
         .filter(|(block, _)| block.status.as_deref() == Some(CLOSED_STATUS))
         .map(|&(block, track_title)| {
             let key = format!("{repo}:{}", block.id);
+            let enrichment = block_graph.get(&key);
             let mut dto = BoardBlockDto {
                 id: block.id.clone(),
                 title: block.title.clone(),
@@ -261,6 +285,12 @@ fn finished_blocks_for_repo(
                 due: None,
                 track: None,
                 last_touched: last_touched.get(&key).cloned(),
+                dependent_count: enrichment.map(|e| e.dependent_count),
+                ready: enrichment.map(|e| e.ready),
+                // `finished` is never the blocked lane — `unmet_count` stays
+                // `None` here (mev defines it as `0` for this lane, which
+                // would read as falsely-ready if surfaced unqualified).
+                unmet_count: None,
             };
             enrich_block(&mut dto, Some((block, track_title)));
             dto.blocked_by = unmet_deps(&block.depends_on, status_map);
@@ -274,6 +304,17 @@ fn finished_blocks_for_repo(
 /// derived from `files`' `tracks[].blocks[]`, an aggregate `lanes` across every
 /// in-scope repo, and the caller-computed `stale` freshness flag threaded through
 /// unchanged.
+///
+/// `block_graph` (mev's corpus-wide `"{repo}:{id}" -> BlockEnrichment` map,
+/// threaded through from [`BoardAssembly::block_graph`]) populates
+/// `dependent_count`/`ready` on **every** lane — `now`, `next`, `blocked`,
+/// `deferred`, and `finished` — for every mapped block; a block absent from
+/// the map (e.g. `?graph=1` not requested, or `max_nodes`-truncated) gets
+/// `None` for both, never a fabricated `0`/`false`. `unmet_count` is the one
+/// exception: it is populated (`Some`) **only** on the `blocked` lane, and
+/// left `None` on the other four — mev defines `unmet_count` as `0` for every
+/// non-`Blocked` lane, so surfacing it unqualified there would read as
+/// falsely-ready (see `BoardBlockDto::unmet_count`'s doc comment).
 pub fn build_board(
     scope: BoardScope,
     resolved_tier: Option<String>,
@@ -281,6 +322,7 @@ pub fn build_board(
     files: &[(StateSource, StateFile)],
     stale: bool,
     last_touched: &HashMap<String, String>,
+    block_graph: &HashMap<String, BlockEnrichment>,
 ) -> BoardDto {
     let mut repos: Vec<RepoBoardDto> = Vec::new();
     let mut agg_now = Vec::new();
@@ -301,7 +343,7 @@ pub fn build_board(
             .now
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo, last_touched);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched, block_graph);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -314,7 +356,7 @@ pub fn build_board(
             .next
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo, last_touched);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched, block_graph);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -326,13 +368,19 @@ pub fn build_board(
         // `blocked` lane: enrich the other five fields only — `blocked_by`
         // stays the rollup's already-computed `unmet` list so the two
         // derivations (rollup's and this handler's) cannot drift apart.
+        // This is the ONLY lane where `unmet_count` is surfaced (`Some`) —
+        // mev defines `unmet_count` as `0` for every other lane, which would
+        // read as falsely-ready if projected unqualified (see task 2's doc
+        // comment on `BoardBlockDto::unmet_count`).
         let blocked: Vec<BoardBlockDto> = rollup
             .blocked
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo, last_touched);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched, block_graph);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
+                let key = format!("{}:{}", rollup.repo, b.id);
+                dto.unmet_count = block_graph.get(&key).map(|e| e.unmet_count);
                 dto
             })
             .collect();
@@ -343,7 +391,7 @@ pub fn build_board(
             .deferred
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo, last_touched);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched, block_graph);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -352,7 +400,8 @@ pub fn build_board(
                 dto
             })
             .collect();
-        let finished = finished_blocks_for_repo(&rollup.repo, &index, &status_map, last_touched);
+        let finished =
+            finished_blocks_for_repo(&rollup.repo, &index, &status_map, last_touched, block_graph);
 
         agg_now.extend(now.iter().cloned());
         agg_next.extend(next.iter().cloned());
@@ -514,6 +563,33 @@ pub(crate) struct BoardAssembly {
     /// block absent from this map has no resolvable SDLC run — never a
     /// sentinel, never backfilled from `StateFile.updated`.
     pub(crate) last_touched: HashMap<String, String>,
+    /// `"{repo}:{id}" -> BlockEnrichment` — mev's corpus-wide
+    /// `dependent_count`/`ready`/`unmet_count` (`plan-board-graph-enrichment`
+    /// A5), computed **at most once** per request by a single UNSCOPED
+    /// `mev::build_block_graph_export` call and threaded into [`build_board`].
+    /// Empty (not an error) when the graph enrichment wasn't requested
+    /// (`?graph=1` gate, per task 1's measurement) or the corpus has no
+    /// blocks. A block absent from this map has no graph entry (e.g.
+    /// `max_nodes`-truncated) — never a fabricated zero.
+    pub(crate) block_graph: HashMap<String, BlockEnrichment>,
+}
+
+/// One block's corpus-wide graph enrichment, carried verbatim from
+/// `mev::brain::block_graph::BlockGraphNode` — bastion derives nothing here.
+/// `unmet_count` is populated by mev as `0` for every non-blocked lane (see
+/// `BlockGraphNode::unmet_count`'s doc comment); [`build_board`] (task 4) is
+/// responsible for only surfacing it as `Some` on the blocked lane and `None`
+/// elsewhere on the wire — this struct just mirrors mev's raw values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BlockEnrichment {
+    /// Corpus-wide fan-in count — identical for a node key across a scoped
+    /// and an unscoped export (see `BlockGraphNode::dependent_count`).
+    pub(crate) dependent_count: u32,
+    /// Membership in mev's full-corpus `ready_order`.
+    pub(crate) ready: bool,
+    /// Unmet-dependency count; `0` for every non-`Blocked` lane per mev's own
+    /// contract — do not treat this raw `0` as "ready" on a non-blocked lane.
+    pub(crate) unmet_count: u32,
 }
 
 /// Assemble the brain-walk inputs `build_board` needs: the loaded
@@ -526,7 +602,19 @@ pub(crate) struct BoardAssembly {
 /// failing the whole request — only an unresolvable brain root is a hard
 /// error. `pub(crate)` so sibling handler modules can call it directly rather
 /// than duplicating this pipeline.
-pub(crate) fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<BoardAssembly, String> {
+///
+/// `include_graph` gates the A5 enrichment (`plan-board-graph-enrichment`
+/// task 1's measurement: an unconditional `build_block_graph_export` call
+/// roughly doubles per-request board-assembly time on the live HQ corpus) —
+/// when `false`, [`BoardAssembly::block_graph`] is left empty and no export
+/// is built at all; callers that don't need `dependent_count`/`ready` (e.g.
+/// `handlers/block_graph.rs`, which builds its own scoped export) should pass
+/// `false`.
+pub(crate) fn assemble_board(
+    root: &Path,
+    tier_scope: &TierScope,
+    include_graph: bool,
+) -> Result<BoardAssembly, String> {
     let config = load_brain_config(&root.join("brain.toml"))
         .map_err(|e| format!("could not load brain.toml at {}: {e}", root.display()))?;
 
@@ -548,6 +636,12 @@ pub(crate) fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<Boar
 
     let last_touched = derive_last_touched(root, &config, &loaded);
 
+    let block_graph = if include_graph {
+        build_block_graph_enrichment(root, &config, &graph, &loaded)
+    } else {
+        HashMap::new()
+    };
+
     Ok(BoardAssembly {
         config,
         rollups,
@@ -555,7 +649,55 @@ pub(crate) fn assemble_board(root: &Path, tier_scope: &TierScope) -> Result<Boar
         graph,
         stale,
         last_touched,
+        block_graph,
     })
+}
+
+/// Build the corpus-wide `"{repo}:{id}" -> BlockEnrichment` map by calling
+/// `mev::build_block_graph_export` **exactly once**, with an UNSCOPED
+/// [`BlockGraphScope`] (`TierScope::All`, no epic/repo restriction,
+/// `include_closed: true`, `include_boundary: false`, `max_nodes: usize::MAX`).
+///
+/// Scoping this call to the board's own `tier_scope` would silently
+/// reintroduce the exact scope-dependence this block exists to eliminate:
+/// `dependent_count`/`ready` are corpus-invariant by construction in mev
+/// (`BlockGraphNode::dependent_count`'s doc comment), but only when the export
+/// itself is built over the full corpus before any scope filtering — a scoped
+/// export's fan-in counts only its own in-scope neighbours. `include_closed:
+/// true` and no `max_nodes` truncation are likewise required so a block
+/// dropped from *this* export for a reason unrelated to the board's own scope
+/// doesn't fabricate a `None` that should have been a real value.
+fn build_block_graph_enrichment(
+    root: &Path,
+    config: &BrainConfig,
+    graph: &StateGraph,
+    files: &[(StateSource, StateFile)],
+) -> HashMap<String, BlockEnrichment> {
+    let scope = BlockGraphScope {
+        tier: TierScope::All,
+        epic: None,
+        repo: None,
+        include_closed: true,
+        include_boundary: false,
+        max_nodes: usize::MAX,
+    };
+
+    let export = build_block_graph_export(root, config, graph, files, &scope);
+
+    export
+        .nodes
+        .into_iter()
+        .map(|node| {
+            (
+                node.key,
+                BlockEnrichment {
+                    dependent_count: node.dependent_count,
+                    ready: node.ready,
+                    unmet_count: node.unmet_count,
+                },
+            )
+        })
+        .collect()
 }
 
 /// The two error shapes [`get_board`]'s `web::block` closure can fail with:
@@ -578,7 +720,12 @@ pub async fn get_board(
     query: web::Query<BoardQuery>,
     registry: web::Data<FileConfig>,
 ) -> HttpResponse {
-    let BoardQuery { scope, tier, epic } = query.into_inner();
+    let BoardQuery {
+        scope,
+        tier,
+        epic,
+        graph: include_graph,
+    } = query.into_inner();
 
     if scope == BoardScope::Epic && epic_param_missing(epic.as_deref()) {
         return epic_error_response("scope=epic requires a non-empty &epic=<slug> query param");
@@ -603,8 +750,17 @@ pub async fn get_board(
             graph: _graph,
             stale,
             last_touched,
-        } = assemble_board(&root, &tier_scope).map_err(BoardError::BrainRoot)?;
-        let board = build_board(scope, resolved_tier, &rollups, &files, stale, &last_touched);
+            block_graph,
+        } = assemble_board(&root, &tier_scope, include_graph).map_err(BoardError::BrainRoot)?;
+        let board = build_board(
+            scope,
+            resolved_tier,
+            &rollups,
+            &files,
+            stale,
+            &last_touched,
+            &block_graph,
+        );
 
         if scope != BoardScope::Epic {
             return Ok(board);
@@ -793,7 +949,13 @@ mod tests {
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
 
-        let finished = finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new());
+        let finished = finished_blocks_for_repo(
+            "bastion",
+            &index,
+            &status_map,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].id, "BA.1.A");
         assert_eq!(finished[0].repo, "bastion");
@@ -806,7 +968,14 @@ mod tests {
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
         assert!(
-            finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new()).is_empty()
+            finished_blocks_for_repo(
+                "bastion",
+                &index,
+                &status_map,
+                &HashMap::new(),
+                &HashMap::new()
+            )
+            .is_empty()
         );
     }
 
@@ -817,7 +986,14 @@ mod tests {
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
         assert!(
-            finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new()).is_empty()
+            finished_blocks_for_repo(
+                "bastion",
+                &index,
+                &status_map,
+                &HashMap::new(),
+                &HashMap::new()
+            )
+            .is_empty()
         );
     }
 
@@ -895,6 +1071,7 @@ mod tests {
             &sample_block("BA.1.A", Some("open"), Vec::new()),
             "bastion",
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         enrich_block(&mut dto, Some((&track_block, "Phase 11")));
@@ -914,6 +1091,7 @@ mod tests {
             &sample_block("BA.1.A", Some("open"), Vec::new()),
             "bastion",
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         enrich_block(&mut dto, Some((&track_block, "Phase 11")));
@@ -931,6 +1109,7 @@ mod tests {
         let mut dto = board_block_from(
             &sample_block("BA.1.A", Some("open"), Vec::new()),
             "bastion",
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -1073,6 +1252,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.scope, BoardScope::Tier);
@@ -1105,6 +1285,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.deferred.len(), 1);
@@ -1130,6 +1311,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.blocked[0].blocked_by.len(), 1);
@@ -1153,6 +1335,7 @@ mod tests {
             &rollups,
             &files,
             false,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -1199,6 +1382,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         let now = &dto.lanes.now[0];
@@ -1230,6 +1414,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.next[0].status, Some("open".to_owned()));
@@ -1252,6 +1437,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.now[0].status, Some("open".to_owned()));
@@ -1268,6 +1454,7 @@ mod tests {
             &rollups,
             &files,
             false,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -1336,6 +1523,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         let blocked_entry = dto.lanes.next.iter().find(|b| b.id == "BA.1.B").unwrap();
@@ -1372,6 +1560,7 @@ mod tests {
             &rollups,
             &files,
             false,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -1422,7 +1611,15 @@ mod tests {
             "2026-07-28T12:00:00Z".to_owned(),
         );
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &last_touched,
+            &HashMap::new(),
+        );
 
         assert_eq!(
             dto.lanes.now[0].last_touched.as_deref(),
@@ -1462,7 +1659,15 @@ mod tests {
             "2026-07-28T12:00:00Z".to_owned(),
         );
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &last_touched,
+            &HashMap::new(),
+        );
 
         assert_eq!(dto.lanes.now[0].last_touched, None);
         assert_eq!(dto.lanes.next[0].last_touched, None);
@@ -1481,7 +1686,15 @@ mod tests {
         let mut last_touched = HashMap::new();
         last_touched.insert("bella:BA.1.A".to_owned(), "2026-07-28T12:00:00Z".to_owned());
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &last_touched,
+            &HashMap::new(),
+        );
 
         let bastion_now = dto.lanes.now.iter().find(|b| b.repo == "bastion").unwrap();
         assert_eq!(
@@ -1508,6 +1721,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.now[0].last_touched, None);
@@ -1517,9 +1731,165 @@ mod tests {
         assert_eq!(dto.lanes.finished[0].last_touched, None);
     }
 
+    // ── block_graph enrichment (dependent_count/ready/unmet_count) ──────────
+
+    /// A populated `block_graph` map with one entry for `bastion:BA.1.A` —
+    /// the id every `all_lanes_rollup`/`all_lanes_files` block shares — with
+    /// a distinguishable `dependent_count`/`ready`/`unmet_count` so lane
+    /// assertions can't pass by accident on a default value.
+    fn sample_block_graph_map() -> HashMap<String, BlockEnrichment> {
+        let mut map = HashMap::new();
+        map.insert(
+            "bastion:BA.1.A".to_owned(),
+            BlockEnrichment {
+                dependent_count: 7,
+                ready: true,
+                unmet_count: 2,
+            },
+        );
+        map
+    }
+
+    #[test]
+    fn build_board_populates_dependent_count_and_ready_on_every_lane_when_key_matches() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+        let block_graph = sample_block_graph_map();
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+            &block_graph,
+        );
+
+        for (lane_name, entry) in [
+            ("now", &dto.lanes.now[0]),
+            ("next", &dto.lanes.next[0]),
+            ("blocked", &dto.lanes.blocked[0]),
+            ("deferred", &dto.lanes.deferred[0]),
+            ("finished", &dto.lanes.finished[0]),
+        ] {
+            assert_eq!(
+                entry.dependent_count,
+                Some(7),
+                "{lane_name} lane dependent_count"
+            );
+            assert_eq!(entry.ready, Some(true), "{lane_name} lane ready");
+        }
+    }
+
+    #[test]
+    fn build_board_populates_unmet_count_only_on_blocked_lane() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+        let block_graph = sample_block_graph_map();
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+            &block_graph,
+        );
+
+        assert_eq!(
+            dto.lanes.blocked[0].unmet_count,
+            Some(2),
+            "blocked lane surfaces mev's raw unmet_count"
+        );
+        assert_eq!(dto.lanes.now[0].unmet_count, None, "now lane");
+        assert_eq!(dto.lanes.next[0].unmet_count, None, "next lane");
+        assert_eq!(dto.lanes.deferred[0].unmet_count, None, "deferred lane");
+        assert_eq!(dto.lanes.finished[0].unmet_count, None, "finished lane");
+    }
+
+    #[test]
+    fn build_board_block_absent_from_graph_map_yields_none_for_all_three_fields() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+        // Populated map, but with no entry for this fixture's block id —
+        // must yield `None`, never a fabricated `0`/`false`.
+        let mut block_graph = HashMap::new();
+        block_graph.insert(
+            "bastion:BA.9.Z".to_owned(),
+            BlockEnrichment {
+                dependent_count: 9,
+                ready: true,
+                unmet_count: 1,
+            },
+        );
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+            &block_graph,
+        );
+
+        for (lane_name, entry) in [
+            ("now", &dto.lanes.now[0]),
+            ("next", &dto.lanes.next[0]),
+            ("blocked", &dto.lanes.blocked[0]),
+            ("deferred", &dto.lanes.deferred[0]),
+            ("finished", &dto.lanes.finished[0]),
+        ] {
+            assert_eq!(
+                entry.dependent_count, None,
+                "{lane_name} lane dependent_count"
+            );
+            assert_eq!(entry.ready, None, "{lane_name} lane ready");
+            assert_eq!(entry.unmet_count, None, "{lane_name} lane unmet_count");
+        }
+    }
+
+    #[test]
+    fn build_board_empty_block_graph_map_leaves_every_lane_none() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        for entry in [
+            &dto.lanes.now[0],
+            &dto.lanes.next[0],
+            &dto.lanes.blocked[0],
+            &dto.lanes.deferred[0],
+            &dto.lanes.finished[0],
+        ] {
+            assert_eq!(entry.dependent_count, None);
+            assert_eq!(entry.ready, None);
+            assert_eq!(entry.unmet_count, None);
+        }
+    }
+
     #[test]
     fn build_board_empty_rollups_yields_empty_board() {
-        let dto = build_board(BoardScope::Hq, None, &[], &[], false, &HashMap::new());
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &[],
+            &[],
+            false,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert!(dto.lanes.now.is_empty());
         assert!(dto.lanes.next.is_empty());
         assert!(dto.lanes.blocked.is_empty());
@@ -1529,7 +1899,15 @@ mod tests {
 
     #[test]
     fn build_board_threads_stale_flag() {
-        let dto = build_board(BoardScope::Hq, None, &[], &[], true, &HashMap::new());
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &[],
+            &[],
+            true,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert!(dto.stale);
     }
 
@@ -1599,6 +1977,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         )
     }
 
@@ -1648,6 +2027,7 @@ mod tests {
             &[rollup],
             &[(sample_source("mev"), file)],
             false,
+            &HashMap::new(),
             &HashMap::new(),
         );
         let filtered = filter_board_to_epic(board, "epic-alpha");
@@ -1810,7 +2190,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let result = assemble_board(&dir, &TierScope::All);
+        let result = assemble_board(&dir, &TierScope::All, false);
         assert!(
             result.is_err(),
             "expected an error with no brain.toml present"
@@ -1864,8 +2244,8 @@ heading = "Bastion"
         )
         .unwrap();
 
-        let assembly =
-            assemble_board(&dir, &TierScope::All).expect("fixture corpus should assemble cleanly");
+        let assembly = assemble_board(&dir, &TierScope::All, false)
+            .expect("fixture corpus should assemble cleanly");
 
         let mut node_keys: Vec<String> =
             assembly.graph.nodes.iter().map(|n| n.key.clone()).collect();
@@ -1875,5 +2255,565 @@ heading = "Bastion"
         assert_eq!(assembly.files.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── task 3: block_graph enrichment map on BoardAssembly ─────────────────
+
+    /// Build a small on-disk brain root with two repos and a `BlockedBy`
+    /// fan-in (`beta:B1` depends on `alpha:A1`, so `alpha:A1` has
+    /// `dependent_count == 1`) — enough to exercise the enrichment map's key
+    /// shape and a non-zero `dependent_count` without depending on the larger
+    /// timing fixtures below.
+    fn make_block_graph_enrichment_fixture_brain_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-board-block-graph-enrichment-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let alpha_planning = dir.join("alpha").join("planning");
+        let beta_planning = dir.join("beta").join("planning");
+        std::fs::create_dir_all(&alpha_planning).unwrap();
+        std::fs::create_dir_all(&beta_planning).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "alpha"
+tier = "core"
+repo_path = "alpha"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/alpha.md"
+heading = "Alpha"
+
+[[repos]]
+slug = "beta"
+tier = "core"
+repo_path = "beta"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/beta.md"
+heading = "Beta"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            alpha_planning.join("state.json"),
+            r#"{
+  "repo": "alpha",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "A1", "title": "A1 title", "status": "open"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            beta_planning.join("state.json"),
+            r#"{
+  "repo": "beta",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "B1", "title": "B1 title", "status": "open", "depends_on": [{"type": "block", "repo": "alpha", "id": "A1"}]}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn assemble_board_leaves_block_graph_empty_when_include_graph_is_false() {
+        let dir = make_block_graph_enrichment_fixture_brain_root();
+
+        let assembly = assemble_board(&dir, &TierScope::All, false)
+            .expect("fixture corpus should assemble cleanly");
+
+        assert!(
+            assembly.block_graph.is_empty(),
+            "block_graph must stay empty (no export built at all) when include_graph=false"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assemble_board_populates_block_graph_keyed_repo_colon_id() {
+        let dir = make_block_graph_enrichment_fixture_brain_root();
+
+        let assembly = assemble_board(&dir, &TierScope::All, true)
+            .expect("fixture corpus should assemble cleanly");
+
+        let mut keys: Vec<&String> = assembly.block_graph.keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["alpha:A1", "beta:B1"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assemble_board_block_graph_dependent_count_matches_build_block_graph_export_directly() {
+        let dir = make_block_graph_enrichment_fixture_brain_root();
+
+        let assembly = assemble_board(&dir, &TierScope::All, true)
+            .expect("fixture corpus should assemble cleanly");
+
+        // Call build_block_graph_export directly, unscoped, over the same
+        // inputs, and assert the map's values for "alpha:A1" match exactly —
+        // bastion must carry mev's values verbatim, never re-derive them.
+        let scope = BlockGraphScope {
+            tier: TierScope::All,
+            epic: None,
+            repo: None,
+            include_closed: true,
+            include_boundary: false,
+            max_nodes: usize::MAX,
+        };
+        let export = build_block_graph_export(
+            &dir,
+            &assembly.config,
+            &assembly.graph,
+            &assembly.files,
+            &scope,
+        );
+        let direct_a1 = export
+            .nodes
+            .iter()
+            .find(|n| n.key == "alpha:A1")
+            .expect("alpha:A1 must be present in the direct export");
+
+        let mapped_a1 = assembly
+            .block_graph
+            .get("alpha:A1")
+            .expect("alpha:A1 must be present in assemble_board's enrichment map");
+
+        assert_eq!(mapped_a1.dependent_count, direct_a1.dependent_count);
+        assert_eq!(mapped_a1.dependent_count, 1, "beta:B1 depends on alpha:A1");
+        assert_eq!(mapped_a1.ready, direct_a1.ready);
+        assert_eq!(mapped_a1.unmet_count, direct_a1.unmet_count);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assemble_board_block_graph_is_empty_not_panicking_for_corpus_with_no_blocks() {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-board-block-graph-no-blocks-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let planning_dir = dir.join("bastion").join("planning");
+        std::fs::create_dir_all(&planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "Bastion"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            planning_dir.join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": []
+}"#,
+        )
+        .unwrap();
+
+        let assembly = assemble_board(&dir, &TierScope::All, true)
+            .expect("fixture corpus with no blocks should still assemble cleanly");
+
+        assert!(
+            assembly.block_graph.is_empty(),
+            "a corpus with no blocks must yield an empty (not panicking) enrichment map"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── task 5: corpus-invariance headline test ─────────────────────────────
+    //
+    // This block's headline acceptance test: `dependent_count` must be
+    // IDENTICAL for a given block whether the board is fetched at `scope=hq`
+    // (`TierScope::All`) or at a narrower tier scope — the property
+    // bastion-web's in-scope reverse-dep count (`lib/board-view.ts:669-676`)
+    // structurally cannot have, because it counts fan-in only from whatever
+    // subset of the corpus that request happened to load.
+
+    /// Two repos in *different* tiers — `alpha` (`core`) and `beta` (`other`)
+    /// — where `beta:B1` depends on `alpha:A1`. A narrower `TierScope::Tier
+    /// ("core")` rollup excludes `beta` entirely, so if `alpha:A1`'s
+    /// `dependent_count` were derived from the *in-scope* rollup rather than
+    /// mev's corpus-wide, unscoped export, the narrower board would report `0`
+    /// dependents instead of `1`. `alpha` stays in scope at both tiers so the
+    /// same block can be compared across both boards.
+    fn make_corpus_invariance_fixture_brain_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-board-corpus-invariance-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let alpha_planning = dir.join("alpha").join("planning");
+        let beta_planning = dir.join("beta").join("planning");
+        std::fs::create_dir_all(&alpha_planning).unwrap();
+        std::fs::create_dir_all(&beta_planning).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "alpha"
+tier = "core"
+repo_path = "alpha"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/alpha.md"
+heading = "Alpha"
+
+[[repos]]
+slug = "beta"
+tier = "other"
+repo_path = "beta"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/beta.md"
+heading = "Beta"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            alpha_planning.join("state.json"),
+            r#"{
+  "repo": "alpha",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "A1", "title": "A1 title", "status": "open"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            beta_planning.join("state.json"),
+            r#"{
+  "repo": "beta",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "B1", "title": "B1 title", "status": "open", "depends_on": [{"type": "block", "repo": "alpha", "id": "A1"}]}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    /// Look up a `(repo, id)` block's `dependent_count` in a built [`BoardDto`]
+    /// by scanning every lane — the block may land in any of the five
+    /// depending on its authored status, and this helper doesn't care which.
+    fn dependent_count_in_board(dto: &BoardDto, repo: &str, id: &str) -> Option<u32> {
+        dto.lanes
+            .now
+            .iter()
+            .chain(dto.lanes.next.iter())
+            .chain(dto.lanes.blocked.iter())
+            .chain(dto.lanes.deferred.iter())
+            .chain(dto.lanes.finished.iter())
+            .find(|b| b.repo == repo && b.id == id)
+            .unwrap_or_else(|| panic!("{repo}:{id} missing from every board lane"))
+            .dependent_count
+    }
+
+    #[test]
+    fn dependent_count_is_identical_at_hq_scope_and_at_a_narrower_tier_scope() {
+        let dir = make_corpus_invariance_fixture_brain_root();
+
+        // `scope=hq` — `TierScope::All` — includes both `alpha` and `beta`.
+        let hq_assembly = assemble_board(&dir, &TierScope::All, true)
+            .expect("fixture corpus should assemble cleanly at hq scope");
+        let hq_dto = build_board(
+            BoardScope::Hq,
+            None,
+            &hq_assembly.rollups,
+            &hq_assembly.files,
+            hq_assembly.stale,
+            &hq_assembly.last_touched,
+            &hq_assembly.block_graph,
+        );
+
+        // `scope=tier&tier=core` — `TierScope::Tier("core")` — excludes `beta`
+        // (tier `"other"`) from the rollup entirely; `alpha` stays in scope.
+        let narrow_scope = TierScope::Tier("core".to_owned());
+        let narrow_assembly = assemble_board(&dir, &narrow_scope, true)
+            .expect("fixture corpus should assemble cleanly at the narrower tier scope");
+        let narrow_dto = build_board(
+            BoardScope::Tier,
+            Some("core".to_owned()),
+            &narrow_assembly.rollups,
+            &narrow_assembly.files,
+            narrow_assembly.stale,
+            &narrow_assembly.last_touched,
+            &narrow_assembly.block_graph,
+        );
+
+        // The narrower board's rollup must actually have excluded `beta` —
+        // otherwise this test wouldn't be exercising the property it claims to.
+        assert!(
+            !narrow_assembly.rollups.iter().any(|r| r.repo == "beta"),
+            "the narrower tier scope must exclude beta from its rollup"
+        );
+
+        let hq_count = dependent_count_in_board(&hq_dto, "alpha", "A1");
+        let narrow_count = dependent_count_in_board(&narrow_dto, "alpha", "A1");
+
+        assert_eq!(
+            hq_count,
+            Some(1),
+            "alpha:A1 has one corpus-wide dependent (beta:B1) at hq scope"
+        );
+        assert_eq!(
+            hq_count, narrow_count,
+            "dependent_count for alpha:A1 must be IDENTICAL at hq scope and at the narrower \
+             tier scope that excludes beta — this is the property bastion-web's in-scope \
+             reverse-dep count (lib/board-view.ts:669-676) structurally cannot have, because \
+             beta:B1 (the block that makes alpha:A1's count 1, not 0) is out of scope at the \
+             narrower tier and would be invisible to any in-scope-only derivation"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── task 1 measurement: cost of adding `build_block_graph_export` to the
+    // board path (`plan-board-graph-enrichment`, task 1) ─────────────────────
+    //
+    // Decision task, no production code change. Times `build_board` alone
+    // against `build_board` plus a single unscoped `mev::build_block_graph_export`
+    // call over the *same* `BoardAssembly` inputs, using the `Instant`/`elapsed`
+    // precedent already established at `src/main.rs:315` and
+    // `src/run/abort.rs:121`. Run with `--nocapture` to see the printed
+    // absolute-ms figures; the measured numbers are transcribed by hand into
+    // `tasks.md`'s Notes section (this test only proves the harness works and
+    // that the two calls stay ordered sanely — CI machines vary too much in
+    // absolute speed for a hardcoded ms budget to be meaningful).
+
+    /// Build a synthetic on-disk brain root with a single repo containing `n`
+    /// blocks, each depending on the previous one (a long `BlockedBy` chain),
+    /// approximating a larger-than-fixture-default corpus for the timing
+    /// harness without depending on the live HQ corpus being present.
+    fn make_timing_fixture_brain_root(n: usize) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-board-timing-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let planning_dir = dir.join("bastion").join("planning");
+        std::fs::create_dir_all(&planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "Bastion"
+"#,
+        )
+        .unwrap();
+
+        let mut blocks_json = String::new();
+        for i in 0..n {
+            if i > 0 {
+                blocks_json.push(',');
+            }
+            let id = format!("BA.{i}");
+            if i == 0 {
+                blocks_json.push_str(&format!(
+                    r#"{{"id": "{id}", "title": "{id} title", "status": "open"}}"#
+                ));
+            } else {
+                let dep = format!("BA.{}", i - 1);
+                blocks_json.push_str(&format!(
+                    r#"{{"id": "{id}", "title": "{id} title", "status": "open", "depends_on": [{{"type": "block", "repo": "bastion", "id": "{dep}"}}]}}"#
+                ));
+            }
+        }
+        let state_json = format!(
+            r#"{{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {{
+      "title": "Phase 1",
+      "blocks": [{blocks_json}]
+    }}
+  ]
+}}"#
+        );
+        std::fs::write(planning_dir.join("state.json"), state_json).unwrap();
+
+        dir
+    }
+
+    /// Time `build_board` alone, then `build_board` plus one unscoped
+    /// `mev::build_block_graph_export` call, over the same `BoardAssembly`.
+    /// Also prints the full `assemble_board` (discover → load → build-graph →
+    /// derive-rollup → `derive_last_touched`) time for context — that I/O
+    /// walk, not `build_board` itself, is most of what a real `/api/board`
+    /// request pays today. Returns `(build_board_ms, build_board_plus_graph_ms)`.
+    fn measure_board_vs_board_plus_graph(root: &std::path::Path) -> (u128, u128) {
+        let t_assemble = std::time::Instant::now();
+        let assembly = assemble_board(root, &TierScope::All, false)
+            .expect("fixture corpus should assemble cleanly");
+        let assemble_board_ms = t_assemble.elapsed().as_millis();
+        println!("[task1 measurement]   (context) assemble_board={assemble_board_ms}ms");
+
+        let t0 = std::time::Instant::now();
+        let _board = build_board(
+            BoardScope::Hq,
+            None,
+            &assembly.rollups,
+            &assembly.files,
+            assembly.stale,
+            &assembly.last_touched,
+            &assembly.block_graph,
+        );
+        let build_board_ms = t0.elapsed().as_millis();
+
+        // Unscoped — TierScope::All, no epic/repo restriction, include_closed
+        // so nothing is dropped, max_nodes large enough to cover the whole
+        // corpus — matching the corpus-invariance requirement task 3 will
+        // enforce in production code.
+        let scope = mev::BlockGraphScope {
+            tier: TierScope::All,
+            epic: None,
+            repo: None,
+            include_closed: true,
+            include_boundary: false,
+            max_nodes: usize::MAX,
+        };
+
+        let t1 = std::time::Instant::now();
+        let _board_again = build_board(
+            BoardScope::Hq,
+            None,
+            &assembly.rollups,
+            &assembly.files,
+            assembly.stale,
+            &assembly.last_touched,
+            &assembly.block_graph,
+        );
+        let _export = mev::build_block_graph_export(
+            root,
+            &assembly.config,
+            &assembly.graph,
+            &assembly.files,
+            &scope,
+        );
+        let build_board_plus_graph_ms = t1.elapsed().as_millis();
+
+        (build_board_ms, build_board_plus_graph_ms)
+    }
+
+    #[test]
+    fn task1_measure_build_block_graph_export_cost_on_synthetic_corpus() {
+        // 500 blocks in one repo — larger than any other fixture in this test
+        // module, used as a stand-in "largest available fixture corpus" per
+        // the task 1 description.
+        let dir = make_timing_fixture_brain_root(500);
+
+        let (build_board_ms, build_board_plus_graph_ms) = measure_board_vs_board_plus_graph(&dir);
+
+        println!(
+            "[task1 measurement] synthetic 500-block corpus: build_board={build_board_ms}ms, \
+             build_board+build_block_graph_export={build_board_plus_graph_ms}ms"
+        );
+
+        // No hardcoded ms budget (CI hardware varies too much for that to be
+        // meaningful) — this test's job is to prove the harness runs cleanly
+        // end-to-end and produces two comparable, non-negative measurements.
+        // The transcribed absolute figures and the unconditional-vs-gated
+        // decision live in tasks.md's Notes, not in a test assertion.
+        assert!(build_board_plus_graph_ms >= build_board_ms.min(build_board_plus_graph_ms));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn task1_measure_build_block_graph_export_cost_on_live_hq_corpus_if_reachable() {
+        // "if reachable read-only" per the task 1 description — the live HQ
+        // brain root sits some number of parent directories above this crate
+        // (a plain checkout has it two levels above `bastion/`; an SDLC
+        // worktree checkout adds an extra `trees/<branch>/` level), so this
+        // walks up from `CARGO_MANIFEST_DIR` with the same
+        // `find_brain_root` the production `get_board` handler uses, and
+        // degrades to a no-op (rather than failing) when no `brain.toml` is
+        // found, e.g. on a CI runner that only checks out this repo.
+        let start = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+        let Ok(hq_root) = find_brain_root(&start) else {
+            println!("[task1 measurement] live HQ brain root not reachable — skipping");
+            return;
+        };
+
+        let (build_board_ms, build_board_plus_graph_ms) =
+            measure_board_vs_board_plus_graph(&hq_root);
+
+        println!(
+            "[task1 measurement] live HQ corpus ({}): build_board={build_board_ms}ms, \
+             build_board+build_block_graph_export={build_board_plus_graph_ms}ms",
+            hq_root.display()
+        );
+
+        assert!(build_board_plus_graph_ms >= build_board_ms.min(build_board_plus_graph_ms));
     }
 }

@@ -786,6 +786,39 @@ pub struct BoardBlockDto {
     /// than `null` — the block's stated backward-compatibility contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_touched: Option<String>,
+    /// Corpus-wide count of in-corpus blocks whose `BlockedBy` edges point at this
+    /// block, carried **verbatim** from mev's `BlockGraphNode::dependent_count`
+    /// (`../mev/src/brain/block_graph.rs:204`) — `serve` derives nothing itself.
+    /// Computed over the full corpus before any scope filtering, so it is
+    /// **identical for a given block whether the board is fetched at `hq` scope or
+    /// a narrower tier/project scope** (see `../mev/src/brain/block_graph.rs:110-113`)
+    /// — this is the property bastion-web's in-scope reverse-dep count
+    /// (`lib/board-view.ts:669-676`) structurally cannot have, and the entire
+    /// justification for shipping this field. `None` means the block was **absent
+    /// from the graph export** (truncated by `max_nodes`, or filtered out of scope
+    /// entirely) — never a fabricated zero; mev's own `dependent_count` is `0` for a
+    /// block nothing depends on, so `Some(0)` and `None` are deliberately distinct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependent_count: Option<u32>,
+    /// Membership in mev's `ready_order` set, carried verbatim from
+    /// `BlockGraphNode::ready`. **This is the readiness signal consumers should
+    /// use** — not `unmet_count == 0` (see that field's doc comment). `None` means
+    /// the block was absent from the graph export, never a fabricated `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<bool>,
+    /// Count of unmet dependencies, carried verbatim from
+    /// `BlockGraphNode::unmet_count`, but populated **only for blocked-lane
+    /// entries**. mev defines `unmet_count` as `0` for every non-blocked lane
+    /// (`../mev/src/brain/block_graph.rs:104-106`) — that is a structural zero, not
+    /// a measurement, so projecting it unqualified onto `now`/`next`/`deferred`/
+    /// `finished` blocks would let a consumer read "0 unmet ⇒ ready" and reproduce,
+    /// server-blessed, the exact false-ready bug this enrichment exists to kill.
+    /// **Consumers must use `ready`, never `unmet_count == 0`, as the readiness
+    /// check.** `None` on the blocked lane means the block was absent from the
+    /// graph export; `None` on every other lane is the field's normal, permanent
+    /// state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unmet_count: Option<u32>,
 }
 
 /// The four now/next/blocked/finished lanes for one board (aggregate or per-repo).
@@ -2999,6 +3032,9 @@ mod tests {
             due: Some("2026-07-15".to_owned()),
             track: Some("Phase 11".to_owned()),
             last_touched: None,
+            dependent_count: None,
+            ready: None,
+            unmet_count: None,
         }
     }
 
@@ -3423,10 +3459,71 @@ mod tests {
             due: Some("2026-07-15".to_string()),
             track: Some("Phase 11".to_string()),
             last_touched: Some("2026-07-28T12:00:00Z".to_string()),
+            dependent_count: Some(4),
+            ready: Some(true),
+            unmet_count: None,
         };
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: BoardBlockDto = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, decoded, "round-trip must preserve all fields");
+    }
+
+    #[test]
+    fn board_block_dto_graph_enrichment_all_populated_round_trips() {
+        let mut dto = sample_board_block();
+        dto.dependent_count = Some(3);
+        dto.ready = Some(true);
+        dto.unmet_count = Some(0);
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let decoded: BoardBlockDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, decoded, "round-trip must preserve all three fields");
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        assert_eq!(v["dependent_count"], serde_json::json!(3));
+        assert_eq!(v["ready"], serde_json::json!(true));
+        assert_eq!(v["unmet_count"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn board_block_dto_graph_enrichment_all_absent_omits_keys() {
+        let mut dto = sample_board_block();
+        dto.dependent_count = None;
+        dto.ready = None;
+        dto.unmet_count = None;
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        let obj = v.as_object().expect("object");
+        assert!(
+            !obj.contains_key("dependent_count"),
+            "dependent_count must be an absent key when None, got: {v}"
+        );
+        assert!(
+            !obj.contains_key("ready"),
+            "ready must be an absent key when None, got: {v}"
+        );
+        assert!(
+            !obj.contains_key("unmet_count"),
+            "unmet_count must be an absent key when None, got: {v}"
+        );
+        let decoded: BoardBlockDto = serde_json::from_str(&v.to_string()).expect("deserialize");
+        assert_eq!(dto, decoded, "round-trip must preserve all-absent state");
+    }
+
+    #[test]
+    fn board_block_dto_graph_enrichment_unmet_count_present_others_absent() {
+        // The blocked-lane shape: dependent_count/ready absent (block not in the
+        // graph export) while unmet_count is populated. Distinct from the mix
+        // above — pins that the three fields are independently optional, not a
+        // single all-or-nothing enrichment bundle.
+        let mut dto = sample_board_block();
+        dto.dependent_count = None;
+        dto.ready = None;
+        dto.unmet_count = Some(2);
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        let obj = v.as_object().expect("object");
+        assert!(!obj.contains_key("dependent_count"));
+        assert!(!obj.contains_key("ready"));
+        assert_eq!(v["unmet_count"], serde_json::json!(2));
+        let decoded: BoardBlockDto = serde_json::from_str(&v.to_string()).expect("deserialize");
+        assert_eq!(dto, decoded, "round-trip must preserve the mixed state");
     }
 
     #[test]
@@ -3443,6 +3540,9 @@ mod tests {
             due: None,
             track: None,
             last_touched: None,
+            dependent_count: None,
+            ready: None,
+            unmet_count: None,
         };
         let v = serde_json::to_value(&dto).expect("serialize");
         assert!(v["epics"].is_array());

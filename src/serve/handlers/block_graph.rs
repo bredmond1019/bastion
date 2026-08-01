@@ -239,7 +239,8 @@ pub async fn get_block_graph(
             graph,
             stale,
             last_touched: _last_touched,
-        } = board::assemble_board(&root, &block_graph_scope.tier)
+            block_graph: _block_graph,
+        } = board::assemble_board(&root, &block_graph_scope.tier, false)
             .map_err(BlockGraphError::BrainRoot)?;
 
         if response_scope == BoardScope::Epic {
@@ -673,7 +674,12 @@ heading = "Bastion"
     fn export_to_dto_matches_build_board_node_count_edge_count_and_lanes() {
         let dir = make_cross_check_brain_root();
 
-        let assembly = board::assemble_board(&dir, &TierScope::All)
+        // `include_graph: true` — this test extends to also cross-check
+        // `dependent_count`/`ready` (`plan-board-graph-enrichment` task 5), which
+        // requires `assembly.block_graph` to actually be populated; with
+        // `include_graph: false` every board entry would report `None` and the
+        // comparison below would be vacuous.
+        let assembly = board::assemble_board(&dir, &TierScope::All, true)
             .expect("fixture corpus should assemble cleanly");
 
         // Same corpus (config, files, graph) feeds both independent read paths.
@@ -701,6 +707,7 @@ heading = "Bastion"
             &assembly.files,
             assembly.stale,
             &assembly.last_touched,
+            &assembly.block_graph,
         );
 
         // ── node count ───────────────────────────────────────────────────
@@ -826,6 +833,80 @@ heading = "Bastion"
             graph_last_touched.get("bastion:BA.5").cloned().flatten(),
             None,
             "BA.5 has no spec folder and must be None on build_block_graph_export's side"
+        );
+
+        // ── dependent_count / ready one-derivation cross-check
+        // (`plan-board-graph-enrichment` task 5) ─────────────────────────
+        //
+        // Same shape as the `last_touched` cross-check above: both
+        // `build_board` (via `board::board_block_from` /
+        // `finished_blocks_for_repo`, reading `assembly.block_graph`) and
+        // `mev::build_block_graph_export` (via `BlockGraphNode.dependent_count`
+        // / `.ready`) ultimately source these values from the very same
+        // unscoped `build_block_graph_export` call `assemble_board` makes once
+        // internally (`board::build_block_graph_enrichment`). bastion derives
+        // nothing itself — every value must agree, verbatim, on both read
+        // paths, value-and-absence, for every fixture block.
+        let mut board_dependent_count: std::collections::HashMap<String, Option<u32>> =
+            std::collections::HashMap::new();
+        let mut board_ready: std::collections::HashMap<String, Option<bool>> =
+            std::collections::HashMap::new();
+        for b in board_dto
+            .lanes
+            .now
+            .iter()
+            .chain(board_dto.lanes.next.iter())
+            .chain(board_dto.lanes.blocked.iter())
+            .chain(board_dto.lanes.deferred.iter())
+            .chain(board_dto.lanes.finished.iter())
+        {
+            let key = format!("{}:{}", b.repo, b.id);
+            board_dependent_count.insert(key.clone(), b.dependent_count);
+            board_ready.insert(key, b.ready);
+        }
+        assert_eq!(
+            board_dependent_count.len(),
+            5,
+            "every fixture block must appear exactly once across build_board's lanes"
+        );
+
+        let mut graph_dependent_count: std::collections::HashMap<String, Option<u32>> =
+            std::collections::HashMap::new();
+        let mut graph_ready: std::collections::HashMap<String, Option<bool>> =
+            std::collections::HashMap::new();
+        for node in &export.nodes {
+            graph_dependent_count.insert(node.key.clone(), Some(node.dependent_count));
+            graph_ready.insert(node.key.clone(), Some(node.ready));
+        }
+        assert_eq!(
+            graph_dependent_count.len(),
+            5,
+            "every fixture block must appear exactly once across build_block_graph_export's nodes"
+        );
+
+        assert_eq!(
+            board_dependent_count, graph_dependent_count,
+            "dependent_count must agree between build_board and build_block_graph_export for every block"
+        );
+        assert_eq!(
+            board_ready, graph_ready,
+            "ready must agree between build_board and build_block_graph_export for every block"
+        );
+
+        // Concrete, non-vacuous assertions: BA.3 depends on the already-closed
+        // BA.2 (met dep, so BA.3 has one dependent-of-BA.2 relationship) and
+        // BA.4 depends on the still-open BA.3 (unmet dep) — both directions
+        // give BA.2/BA.3 a non-zero dependent_count to assert against, ruling
+        // out a test that would pass by accident on an all-zero default.
+        assert_eq!(
+            board_dependent_count.get("bastion:BA.2").copied().flatten(),
+            Some(1),
+            "BA.3 depends on BA.2, so BA.2 has one dependent (build_board's side)"
+        );
+        assert_eq!(
+            graph_dependent_count.get("bastion:BA.2").copied().flatten(),
+            Some(1),
+            "BA.3 depends on BA.2, so BA.2 has one dependent (build_block_graph_export's side)"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
