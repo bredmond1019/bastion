@@ -143,6 +143,9 @@ fn board_block_from(
         due: None,
         track: None,
         last_touched: last_touched.get(&key).cloned(),
+        dependent_count: None,
+        ready: None,
+        unmet_count: None,
     }
 }
 
@@ -261,6 +264,9 @@ fn finished_blocks_for_repo(
                 due: None,
                 track: None,
                 last_touched: last_touched.get(&key).cloned(),
+                dependent_count: None,
+                ready: None,
+                unmet_count: None,
             };
             enrich_block(&mut dto, Some((block, track_title)));
             dto.blocked_by = unmet_deps(&block.depends_on, status_map);
