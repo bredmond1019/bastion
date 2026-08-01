@@ -376,6 +376,11 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                 web::resource("/repos/{name}/workflows")
                     .route(web::get().to(handlers::status::get_repo_workflows)),
             )
+            // /workflows — GET only (cross-repo flow-state aggregate, A2)
+            .service(
+                web::resource("/workflows")
+                    .route(web::get().to(handlers::status::list_all_workflows)),
+            )
             // ── Quick-action command route (BA.11.E) ────────────────────────
             // /actions/command — POST only
             .service(
@@ -649,6 +654,10 @@ mod tests {
             .service(
                 web::resource("/repos/{name}/workflows")
                     .route(web::get().to(handlers::status::get_repo_workflows)),
+            )
+            .service(
+                web::resource("/workflows")
+                    .route(web::get().to(handlers::status::list_all_workflows)),
             )
             .service(
                 web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
@@ -1400,6 +1409,127 @@ mod tests {
 
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert_eq!(body, serde_json::json!([]));
+    }
+
+    // ── /api/workflows — cross-repo aggregate (A2) ──────────────────────────
+
+    #[actix_web::test]
+    async fn list_all_workflows_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get().uri("/api/workflows").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/workflows without token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_all_workflows_empty_registry_returns_200_empty_array() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/workflows")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body, serde_json::json!([]));
+    }
+
+    #[actix_web::test]
+    async fn list_all_workflows_populated_two_repos_returns_repo_tagged_entries() {
+        let tmp_a = TempDir::new();
+        write_fixture(
+            &tmp_a
+                .path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+        let tmp_b = TempDir::new();
+        write_fixture(
+            &tmp_b
+                .path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON_WITH_RUN_ID,
+        );
+
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("repo-alpha".to_string(), tmp_a.path().to_path_buf());
+        workspaces.insert("repo-beta".to_string(), tmp_b.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/workflows")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let entries = body.as_array().expect("response must be a JSON array");
+        assert_eq!(entries.len(), 2, "expected one entry per repo, got: {body}");
+
+        // Ordered by (repo name, then spec_slug): "repo-alpha" sorts before "repo-beta".
+        assert_eq!(entries[0]["repo"], "repo-alpha");
+        assert_eq!(entries[0]["spec_slug"], "phase6-blockA");
+        assert!(
+            !entries[0]
+                .as_object()
+                .expect("entry must be an object")
+                .contains_key("run_id"),
+            "unstamped entry must omit run_id key entirely, got: {body}"
+        );
+
+        assert_eq!(entries[1]["repo"], "repo-beta");
+        assert_eq!(entries[1]["spec_slug"], "phase6-blockA");
+        assert_eq!(
+            entries[1]["run_id"], "a1b2c3d4-e5f6-4789-a012-3456789abcde",
+            "run_id must surface verbatim, got: {body}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_all_workflows_agrees_with_per_repo_route() {
+        let (_tmp, registry) = registry_with_fixture_repo();
+        let app = test::init_service(build_app(registry)).await;
+
+        let agg_req = test::TestRequest::get()
+            .uri("/api/workflows")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let agg_resp = test::call_service(&app, agg_req).await;
+        assert_eq!(agg_resp.status(), 200);
+        let agg_body: serde_json::Value = test::read_body_json(agg_resp).await;
+
+        let per_repo_req = test::TestRequest::get()
+            .uri("/api/repos/repo-x/workflows")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let per_repo_resp = test::call_service(&app, per_repo_req).await;
+        assert_eq!(per_repo_resp.status(), 200);
+        let per_repo_body: serde_json::Value = test::read_body_json(per_repo_resp).await;
+
+        let agg_entries = agg_body.as_array().expect("aggregate must be an array");
+        assert_eq!(agg_entries.len(), 1);
+        let per_repo_entries = per_repo_body
+            .as_array()
+            .expect("per-repo response must be an array");
+        assert_eq!(per_repo_entries.len(), 1);
+
+        assert_eq!(agg_entries[0]["repo"], "repo-x");
+        assert_eq!(
+            agg_entries[0]["spec_slug"],
+            per_repo_entries[0]["spec_slug"]
+        );
+        assert_eq!(agg_entries[0]["status"], per_repo_entries[0]["status"]);
     }
 
     // ── /api/actions/command — route registration (BA.11.E) ────────────────

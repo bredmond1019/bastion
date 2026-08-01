@@ -274,6 +274,20 @@ pub async fn get_repo_workflows(
     }
 }
 
+/// `GET /api/workflows` — cross-repo flow-state aggregate over every
+/// registered workspace (A2). Shaped exactly like [`list_repos`]: wraps the
+/// pure [`collect_all_workflows`] in `web::block`, returning 200 with the
+/// resulting (possibly empty) list, or a 500 on thread-pool failure.
+///
+/// Never 404s — an empty/absent registry degrades to `200 []`, matching
+/// `collect_all_workflows`'s own degrade-gracefully contract.
+pub async fn list_all_workflows(registry: web::Data<FileConfig>) -> HttpResponse {
+    match web::block(move || collect_all_workflows(&registry)).await {
+        Ok(list) => HttpResponse::Ok().json(list),
+        Err(err) => blocking_error_response(err),
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
