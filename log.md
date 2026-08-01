@@ -13,6 +13,63 @@ timestamp: 2026-07-30T22:45:00Z
 
 ## [run: 2026-08-01]
 
+### Arch-review spec train (A1/A3 · A5 · A2 · A4) — ALL FOUR SHIPPED, serve-api v0.17 → v0.20
+
+Drove the full four-spec train filed by bastion-web's 2026-08-01 architecture review, run
+**serially** (not as a parallel worktree fan-out) because all four touch `src/serve/dto.rs`,
+`docs/serve-api.md`, and `types/serve.ts`, and each claims a contract version. Each spec was merged
+to `main` and its worktree removed before the next started.
+
+| Spec | Ask | Version | Merge |
+|---|---|---|---|
+| `ticket-serve-run-join-and-handoff-types` | A1+A3 | v0.18 | `a96dcfa` |
+| `plan-board-graph-enrichment` | A5 | v0.19 | `865a565` |
+| `ticket-workflows-aggregate` | A2 | v0.20 | `5f7b593` |
+| `plan-contract-corpus-goldens` | A4 | — | `e16bc96` |
+
+Final combined gate on `main`: fmt ✓, clippy `-D warnings` ✓, full suite **1949 passed / 0
+failed**, release build ✓, typeshare drift ✓, contract-corpus drift ✓. Nothing pushed — all merges
+local per user decision.
+
+**Spec 1 (A1+A3) is logged here because its own pipeline bailed before bookkeeping.** The
+`/sdlc-task` engine stopped after task 5 reporting `typeshare-cli` "not installed" and prescribing
+`cargo install`. **That diagnosis was wrong**: typeshare 1.13.4 was already present at
+`~/.cargo/bin/typeshare` — `~/.cargo/bin` is simply **not on this machine's PATH** (`cargo` resolves
+from Homebrew). Patched by symlinking into the already-on-PATH `~/.local/bin`; the drift check then
+confirmed task 5's committed `types/serve.ts` matched generator output byte-for-byte, i.e. it had
+been written correctly but unverifiably. Tasks 1–5 were sound; task 6 (Validate) was run manually.
+Shipped `run_id` on `FlowState`/`WorkflowStateDto` (absent key when `None`) and a typeshared
+`HandoffInfoDto` mirror, leaving `HandoffInfo` unannotated so `dto.rs` stays the single source of
+truth.
+
+**Findings worth carrying forward** (full detail in
+[`planning/arch-review-train-followups.md`](planning/arch-review-train-followups.md)):
+- `~/.cargo/bin` off PATH — machine-level, still only patched, may also affect the Mac Mini cron
+  environment.
+- `serve::tests::get_docs_file_bare_dotenv_returns_403_c003` is an **intermittent** flake (failed
+  twice, passed on the third run, passes in isolation) caused by process-global
+  `std::env::set_var`/`remove_var` in tests — same class as the known costs flake. **`nextest` is
+  structurally immune (process-per-test), so only the authoritative full-suite gate is exposed**,
+  and a green pipeline PASS is not evidence that gate is green.
+- The contract corpus does not cover `workflows`, `handoff`, `costs`, `epics`, or `blocks/graph` —
+  spec-intended scope, but it leaves the surface this train just added unfrozen.
+- Spec 2's two task-1 timing tests aren't `#[ignore]`d and carry a mathematically vacuous assertion.
+- The brain repo's git index is shared across concurrent sessions; one commit absorbed another
+  session's staged files and had to be split (caught and corrected while unpushed).
+
+Also corrected a **false claim** in `planning/11.T-run-summary-projection/tasks.md` asserting
+engine-rs had shipped a public `engine_serve::get_live_run_metadata`. Verified false —
+`live_run_metadata()` is still `pub(crate)` at `../engine-rs/crates/engine-serve/src/http.rs:237`,
+so `RunSummaryDto.workflow_type` remains always-`None`. The engine-rs ticket needed no reopening
+(it reads `status: Not started`; it was never closed).
+
+```diff
++ src/serve/contract_corpus.rs, types/contract-corpus/ (22 goldens)
++ scripts/gen-contract-corpus.sh, scripts/check-contract-corpus-drift.sh
+~ src/serve/dto.rs, src/serve/handlers/{board,status,block_graph,epics}.rs
+~ src/serve/status/flow.rs, src/serve/mod.rs, types/serve.ts, docs/serve-api.md
+```
+
 ### plan-contract-corpus-goldens (A4) — DONE, all 7 tasks PASS, review PASS
 
 `/sdlc-flow --worktree` shipped the fourth and last spec of the four-spec arch-review train: a
