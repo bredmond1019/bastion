@@ -355,6 +355,42 @@ export interface BoardBlockDto {
 	 * than `null` — the block's stated backward-compatibility contract.
 	 */
 	last_touched?: string;
+	/**
+	 * Corpus-wide count of in-corpus blocks whose `BlockedBy` edges point at this
+	 * block, carried **verbatim** from mev's `BlockGraphNode::dependent_count`
+	 * (`../mev/src/brain/block_graph.rs:204`) — `serve` derives nothing itself.
+	 * Computed over the full corpus before any scope filtering, so it is
+	 * **identical for a given block whether the board is fetched at `hq` scope or
+	 * a narrower tier/project scope** (see `../mev/src/brain/block_graph.rs:110-113`)
+	 * — this is the property bastion-web's in-scope reverse-dep count
+	 * (`lib/board-view.ts:669-676`) structurally cannot have, and the entire
+	 * justification for shipping this field. `None` means the block was **absent
+	 * from the graph export** (truncated by `max_nodes`, or filtered out of scope
+	 * entirely) — never a fabricated zero; mev's own `dependent_count` is `0` for a
+	 * block nothing depends on, so `Some(0)` and `None` are deliberately distinct.
+	 */
+	dependent_count?: number;
+	/**
+	 * Membership in mev's `ready_order` set, carried verbatim from
+	 * `BlockGraphNode::ready`. **This is the readiness signal consumers should
+	 * use** — not `unmet_count == 0` (see that field's doc comment). `None` means
+	 * the block was absent from the graph export, never a fabricated `false`.
+	 */
+	ready?: boolean;
+	/**
+	 * Count of unmet dependencies, carried verbatim from
+	 * `BlockGraphNode::unmet_count`, but populated **only for blocked-lane
+	 * entries**. mev defines `unmet_count` as `0` for every non-blocked lane
+	 * (`../mev/src/brain/block_graph.rs:104-106`) — that is a structural zero, not
+	 * a measurement, so projecting it unqualified onto `now`/`next`/`deferred`/
+	 * `finished` blocks would let a consumer read "0 unmet ⇒ ready" and reproduce,
+	 * server-blessed, the exact false-ready bug this enrichment exists to kill.
+	 * **Consumers must use `ready`, never `unmet_count == 0`, as the readiness
+	 * check.** `None` on the blocked lane means the block was absent from the
+	 * graph export; `None` on every other lane is the field's normal, permanent
+	 * state.
+	 */
+	unmet_count?: number;
 }
 
 /** The four now/next/blocked/finished lanes for one board (aggregate or per-repo). */
