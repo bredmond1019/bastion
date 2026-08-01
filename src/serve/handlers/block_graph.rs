@@ -559,6 +559,7 @@ mod tests {
             title: "Bastion Surfaces".to_owned(),
             description: None,
             status: None,
+            weight: None,
             plan: None,
             repos: Vec::new(),
         }];

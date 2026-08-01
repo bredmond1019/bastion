@@ -1754,6 +1754,7 @@ mod tests {
             title: format!("{slug} title"),
             description: None,
             status: None,
+            weight: None,
             plan: None,
             repos: Vec::new(),
         }

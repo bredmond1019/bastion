@@ -184,6 +184,7 @@ mod tests {
             title: format!("{slug} title"),
             description: None,
             status: None,
+            weight: None,
             plan: None,
             repos: Vec::new(),
         }
@@ -334,6 +335,7 @@ mod tests {
             title: "Bastion TUI".to_owned(),
             description: None,
             status: Some("paused".to_owned()),
+            weight: None,
             plan: None,
             repos: Vec::new(),
         };
@@ -371,6 +373,7 @@ mod tests {
             title: "Bastion TUI".to_owned(),
             description: None,
             status: Some("active".to_owned()),
+            weight: None,
             plan: None,
             repos: Vec::new(),
         };
@@ -392,6 +395,7 @@ mod tests {
             title: "Done Initiative".to_owned(),
             description: None,
             status: Some("complete".to_owned()),
+            weight: None,
             plan: None,
             repos: Vec::new(),
         };
@@ -415,6 +419,7 @@ mod tests {
             title: "Bastion Surfaces".to_owned(),
             description: Some("Cross-repo surfaces initiative".to_owned()),
             status: Some("active".to_owned()),
+            weight: None,
             plan: Some("core/planning/master-plan.md".to_owned()),
             repos: vec!["bastion".to_owned(), "bastion-ui".to_owned()],
         };
