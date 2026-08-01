@@ -51,7 +51,7 @@ use engine_serve::dispatch::Dispatcher;
 use engine_serve::durable::spawn_durable_writer;
 use engine_serve::http::AppState as EngineAppState;
 use engine_serve::live_state::LiveStateStore;
-use engine_serve::workflows::register_builtin_workflows;
+use engine_serve::workflows::{init_repo_registry_from_env, register_builtin_workflows};
 
 /// Build the engine's `Dispatcher` with every builtin workflow (currently
 /// just `SDLC_FLOW`) registered. Pulled out of `run()` so the wiring is
@@ -275,6 +275,16 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         target: "bastion::serve",
                         "engine routes mounted (DATABASE_URL + engine_api_key present)"
                     );
+                    // EN.3.K: resolve the process-global repo registry from
+                    // `ENGINE_BRAIN_ROOT` before `build_engine_dispatcher()`
+                    // registers `SDLC_FLOW` — its factory reads the registry
+                    // once at registration time (`register_sdlc_flow` ->
+                    // `repo_registry()`), so this must run first or every
+                    // `repo`-bearing event 422s regardless of the env var.
+                    // No-op (logs and leaves the registry unset) when
+                    // `ENGINE_BRAIN_ROOT` is absent/unresolvable — absent-`repo`
+                    // events are unaffected either way.
+                    init_repo_registry_from_env();
                     let state = EngineAppState {
                         dispatcher: Arc::new(build_engine_dispatcher()),
                         live: live_store.clone(),
