@@ -572,6 +572,129 @@ impl From<crate::serve::status::flow::FlowState> for WorkflowStateDto {
     }
 }
 
+/// JSON response element for `GET /api/workflows` — one [`WorkflowStateDto`]
+/// tagged with the repo it belongs to.
+///
+/// `WorkflowStateDto` carries `spec_slug` but no repo dimension: in the
+/// per-repo route (`GET /repos/{name}/workflows`) the repo is implied by the
+/// path, but flattened across every registered repo it is not — two repos can
+/// legitimately hold the same `spec_slug`, so a bare list of `WorkflowStateDto`
+/// would be ambiguous. This wrapper makes the repo dimension explicit.
+///
+/// **Shape note:** the natural encoding here would be
+/// `{ repo: String, #[serde(flatten)] state: WorkflowStateDto }`, but
+/// `typeshare` 1.13 does not support `#[serde(flatten)]` — it is a hard parse
+/// error ("The serde flatten attribute is not currently supported"), verified
+/// empirically against this exact shape before choosing the fallback below.
+/// So this struct mirrors `WorkflowStateDto`'s fields directly rather than
+/// composing it; the duplication is forced by the typeshare toolchain, not a
+/// design choice. If `WorkflowStateDto` gains or changes a field, mirror the
+/// change here too — the `From<(String, WorkflowStateDto)>` impl below will
+/// fail to compile if the two drift, since it destructures `WorkflowStateDto`
+/// by name.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoWorkflowStateDto {
+    /// The registered workspace name this flow state belongs to.
+    pub repo: String,
+    pub spec_slug: String,
+    pub branch: String,
+    /// Raw status string, e.g. `"running"`, `"done"`, `"blocked"`.
+    pub status: String,
+    pub current_task: u32,
+    pub started_at: String,
+    pub updated_at: String,
+    /// See [`WorkflowStateDto::run_id`] — same semantics, same
+    /// absent-key-when-`None` serialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+}
+
+impl From<(String, WorkflowStateDto)> for RepoWorkflowStateDto {
+    fn from((repo, state): (String, WorkflowStateDto)) -> Self {
+        let WorkflowStateDto {
+            spec_slug,
+            branch,
+            status,
+            current_task,
+            started_at,
+            updated_at,
+            run_id,
+        } = state;
+        Self {
+            repo,
+            spec_slug,
+            branch,
+            status,
+            current_task,
+            started_at,
+            updated_at,
+            run_id,
+        }
+    }
+}
+
+#[cfg(test)]
+mod repo_workflow_state_dto_tests {
+    use super::*;
+
+    fn sample_state(run_id: Option<String>) -> WorkflowStateDto {
+        WorkflowStateDto {
+            spec_slug: "phase11-blockD".to_string(),
+            branch: "feat/phase11-blockD".to_string(),
+            status: "running".to_string(),
+            current_task: 3,
+            started_at: "2026-08-01T00:00:00Z".to_string(),
+            updated_at: "2026-08-01T01:00:00Z".to_string(),
+            run_id,
+        }
+    }
+
+    #[test]
+    fn from_tuple_carries_repo_and_all_state_fields() {
+        let state = sample_state(Some("9c6c6f1e-6d1a-4b3a-9b1a-1e2f3a4b5c6d".to_string()));
+        let dto = RepoWorkflowStateDto::from(("bastion".to_string(), state.clone()));
+        assert_eq!(dto.repo, "bastion");
+        assert_eq!(dto.spec_slug, state.spec_slug);
+        assert_eq!(dto.branch, state.branch);
+        assert_eq!(dto.status, state.status);
+        assert_eq!(dto.current_task, state.current_task);
+        assert_eq!(dto.started_at, state.started_at);
+        assert_eq!(dto.updated_at, state.updated_at);
+        assert_eq!(dto.run_id, state.run_id);
+    }
+
+    #[test]
+    fn round_trip_with_run_id() {
+        let state = sample_state(Some("abc-123".to_string()));
+        let dto = RepoWorkflowStateDto::from(("orchestrator".to_string(), state));
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let round_tripped: RepoWorkflowStateDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, dto);
+        assert_eq!(round_tripped.run_id.as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn none_run_id_is_absent_key() {
+        let state = sample_state(None);
+        let dto = RepoWorkflowStateDto::from(("bastion".to_string(), state));
+        let value = serde_json::to_value(&dto).expect("serialize to value");
+        let obj = value.as_object().expect("object");
+        assert!(
+            !obj.contains_key("run_id"),
+            "run_id should be an absent key when None, got: {value}"
+        );
+    }
+
+    #[test]
+    fn repo_field_is_present_in_serialized_json() {
+        let state = sample_state(None);
+        let dto = RepoWorkflowStateDto::from(("bella".to_string(), state));
+        let value = serde_json::to_value(&dto).expect("serialize to value");
+        assert_eq!(value["repo"], "bella");
+    }
+}
+
 #[cfg(test)]
 mod workflow_state_dto_tests {
     use super::*;
