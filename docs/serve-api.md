@@ -1,18 +1,18 @@
 ---
 type: Guideline
-title: "serve-api contract v0.17"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change."
+title: "serve-api contract v0.18"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.17 Contract
+# serve-api — v0.18 Contract
 
-**Version:** v0.17  
+**Version:** v0.18  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–24 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -842,7 +842,10 @@ GET /api/repos/bastion/handoff HTTP/1.1
 Authorization: Bearer <token>
 ```
 
-**Response (200 OK):** `HandoffInfo`
+**Response (200 OK):** `HandoffInfoDto` (v0.18; typeshared `#[typeshare]` DTO in
+`src/serve/dto.rs`, mirroring the internal `HandoffInfo` domain type field-for-field per the
+`RepoStatusDto` precedent — `HandoffInfo` itself carries no `#[typeshare]` annotation, since
+`dto.rs` is the single source of truth for typeshared contract types)
 
 ```json
 {
@@ -892,7 +895,8 @@ Authorization: Bearer <token>
     "status": "done",
     "current_task": 5,
     "started_at": "2026-06-25T18:30:59Z",
-    "updated_at": "2026-06-25T19:02:33Z"
+    "updated_at": "2026-06-25T19:02:33Z",
+    "run_id": "9c6c6f1e-6d1a-4b3a-9b1a-1e2f3a4b5c6d"
   }
 ]
 ```
@@ -904,6 +908,7 @@ Authorization: Bearer <token>
 | `status` | string | Raw flow status (e.g. `"running"`, `"done"`, `"blocked"`) |
 | `current_task` | integer | Current task index |
 | `started_at` / `updated_at` | string (RFC 3339) | Timestamps from `sdlc-flow-state.json` |
+| `run_id` (v0.18) | string \| absent | The engine's `events.id` run UUID that produced this write, stamped by engine-rs `EN.6.J` into the top-level `run_id` key of `sdlc-flow-state.json`. **Absent (not `null`) means the state predates that stamp, or was written by base-template's JS `sdlc-flow.js` engine (which never sets it) — never that the run lacks an id.** `#[serde(skip_serializing_if = "Option::is_none")]`, matching the `last_touched` (v0.14) convention on `BoardBlockDto`. |
 
 Returns `404` (`ErrorPayload`, code `C005`) only when `name` is not a
 registered workspace. A workspace with no specs, or no matching
@@ -1931,7 +1936,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.17**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.18**.
 
 ---
 
@@ -2363,6 +2368,24 @@ window (recorded in `planning/11.J-cost-read-endpoint/tasks.md`'s `## Notes`).
 ---
 
 ## Amendment Log
+
+- **2026-08-01 — v0.17 → v0.18 (asks A1 + A3, `planning/arch-review-asks-bastion-web/notes.md`):**
+  Two smallest asks from the bastion-web architecture review, shipped together. **A1:** Section
+  11.4's `WorkflowStateDto` gains `run_id: Option<String>`, carrying the engine's `events.id` run
+  UUID that engine-rs `EN.6.J` already stamps into the top-level `run_id` key of
+  `sdlc-flow-state.json` (read by `FlowState`, `#[serde(default)]`, unchanged for states written
+  before that fix or by base-template's JS `sdlc-flow.js` engine, neither of which sets it).
+  Serializes with `skip_serializing_if = "Option::is_none"` (the `BoardBlockDto.last_touched`
+  precedent) so `None` is an absent key, not `null` — a consumer can distinguish "predates the
+  stamp" from "field not understood". No new I/O, no engine-rs change; unblocks bastion-web's
+  `BW.3.F` band-merge, joining `GET /api/repos/{name}/workflows` against `GET /api/runs`'s existing
+  `RunSummaryDto.run_id` (v0.16). **A3:** Section 11.3's response type is now the typeshared
+  `HandoffInfoDto` in `src/serve/dto.rs`, mirroring the internal `HandoffInfo` domain type
+  (`title`, `body`) field-for-field per the `RepoStatusDto` precedent (Section 11.2) — `HandoffInfo`
+  itself stays unannotated, preserving `dto.rs`-is-source-of-truth for typeshared contract types.
+  `get_repo_handoff`'s existing 404/`C002` behaviour for a missing `handoff.md` is unchanged.
+  Unblocks bastion-web's `BW.8.K3` briefing handoff feed. `types/serve.ts` regenerated
+  (`scripts/gen-types.sh`); `scripts/check-typeshare-drift.sh` passes clean.
 
 - **2026-07-31 — v0.16 → v0.17 (bastion-web DAG status-color work):** `db::workflows::derive_run_status`
   gains a third metadata check — `metadata.suspension.suspended == true` → `RunStatus::Suspended` —

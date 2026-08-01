@@ -707,6 +707,23 @@ export interface EventPayload {
 }
 
 /**
+ * JSON response for `GET /repos/{name}/handoff`.
+ * 
+ * Mirrors [`crate::serve::status::handoff::HandoffInfo`] field-for-field — kept
+ * as an independent DTO (per this module's doc comment) rather than reusing
+ * the domain type directly.
+ */
+export interface HandoffInfoDto {
+	/**
+	 * Title — frontmatter `title:` scalar if present, else the text after
+	 * the first `# Handoff —`/`# Handoff -` heading, else an empty string.
+	 */
+	title: string;
+	/** The full raw markdown content (including frontmatter, if any). */
+	body: string;
+}
+
+/**
  * JSON body returned by `GET /health`.
  * 
  * Matches the shape documented in `docs/serve-api.md` v0:
@@ -1057,7 +1074,8 @@ export interface RunSummaryDto {
 	/**
 	 * Lifecycle status as the lowercase wire string, derived via
 	 * `db::workflows::derive_run_status`: `pending`/`running`/`success`/`failed`/
-	 * `cancelled`/`budget_halted`.
+	 * `cancelled`/`budget_halted`/`suspended` (v0.17). `suspended` is not
+	 * terminal — a resumed run falls back through to the other rules.
 	 */
 	status: string;
 	/**
@@ -1180,6 +1198,17 @@ export interface WorkflowStateDto {
 	current_task: number;
 	started_at: string;
 	updated_at: string;
+	/**
+	 * The engine's `events.id` run UUID that produced this write, stamped by
+	 * engine-rs `EN.6.J` into the top-level `run_id` key of
+	 * `sdlc-flow-state.json`. `None` for states written before that fix and
+	 * for any state written by base-template's JS `sdlc-flow.js` engine,
+	 * which never sets it. Deliberately carries `skip_serializing_if` (the
+	 * `BoardBlockDto.last_touched` precedent) so `None` serialises as an
+	 * **absent key** rather than `null` — a consumer must be able to
+	 * distinguish "this run predates the stamp" from "field not understood".
+	 */
+	run_id?: string;
 }
 
 /**
