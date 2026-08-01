@@ -239,7 +239,8 @@ pub async fn get_block_graph(
             graph,
             stale,
             last_touched: _last_touched,
-        } = board::assemble_board(&root, &block_graph_scope.tier)
+            block_graph: _block_graph,
+        } = board::assemble_board(&root, &block_graph_scope.tier, false)
             .map_err(BlockGraphError::BrainRoot)?;
 
         if response_scope == BoardScope::Epic {
@@ -559,6 +560,7 @@ mod tests {
             title: "Bastion Surfaces".to_owned(),
             description: None,
             status: None,
+            weight: None,
             plan: None,
             repos: Vec::new(),
         }];
@@ -672,7 +674,7 @@ heading = "Bastion"
     fn export_to_dto_matches_build_board_node_count_edge_count_and_lanes() {
         let dir = make_cross_check_brain_root();
 
-        let assembly = board::assemble_board(&dir, &TierScope::All)
+        let assembly = board::assemble_board(&dir, &TierScope::All, false)
             .expect("fixture corpus should assemble cleanly");
 
         // Same corpus (config, files, graph) feeds both independent read paths.
