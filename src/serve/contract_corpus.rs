@@ -637,3 +637,305 @@ mod harness_tests {
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }
+
+/// Task 3: `GET /api/runs` corpus scenarios — the empty store, one active
+/// run, and one scenario per `RunStatus` variant, so every wire status
+/// string is frozen (in particular `budget_halted`, which
+/// `handlers::runs::run_status_str` hand-writes rather than derives).
+///
+/// Every scenario here dispatches through the **real** `handlers::runs::list_runs`
+/// handler and the real `LiveStateStore`, wired into a minimal actix app that
+/// mirrors `src/serve/mod.rs`'s `build_app` routing for just this resource
+/// (`web::resource("/runs") -> list_runs`) — scoped down so these tests don't
+/// need the hub/auth machinery the full app factory carries, while still
+/// going through real `actix_web` dispatch and real `serde` serialization,
+/// never a hand-authored `serde_json::Value`.
+///
+/// `run_id` (A1, `ticket-serve-run-join-and-handoff-types`, contract v0.18)
+/// has already landed in this branch's history (see `git log` /
+/// `RunSummaryDto`) before this task ran, so nothing is omitted here — every
+/// golden below carries a real `run_id`.
+#[cfg(test)]
+mod runs_scenarios {
+    use std::collections::{BTreeSet, HashMap};
+
+    use actix_web::web;
+    use chrono::{TimeZone, Utc};
+    use engine_contract::task_context::{NodeRun, NodeRunStatus, TaskContext};
+    use engine_serve::live_state::LiveStateStore;
+    use uuid::Uuid;
+
+    use super::dump;
+    use crate::db::workflows::RunStatus;
+    use crate::serve::handlers::runs::list_runs;
+
+    /// Build a minimal actix `Service` wired to the real `list_runs` handler
+    /// over `$store`, matching `src/serve/mod.rs`'s production
+    /// `web::resource("/runs").route(web::get().to(handlers::runs::list_runs))`
+    /// mapping. A macro (not a fn returning `impl Service<..>`) because the
+    /// body/service associated types `actix_web::test::init_service` produces
+    /// are opaque per-call-site; inlining avoids naming them.
+    macro_rules! runs_service {
+        ($store:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($store))
+                    .service(web::resource("/api/runs").route(web::get().to(list_runs))),
+            )
+            .await
+        };
+    }
+
+    /// Fixed, non-random run ids (determinism rule 2 — never
+    /// `Uuid::new_v4()` in a fixture; [`super::redact_value`]'s UUID
+    /// redaction is the backstop, not the primary source of determinism).
+    fn fixed_run_id(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn node_run(status: NodeRunStatus) -> NodeRun {
+        NodeRun {
+            status,
+            started_at: None,
+            completed_at: None,
+            error: None,
+            input: None,
+            usage: None,
+        }
+    }
+
+    /// A run with a single node in the given `NodeRunStatus` and no metadata
+    /// annotations — exercises `derive_run_status`'s node-aggregate fallback
+    /// (priority order step 4: `pending`/`running`/`failed`/`success`).
+    fn ctx_with_node(status: NodeRunStatus) -> TaskContext {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("Node".to_string(), node_run(status));
+        TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        }
+    }
+
+    /// A run carrying a v1.1.0 metadata annotation (cancellation / budget /
+    /// suspension) and no tracked nodes — exercises `derive_run_status`'s
+    /// metadata-priority path (steps 1-3), which wins over node state.
+    fn ctx_with_metadata(metadata: serde_json::Value) -> TaskContext {
+        TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata,
+            node_runs: HashMap::new(),
+        }
+    }
+
+    /// The seven `RunStatus` variants, each paired with the fixture that
+    /// drives `derive_run_status` to produce it and the scenario name its
+    /// golden is filed under. **Exhaustive by construction**: adding an
+    /// eighth `RunStatus` variant breaks [`expected_status_str`]'s match
+    /// (no wildcard arm) at *compile* time — a stronger guarantee than a
+    /// runtime test failure — forcing this list to be extended too before
+    /// the crate builds again.
+    fn variant_scenarios() -> Vec<(&'static str, TaskContext, RunStatus)> {
+        vec![
+            (
+                "pending",
+                ctx_with_node(NodeRunStatus::Pending),
+                RunStatus::Pending,
+            ),
+            (
+                "running",
+                ctx_with_node(NodeRunStatus::Running),
+                RunStatus::Running,
+            ),
+            (
+                "success",
+                ctx_with_node(NodeRunStatus::Success),
+                RunStatus::Success,
+            ),
+            (
+                "failed",
+                ctx_with_node(NodeRunStatus::Failed),
+                RunStatus::Failed,
+            ),
+            (
+                "cancelled",
+                ctx_with_metadata(serde_json::json!({
+                    "cancellation": { "cancelled": true }
+                })),
+                RunStatus::Cancelled,
+            ),
+            (
+                "budget_halted",
+                ctx_with_metadata(serde_json::json!({
+                    "budget": {
+                        "halted": true,
+                        "reason": {
+                            "cap": "max_total_tokens",
+                            "spent": 120_000,
+                            "limit": 100_000,
+                        }
+                    }
+                })),
+                RunStatus::BudgetHalted,
+            ),
+            (
+                "suspended",
+                ctx_with_metadata(serde_json::json!({
+                    "suspension": { "suspended": true }
+                })),
+                RunStatus::Suspended,
+            ),
+        ]
+    }
+
+    /// Exhaustive `RunStatus` -> wire string map. Deliberately independent of
+    /// `handlers::runs::run_status_str` (private to that module) so this
+    /// module's coverage guarantee does not depend on reaching into that
+    /// function — the two are instead kept honest by
+    /// `observed_status_strings_equal_expected_seven_variant_set`, which
+    /// compares this map's expectations against what the real handler
+    /// actually emits.
+    fn expected_status_str(status: RunStatus) -> &'static str {
+        match status {
+            RunStatus::Pending => "pending",
+            RunStatus::Running => "running",
+            RunStatus::Success => "success",
+            RunStatus::Failed => "failed",
+            RunStatus::Cancelled => "cancelled",
+            RunStatus::BudgetHalted => "budget_halted",
+            RunStatus::Suspended => "suspended",
+        }
+    }
+
+    // ---- corpus goldens -----------------------------------------------
+
+    #[actix_web::test]
+    async fn runs_corpus_empty_store() {
+        let app = runs_service!(LiveStateStore::new());
+        let req = actix_web::test::TestRequest::get().uri("/api/runs");
+        dump("runs", "empty", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn runs_corpus_active_run() {
+        let store = LiveStateStore::new();
+        let mut node_runs = HashMap::new();
+        node_runs.insert(
+            "PlanNode".to_string(),
+            NodeRun {
+                status: NodeRunStatus::Running,
+                started_at: Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()),
+                completed_at: None,
+                error: None,
+                input: None,
+                usage: None,
+            },
+        );
+        store.record(
+            fixed_run_id(1),
+            &TaskContext {
+                event: serde_json::json!({ "spec_slug": "contract-corpus-active-fixture" }),
+                nodes: HashMap::new(),
+                metadata: serde_json::json!({}),
+                node_runs,
+            },
+        );
+
+        let app = runs_service!(store);
+        let req = actix_web::test::TestRequest::get().uri("/api/runs");
+        dump("runs", "active", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn runs_corpus_all_run_status_variants() {
+        for (i, (scenario, ctx, _expected)) in variant_scenarios().into_iter().enumerate() {
+            let store = LiveStateStore::new();
+            // `100 + i` keeps ids disjoint from `runs_corpus_active_run`'s
+            // fixed id and from each other; the exact value is irrelevant
+            // once redacted, but must stay fixed (never `Uuid::new_v4()`).
+            store.record(fixed_run_id(100 + i as u128), &ctx);
+            let app = runs_service!(store);
+            let req = actix_web::test::TestRequest::get().uri("/api/runs");
+            dump("runs", scenario, req, &app).await;
+        }
+    }
+
+    /// The coverage guarantee this task exists for: the set of `status`
+    /// strings actually observed by dispatching [`variant_scenarios`]
+    /// through the real handler must equal the expected seven-element set.
+    /// Combined with [`variant_scenarios`]'s exhaustive-match construction,
+    /// an eighth `RunStatus` variant added without a matching scenario here
+    /// either fails the crate to compile (if `expected_status_str` is left
+    /// un-updated) or fails this test's set-equality assertion — never
+    /// silently ships an unfrozen status string.
+    #[actix_web::test]
+    async fn observed_status_strings_equal_expected_seven_variant_set() {
+        let mut observed: BTreeSet<String> = BTreeSet::new();
+
+        for (scenario, ctx, expected_status) in variant_scenarios() {
+            let store = LiveStateStore::new();
+            store.record(Uuid::new_v4(), &ctx);
+            let resp = list_runs(web::Data::new(store)).await;
+            assert_eq!(resp.status(), 200, "scenario {scenario} must return 200");
+
+            let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let arr = json.as_array().expect("array body");
+            assert_eq!(
+                arr.len(),
+                1,
+                "scenario {scenario} must produce exactly one run"
+            );
+            assert!(
+                arr[0]
+                    .get("run_id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "scenario {scenario} must carry a run_id (A1 has landed)"
+            );
+
+            let status = arr[0]
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| panic!("scenario {scenario} response missing status field"));
+            let expected = expected_status_str(expected_status);
+            assert_eq!(
+                status, expected,
+                "scenario {scenario} produced status {status:?}, expected {expected:?}"
+            );
+            observed.insert(status.to_owned());
+        }
+
+        let expected: BTreeSet<String> = [
+            "pending",
+            "running",
+            "success",
+            "failed",
+            "cancelled",
+            "budget_halted",
+            "suspended",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+        assert_eq!(
+            observed, expected,
+            "observed RunStatus wire strings must exactly equal the expected seven-element set \
+             — if this fails after adding a RunStatus variant, add its scenario to \
+             `variant_scenarios()` (and a golden) rather than only updating this set"
+        );
+
+        // The single highest-value assertion this corpus exists for (see
+        // module docs + task spec): `run_status_str` is a hand-written match,
+        // not a serde derive, and would emit `budgethalted` under
+        // `rename_all = "lowercase"` — pin the underscore spelling
+        // explicitly, not just via set membership.
+        assert!(
+            observed.contains("budget_halted"),
+            "budget_halted must be frozen with its exact underscore spelling"
+        );
+    }
+}
