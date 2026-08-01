@@ -32,12 +32,56 @@
 //! (default `types/contract-corpus`, relative to the crate root) — used by
 //! this module's own unit tests so they never touch the real checked-in
 //! corpus.
+//!
+//! # Determinism (Task 2, redaction rules)
+//!
+//! A non-deterministic golden is worse than none — it trains reviewers to
+//! ignore the diff — so every value that can legitimately vary between two
+//! otherwise-identical runs is neutralized by [`redact_value`] before a
+//! golden is written *or* compared. Redaction is applied uniformly on both
+//! the GENERATE and VERIFY paths (inside [`build_golden`]), so the checked-in
+//! corpus and every future comparison are redacted the same way.
+//!
+//! Rules, applied to `serde_json::Value` **strings only** — object *keys* and
+//! non-string values (numbers, bools, the run-status strings this corpus
+//! exists to freeze, etc.) are never touched:
+//!
+//! 1. **RFC3339 timestamps** (`started_at`, `updated_at`, `last_touched`, …)
+//!    — any string value matching an RFC3339 datetime shape is replaced with
+//!    the sentinel `"<TIMESTAMP>"`. Preferred long-term fix at the call site
+//!    is a fixed fixture clock; this redaction is the backstop for any value
+//!    that slips through un-pinned.
+//! 2. **UUIDs** (`run_id`, …) — any string value matching the canonical
+//!    8-4-4-4-12 hex UUID shape is replaced with `"<UUID>"`. Fixtures should
+//!    still prefer seeding with a fixed UUID (never `Uuid::new_v4()`) so the
+//!    *pre-redaction* value is also deterministic; this rule catches the
+//!    rest.
+//! 3. **Absolute temp-dir paths** — any string value that starts with the
+//!    process's own `std::env::temp_dir()` path (e.g. a fixture's scratch
+//!    workspace root) is replaced with `"<TMP_PATH>"`, since that path
+//!    embeds a per-run/per-OS temp root that is never stable across
+//!    machines or invocations.
+//! 4. **Key ordering** — `serde_json::Value::Object` in this crate's actual
+//!    build is confirmed (by this module's
+//!    `object_keys_serialize_in_sorted_order_not_insertion_order` test, not by
+//!    assumption — this crate's dependency graph pulls in a build-dependency
+//!    that could in principle unify the `preserve_order` feature onto
+//!    `serde_json`, which would make key order insertion-order instead of
+//!    sorted) to serialize object keys in **sorted** order regardless of
+//!    insertion order, so two dumps of the same logical data always produce
+//!    byte-identical JSON text without this module doing any extra work.
+//!    Any handler-level `Vec` sourced from iterating a `HashMap` is a
+//!    separate concern this module cannot fix generically — that sorting
+//!    must happen at the handler/serialization layer, before the value ever
+//!    reaches [`dump`].
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use actix_web::body::MessageBody;
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::test;
+use regex::Regex;
 
 /// Root directory the corpus is checked in under, relative to the crate
 /// root, unless overridden by `BASTION_CONTRACT_CORPUS_DIR` (test-only knob).
@@ -74,8 +118,79 @@ fn should_write() -> bool {
     std::env::var(DUMP_ENV_VAR).as_deref() == Ok("1")
 }
 
+/// Matches an RFC3339 timestamp value, e.g. `2026-07-31T12:00:00Z` or
+/// `2026-07-31T12:00:00.123456+00:00`. See module docs, redaction rule 1.
+fn rfc3339_timestamp_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
+            .expect("static RFC3339 regex must compile")
+    })
+}
+
+/// Matches a canonical 8-4-4-4-12 hex UUID value (case-insensitive), e.g.
+/// `run_id`. See module docs, redaction rule 2.
+fn uuid_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+            .expect("static UUID regex must compile")
+    })
+}
+
+/// Redact a single string *value* per the rules documented in the module
+/// docs' "Determinism (Task 2, redaction rules)" section. Returns `None`
+/// when the value should be left exactly as-is — in particular, run-status
+/// strings (`budget_halted`, etc.) never match any of these patterns and so
+/// always fall through unredacted, which is the point: this corpus exists to
+/// freeze those strings, not scrub them.
+fn redact_string_value(value: &str) -> Option<&'static str> {
+    if rfc3339_timestamp_re().is_match(value) {
+        return Some("<TIMESTAMP>");
+    }
+    if uuid_re().is_match(value) {
+        return Some("<UUID>");
+    }
+    if let Some(tmp_dir) = std::env::temp_dir().to_str() {
+        if !tmp_dir.is_empty() && value.starts_with(tmp_dir) {
+            return Some("<TMP_PATH>");
+        }
+    }
+    None
+}
+
+/// Recursively redact every string *value* in `value` in place. Object
+/// **keys** are never touched — only [`serde_json::Value::String`] leaves
+/// (found directly, or nested inside arrays/objects) are candidates for
+/// redaction, and only when they match one of [`redact_string_value`]'s
+/// patterns.
+fn redact_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            if let Some(redacted) = redact_string_value(s) {
+                *s = redacted.to_string();
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_value(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            // `.values_mut()` — iterates VALUES only; keys are structurally
+            // untouchable through this iterator, which is what makes "never
+            // redact keys" true by construction rather than by convention.
+            for v in map.values_mut() {
+                redact_value(v);
+            }
+        }
+        serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null => {}
+    }
+}
+
 /// Parse a captured `(status_code, raw response body bytes)` pair into the
-/// golden JSON value `{status_code, body}`.
+/// golden JSON value `{status_code, body}`, with all volatile values
+/// redacted per [`redact_value`].
 ///
 /// Fails loudly (panics) rather than silently skipping when the body is not
 /// valid JSON — a non-JSON body means either the route doesn't serialize to
@@ -83,13 +198,14 @@ fn should_write() -> bool {
 /// something unexpected. Either way it must never be swallowed into an
 /// empty/null golden that looks like a passing scenario.
 fn build_golden(status_code: u16, body_bytes: &[u8]) -> serde_json::Value {
-    let body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap_or_else(|e| {
+    let mut body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap_or_else(|e| {
         panic!(
             "contract corpus dump: response body for status {status_code} is not valid JSON \
              ({e}); refusing to write/verify a golden from a non-JSON body. Raw body: {:?}",
             String::from_utf8_lossy(body_bytes)
         )
     });
+    redact_value(&mut body);
     serde_json::json!({
         "status_code": status_code,
         "body": body,
@@ -166,7 +282,8 @@ mod harness_tests {
     // macro used below. `actix_web::test::*` items are referenced with their
     // full path (`actix_web::test::TestRequest`, etc.) instead.
     use super::{
-        CORPUS_DIR_OVERRIDE_ENV_VAR, DUMP_ENV_VAR, build_golden, dump, golden_path, should_write,
+        CORPUS_DIR_OVERRIDE_ENV_VAR, DUMP_ENV_VAR, build_golden, dump, golden_path,
+        redact_string_value, redact_value, should_write,
     };
     use actix_web::{App, HttpResponse, web};
     use std::path::PathBuf;
@@ -332,6 +449,190 @@ mod harness_tests {
 
         let req = actix_web::test::TestRequest::get().uri("/y");
         dump("widget", "no-golden-yet", req, &app).await;
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    // ---- Task 2: determinism / redaction ----------------------------------
+
+    #[test]
+    fn redact_string_value_redacts_rfc3339_timestamp() {
+        assert_eq!(
+            redact_string_value("2026-07-31T12:00:00Z"),
+            Some("<TIMESTAMP>")
+        );
+        assert_eq!(
+            redact_string_value("2026-07-31T12:00:00.123456+00:00"),
+            Some("<TIMESTAMP>")
+        );
+    }
+
+    #[test]
+    fn redact_string_value_redacts_uuid() {
+        assert_eq!(
+            redact_string_value("550e8400-e29b-41d4-a716-446655440000"),
+            Some("<UUID>")
+        );
+        // Case-insensitive.
+        assert_eq!(
+            redact_string_value("550E8400-E29B-41D4-A716-446655440000"),
+            Some("<UUID>")
+        );
+    }
+
+    #[test]
+    fn redact_string_value_redacts_temp_dir_path() {
+        let tmp_dir = std::env::temp_dir();
+        let path_under_tmp = tmp_dir.join("some-fixture-workspace").join("file.txt");
+        let path_str = path_under_tmp.to_str().unwrap();
+        assert_eq!(redact_string_value(path_str), Some("<TMP_PATH>"));
+    }
+
+    #[test]
+    fn redact_string_value_leaves_run_status_strings_untouched() {
+        // These are the exact strings this corpus exists to freeze — they
+        // must never be redacted, no matter how similar-looking a future
+        // redaction rule might become.
+        for status in [
+            "pending",
+            "running",
+            "success",
+            "failed",
+            "cancelled",
+            "budget_halted",
+            "suspended",
+        ] {
+            assert_eq!(
+                redact_string_value(status),
+                None,
+                "run-status string {status:?} must never be redacted"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_string_value_leaves_ordinary_strings_untouched() {
+        assert_eq!(redact_string_value("hello world"), None);
+        assert_eq!(redact_string_value(""), None);
+        assert_eq!(redact_string_value("not-quite-a-uuid-1234"), None);
+    }
+
+    #[test]
+    fn redact_value_touches_nested_values_but_never_keys() {
+        let mut value = serde_json::json!({
+            "run_id": "550e8400-e29b-41d4-a716-446655440000",
+            "status": "budget_halted",
+            "nested": {
+                "started_at": "2026-07-31T12:00:00Z",
+                "550e8400-e29b-41d4-a716-446655440000": "a key that looks like a uuid",
+            },
+            "items": ["2026-07-31T12:00:00Z", "budget_halted"],
+        });
+        redact_value(&mut value);
+
+        assert_eq!(value["run_id"], serde_json::json!("<UUID>"));
+        assert_eq!(value["status"], serde_json::json!("budget_halted"));
+        assert_eq!(
+            value["nested"]["started_at"],
+            serde_json::json!("<TIMESTAMP>")
+        );
+        assert_eq!(value["items"][0], serde_json::json!("<TIMESTAMP>"));
+        assert_eq!(value["items"][1], serde_json::json!("budget_halted"));
+        // The object KEY that happens to look like a UUID must survive
+        // untouched — redaction only ever rewrites values.
+        assert!(
+            value["nested"]
+                .as_object()
+                .unwrap()
+                .contains_key("550e8400-e29b-41d4-a716-446655440000"),
+            "redaction must never rewrite object keys"
+        );
+    }
+
+    #[test]
+    fn build_golden_redacts_volatile_fields_in_the_body() {
+        let body = br#"{"run_id":"550e8400-e29b-41d4-a716-446655440000","status":"budget_halted","started_at":"2026-07-31T12:00:00Z"}"#;
+        let golden = build_golden(200, body);
+        assert_eq!(golden["body"]["run_id"], serde_json::json!("<UUID>"));
+        assert_eq!(golden["body"]["status"], serde_json::json!("budget_halted"));
+        assert_eq!(
+            golden["body"]["started_at"],
+            serde_json::json!("<TIMESTAMP>")
+        );
+    }
+
+    /// This crate's dependency graph pulls in `tree-sitter` as a
+    /// build-dependency, which in principle could unify the `preserve_order`
+    /// feature onto `serde_json` for the whole build (it enables
+    /// `serde_json/preserve_order` for its own build script). If that ever
+    /// happened, `serde_json::Value::Object` would iterate/serialize in
+    /// *insertion* order instead of sorted order, silently breaking
+    /// determinism across two dumps whose handler happened to build the
+    /// object's fields in a different order. This test proves — for the
+    /// actual `bastion` binary build, not a synthetic crate — that key order
+    /// is sorted, per module docs rule 4. If this test ever starts failing,
+    /// the redaction/determinism story here needs to be revisited, not just
+    /// this assertion.
+    #[test]
+    fn object_keys_serialize_in_sorted_order_not_insertion_order() {
+        let value = serde_json::json!({"zebra": 1, "apple": 2, "middle": 3});
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert_eq!(
+            serialized, r#"{"apple":2,"middle":3,"zebra":1}"#,
+            "serde_json::Value::Object must serialize keys in sorted order in this build \
+             (verified, not assumed) — if this fails, `preserve_order` has been unified onto \
+             serde_json and corpus determinism across differently-ordered handler output can no \
+             longer be assumed"
+        );
+    }
+
+    /// End-to-end determinism proof (the spec's headline acceptance
+    /// criterion): dispatch the *same* request through the *same* app twice,
+    /// in GENERATE mode, into the same target file, and assert the two
+    /// writes produce byte-identical file contents. If any timestamp/UUID
+    /// fixture, HashMap-sourced ordering, or other volatile value leaked
+    /// through unredacted, this test would flap.
+    #[actix_web::test]
+    async fn dump_generates_byte_identical_golden_across_two_runs() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "bastion-contract-corpus-test-{}-{}",
+            std::process::id(),
+            "determinism"
+        ));
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let _dump_guard = EnvVarGuard::set(DUMP_ENV_VAR, "1");
+        let _dir_guard = EnvVarGuard::set(CORPUS_DIR_OVERRIDE_ENV_VAR, tmp_dir.to_str().unwrap());
+
+        // A handler whose response embeds exactly the volatile shapes this
+        // task's redaction rules must neutralize: a UUID and an RFC3339
+        // timestamp, sourced fresh (i.e. genuinely different) on each call.
+        let app = actix_web::test::init_service(App::new().route(
+            "/z",
+            web::get().to(|| async {
+                let run_id = uuid::Uuid::new_v4().to_string();
+                let started_at = chrono::Utc::now().to_rfc3339();
+                HttpResponse::Ok().json(serde_json::json!({
+                    "run_id": run_id,
+                    "started_at": started_at,
+                    "status": "budget_halted",
+                }))
+            }),
+        ))
+        .await;
+
+        let req1 = actix_web::test::TestRequest::get().uri("/z");
+        dump("widget", "determinism", req1, &app).await;
+        let path = tmp_dir.join("widget__determinism.json");
+        let first_write = std::fs::read(&path).unwrap();
+
+        let req2 = actix_web::test::TestRequest::get().uri("/z");
+        dump("widget", "determinism", req2, &app).await;
+        let second_write = std::fs::read(&path).unwrap();
+
+        assert_eq!(
+            first_write, second_write,
+            "two dumps of logically-identical scenario data must produce byte-identical goldens"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
