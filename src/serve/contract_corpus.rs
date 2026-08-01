@@ -338,10 +338,24 @@ mod harness_tests {
     use actix_web::{App, HttpResponse, web};
     use std::path::PathBuf;
 
+    /// Serializes every test in this module that mutates the process-wide
+    /// `DUMP_ENV_VAR`/`CORPUS_DIR_OVERRIDE_ENV_VAR` env vars via
+    /// [`EnvVarGuard`]. `cargo test`'s default in-process thread parallelism
+    /// means two tests racing to set/unset the same env var can observe each
+    /// other's state (this bit in practice: one test's
+    /// `CORPUS_DIR_OVERRIDE_ENV_VAR` override was briefly overwritten by a
+    /// concurrently-running sibling test's own override, so `dump()` wrote to
+    /// or looked for the golden in the *wrong* temp dir); `cargo nextest`
+    /// isolates each test in its own process and would not need this, but the
+    /// lock keeps both runners correct. Mirrors `DATABASE_URL_ENV_LOCK` in
+    /// `src/serve/mod.rs`'s test module.
+    static CORPUS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// RAII guard that sets an env var for the duration of a test and always
     /// restores the previous value on drop (including on panic/unwind), so a
     /// `#[should_panic]` test never leaks its override into a sibling test
-    /// within the same process.
+    /// within the same process. Every caller must hold
+    /// [`CORPUS_ENV_LOCK`] for as long as the guard is alive.
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
@@ -350,8 +364,9 @@ mod harness_tests {
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
-            // SAFETY: test-only, single-threaded-per-test under `cargo nextest`
-            // (each test runs in its own process); mirrors the existing
+            // SAFETY: serialized by `CORPUS_ENV_LOCK`, held by every caller —
+            // no other test in this module reads or writes these env vars
+            // while the guard is held; mirrors the existing
             // `unsafe { std::env::set_var(..) }` pattern already used by
             // `src/serve/mod.rs`'s test module for `DATABASE_URL`.
             unsafe { std::env::set_var(key, value) };
@@ -372,6 +387,7 @@ mod harness_tests {
 
     #[test]
     fn golden_path_builds_expected_route_scenario_filename() {
+        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _dir_guard = EnvVarGuard::set(CORPUS_DIR_OVERRIDE_ENV_VAR, "types/contract-corpus");
         let path = golden_path("runs", "empty");
         assert_eq!(
@@ -382,6 +398,7 @@ mod harness_tests {
 
     #[test]
     fn golden_path_respects_corpus_dir_override() {
+        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _dir_guard = EnvVarGuard::set(CORPUS_DIR_OVERRIDE_ENV_VAR, "/tmp/some-override-dir");
         let path = golden_path("board", "hq");
         assert_eq!(path, PathBuf::from("/tmp/some-override-dir/board__hq.json"));
@@ -409,6 +426,7 @@ mod harness_tests {
 
     #[test]
     fn should_write_is_false_when_env_var_unset() {
+        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var(DUMP_ENV_VAR).ok();
         unsafe { std::env::remove_var(DUMP_ENV_VAR) };
         let result = should_write();
@@ -426,6 +444,7 @@ mod harness_tests {
 
     #[test]
     fn should_write_is_true_only_for_exact_value_one() {
+        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         {
             let _guard = EnvVarGuard::set(DUMP_ENV_VAR, "1");
             assert!(should_write());
@@ -445,6 +464,7 @@ mod harness_tests {
     /// `dump` itself (not just the pure helpers) writes to the right place.
     #[actix_web::test]
     async fn dump_writes_golden_at_expected_path_in_generate_mode() {
+        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp_dir = std::env::temp_dir().join(format!(
             "bastion-contract-corpus-test-{}-{}",
             std::process::id(),
@@ -480,6 +500,7 @@ mod harness_tests {
     #[actix_web::test]
     #[should_panic(expected = "missing checked-in golden")]
     async fn dump_verify_mode_fails_loudly_when_golden_missing() {
+        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp_dir = std::env::temp_dir().join(format!(
             "bastion-contract-corpus-test-{}-{}",
             std::process::id(),
@@ -670,6 +691,7 @@ mod harness_tests {
     /// through unredacted, this test would flap.
     #[actix_web::test]
     async fn dump_generates_byte_identical_golden_across_two_runs() {
+        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp_dir = std::env::temp_dir().join(format!(
             "bastion-contract-corpus-test-{}-{}",
             std::process::id(),
