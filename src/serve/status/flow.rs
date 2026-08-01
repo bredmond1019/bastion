@@ -24,6 +24,13 @@ pub struct FlowState {
     pub current_task: u32,
     pub started_at: String,
     pub updated_at: String,
+    /// The engine's `events.id` run UUID that produced this write, stamped by
+    /// engine-rs `EN.6.J` into the top-level `run_id` key of
+    /// `sdlc-flow-state.json`. `None` for states written before that fix and
+    /// for any state written by base-template's JS `sdlc-flow.js` engine,
+    /// which never sets it.
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 // ── Pure parsing ──────────────────────────────────────────────────────────────
@@ -66,6 +73,8 @@ mod tests {
 
     const VALID: &str = include_str!("fixtures/flow_state_valid.json");
     const MALFORMED: &str = include_str!("fixtures/flow_state_malformed.json");
+    const WITH_RUN_ID: &str = include_str!("fixtures/flow_state_with_run_id.json");
+    const NULL_RUN_ID: &str = include_str!("fixtures/flow_state_null_run_id.json");
 
     fn flow_with_status(status: &str) -> FlowState {
         FlowState {
@@ -75,6 +84,7 @@ mod tests {
             current_task: 2,
             started_at: "2026-06-30T00:00:00Z".to_string(),
             updated_at: "2026-06-30T01:00:00Z".to_string(),
+            run_id: None,
         }
     }
 
@@ -87,6 +97,40 @@ mod tests {
         assert_eq!(state.current_task, 5);
         assert_eq!(state.started_at, "2026-06-25T18:30:59Z");
         assert_eq!(state.updated_at, "2026-06-25T19:02:33Z");
+        // The JS-engine compatibility case: no `run_id` key at all in the
+        // fixture, so it must parse cleanly to `None` while every other
+        // field is still populated correctly.
+        assert_eq!(state.run_id, None);
+    }
+
+    #[test]
+    fn parses_run_id_verbatim_when_present() {
+        let state = parse_flow_state(WITH_RUN_ID).expect("should parse");
+        assert_eq!(state.spec_slug, "phase6-blockA");
+        assert_eq!(
+            state.run_id,
+            Some("a1b2c3d4-e5f6-4789-a012-3456789abcde".to_string())
+        );
+    }
+
+    #[test]
+    fn missing_run_id_key_parses_to_none_with_other_fields_intact() {
+        // Same assertion as `parses_valid_flow_state`'s run_id check, but
+        // isolated as its own test per the task's explicit AC wording.
+        let state = parse_flow_state(VALID).expect("should parse");
+        assert_eq!(state.run_id, None);
+        assert_eq!(state.spec_slug, "phase6-blockA");
+        assert_eq!(state.branch, "phase6-blockA-flow");
+        assert_eq!(state.status, "done");
+        assert_eq!(state.current_task, 5);
+        assert_eq!(state.started_at, "2026-06-25T18:30:59Z");
+        assert_eq!(state.updated_at, "2026-06-25T19:02:33Z");
+    }
+
+    #[test]
+    fn null_run_id_parses_to_none() {
+        let state = parse_flow_state(NULL_RUN_ID).expect("should parse");
+        assert_eq!(state.run_id, None);
     }
 
     #[test]

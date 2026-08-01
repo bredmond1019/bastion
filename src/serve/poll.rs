@@ -679,6 +679,7 @@ background\t0\t1\t1718000100\tzsh\n";
             current_task: 1,
             started_at: "2026-06-30T00:00:00Z".to_owned(),
             updated_at: "2026-06-30T01:00:00Z".to_owned(),
+            run_id: None,
         }
     }
 
