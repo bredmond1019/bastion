@@ -1111,6 +1111,7 @@ mod tests {
     const STATUS_MD: &str = include_str!("status/fixtures/status_well_formed.md");
     const HANDOFF_MD: &str = include_str!("status/fixtures/handoff_minimal.md");
     const FLOW_JSON: &str = include_str!("status/fixtures/flow_state_valid.json");
+    const FLOW_JSON_WITH_RUN_ID: &str = include_str!("status/fixtures/flow_state_with_run_id.json");
 
     fn write_fixture(path: &std::path::Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -1322,6 +1323,62 @@ mod tests {
         assert!(body.is_array());
         assert_eq!(body[0]["spec_slug"], "phase6-blockA");
         assert_eq!(body[0]["status"], "done");
+    }
+
+    /// A1: `run_id` present on-disk must surface verbatim in the raw JSON
+    /// body of `GET /api/repos/{name}/workflows`.
+    #[actix_web::test]
+    async fn get_repo_workflows_surfaces_run_id_verbatim() {
+        let tmp = TempDir::new();
+        write_fixture(&tmp.path().join("planning/status.md"), STATUS_MD);
+        write_fixture(
+            &tmp.path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON_WITH_RUN_ID,
+        );
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("repo-with-run-id".to_string(), tmp.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/repo-with-run-id/workflows")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(
+            body[0]["run_id"], "a1b2c3d4-e5f6-4789-a012-3456789abcde",
+            "run_id must surface verbatim, got: {body}"
+        );
+    }
+
+    /// A1: a state file with no `run_id` key must produce an ABSENT key in
+    /// the raw serialized JSON — never `null` — so a consumer can
+    /// distinguish "predates the stamp" from "field not understood".
+    #[actix_web::test]
+    async fn get_repo_workflows_omits_run_id_key_when_unstamped() {
+        let (_tmp, registry) = registry_with_fixture_repo();
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/repo-x/workflows")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let entry = body[0]
+            .as_object()
+            .expect("workflow entry must be a JSON object");
+        assert!(
+            !entry.contains_key("run_id"),
+            "run_id should be an absent key when unstamped, got: {body}"
+        );
     }
 
     #[actix_web::test]
@@ -1634,6 +1691,94 @@ heading = "bastion"
     /// need this, but the lock keeps both runners correct.
     static DATABASE_URL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// RAII guard that neutralizes `dotenvy::dotenv()` for the tests that need
+    /// `DATABASE_URL` to be genuinely absent (or genuinely theirs).
+    ///
+    /// `Config::load` calls `dotenvy::dotenv()`, which **searches upward from
+    /// the process cwd** and loads the first `.env` it finds, setting any var
+    /// not already present in the environment. Simply removing this crate's own
+    /// `.env` is therefore not enough: in a git worktree
+    /// (`core/bastion/trees/<branch>/`) dotenvy walks past the deleted file and
+    /// picks up the main checkout's `core/bastion/.env` instead, silently
+    /// restoring a working `DATABASE_URL` and turning the expected 503 into a
+    /// 200 against the dev Postgres.
+    ///
+    /// So instead of *removing* `.env`, we **replace it with an empty one**:
+    /// dotenvy stops at the first file it finds, loads nothing from it, and
+    /// never reaches any ancestor `.env`. Nothing outside this worktree is ever
+    /// touched. The original file (if any) is restored on `Drop`, so a panicking
+    /// assertion can't leave the checkout without its `.env`.
+    ///
+    /// Must be held together with [`DATABASE_URL_ENV_LOCK`] — it mutates a
+    /// process-wide (indeed repo-wide) resource.
+    struct DotenvShadow {
+        /// Path of the saved original, or `None` when there was no `.env`.
+        backup: Option<std::path::PathBuf>,
+    }
+
+    impl DotenvShadow {
+        /// `suffix` disambiguates the backup filename so two guards can never
+        /// collide on it, even if the lock discipline is ever broken.
+        fn new(suffix: &str) -> Self {
+            let env_path = std::path::Path::new(".env");
+            let backup_path = std::path::PathBuf::from(format!(".env.{suffix}.bak"));
+
+            let backup = if env_path.exists() && std::fs::rename(env_path, &backup_path).is_ok() {
+                Some(backup_path)
+            } else {
+                None
+            };
+
+            // The empty stand-in is what actually stops dotenvy's upward walk.
+            let _ = std::fs::write(env_path, "");
+
+            Self { backup }
+        }
+    }
+
+    impl Drop for DotenvShadow {
+        fn drop(&mut self) {
+            let env_path = std::path::Path::new(".env");
+            let _ = std::fs::remove_file(env_path);
+            if let Some(backup) = &self.backup {
+                let _ = std::fs::rename(backup, env_path);
+            }
+        }
+    }
+
+    // `#[actix_web::test]` rather than a bare `#[test]`: this module does
+    // `use actix_web::test;`, which shadows the built-in attribute.
+    #[actix_web::test]
+    async fn dotenv_shadow_leaves_an_empty_env_and_restores_the_original() {
+        let _guard = DATABASE_URL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let env_path = std::path::Path::new(".env");
+        let before = std::fs::read_to_string(env_path).ok();
+
+        {
+            let _shadow = DotenvShadow::new("unit_test");
+            assert!(
+                env_path.exists(),
+                "DotenvShadow must leave an empty `.env` in place — an absent file \
+                 lets dotenvy walk up to an ancestor checkout's `.env`"
+            );
+            assert_eq!(
+                std::fs::read_to_string(env_path).unwrap(),
+                "",
+                "the stand-in `.env` must be empty so it sets no variables"
+            );
+        }
+
+        let after = std::fs::read_to_string(env_path).ok();
+        assert_eq!(
+            after, before,
+            "dropping the guard must restore the original `.env` byte-for-byte \
+             (and leave none behind when there was none)"
+        );
+    }
+
     #[actix_web::test]
     async fn get_costs_rejects_missing_token_with_401() {
         let app = test::init_service(build_app(FileConfig::default())).await;
@@ -1694,15 +1839,12 @@ heading = "bastion"
         let previous = std::env::var("DATABASE_URL").ok();
 
         // `Config::load` calls `dotenvy::dotenv()`, which repopulates
-        // DATABASE_URL from this repo's dev `.env` the moment we remove it
-        // from the process env (dotenvy only sets vars that are absent) —
-        // so a bare `remove_var` isn't enough to simulate "unset" in a dev
-        // checkout that has a working local Postgres. Shadow the file too,
-        // for the lifetime of this guard.
-        let env_path = std::path::Path::new(".env");
-        let env_backup_path = std::path::Path::new(".env.get_costs_test_bak");
-        let env_file_moved =
-            env_path.exists() && std::fs::rename(env_path, env_backup_path).is_ok();
+        // DATABASE_URL from a `.env` the moment we remove it from the process
+        // env (dotenvy only sets vars that are absent) — so a bare `remove_var`
+        // isn't enough to simulate "unset" in a dev checkout that has a working
+        // local Postgres. `DotenvShadow` neutralizes that lookup, including the
+        // ancestor-`.env` case that bites inside a git worktree; see its docs.
+        let _dotenv_shadow = DotenvShadow::new("get_costs_c005");
 
         // Safety: serialized by DATABASE_URL_ENV_LOCK above — no other test
         // reads or writes this env var while the guard is held.
@@ -1725,9 +1867,6 @@ heading = "bastion"
                 None => std::env::remove_var("DATABASE_URL"),
             }
         }
-        if env_file_moved {
-            let _ = std::fs::rename(env_backup_path, env_path);
-        }
 
         assert_eq!(
             status, 503,
@@ -1747,10 +1886,7 @@ heading = "bastion"
         // would otherwise repopulate DATABASE_URL from the repo's dev
         // `.env` via `dotenvy::dotenv()` before we get to set our own
         // (present-but-unreachable) value.
-        let env_path = std::path::Path::new(".env");
-        let env_backup_path = std::path::Path::new(".env.get_costs_c009_test_bak");
-        let env_file_moved =
-            env_path.exists() && std::fs::rename(env_path, env_backup_path).is_ok();
+        let _dotenv_shadow = DotenvShadow::new("get_costs_c009");
 
         // Safety: serialized by DATABASE_URL_ENV_LOCK above — no other test
         // reads or writes this env var while the guard is held. A
@@ -1778,9 +1914,6 @@ heading = "bastion"
                 Some(v) => std::env::set_var("DATABASE_URL", v),
                 None => std::env::remove_var("DATABASE_URL"),
             }
-        }
-        if env_file_moved {
-            let _ = std::fs::rename(env_backup_path, env_path);
         }
 
         assert_eq!(

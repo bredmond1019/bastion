@@ -546,6 +546,16 @@ pub struct WorkflowStateDto {
     pub current_task: u32,
     pub started_at: String,
     pub updated_at: String,
+    /// The engine's `events.id` run UUID that produced this write, stamped by
+    /// engine-rs `EN.6.J` into the top-level `run_id` key of
+    /// `sdlc-flow-state.json`. `None` for states written before that fix and
+    /// for any state written by base-template's JS `sdlc-flow.js` engine,
+    /// which never sets it. Deliberately carries `skip_serializing_if` (the
+    /// `BoardBlockDto.last_touched` precedent) so `None` serialises as an
+    /// **absent key** rather than `null` — a consumer must be able to
+    /// distinguish "this run predates the stamp" from "field not understood".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 impl From<crate::serve::status::flow::FlowState> for WorkflowStateDto {
@@ -557,7 +567,121 @@ impl From<crate::serve::status::flow::FlowState> for WorkflowStateDto {
             current_task: f.current_task,
             started_at: f.started_at,
             updated_at: f.updated_at,
+            run_id: f.run_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod workflow_state_dto_tests {
+    use super::*;
+    use crate::serve::status::flow::FlowState;
+
+    fn sample_flow_state(run_id: Option<String>) -> FlowState {
+        FlowState {
+            spec_slug: "phase11-blockD".to_string(),
+            branch: "feat/phase11-blockD".to_string(),
+            status: "running".to_string(),
+            current_task: 3,
+            started_at: "2026-08-01T00:00:00Z".to_string(),
+            updated_at: "2026-08-01T01:00:00Z".to_string(),
+            run_id,
+        }
+    }
+
+    #[test]
+    fn workflow_state_dto_round_trip_with_run_id() {
+        let dto = WorkflowStateDto::from(sample_flow_state(Some(
+            "9c6c6f1e-6d1a-4b3a-9b1a-1e2f3a4b5c6d".to_string(),
+        )));
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let round_tripped: WorkflowStateDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, dto);
+        assert_eq!(
+            round_tripped.run_id.as_deref(),
+            Some("9c6c6f1e-6d1a-4b3a-9b1a-1e2f3a4b5c6d")
+        );
+    }
+
+    #[test]
+    fn workflow_state_dto_none_run_id_is_absent_key() {
+        let dto = WorkflowStateDto::from(sample_flow_state(None));
+        let value = serde_json::to_value(&dto).expect("serialize to value");
+        let obj = value.as_object().expect("object");
+        assert!(
+            !obj.contains_key("run_id"),
+            "run_id should be an absent key when None, got: {value}"
+        );
+    }
+
+    #[test]
+    fn from_flow_state_carries_run_id_verbatim_some() {
+        let flow = sample_flow_state(Some("abc-123".to_string()));
+        let dto = WorkflowStateDto::from(flow.clone());
+        assert_eq!(dto.run_id, flow.run_id);
+    }
+
+    #[test]
+    fn from_flow_state_carries_run_id_verbatim_none() {
+        let flow = sample_flow_state(None);
+        let dto = WorkflowStateDto::from(flow.clone());
+        assert_eq!(dto.run_id, flow.run_id);
+        assert_eq!(dto.run_id, None);
+    }
+}
+
+/// JSON response for `GET /repos/{name}/handoff`.
+///
+/// Mirrors [`crate::serve::status::handoff::HandoffInfo`] field-for-field — kept
+/// as an independent DTO (per this module's doc comment) rather than reusing
+/// the domain type directly.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HandoffInfoDto {
+    /// Title — frontmatter `title:` scalar if present, else the text after
+    /// the first `# Handoff —`/`# Handoff -` heading, else an empty string.
+    pub title: String,
+    /// The full raw markdown content (including frontmatter, if any).
+    pub body: String,
+}
+
+impl From<crate::serve::status::handoff::HandoffInfo> for HandoffInfoDto {
+    fn from(h: crate::serve::status::handoff::HandoffInfo) -> Self {
+        Self {
+            title: h.title,
+            body: h.body,
+        }
+    }
+}
+
+#[cfg(test)]
+mod handoff_info_dto_tests {
+    use super::*;
+    use crate::serve::status::handoff::HandoffInfo;
+
+    fn sample_handoff_info() -> HandoffInfo {
+        HandoffInfo {
+            title: "Handoff — sample".to_string(),
+            body: "# Handoff — sample\n\nbody text".to_string(),
+        }
+    }
+
+    #[test]
+    fn handoff_info_dto_round_trip() {
+        let dto = HandoffInfoDto::from(sample_handoff_info());
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let round_tripped: HandoffInfoDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, dto);
+        assert_eq!(round_tripped.title, "Handoff — sample");
+        assert_eq!(round_tripped.body, "# Handoff — sample\n\nbody text");
+    }
+
+    #[test]
+    fn from_handoff_info_carries_fields_verbatim() {
+        let info = sample_handoff_info();
+        let dto = HandoffInfoDto::from(info.clone());
+        assert_eq!(dto.title, info.title);
+        assert_eq!(dto.body, info.body);
     }
 }
 

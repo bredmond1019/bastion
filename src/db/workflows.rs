@@ -857,7 +857,8 @@ mod tests {
         let tc: serde_json::Value = serde_json::from_str(SUSPENDED_FIXTURE).unwrap();
         let nodes = parse_task_context(&tc).unwrap();
         let mut metadata = tc.get("metadata").cloned().unwrap();
-        metadata["cancellation"] = serde_json::json!({ "cancelled": true, "at": "2026-07-16T10:06:00Z" });
+        metadata["cancellation"] =
+            serde_json::json!({ "cancelled": true, "at": "2026-07-16T10:06:00Z" });
         let (status, _) = derive_run_status(&nodes, &metadata);
         assert_eq!(status, RunStatus::Cancelled);
     }

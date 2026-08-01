@@ -485,8 +485,14 @@ mod tests {
     #[test]
     fn status_color_suspended_is_cyan_and_distinct_from_running_and_cancelled() {
         assert_eq!(status_color(&RunStatus::Suspended), Color::Cyan);
-        assert_ne!(status_color(&RunStatus::Suspended), status_color(&RunStatus::Running));
-        assert_ne!(status_color(&RunStatus::Suspended), status_color(&RunStatus::Cancelled));
+        assert_ne!(
+            status_color(&RunStatus::Suspended),
+            status_color(&RunStatus::Running)
+        );
+        assert_ne!(
+            status_color(&RunStatus::Suspended),
+            status_color(&RunStatus::Cancelled)
+        );
     }
 
     // ── status_symbol ─────────────────────────────────────────────────────────
