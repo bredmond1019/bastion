@@ -6,14 +6,14 @@ doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff, dependent_count, ready, unmet_count, block-graph-enrichment, corpus-wide, one-derivation, a5, workflows-aggregate, RepoWorkflowStateDto, cross-repo, n-plus-one, a2]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff, dependent_count, ready, unmet_count, block-graph-enrichment, corpus-wide, one-derivation, a5, workflows-aggregate, RepoWorkflowStateDto, cross-repo, n-plus-one, a2, contract-corpus, goldens, stub-fidelity, redaction, drift-check, a4]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
 # serve-api — v0.20 Contract
 
 **Version:** v0.20  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–24 — plus, when mounted,
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–25 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
 bastion-web (`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web
@@ -2458,7 +2458,107 @@ window (recorded in `planning/11.J-cost-read-endpoint/tasks.md`'s `## Notes`).
 
 ---
 
+## 25. Contract-corpus goldens (stub-fidelity check, ask A4)
+
+`types/contract-corpus/` (committed at the bastion package root, beside `types/serve.ts`) is a
+directory of checked-in golden JSON files, one per (route × scenario), produced by dispatching a
+real request through the **real** `serve` app factory and handlers and capturing the **real**
+`serde` serializer's output. It exists so `bastion-web`'s e2e stub can assert against real serve
+behaviour instead of a hand-maintained approximation of it — the corpus is the mechanism that
+turned two real shipped bugs (a docs-tree file path 404ing where real serve returns `200 +
+entries: []`, and a `workflow_type` key-case mismatch) into something a PR diff would have caught
+before either shipped. Consumer side: `../bastion-web/ticket-stub-fidelity-check/`.
+
+### 25.1 Naming convention
+
+Each golden is named `<route>__<scenario>.json` — e.g. `runs__budget_halted.json`,
+`docs-tree__file.json`, `pipeline__keyless.json`. Every file is a pretty-printed JSON object with
+at least `{status_code, body}`, where `body` is the parsed response payload (not a raw string), so
+diffs read as structured JSON rather than an escaped blob.
+
+**Goldens must never be hand-edited — exactly like `types/serve.ts` (Section 19.1).** The only
+way a golden may change is by regenerating it from the real handlers (below); a hand-authored or
+hand-tweaked golden defeats the entire point of the corpus, since it would no longer prove
+anything about what `serve` actually returns.
+
+### 25.2 Regenerating
+
+```bash
+scripts/gen-contract-corpus.sh                 # writes types/contract-corpus/ in place
+```
+
+The script sets `BASTION_DUMP_CORPUS=1` and runs the `#[cfg(test)] src/serve/contract_corpus.rs`
+scenario tests (`*_scenarios::`), which switch the harness's `dump()` function from its default
+**verify** mode (assert the response matches the checked-in golden — what a normal `cargo test`
+run exercises) into **generate** mode (write the golden to disk). Run this after any change to a
+handler or DTO shape covered by the corpus, and commit the regenerated files alongside the source
+change.
+
+### 25.3 Determinism / redaction rules
+
+A non-deterministic golden is worse than none — it trains reviewers to ignore the diff. Every
+value in a golden that could legitimately vary between two otherwise-identical runs is neutralized
+by `contract_corpus.rs`'s `redact_value` before being written or compared (see that module's own
+header comment for the authoritative, line-numbered version of these rules):
+
+1. RFC3339 timestamps and bare `YYYY-MM-DD` calendar dates (`started_at`, `updated_at`,
+   `last_touched`, `as_of`, `created`, `reviewed`, …) → `"<TIMESTAMP>"`.
+2. UUIDs (`run_id`, …) → `"<UUID>"`. Fixtures still seed a fixed UUID rather than
+   `Uuid::new_v4()` so the pre-redaction value is deterministic too; this rule catches anything
+   that slips through.
+3. Absolute temp-dir paths (fixture scratch workspaces) → `"<TMP_PATH>"`.
+4. Object key ordering is confirmed sorted (not insertion-order) by a dedicated unit test rather
+   than assumed from `serde_json`'s default configuration.
+5. `age_days` (a live-clock-derived `Number`, not a string, so rule 1 cannot pattern-match it) is
+   redacted by key name to the sentinel `0` regardless of its pre-redaction value.
+
+Redaction touches values only — it never touches object keys, and it never touches the
+`RunStatus` wire strings (e.g. `budget_halted`) the corpus exists to freeze.
+
+### 25.4 Drift check (gating)
+
+`scripts/check-contract-corpus-drift.sh` regenerates the corpus to a temp directory (via
+`scripts/gen-contract-corpus.sh`, so the two scripts can never diverge on invocation) and diffs it
+against the committed `types/contract-corpus/`, mirroring `scripts/check-typeshare-drift.sh`'s
+(Section 19.3) structure and exit-code conventions:
+
+- Exits **0** and prints `OK: types/contract-corpus/ is up to date with the real serve handlers.`
+  when identical.
+- Exits **non-zero** and prints the unified diff when the corpus is stale relative to the real
+  handlers.
+
+Unlike the typeshare drift check, this one **is** wired into `planning/harness.json`'s
+`validation.checks[]` as a gating check, so a stale corpus fails the SDLC pipeline and CI, not
+just a human's memory.
+
+### 25.5 Standing rule — a changed golden IS a contract change
+
+**A changed golden in a PR diff is a contract change**, exactly as a `types/serve.ts` diff is,
+and must carry the same treatment: a version bump in this document's header/versioning history
+(Section 21) and a dated entry in the Amendment Log below, describing what shifted and why. This
+holds even though the corpus itself does not encode a version number — the *reason* a golden
+changes is always either an intentional DTO/handler change (which already needs a version bump
+for its own sake) or a redaction-rule gap letting a volatile field leak into a golden (which needs
+a task-2-style fix, not a silent re-generate-and-commit). Treat an unexplained corpus diff in a PR
+the same way an unexplained `types/serve.ts` diff would be treated: as a signal to stop and find
+out what changed, not as routine churn to regenerate past.
+
+No `serve` runtime behaviour changed as part of adding this section — the dump harness is
+`#[cfg(test)]`-gated throughout and never compiles into the production binary.
+
+---
+
 ## Amendment Log
+
+- **2026-08-01 — contract-corpus goldens added (ask A4, `planning/arch-review-asks-bastion-web/notes.md`;
+  no version bump):** Added Section 25 and `types/contract-corpus/` — checked-in golden JSON per
+  (route × scenario), produced by the real `serve` handlers and real serializer via the
+  `#[cfg(test)]` dump harness in `src/serve/contract_corpus.rs`, plus `scripts/gen-contract-corpus.sh`
+  / `scripts/check-contract-corpus-drift.sh` (the latter wired into `planning/harness.json` as a
+  gating check). Consumer side: `../bastion-web/ticket-stub-fidelity-check/`. Purely additive
+  tooling and documentation — no wire shape changed, so no version bump. Per Section 25.5, any
+  *future* PR where a golden's content changes is itself a contract change requiring its own
+  version bump and Amendment Log entry.
 
 - **2026-08-01 — v0.19 → v0.20 (ask A2, `planning/arch-review-asks-bastion-web/notes.md`):**
   New Section 11.6 route, `GET /api/workflows` — a cross-repo flow-state aggregate so consumers stop
