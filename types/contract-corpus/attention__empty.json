@@ -1,0 +1,20 @@
+{
+  "body": {
+    "as_of": "<TIMESTAMP>",
+    "lanes": {
+      "aging_backlog": [],
+      "orphaned_captures": [],
+      "stale_carryover": []
+    },
+    "scope": "hq",
+    "thresholds": {
+      "backlog_days": 7,
+      "constraint_days": 10,
+      "deferred_days": 5,
+      "env_days": 3,
+      "known_issue_days": 10
+    },
+    "tier": null
+  },
+  "status_code": 200
+}

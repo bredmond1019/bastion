@@ -13,6 +13,44 @@ timestamp: 2026-07-30T22:45:00Z
 
 ## [run: 2026-08-01]
 
+### plan-contract-corpus-goldens (A4) — DONE, all 7 tasks PASS, review PASS
+
+`/sdlc-flow --worktree` shipped the fourth and last spec of the four-spec arch-review train: a
+`#[cfg(test)]` contract-corpus dump harness (`src/serve/contract_corpus.rs`) that dispatches real
+requests through the real serve handlers and the real serializer, writing/verifying checked-in
+golden JSON under `types/contract-corpus/` so bastion-web can assert its e2e stub against actual
+wire shapes instead of a hand-maintained approximation. Task 1 built the harness core (env-var
+GENERATE/VERIFY toggle, non-200/non-JSON handling, 9 passing tests). Task 2 added redaction of
+RFC3339 timestamps, UUIDs, and temp-dir paths applied uniformly to both write and verify paths,
+with an empirically-proven sorted-key-order test and a byte-identical determinism test. Task 3
+added `GET /api/runs` goldens for empty/active/all seven `RunStatus` variants — including the
+hand-written `budget_halted` wire string — pinned by a compile/test-enforced coverage assertion.
+Task 4 added board/attention/pipeline/docs-tree goldens (13 more, 22 total) dispatched over minimal
+on-disk fixture brain corpora, extending redaction to neutralize Attention's live-clock
+`as_of`/`age_days` fields. Task 5 added `scripts/gen-contract-corpus.sh` and
+`scripts/check-contract-corpus-drift.sh` (mirroring the typeshare script pair) and registered
+`contract-corpus-drift` as a gating check in `planning/harness.json`. Task 6 documented the corpus
+in `docs/serve-api.md` §25 (naming, regeneration, the five redaction rules, and the standing rule
+that a changed golden is a contract change) with a dated Amendment Log entry — no version bump,
+since no wire shape changed. Task 7 ran the full gated validation suite (fmt, clippy, `cargo test`,
+release build, both drift checks run twice), fixing a real thread-parallelism env-var race in the
+harness's own tests along the way (test-only code; production source untouched). Final verdict:
+PASS, no review findings. No matching authored block entry exists in `planning/state.json` for
+this arch-review-derived plan (same as A5/A2), so no block-graph flip was made. This closes out the
+full four-spec arch-review train (A1+A3 v0.18, A5 v0.19, A2 v0.20, A4 no-bump) landed serially as
+planned. Next: pick up `BA.ticket.epic-weight-dto` or `BA.11.O` (Brain-rag CLI bridge).
+
+```
+1115ccb feat: implement plan-contract-corpus-goldens-task7
+15d094b docs: document contract-corpus goldens in serve-api.md (A4)
+91350c4 feat: implement plan-contract-corpus-goldens-task5
+06d35e4 feat: implement plan-contract-corpus-goldens-task4
+1848bf2 feat: implement plan-contract-corpus-goldens-task3
+9c09380 feat: implement plan-contract-corpus-goldens-task2
+fb4da55 feat: implement plan-contract-corpus-goldens-task1
+58f4868 chore: init worktree plan-contract-corpus-goldens-flow
+```
+
 ### plan-board-graph-enrichment (A5) — DONE, all 8 tasks PASS, review PASS
 
 `/sdlc-flow --worktree` shipped the second spec of the four-spec arch-review train: `GET

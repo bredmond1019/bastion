@@ -1,0 +1,126 @@
+{
+  "body": {
+    "lanes": {
+      "blocked": [
+        {
+          "blocked_by": [
+            {
+              "id": "BA.1",
+              "repo": "bastion",
+              "type": "block",
+              "what": null
+            }
+          ],
+          "due": null,
+          "epics": [],
+          "id": "BA.2",
+          "priority": null,
+          "repo": "bastion",
+          "status": "open",
+          "title": "Waiting on BA.1",
+          "track": "Phase 1",
+          "wave": null
+        }
+      ],
+      "deferred": [],
+      "finished": [
+        {
+          "blocked_by": [],
+          "due": null,
+          "epics": [],
+          "id": "BA.9",
+          "priority": null,
+          "repo": "bastion",
+          "status": "closed",
+          "title": "Closed",
+          "track": "Phase 1",
+          "wave": null
+        }
+      ],
+      "next": [],
+      "now": [
+        {
+          "blocked_by": [],
+          "due": null,
+          "epics": [
+            "epic-alpha"
+          ],
+          "id": "BA.1",
+          "last_touched": "<TIMESTAMP>",
+          "priority": null,
+          "repo": "bastion",
+          "status": "in_progress",
+          "title": "In progress",
+          "track": "Phase 1",
+          "wave": 1
+        }
+      ]
+    },
+    "repos": [
+      {
+        "lanes": {
+          "blocked": [
+            {
+              "blocked_by": [
+                {
+                  "id": "BA.1",
+                  "repo": "bastion",
+                  "type": "block",
+                  "what": null
+                }
+              ],
+              "due": null,
+              "epics": [],
+              "id": "BA.2",
+              "priority": null,
+              "repo": "bastion",
+              "status": "open",
+              "title": "Waiting on BA.1",
+              "track": "Phase 1",
+              "wave": null
+            }
+          ],
+          "deferred": [],
+          "finished": [
+            {
+              "blocked_by": [],
+              "due": null,
+              "epics": [],
+              "id": "BA.9",
+              "priority": null,
+              "repo": "bastion",
+              "status": "closed",
+              "title": "Closed",
+              "track": "Phase 1",
+              "wave": null
+            }
+          ],
+          "next": [],
+          "now": [
+            {
+              "blocked_by": [],
+              "due": null,
+              "epics": [
+                "epic-alpha"
+              ],
+              "id": "BA.1",
+              "last_touched": "<TIMESTAMP>",
+              "priority": null,
+              "repo": "bastion",
+              "status": "in_progress",
+              "title": "In progress",
+              "track": "Phase 1",
+              "wave": 1
+            }
+          ]
+        },
+        "repo": "bastion",
+        "tier": "core"
+      }
+    ],
+    "scope": "tier",
+    "stale": true,
+    "tier": "core"
+  },
+  "status_code": 200
+}

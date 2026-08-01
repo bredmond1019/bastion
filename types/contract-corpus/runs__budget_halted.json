@@ -1,0 +1,11 @@
+{
+  "body": [
+    {
+      "run_id": "<UUID>",
+      "started_at": null,
+      "status": "budget_halted",
+      "updated_at": null
+    }
+  ],
+  "status_code": 200
+}

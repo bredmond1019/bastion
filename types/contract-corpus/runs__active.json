@@ -1,0 +1,12 @@
+{
+  "body": [
+    {
+      "run_id": "<UUID>",
+      "spec_slug": "contract-corpus-active-fixture",
+      "started_at": "<TIMESTAMP>",
+      "status": "running",
+      "updated_at": "<TIMESTAMP>"
+    }
+  ],
+  "status_code": 200
+}

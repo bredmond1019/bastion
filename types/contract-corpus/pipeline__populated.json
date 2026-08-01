@@ -1,0 +1,26 @@
+{
+  "body": {
+    "opportunities": [
+      {
+        "has_findings": true,
+        "kind": "company",
+        "last_contact": null,
+        "next_action": null,
+        "slug": "anthropic",
+        "source": "RESEARCH_AGENT test run",
+        "stage": "identified",
+        "title": "Anthropic"
+      }
+    ],
+    "stages": [
+      "identified",
+      "researching",
+      "contacted",
+      "conversation",
+      "proposal-sent",
+      "closed-won",
+      "closed-lost"
+    ]
+  },
+  "status_code": 200
+}

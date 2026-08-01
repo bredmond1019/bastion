@@ -1,0 +1,14 @@
+{
+  "body": {
+    "entries": [
+      {
+        "is_dir": false,
+        "name": "guide.md",
+        "path": "docs/guide.md"
+      }
+    ],
+    "repo": "myrepo",
+    "root": "docs"
+  },
+  "status_code": 200
+}
