@@ -27,7 +27,8 @@ use actix_web::{HttpResponse, web};
 
 use crate::config::{FileConfig, resolve_workspace_root};
 use crate::serve::dto::{
-    ErrorPayload, HandoffInfoDto, RepoStatusDto, RepoSummaryDto, WorkflowStateDto,
+    ErrorPayload, HandoffInfoDto, RepoStatusDto, RepoSummaryDto, RepoWorkflowStateDto,
+    WorkflowStateDto,
 };
 use crate::serve::status::flow::{FlowState, parse_flow_state};
 use crate::serve::status::handoff::{HandoffInfo, read_handoff};
@@ -155,6 +156,42 @@ fn collect_repo_workflows(root: &Path) -> Vec<WorkflowStateDto> {
     collect_flow_states(root)
         .into_iter()
         .map(Into::into)
+        .collect()
+}
+
+/// `GET /api/workflows` — cross-repo flow-state aggregate over every
+/// registered workspace, following the `build_repo_summaries` (`:97`)
+/// registry-iteration precedent exactly: empty/absent registry -> empty
+/// Vec, else sort workspace names and walk each in order.
+///
+/// Reuses [`collect_flow_states`] verbatim per-repo (no second flow-state
+/// walk) and tags each resulting entry with its owning repo name via
+/// [`RepoWorkflowStateDto`]. A repo whose root fails to resolve, or which
+/// has no `planning/` dir / only malformed flow-state files, contributes
+/// zero entries without aborting the walk — the same degrade-gracefully
+/// behaviour `collect_flow_states` and `build_repo_summaries` already have.
+///
+/// Output is ordered by `(repo name, then spec_slug)`: `collect_flow_states`
+/// already sorts by `spec_slug` within a repo, and iterating the
+/// (pre-sorted) repo names in order composes that into the full ordering.
+pub(crate) fn collect_all_workflows(registry: &FileConfig) -> Vec<RepoWorkflowStateDto> {
+    let Some(workspaces) = registry.workspaces.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut names: Vec<&String> = workspaces.keys().collect();
+    names.sort();
+
+    names
+        .into_iter()
+        .flat_map(|name| {
+            let root = resolve_root(name, registry);
+            root.into_iter().flat_map(move |root| {
+                collect_flow_states(&root).into_iter().map(move |state| {
+                    RepoWorkflowStateDto::from((name.clone(), WorkflowStateDto::from(state)))
+                })
+            })
+        })
         .collect()
 }
 
@@ -472,6 +509,129 @@ mod tests {
         let flows = collect_repo_workflows(tmp.path());
         assert_eq!(flows.len(), 1);
         assert_eq!(flows[0].spec_slug, "phase6-blockA");
+    }
+
+    // ── collect_all_workflows ────────────────────────────────────────────
+
+    #[test]
+    fn collect_all_workflows_empty_registry_returns_empty_vec() {
+        let registry = FileConfig::default();
+        assert_eq!(collect_all_workflows(&registry), Vec::new());
+    }
+
+    #[test]
+    fn collect_all_workflows_two_repos_returns_tagged_and_ordered_entries() {
+        let tmp_a = TempDir::new();
+        let tmp_z = TempDir::new();
+        write(
+            &tmp_a
+                .path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+        let zeta_json = FLOW_JSON.replace("phase6-blockA", "zeta-spec");
+        write(
+            &tmp_z
+                .path()
+                .join("planning/z-dir/sdlc/sdlc-flow-state.json"),
+            &zeta_json,
+        );
+
+        let mut workspaces = HashMap::new();
+        workspaces.insert("alpha-repo".to_string(), tmp_a.path().to_path_buf());
+        workspaces.insert("zeta-repo".to_string(), tmp_z.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let entries = collect_all_workflows(&registry);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].repo, "alpha-repo");
+        assert_eq!(entries[0].spec_slug, "phase6-blockA");
+        assert_eq!(entries[1].repo, "zeta-repo");
+        assert_eq!(entries[1].spec_slug, "zeta-spec");
+    }
+
+    #[test]
+    fn collect_all_workflows_orders_by_repo_then_spec_slug_within_repo() {
+        let tmp_a = TempDir::new();
+        let zeta_json = FLOW_JSON.replace("phase6-blockA", "zeta-spec");
+        let alpha_json = FLOW_JSON.replace("phase6-blockA", "alpha-spec");
+        write(
+            &tmp_a
+                .path()
+                .join("planning/z-dir/sdlc/sdlc-flow-state.json"),
+            &zeta_json,
+        );
+        write(
+            &tmp_a
+                .path()
+                .join("planning/a-dir/sdlc/sdlc-flow-state.json"),
+            &alpha_json,
+        );
+
+        let registry = registry_with("only-repo", tmp_a.path());
+        let entries = collect_all_workflows(&registry);
+        let slugs: Vec<&str> = entries.iter().map(|e| e.spec_slug.as_str()).collect();
+        assert_eq!(slugs, vec!["alpha-spec", "zeta-spec"]);
+    }
+
+    #[test]
+    fn collect_all_workflows_malformed_repo_does_not_suppress_sibling_repo() {
+        let tmp_bad = TempDir::new();
+        let tmp_good = TempDir::new();
+        write(
+            &tmp_bad
+                .path()
+                .join("planning/bad-spec/sdlc/sdlc-flow-state.json"),
+            "{ not json",
+        );
+        write(
+            &tmp_good
+                .path()
+                .join("planning/good-spec/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+
+        let mut workspaces = HashMap::new();
+        workspaces.insert("bad-repo".to_string(), tmp_bad.path().to_path_buf());
+        workspaces.insert("good-repo".to_string(), tmp_good.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let entries = collect_all_workflows(&registry);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].repo, "good-repo");
+        assert_eq!(entries[0].spec_slug, "phase6-blockA");
+    }
+
+    #[test]
+    fn collect_all_workflows_nonexistent_repo_path_is_skipped() {
+        let tmp_good = TempDir::new();
+        write(
+            &tmp_good
+                .path()
+                .join("planning/good-spec/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "ghost-repo".to_string(),
+            PathBuf::from("/nonexistent/path/should/not/exist"),
+        );
+        workspaces.insert("good-repo".to_string(), tmp_good.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let entries = collect_all_workflows(&registry);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].repo, "good-repo");
     }
 
     // ── resolve_root ──────────────────────────────────────────────────────
