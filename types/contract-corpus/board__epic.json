@@ -1,0 +1,60 @@
+{
+  "body": {
+    "lanes": {
+      "blocked": [],
+      "deferred": [],
+      "finished": [],
+      "next": [],
+      "now": [
+        {
+          "blocked_by": [],
+          "due": null,
+          "epics": [
+            "epic-alpha"
+          ],
+          "id": "BA.1",
+          "last_touched": "<TIMESTAMP>",
+          "priority": null,
+          "repo": "bastion",
+          "status": "in_progress",
+          "title": "In progress",
+          "track": "Phase 1",
+          "wave": 1
+        }
+      ]
+    },
+    "repos": [
+      {
+        "lanes": {
+          "blocked": [],
+          "deferred": [],
+          "finished": [],
+          "next": [],
+          "now": [
+            {
+              "blocked_by": [],
+              "due": null,
+              "epics": [
+                "epic-alpha"
+              ],
+              "id": "BA.1",
+              "last_touched": "<TIMESTAMP>",
+              "priority": null,
+              "repo": "bastion",
+              "status": "in_progress",
+              "title": "In progress",
+              "track": "Phase 1",
+              "wave": 1
+            }
+          ]
+        },
+        "repo": "bastion",
+        "tier": "core"
+      }
+    ],
+    "scope": "epic",
+    "stale": true,
+    "tier": null
+  },
+  "status_code": 200
+}

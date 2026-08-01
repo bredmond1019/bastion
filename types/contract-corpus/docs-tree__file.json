@@ -1,0 +1,8 @@
+{
+  "body": {
+    "entries": [],
+    "repo": "myrepo",
+    "root": "docs/guide.md"
+  },
+  "status_code": 200
+}

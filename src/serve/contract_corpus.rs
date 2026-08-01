@@ -43,14 +43,25 @@
 //! corpus and every future comparison are redacted the same way.
 //!
 //! Rules, applied to `serde_json::Value` **strings only** — object *keys* and
-//! non-string values (numbers, bools, the run-status strings this corpus
-//! exists to freeze, etc.) are never touched:
+//! most non-string values (numbers, bools, the run-status strings this
+//! corpus exists to freeze, etc.) are never touched. **One exception** (rule
+//! 5 below) is a narrowly-scoped, key-named numeric redaction added by Task
+//! 4 for the Attention corpus's live-clock `age_days` field — see that rule
+//! for why a blanket "values only" redaction cannot cover it:
 //!
-//! 1. **RFC3339 timestamps** (`started_at`, `updated_at`, `last_touched`, …)
-//!    — any string value matching an RFC3339 datetime shape is replaced with
-//!    the sentinel `"<TIMESTAMP>"`. Preferred long-term fix at the call site
-//!    is a fixed fixture clock; this redaction is the backstop for any value
-//!    that slips through un-pinned.
+//! 1. **RFC3339 timestamps AND bare calendar dates** (`started_at`,
+//!    `updated_at`, `last_touched`, `as_of`, `created`, `reviewed`, …) — any
+//!    string value matching an RFC3339 datetime shape (e.g.
+//!    `2026-07-31T12:00:00Z`) **or** a bare `YYYY-MM-DD` calendar date (e.g.
+//!    `2026-07-31`, as `AttentionDto::as_of` and the `Carryover`/`Backlog`
+//!    `created`/`reviewed` fields all wire) is replaced with the sentinel
+//!    `"<TIMESTAMP>"`. Bare dates were added by Task 4: `get_attention`
+//!    computes `as_of` from `chrono::Local::now().date_naive()` at request
+//!    time with no fixture-clock override, so every Attention golden would
+//!    otherwise drift by exactly one day, every day, forever — the single
+//!    most avoidable false-drift source this corpus could ship with.
+//!    Preferred long-term fix at the call site is a fixed fixture clock; this
+//!    redaction is the backstop for any value that slips through un-pinned.
 //! 2. **UUIDs** (`run_id`, …) — any string value matching the canonical
 //!    8-4-4-4-12 hex UUID shape is replaced with `"<UUID>"`. Fixtures should
 //!    still prefer seeding with a fixed UUID (never `Uuid::new_v4()`) so the
@@ -74,6 +85,23 @@
 //!    separate concern this module cannot fix generically — that sorting
 //!    must happen at the handler/serialization layer, before the value ever
 //!    reaches [`dump`].
+//! 5. **`age_days` (Task 4, key-named, numeric)** — `AttentionCarryoverDto`
+//!    and `AttentionBacklogDto` both wire a live-clock-derived `age_days: i64`
+//!    (`today - anchor`, computed inside `get_attention` at request time).
+//!    Unlike rule 1's dates, this value is a **number**, so the
+//!    strings-only [`redact_value`] cannot neutralize it by pattern-matching
+//!    the value alone (an arbitrary small integer is indistinguishable from
+//!    any other legitimate integer field). Instead, [`redact_object_entries`]
+//!    special-cases the **key** name `"age_days"` and overwrites *its* value
+//!    (regardless of number) with the sentinel `0`, keeping the field's JSON
+//!    type (`Number`) intact so a consumer asserting the field is numeric
+//!    still passes. Every fixture in the Attention scenarios (Task 4) is
+//!    still built with a *fixed* `created`/`reviewed` offset from
+//!    `chrono::Local::now()` at fixture-build time (not a hardcoded
+//!    calendar date) precisely so the **pre-redaction** age is itself
+//!    deterministic across days — this rule is the backstop for the
+//!    still-live `today` the handler itself computes independently a moment
+//!    later, not a replacement for building deterministic fixtures.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -118,13 +146,16 @@ fn should_write() -> bool {
     std::env::var(DUMP_ENV_VAR).as_deref() == Ok("1")
 }
 
-/// Matches an RFC3339 timestamp value, e.g. `2026-07-31T12:00:00Z` or
-/// `2026-07-31T12:00:00.123456+00:00`. See module docs, redaction rule 1.
+/// Matches an RFC3339 timestamp value (e.g. `2026-07-31T12:00:00Z` or
+/// `2026-07-31T12:00:00.123456+00:00`) **or** a bare `YYYY-MM-DD` calendar
+/// date (e.g. `2026-07-31`, as `AttentionDto::as_of` and the
+/// `Carryover`/`Backlog` `created`/`reviewed` fields wire). The time-of-day
+/// portion is optional. See module docs, redaction rule 1.
 fn rfc3339_timestamp_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
-            .expect("static RFC3339 regex must compile")
+        Regex::new(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2}))?$")
+            .expect("static RFC3339/bare-date regex must compile")
     })
 }
 
@@ -159,11 +190,25 @@ fn redact_string_value(value: &str) -> Option<&'static str> {
     None
 }
 
-/// Recursively redact every string *value* in `value` in place. Object
-/// **keys** are never touched — only [`serde_json::Value::String`] leaves
-/// (found directly, or nested inside arrays/objects) are candidates for
-/// redaction, and only when they match one of [`redact_string_value`]'s
-/// patterns.
+/// Object-key names whose *value* is redacted regardless of its JSON type,
+/// per module docs redaction rule 5. Currently just `age_days` — the one
+/// live-clock-derived numeric field this corpus wires
+/// (`AttentionCarryoverDto`/`AttentionBacklogDto`). Deliberately a short,
+/// explicit allowlist rather than "any field ending in `_days`" — the
+/// *authored* `threshold_days` field is a static config value (not
+/// live-clock-derived) and must NOT be redacted, or the corpus would stop
+/// pinning the resolved `brain.toml` `[attention]` thresholds it exists to
+/// freeze.
+const VOLATILE_NUMERIC_KEYS: [&str; 1] = ["age_days"];
+
+/// Recursively redact every string *value* in `value` in place, plus the
+/// small key-named numeric exception in [`VOLATILE_NUMERIC_KEYS`] (redaction
+/// rule 5). Object **keys** are never touched — only
+/// [`serde_json::Value::String`] leaves (found directly, or nested inside
+/// arrays/objects) are candidates for pattern-based redaction, and only when
+/// they match one of [`redact_string_value`]'s patterns; the
+/// `VOLATILE_NUMERIC_KEYS` exception rewrites a *value* looked up by its
+/// *key* name, never the key itself.
 fn redact_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(s) => {
@@ -177,10 +222,15 @@ fn redact_value(value: &mut serde_json::Value) {
             }
         }
         serde_json::Value::Object(map) => {
-            // `.values_mut()` — iterates VALUES only; keys are structurally
-            // untouchable through this iterator, which is what makes "never
-            // redact keys" true by construction rather than by convention.
-            for v in map.values_mut() {
+            // Iterate `(key, value)` pairs — keys are read-only here (never
+            // reassigned), which is what makes "never redact keys" true by
+            // construction rather than by convention; only the paired value
+            // is ever written back.
+            for (key, v) in map.iter_mut() {
+                if VOLATILE_NUMERIC_KEYS.contains(&key.as_str()) && v.is_number() {
+                    *v = serde_json::json!(0);
+                    continue;
+                }
                 redact_value(v);
             }
         }
@@ -468,6 +518,16 @@ mod harness_tests {
     }
 
     #[test]
+    fn redact_string_value_redacts_bare_calendar_date() {
+        // Task 4: `AttentionDto::as_of` and the `Carryover`/`Backlog`
+        // `created`/`reviewed` fields wire a bare `YYYY-MM-DD` date with no
+        // time component — distinct from rule 1's original RFC3339 shape,
+        // and must be redacted the same way or every Attention golden
+        // drifts by one day, every day.
+        assert_eq!(redact_string_value("2026-07-31"), Some("<TIMESTAMP>"));
+    }
+
+    #[test]
     fn redact_string_value_redacts_uuid() {
         assert_eq!(
             redact_string_value("550e8400-e29b-41d4-a716-446655440000"),
@@ -547,6 +607,22 @@ mod harness_tests {
                 .contains_key("550e8400-e29b-41d4-a716-446655440000"),
             "redaction must never rewrite object keys"
         );
+    }
+
+    #[test]
+    fn redact_value_redacts_age_days_key_regardless_of_magnitude() {
+        // Redaction rule 5 (Task 4): `age_days` is redacted by KEY name, not
+        // by value pattern-matching, since a plain integer can't be told
+        // apart from any other legitimate numeric field by its value alone.
+        let mut value = serde_json::json!({
+            "age_days": 23,
+            "threshold_days": 3,
+        });
+        redact_value(&mut value);
+        assert_eq!(value["age_days"], serde_json::json!(0));
+        // The AUTHORED threshold must survive untouched — only the
+        // live-clock-derived field is in `VOLATILE_NUMERIC_KEYS`.
+        assert_eq!(value["threshold_days"], serde_json::json!(3));
     }
 
     #[test]
@@ -937,5 +1013,616 @@ mod runs_scenarios {
             observed.contains("budget_halted"),
             "budget_halted must be frozen with its exact underscore spelling"
         );
+    }
+}
+
+/// Task 4 shared test-only fixture plumbing: a minimal on-disk HQ brain
+/// corpus for the `board`/`attention` scenarios, plus the small `TempDir`
+/// helper every fixture-backed scenario module below uses (mirroring the
+/// existing pattern in `handlers/pipeline.rs`/`handlers/block_graph.rs`'s own
+/// test modules — reused here by name/shape, not by import, since each
+/// lives in its own private test module).
+#[cfg(test)]
+mod fixtures {
+    use std::path::{Path, PathBuf};
+
+    /// Minimal self-cleaning temp-dir helper. Mirrors
+    /// `handlers/pipeline.rs`'s / `handlers/block_graph.rs`'s own test-only
+    /// `TempDir` — duplicated rather than shared across modules because each
+    /// lives behind its own private `#[cfg(test)] mod`.
+    pub(super) struct TempDir(PathBuf);
+
+    impl TempDir {
+        pub(super) fn new(name: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let pid = std::process::id();
+            let dir =
+                std::env::temp_dir().join(format!("bastion_contract_corpus_{name}_{pid}_{id}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+
+        pub(super) fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Write `content` to `path`, creating parent directories as needed.
+    pub(super) fn write(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// `today - n` as `YYYY-MM-DD`, computed at fixture-build time from the
+    /// same wall clock `get_attention` itself reads
+    /// (`chrono::Local::now().date_naive()`) — NOT a hardcoded calendar
+    /// date. Because both this fixture-build-time subtraction and the
+    /// handler's own `today - anchor` subtraction happen against the same
+    /// live "now" a moment apart, the resulting `age_days` is a fixed
+    /// constant (`n`, give or take a same-day rounding of zero) regardless
+    /// of which real-world day the test runs on — see module docs'
+    /// redaction rule 5 for why `age_days` itself is *also* redacted as a
+    /// backstop, not a replacement for this.
+    pub(super) fn days_ago(n: i64) -> String {
+        let today = chrono::Local::now().date_naive();
+        (today - chrono::Duration::days(n))
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+}
+
+/// Task 4: `GET /api/board` corpus scenarios — `scope=hq`/`tier`/`epic`, the
+/// epic-404 registry-miss, and the `last_touched`/`dependent_count`/`ready`
+/// enrichment fields (`plan-board-graph-enrichment`, A5, already landed on
+/// this branch — see `tasks.md` Notes).
+///
+/// Every scenario here dispatches through the **real**
+/// `handlers::board::get_board` handler, wired into a minimal actix app that
+/// mirrors `src/serve/mod.rs`'s production `web::resource("/api/board")`
+/// mapping over a real, on-disk fixture brain corpus (`fixture_hq_corpus`) —
+/// scoped down so these tests don't need the hub/auth machinery the full app
+/// factory carries, while still going through real `actix_web` dispatch and
+/// real `mev`/`serde` brain-walk + serialization, never a hand-authored
+/// `serde_json::Value` (mirrors `runs_scenarios`' own doc comment).
+#[cfg(test)]
+mod board_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::board::get_board;
+
+    /// Build a fixture HQ brain corpus:
+    /// - `brain.toml`: one `[[repos]]` entry, `bastion`, tier `core`.
+    /// - `planning/state.json` (HQ, `kind: "brain"`): one HQ `epics[]` entry
+    ///   (`epic-alpha`) — the registry `scope=epic` validates `&epic=`
+    ///   against.
+    /// - `bastion/planning/state.json` (`kind: "project"`): `BA.1`
+    ///   (`in_progress`, tagged `epic-alpha`, wave 1 — lands in the `now`
+    ///   lane), `BA.2` (`open`, `depends_on` the still-open `BA.1` — lands
+    ///   in the `blocked` lane with an unmet dep, and gives `BA.1` a
+    ///   corpus-wide `dependent_count` of 1 under `?graph=1`), and `BA.9`
+    ///   (`closed` — lands in the `finished` lane).
+    /// - `bastion/planning/BA.1-in-progress/sdlc/sdlc-flow-state.json`: a
+    ///   resolvable SDLC spec folder for `BA.1` only, so
+    ///   `derive_last_touched` (BA.11.S) has exactly one resolvable block —
+    ///   mirrors `handlers/block_graph.rs`'s own cross-check fixture.
+    ///
+    /// `bastion`'s `status_file`/`cache_doc` are deliberately never created,
+    /// so `check_sync` reports every in-scope repo stale — a static,
+    /// non-live-clock-derived `stale: true` on every board golden below.
+    fn fixture_hq_corpus() -> TempDir {
+        let tmp = TempDir::new("board");
+        let root = tmp.path();
+
+        write(
+            &root.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "Bastion"
+"#,
+        );
+
+        write(
+            &root.join("planning").join("state.json"),
+            r#"{
+  "repo": "hq",
+  "kind": "brain",
+  "updated": "2026-07-28",
+  "epics": [
+    {"slug": "epic-alpha", "title": "Epic Alpha", "description": "The alpha initiative"}
+  ]
+}"#,
+        );
+
+        write(
+            &root.join("bastion").join("planning").join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-28",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "BA.1", "title": "In progress", "status": "in_progress", "epics": ["epic-alpha"], "wave": 1},
+        {"id": "BA.2", "title": "Waiting on BA.1", "status": "open", "depends_on": [{"type": "block", "repo": "bastion", "id": "BA.1"}]},
+        {"id": "BA.9", "title": "Closed", "status": "closed"}
+      ]
+    }
+  ]
+}"#,
+        );
+
+        write(
+            &root
+                .join("bastion")
+                .join("planning")
+                .join("BA.1-in-progress")
+                .join("sdlc")
+                .join("sdlc-flow-state.json"),
+            r#"{"updated_at": "2026-07-28T12:00:00Z"}"#,
+        );
+
+        tmp
+    }
+
+    fn registry(tmp: &TempDir) -> FileConfig {
+        FileConfig {
+            workspaces: Some(HashMap::from([("hq".to_owned(), tmp.path().to_path_buf())])),
+            default_workspace: Some("hq".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    macro_rules! board_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(web::resource("/api/board").route(web::get().to(get_board))),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn board_corpus_hq() {
+        let tmp = fixture_hq_corpus();
+        let app = board_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/board?scope=hq");
+        dump("board", "hq", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn board_corpus_tier() {
+        let tmp = fixture_hq_corpus();
+        let app = board_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/board?scope=tier&tier=core");
+        dump("board", "tier", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn board_corpus_epic() {
+        let tmp = fixture_hq_corpus();
+        let app = board_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/board?scope=epic&epic=epic-alpha");
+        dump("board", "epic", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn board_corpus_epic_404() {
+        let tmp = fixture_hq_corpus();
+        let app = board_service!(registry(&tmp));
+        let req =
+            actix_web::test::TestRequest::get().uri("/api/board?scope=epic&epic=no-such-epic");
+        dump("board", "epic-404", req, &app).await;
+    }
+
+    /// `last_touched` is populated unconditionally (no `?graph=1` gate) —
+    /// this scenario exists as its own named golden per the task spec's
+    /// scenario list, even though `board__hq` above already exercises the
+    /// same field on the same fixture's `BA.1`.
+    #[actix_web::test]
+    async fn board_corpus_last_touched() {
+        let tmp = fixture_hq_corpus();
+        let app = board_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/board?scope=hq");
+        dump("board", "last_touched", req, &app).await;
+    }
+
+    /// `?graph=1` gates the A5 `dependent_count`/`ready` enrichment
+    /// (`plan-board-graph-enrichment`, already landed) — `BA.1` has `BA.2`
+    /// depending on it, so `BA.1`'s `now`-lane entry carries a nonzero
+    /// `dependent_count` here (`None` on every other board golden above,
+    /// which omit `?graph=1`).
+    #[actix_web::test]
+    async fn board_corpus_dependent_count() {
+        let tmp = fixture_hq_corpus();
+        let app = board_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/board?scope=hq&graph=true");
+        dump("board", "dependent_count", req, &app).await;
+    }
+}
+
+/// Task 4: `GET /api/attention` corpus scenarios — populated (stale
+/// carryover + aging backlog + orphaned capture) and empty.
+///
+/// See `board_scenarios`' doc comment for the shared "minimal app wired to
+/// the real handler over a real on-disk fixture" approach — identical here,
+/// against `handlers::attention::get_attention`.
+///
+/// # The live-clock problem this module's fixtures solve
+/// `get_attention` computes `as_of`/`age_days` from
+/// `chrono::Local::now().date_naive()` at request time — there is no
+/// fixture-clock override. Every `created`/`reviewed` date below is
+/// therefore built with [`super::fixtures::days_ago`], **not** a hardcoded
+/// calendar date, so the resulting `age_days` is a fixed constant across
+/// every real-world day the test runs on; [`super::redact_value`]'s bare
+/// calendar-date + `age_days` rules (redaction rules 1 and 5) are the
+/// backstop for the remaining `as_of` field, which is always today's literal
+/// date regardless of fixture design.
+#[cfg(test)]
+mod attention_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, days_ago, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::attention::get_attention;
+
+    /// Build a fixture HQ brain corpus with one stale `carryover[]` entry
+    /// (`bastion`, `known_issue`, threshold 10 days — created 15 days ago,
+    /// so it trips), one aging `backlog[]` idea (threshold 7 days — created
+    /// 10 days ago), and one `origin.type == "capture"` backlog idea aged
+    /// the same way (lands in `orphaned_captures`, not `aging_backlog`).
+    fn fixture_populated() -> TempDir {
+        let tmp = TempDir::new("attention-populated");
+        let root = tmp.path();
+
+        write(
+            &root.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "Bastion"
+"#,
+        );
+
+        write(
+            &root.join("planning").join("state.json"),
+            &format!(
+                r#"{{
+  "repo": "hq",
+  "kind": "brain",
+  "updated": "2026-07-28",
+  "backlog": [
+    {{
+      "slug": "aging-idea",
+      "title": "Aging idea",
+      "repo": "bastion",
+      "type": "improvement",
+      "status": "idea",
+      "created": "{aging}"
+    }},
+    {{
+      "slug": "orphan-capture",
+      "title": "Orphaned capture",
+      "repo": "bastion",
+      "type": "chore",
+      "status": "idea",
+      "created": "{aging}",
+      "origin": {{"type": "capture", "notes": "planning/orphan-capture/notes.md"}}
+    }}
+  ]
+}}"#,
+                aging = days_ago(10),
+            ),
+        );
+
+        write(
+            &root.join("bastion").join("planning").join("state.json"),
+            &format!(
+                r#"{{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-28",
+  "carryover": [
+    {{
+      "slug": "stale-known-issue",
+      "scope": {{"repo": "bastion"}},
+      "kind": "known_issue",
+      "text": "some known issue that has gone stale",
+      "created": "{created}"
+    }}
+  ]
+}}"#,
+                created = days_ago(15),
+            ),
+        );
+
+        tmp
+    }
+
+    /// A brain with a registered repo but zero `carryover[]`/`backlog[]`
+    /// entries anywhere — every Attention lane comes back empty.
+    fn fixture_empty() -> TempDir {
+        let tmp = TempDir::new("attention-empty");
+        let root = tmp.path();
+
+        write(
+            &root.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "Bastion"
+"#,
+        );
+
+        write(
+            &root.join("planning").join("state.json"),
+            r#"{
+  "repo": "hq",
+  "kind": "brain",
+  "updated": "2026-07-28"
+}"#,
+        );
+
+        tmp
+    }
+
+    fn registry(tmp: &TempDir) -> FileConfig {
+        FileConfig {
+            workspaces: Some(HashMap::from([("hq".to_owned(), tmp.path().to_path_buf())])),
+            default_workspace: Some("hq".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    macro_rules! attention_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(web::resource("/api/attention").route(web::get().to(get_attention))),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn attention_corpus_populated() {
+        let tmp = fixture_populated();
+        let app = attention_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/attention?scope=hq");
+        dump("attention", "populated", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn attention_corpus_empty() {
+        let tmp = fixture_empty();
+        let app = attention_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/attention?scope=hq");
+        dump("attention", "empty", req, &app).await;
+    }
+}
+
+/// Task 4: `GET /api/pipeline` corpus scenarios — populated (a real
+/// `business/docs/pipeline.md` + opportunities/leads) and the keyless-`{}`
+/// case (no `business/` tree at all, so both `stages`/`opportunities`
+/// degrade to their `#[serde(default)]` empty values).
+///
+/// See `board_scenarios`' doc comment for the shared fixture-app approach —
+/// identical here, against `handlers::pipeline::get_pipeline`. Every
+/// frontmatter field here is authored, static test data (never derived from
+/// a live clock), so — unlike `attention_scenarios` — no
+/// [`super::fixtures::days_ago`] trick is needed; any literal dates in the
+/// fixture content are incidentally redacted by
+/// [`super::redact_value`]'s bare-calendar-date rule, which is harmless here
+/// (the corpus exists to freeze *shape*, not these fixture literals).
+#[cfg(test)]
+mod pipeline_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::pipeline::get_pipeline;
+
+    const STAGES_MD: &str = "# Pipeline\n\n## Stages\n\n`identified` → `researching` → `contacted` → `conversation` → `proposal-sent` → `closed-won` → `closed-lost`\n\n---\n\n## Active Leads\n";
+
+    const OPPORTUNITY_FIXTURE: &str = "---\ntype: Opportunity\ntitle: Anthropic\nkind: company\nstage: identified\nsource: RESEARCH_AGENT test run\nurl: https://www.anthropic.com\ncontacts: []\nactions:\n  - { at: 2026-07-25, kind: research, note: \"Generated CompanyBrief\" }\n---\n\n# Anthropic\n\n## Research Brief\n```json\n{ \"company_name\": \"Anthropic\", \"summary\": \"An AI lab.\" }\n```\n";
+
+    /// A brain root with `brain.toml` (so `find_brain_root` resolves) plus a
+    /// real `business/docs/pipeline.md` and one opportunity file.
+    fn fixture_populated() -> TempDir {
+        let tmp = TempDir::new("pipeline-populated");
+        let root = tmp.path();
+
+        write(&root.join("brain.toml"), "");
+
+        write(
+            &root.join("business").join("docs").join("pipeline.md"),
+            STAGES_MD,
+        );
+        write(
+            &root
+                .join("business")
+                .join("docs")
+                .join("opportunities")
+                .join("anthropic.md"),
+            OPPORTUNITY_FIXTURE,
+        );
+
+        tmp
+    }
+
+    /// A brain root with `brain.toml` present but NO `business/` tree at
+    /// all — the keyless-`{}` case: `stages`/`opportunities` both degrade to
+    /// their `#[serde(default)]` empty values rather than erroring (D25:
+    /// this route never treats a missing business tree as a failure).
+    fn fixture_keyless() -> TempDir {
+        let tmp = TempDir::new("pipeline-keyless");
+        write(&tmp.path().join("brain.toml"), "");
+        tmp
+    }
+
+    fn registry(tmp: &TempDir) -> FileConfig {
+        FileConfig {
+            workspaces: Some(HashMap::from([("hq".to_owned(), tmp.path().to_path_buf())])),
+            default_workspace: Some("hq".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    macro_rules! pipeline_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(web::resource("/api/pipeline").route(web::get().to(get_pipeline))),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn pipeline_corpus_populated() {
+        let tmp = fixture_populated();
+        let app = pipeline_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/pipeline");
+        dump("pipeline", "populated", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn pipeline_corpus_keyless() {
+        let tmp = fixture_keyless();
+        let app = pipeline_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/pipeline");
+        dump("pipeline", "keyless", req, &app).await;
+    }
+}
+
+/// Task 4: `GET /api/docs/{repo}/tree` corpus scenarios — a directory path,
+/// a **file** path (the exact shape of shipped bug 1: `resolve_allowlisted_path`
+/// never calls `is_dir()`, so a file resolves successfully through the
+/// allowlist and `crawl_brain` walks it as a root, producing `200` +
+/// `entries: []` rather than the `404` the old bastion-web stub assumed —
+/// this is the single most valuable golden in the whole corpus, per the
+/// task spec), and an unknown/nonexistent path (`404`).
+///
+/// See `board_scenarios`' doc comment for the shared fixture-app approach —
+/// identical here, against `handlers::docs::get_docs_tree`. No live-clock
+/// concern: `DocTreeDto` carries no `modified`/timestamp field (unlike
+/// `DocFileDto`, out of this task's scenario list).
+#[cfg(test)]
+mod docs_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::docs::get_docs_tree;
+
+    /// A repo root with one allowlisted `docs/` directory containing one
+    /// markdown file — enough to exercise both the directory-listing and
+    /// (via `?path=docs/guide.md`) the file-path-as-tree-root scenarios.
+    fn fixture_repo() -> TempDir {
+        let tmp = TempDir::new("docs-tree");
+        write(
+            &tmp.path().join("docs").join("guide.md"),
+            "# Guide\n\nSome content.\n",
+        );
+        tmp
+    }
+
+    fn registry(tmp: &TempDir) -> FileConfig {
+        FileConfig {
+            workspaces: Some(HashMap::from([(
+                "myrepo".to_owned(),
+                tmp.path().to_path_buf(),
+            )])),
+            ..Default::default()
+        }
+    }
+
+    macro_rules! docs_tree_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(
+                        web::resource("/api/docs/{repo}/tree").route(web::get().to(get_docs_tree)),
+                    ),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn docs_tree_corpus_dir() {
+        let tmp = fixture_repo();
+        let app = docs_tree_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/docs/myrepo/tree?path=docs");
+        dump("docs-tree", "dir", req, &app).await;
+    }
+
+    /// Bug 1's exact shape: a **file** path through the tree endpoint must
+    /// come back `200` with `entries: []`, never `404` — the old
+    /// bastion-web stub 404'd here because it (incorrectly) assumed a tree
+    /// request always targets a directory. See `docs::resolve_allowlisted_path`
+    /// and `handlers/docs.rs`'s own `assemble_md_paths`: the file resolves
+    /// through the allowlist fine, then `crawl_brain`'s `WalkDir` walks the
+    /// single-file root, and `build_doc_tree` drops the resulting entry
+    /// (its relative path equals the tree `root` itself, so `strip_root`
+    /// yields no child) — leaving `entries: []`.
+    #[actix_web::test]
+    async fn docs_tree_corpus_file() {
+        let tmp = fixture_repo();
+        let app = docs_tree_service!(registry(&tmp));
+        let req =
+            actix_web::test::TestRequest::get().uri("/api/docs/myrepo/tree?path=docs/guide.md");
+        dump("docs-tree", "file", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn docs_tree_corpus_unknown() {
+        let tmp = fixture_repo();
+        let app = docs_tree_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/docs/myrepo/tree?path=docs/does-not-exist.md");
+        dump("docs-tree", "unknown", req, &app).await;
     }
 }
