@@ -1045,6 +1045,45 @@ export interface RepoSummaryDto {
 }
 
 /**
+ * JSON response element for `GET /api/workflows` — one [`WorkflowStateDto`]
+ * tagged with the repo it belongs to.
+ * 
+ * `WorkflowStateDto` carries `spec_slug` but no repo dimension: in the
+ * per-repo route (`GET /repos/{name}/workflows`) the repo is implied by the
+ * path, but flattened across every registered repo it is not — two repos can
+ * legitimately hold the same `spec_slug`, so a bare list of `WorkflowStateDto`
+ * would be ambiguous. This wrapper makes the repo dimension explicit.
+ * 
+ * **Shape note:** the natural encoding here would be
+ * `{ repo: String, #[serde(flatten)] state: WorkflowStateDto }`, but
+ * `typeshare` 1.13 does not support `#[serde(flatten)]` — it is a hard parse
+ * error ("The serde flatten attribute is not currently supported"), verified
+ * empirically against this exact shape before choosing the fallback below.
+ * So this struct mirrors `WorkflowStateDto`'s fields directly rather than
+ * composing it; the duplication is forced by the typeshare toolchain, not a
+ * design choice. If `WorkflowStateDto` gains or changes a field, mirror the
+ * change here too — the `From<(String, WorkflowStateDto)>` impl below will
+ * fail to compile if the two drift, since it destructures `WorkflowStateDto`
+ * by name.
+ */
+export interface RepoWorkflowStateDto {
+	/** The registered workspace name this flow state belongs to. */
+	repo: string;
+	spec_slug: string;
+	branch: string;
+	/** Raw status string, e.g. `"running"`, `"done"`, `"blocked"`. */
+	status: string;
+	current_task: number;
+	started_at: string;
+	updated_at: string;
+	/**
+	 * See [`WorkflowStateDto::run_id`] — same semantics, same
+	 * absent-key-when-`None` serialization.
+	 */
+	run_id?: string;
+}
+
+/**
  * JSON response for `GET /api/runs/{id}` — the projected `LiveStateStore` snapshot
  * for one run (BA.11.M).
  * 

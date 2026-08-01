@@ -1,18 +1,18 @@
 ---
 type: Guideline
-title: "serve-api contract v0.19"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane."
+title: "serve-api contract v0.20"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff, dependent_count, ready, unmet_count, block-graph-enrichment, corpus-wide, one-derivation, a5]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff, dependent_count, ready, unmet_count, block-graph-enrichment, corpus-wide, one-derivation, a5, workflows-aggregate, RepoWorkflowStateDto, cross-repo, n-plus-one, a2]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.19 Contract
+# serve-api — v0.20 Contract
 
-**Version:** v0.19  
+**Version:** v0.20  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–24 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -737,7 +737,7 @@ Error codes are from the C0xx taxonomy defined in `src/observ/errors.rs`.
 
 ---
 
-## 11. Repo / workflow status REST API (v0.3)
+## 11. Repo / workflow status REST API (v0.3; cross-repo aggregate v0.20, A2)
 
 Four read-only routes projecting per-workspace `planning/status.md`,
 `planning/handoff.md`, and `sdlc-flow-state.json` files onto HTTP.  All routes
@@ -935,6 +935,67 @@ the full transition semantics.
 | `repo` | string | Workspace registry name the workflow belongs to |
 | `spec_slug` | string | `sdlc-flow-state.json` spec slug |
 | `status` | string | The terminal status that triggered the event (`"done"` or `"blocked"`) |
+
+---
+
+### 11.6 `GET /api/workflows` — cross-repo flow-state aggregate (v0.20, A2)
+
+Every registered workspace's Section 11.4 flow states in one response, so consumers stop issuing
+`GET /api/repos` followed by one `GET /api/repos/{name}/workflows` per repo — retiring the residual
+N+1 on bastion-web's `/engine` on-disk band and briefing diff
+(`planning/arch-review-asks-bastion-web/notes.md`, ask A2). Reuses `collect_flow_states` (Section
+11.4's route) verbatim, once per registered workspace — no second flow-state walk exists.
+
+**Request:**
+
+```
+GET /api/workflows HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):** array of `RepoWorkflowStateDto`
+
+```json
+[
+  {
+    "repo": "bastion",
+    "spec_slug": "phase6-blockA",
+    "branch": "phase6-blockA-flow",
+    "status": "done",
+    "current_task": 5,
+    "started_at": "2026-06-25T18:30:59Z",
+    "updated_at": "2026-06-25T19:02:33Z",
+    "run_id": "9c6c6f1e-6d1a-4b3a-9b1a-1e2f3a4b5c6d"
+  },
+  {
+    "repo": "bella",
+    "spec_slug": "phase2-blockB",
+    "branch": "phase2-blockB-flow",
+    "status": "running",
+    "current_task": 2,
+    "started_at": "2026-07-20T14:02:11Z",
+    "updated_at": "2026-07-20T14:10:45Z"
+  }
+]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | Workspace registry name this flow state belongs to — the field `WorkflowStateDto` lacks, added because two repos can hold the same `spec_slug` and a flattened cross-repo list would otherwise be ambiguous |
+| `spec_slug` / `branch` / `status` / `current_task` / `started_at` / `updated_at` / `run_id` | — | Same fields, same semantics, as Section 11.4's `WorkflowStateDto` |
+
+Entries are ordered deterministically by `(repo, spec_slug)` — workspace names are sorted (the
+`build_repo_summaries` precedent), and `collect_flow_states` already sorts each repo's entries by
+`spec_slug`, so the composed ordering is diffable between polls with no extra sort step. A repo
+with no `planning/` directory, an unresolvable root, or only malformed
+`sdlc-flow-state.json` files contributes zero entries and does not fail the request — the same
+degrade-gracefully behaviour Section 11.1's `GET /api/repos` and Section 11.4's per-repo route
+already have. An empty/absent `[workspaces]` registry returns `200 []`.
+
+The route sits under the same bearer-auth `/api` scope as the rest of this section; a request
+without a valid token gets `401` before reaching the handler. Section 11.4's per-repo
+`GET /api/repos/{name}/workflows` route is unchanged by this addition — it remains the endpoint to
+use when only one repo's flow states are needed.
 
 ---
 
@@ -2398,6 +2459,25 @@ window (recorded in `planning/11.J-cost-read-endpoint/tasks.md`'s `## Notes`).
 ---
 
 ## Amendment Log
+
+- **2026-08-01 — v0.19 → v0.20 (ask A2, `planning/arch-review-asks-bastion-web/notes.md`):**
+  New Section 11.6 route, `GET /api/workflows` — a cross-repo flow-state aggregate so consumers stop
+  issuing `GET /api/repos` followed by one `GET /api/repos/{name}/workflows` per repo, retiring the
+  residual N+1 on bastion-web's `/engine` on-disk band and briefing diff left after A1/A5 already
+  removed the hot-path 2s re-fire (`GET /api/runs`). Adds a typeshared `RepoWorkflowStateDto` in
+  `src/serve/dto.rs` — a flat struct mirroring `WorkflowStateDto`'s fields plus a `repo: String`
+  (via `From<(String, WorkflowStateDto)>`), chosen over `#[serde(flatten)]` composition after
+  regenerating and inspecting typeshare's output for both shapes; the flat mirror is what ships.
+  `collect_all_workflows` (`src/serve/handlers/status.rs`) follows the `build_repo_summaries`
+  precedent — sorts registered workspace names, resolves each root, and calls the existing
+  `collect_flow_states` verbatim per workspace (no second flow-state walk); a repo with no
+  `planning/` dir, an unresolvable root, or only malformed `sdlc-flow-state.json` files contributes
+  zero entries without failing the request. Output is ordered by `(repo, spec_slug)` — sorting repo
+  names is sufficient since `collect_flow_states` already sorts by `spec_slug`. The route is
+  registered in both `src/serve/mod.rs` app factories (production and the test `build_app` mirror)
+  under the existing bearer-auth `/api` scope; Section 11.4's per-repo
+  `GET /api/repos/{name}/workflows` is unchanged. `types/serve.ts` regenerated
+  (`scripts/gen-types.sh`); `scripts/check-typeshare-drift.sh` passes clean.
 
 - **2026-08-01 — v0.17 → v0.18 (asks A1 + A3, `planning/arch-review-asks-bastion-web/notes.md`):**
   Two smallest asks from the bastion-web architecture review, shipped together. **A1:** Section
