@@ -32,6 +32,8 @@
 //!   [`auth::BearerAuthMiddleware`], requiring `Authorization: Bearer <token>`.
 
 pub mod auth;
+#[cfg(test)]
+pub mod contract_corpus;
 pub mod docs;
 pub mod dto;
 pub mod handlers;
