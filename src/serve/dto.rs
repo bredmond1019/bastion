@@ -630,6 +630,61 @@ mod workflow_state_dto_tests {
     }
 }
 
+/// JSON response for `GET /repos/{name}/handoff`.
+///
+/// Mirrors [`crate::serve::status::handoff::HandoffInfo`] field-for-field — kept
+/// as an independent DTO (per this module's doc comment) rather than reusing
+/// the domain type directly.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HandoffInfoDto {
+    /// Title — frontmatter `title:` scalar if present, else the text after
+    /// the first `# Handoff —`/`# Handoff -` heading, else an empty string.
+    pub title: String,
+    /// The full raw markdown content (including frontmatter, if any).
+    pub body: String,
+}
+
+impl From<crate::serve::status::handoff::HandoffInfo> for HandoffInfoDto {
+    fn from(h: crate::serve::status::handoff::HandoffInfo) -> Self {
+        Self {
+            title: h.title,
+            body: h.body,
+        }
+    }
+}
+
+#[cfg(test)]
+mod handoff_info_dto_tests {
+    use super::*;
+    use crate::serve::status::handoff::HandoffInfo;
+
+    fn sample_handoff_info() -> HandoffInfo {
+        HandoffInfo {
+            title: "Handoff — sample".to_string(),
+            body: "# Handoff — sample\n\nbody text".to_string(),
+        }
+    }
+
+    #[test]
+    fn handoff_info_dto_round_trip() {
+        let dto = HandoffInfoDto::from(sample_handoff_info());
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let round_tripped: HandoffInfoDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, dto);
+        assert_eq!(round_tripped.title, "Handoff — sample");
+        assert_eq!(round_tripped.body, "# Handoff — sample\n\nbody text");
+    }
+
+    #[test]
+    fn from_handoff_info_carries_fields_verbatim() {
+        let info = sample_handoff_info();
+        let dto = HandoffInfoDto::from(info.clone());
+        assert_eq!(dto.title, info.title);
+        assert_eq!(dto.body, info.body);
+    }
+}
+
 /// Payload for the server→client `event{workflow_done}` WS push.
 ///
 /// Sent inside an [`EventPayload`]-shaped frame: the `event` field is fixed
