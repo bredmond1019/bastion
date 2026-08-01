@@ -2461,6 +2461,172 @@ heading = "Bastion"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ── task 5: corpus-invariance headline test ─────────────────────────────
+    //
+    // This block's headline acceptance test: `dependent_count` must be
+    // IDENTICAL for a given block whether the board is fetched at `scope=hq`
+    // (`TierScope::All`) or at a narrower tier scope — the property
+    // bastion-web's in-scope reverse-dep count (`lib/board-view.ts:669-676`)
+    // structurally cannot have, because it counts fan-in only from whatever
+    // subset of the corpus that request happened to load.
+
+    /// Two repos in *different* tiers — `alpha` (`core`) and `beta` (`other`)
+    /// — where `beta:B1` depends on `alpha:A1`. A narrower `TierScope::Tier
+    /// ("core")` rollup excludes `beta` entirely, so if `alpha:A1`'s
+    /// `dependent_count` were derived from the *in-scope* rollup rather than
+    /// mev's corpus-wide, unscoped export, the narrower board would report `0`
+    /// dependents instead of `1`. `alpha` stays in scope at both tiers so the
+    /// same block can be compared across both boards.
+    fn make_corpus_invariance_fixture_brain_root() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-board-corpus-invariance-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let alpha_planning = dir.join("alpha").join("planning");
+        let beta_planning = dir.join("beta").join("planning");
+        std::fs::create_dir_all(&alpha_planning).unwrap();
+        std::fs::create_dir_all(&beta_planning).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "alpha"
+tier = "core"
+repo_path = "alpha"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/alpha.md"
+heading = "Alpha"
+
+[[repos]]
+slug = "beta"
+tier = "other"
+repo_path = "beta"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/beta.md"
+heading = "Beta"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            alpha_planning.join("state.json"),
+            r#"{
+  "repo": "alpha",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "A1", "title": "A1 title", "status": "open"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            beta_planning.join("state.json"),
+            r#"{
+  "repo": "beta",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "B1", "title": "B1 title", "status": "open", "depends_on": [{"type": "block", "repo": "alpha", "id": "A1"}]}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    /// Look up a `(repo, id)` block's `dependent_count` in a built [`BoardDto`]
+    /// by scanning every lane — the block may land in any of the five
+    /// depending on its authored status, and this helper doesn't care which.
+    fn dependent_count_in_board(dto: &BoardDto, repo: &str, id: &str) -> Option<u32> {
+        dto.lanes
+            .now
+            .iter()
+            .chain(dto.lanes.next.iter())
+            .chain(dto.lanes.blocked.iter())
+            .chain(dto.lanes.deferred.iter())
+            .chain(dto.lanes.finished.iter())
+            .find(|b| b.repo == repo && b.id == id)
+            .unwrap_or_else(|| panic!("{repo}:{id} missing from every board lane"))
+            .dependent_count
+    }
+
+    #[test]
+    fn dependent_count_is_identical_at_hq_scope_and_at_a_narrower_tier_scope() {
+        let dir = make_corpus_invariance_fixture_brain_root();
+
+        // `scope=hq` — `TierScope::All` — includes both `alpha` and `beta`.
+        let hq_assembly = assemble_board(&dir, &TierScope::All, true)
+            .expect("fixture corpus should assemble cleanly at hq scope");
+        let hq_dto = build_board(
+            BoardScope::Hq,
+            None,
+            &hq_assembly.rollups,
+            &hq_assembly.files,
+            hq_assembly.stale,
+            &hq_assembly.last_touched,
+            &hq_assembly.block_graph,
+        );
+
+        // `scope=tier&tier=core` — `TierScope::Tier("core")` — excludes `beta`
+        // (tier `"other"`) from the rollup entirely; `alpha` stays in scope.
+        let narrow_scope = TierScope::Tier("core".to_owned());
+        let narrow_assembly = assemble_board(&dir, &narrow_scope, true)
+            .expect("fixture corpus should assemble cleanly at the narrower tier scope");
+        let narrow_dto = build_board(
+            BoardScope::Tier,
+            Some("core".to_owned()),
+            &narrow_assembly.rollups,
+            &narrow_assembly.files,
+            narrow_assembly.stale,
+            &narrow_assembly.last_touched,
+            &narrow_assembly.block_graph,
+        );
+
+        // The narrower board's rollup must actually have excluded `beta` —
+        // otherwise this test wouldn't be exercising the property it claims to.
+        assert!(
+            !narrow_assembly.rollups.iter().any(|r| r.repo == "beta"),
+            "the narrower tier scope must exclude beta from its rollup"
+        );
+
+        let hq_count = dependent_count_in_board(&hq_dto, "alpha", "A1");
+        let narrow_count = dependent_count_in_board(&narrow_dto, "alpha", "A1");
+
+        assert_eq!(
+            hq_count,
+            Some(1),
+            "alpha:A1 has one corpus-wide dependent (beta:B1) at hq scope"
+        );
+        assert_eq!(
+            hq_count, narrow_count,
+            "dependent_count for alpha:A1 must be IDENTICAL at hq scope and at the narrower \
+             tier scope that excludes beta — this is the property bastion-web's in-scope \
+             reverse-dep count (lib/board-view.ts:669-676) structurally cannot have, because \
+             beta:B1 (the block that makes alpha:A1's count 1, not 0) is out of scope at the \
+             narrower tier and would be invisible to any in-scope-only derivation"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ── task 1 measurement: cost of adding `build_block_graph_export` to the
     // board path (`plan-board-graph-enrichment`, task 1) ─────────────────────
     //
