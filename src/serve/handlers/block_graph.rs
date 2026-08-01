@@ -702,6 +702,7 @@ heading = "Bastion"
             &assembly.files,
             assembly.stale,
             &assembly.last_touched,
+            &assembly.block_graph,
         );
 
         // ── node count ───────────────────────────────────────────────────

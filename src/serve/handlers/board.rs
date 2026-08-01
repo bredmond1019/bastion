@@ -134,12 +134,22 @@ pub fn resolve_scope(scope: BoardScope, tier_param: Option<&str>) -> (TierScope,
 /// missing key yields `None` ("never worked", never a sentinel). This is the
 /// *only* place `board_block_from`'s callers populate the field; `serve`
 /// derives nothing itself.
+///
+/// `dependent_count`/`ready` are looked up the same way in `block_graph`
+/// (mev's corpus-wide `BlockEnrichment` map, threaded through from
+/// [`BoardAssembly::block_graph`]) — a missing key yields `None` for both,
+/// never a fabricated `0`/`false`. `unmet_count` is **never** populated here:
+/// mev defines it as `0` for every non-`Blocked` lane, so surfacing it
+/// unqualified on every lane would read as falsely-ready; only the `blocked`
+/// lane branch in [`build_board`] sets it, from the same `block_graph` entry.
 fn board_block_from(
     block: &okf_core::Block,
     repo: &str,
     last_touched: &HashMap<String, String>,
+    block_graph: &HashMap<String, BlockEnrichment>,
 ) -> BoardBlockDto {
     let key = format!("{repo}:{}", block.id);
+    let enrichment = block_graph.get(&key);
     BoardBlockDto {
         id: block.id.clone(),
         title: block.title.clone(),
@@ -152,8 +162,8 @@ fn board_block_from(
         due: None,
         track: None,
         last_touched: last_touched.get(&key).cloned(),
-        dependent_count: None,
-        ready: None,
+        dependent_count: enrichment.map(|e| e.dependent_count),
+        ready: enrichment.map(|e| e.ready),
         unmet_count: None,
     }
 }
@@ -252,6 +262,7 @@ fn finished_blocks_for_repo(
     index: &HashMap<&str, (&TrackBlock, &str)>,
     status_map: &HashMap<String, Option<String>>,
     last_touched: &HashMap<String, String>,
+    block_graph: &HashMap<String, BlockEnrichment>,
 ) -> Vec<BoardBlockDto> {
     let mut entries: Vec<&(&TrackBlock, &str)> = index.values().collect();
     entries.sort_by_key(|(block, _)| block.id.as_str());
@@ -261,6 +272,7 @@ fn finished_blocks_for_repo(
         .filter(|(block, _)| block.status.as_deref() == Some(CLOSED_STATUS))
         .map(|&(block, track_title)| {
             let key = format!("{repo}:{}", block.id);
+            let enrichment = block_graph.get(&key);
             let mut dto = BoardBlockDto {
                 id: block.id.clone(),
                 title: block.title.clone(),
@@ -273,8 +285,11 @@ fn finished_blocks_for_repo(
                 due: None,
                 track: None,
                 last_touched: last_touched.get(&key).cloned(),
-                dependent_count: None,
-                ready: None,
+                dependent_count: enrichment.map(|e| e.dependent_count),
+                ready: enrichment.map(|e| e.ready),
+                // `finished` is never the blocked lane — `unmet_count` stays
+                // `None` here (mev defines it as `0` for this lane, which
+                // would read as falsely-ready if surfaced unqualified).
                 unmet_count: None,
             };
             enrich_block(&mut dto, Some((block, track_title)));
@@ -289,6 +304,17 @@ fn finished_blocks_for_repo(
 /// derived from `files`' `tracks[].blocks[]`, an aggregate `lanes` across every
 /// in-scope repo, and the caller-computed `stale` freshness flag threaded through
 /// unchanged.
+///
+/// `block_graph` (mev's corpus-wide `"{repo}:{id}" -> BlockEnrichment` map,
+/// threaded through from [`BoardAssembly::block_graph`]) populates
+/// `dependent_count`/`ready` on **every** lane — `now`, `next`, `blocked`,
+/// `deferred`, and `finished` — for every mapped block; a block absent from
+/// the map (e.g. `?graph=1` not requested, or `max_nodes`-truncated) gets
+/// `None` for both, never a fabricated `0`/`false`. `unmet_count` is the one
+/// exception: it is populated (`Some`) **only** on the `blocked` lane, and
+/// left `None` on the other four — mev defines `unmet_count` as `0` for every
+/// non-`Blocked` lane, so surfacing it unqualified there would read as
+/// falsely-ready (see `BoardBlockDto::unmet_count`'s doc comment).
 pub fn build_board(
     scope: BoardScope,
     resolved_tier: Option<String>,
@@ -296,6 +322,7 @@ pub fn build_board(
     files: &[(StateSource, StateFile)],
     stale: bool,
     last_touched: &HashMap<String, String>,
+    block_graph: &HashMap<String, BlockEnrichment>,
 ) -> BoardDto {
     let mut repos: Vec<RepoBoardDto> = Vec::new();
     let mut agg_now = Vec::new();
@@ -316,7 +343,7 @@ pub fn build_board(
             .now
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo, last_touched);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched, block_graph);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -329,7 +356,7 @@ pub fn build_board(
             .next
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo, last_touched);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched, block_graph);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -341,13 +368,19 @@ pub fn build_board(
         // `blocked` lane: enrich the other five fields only — `blocked_by`
         // stays the rollup's already-computed `unmet` list so the two
         // derivations (rollup's and this handler's) cannot drift apart.
+        // This is the ONLY lane where `unmet_count` is surfaced (`Some`) —
+        // mev defines `unmet_count` as `0` for every other lane, which would
+        // read as falsely-ready if projected unqualified (see task 2's doc
+        // comment on `BoardBlockDto::unmet_count`).
         let blocked: Vec<BoardBlockDto> = rollup
             .blocked
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo, last_touched);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched, block_graph);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
+                let key = format!("{}:{}", rollup.repo, b.id);
+                dto.unmet_count = block_graph.get(&key).map(|e| e.unmet_count);
                 dto
             })
             .collect();
@@ -358,7 +391,7 @@ pub fn build_board(
             .deferred
             .iter()
             .map(|b| {
-                let mut dto = board_block_from(b, &rollup.repo, last_touched);
+                let mut dto = board_block_from(b, &rollup.repo, last_touched, block_graph);
                 let entry = index.get(b.id.as_str()).copied();
                 enrich_block(&mut dto, entry);
                 if let Some((track_block, _)) = entry {
@@ -367,7 +400,8 @@ pub fn build_board(
                 dto
             })
             .collect();
-        let finished = finished_blocks_for_repo(&rollup.repo, &index, &status_map, last_touched);
+        let finished =
+            finished_blocks_for_repo(&rollup.repo, &index, &status_map, last_touched, block_graph);
 
         agg_now.extend(now.iter().cloned());
         agg_next.extend(next.iter().cloned());
@@ -716,11 +750,17 @@ pub async fn get_board(
             graph: _graph,
             stale,
             last_touched,
-            // Threading this into `build_board`'s five lanes is task 4
-            // (`plan-board-graph-enrichment`) — not yet wired here.
-            block_graph: _block_graph,
+            block_graph,
         } = assemble_board(&root, &tier_scope, include_graph).map_err(BoardError::BrainRoot)?;
-        let board = build_board(scope, resolved_tier, &rollups, &files, stale, &last_touched);
+        let board = build_board(
+            scope,
+            resolved_tier,
+            &rollups,
+            &files,
+            stale,
+            &last_touched,
+            &block_graph,
+        );
 
         if scope != BoardScope::Epic {
             return Ok(board);
@@ -909,7 +949,13 @@ mod tests {
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
 
-        let finished = finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new());
+        let finished = finished_blocks_for_repo(
+            "bastion",
+            &index,
+            &status_map,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].id, "BA.1.A");
         assert_eq!(finished[0].repo, "bastion");
@@ -922,7 +968,14 @@ mod tests {
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
         assert!(
-            finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new()).is_empty()
+            finished_blocks_for_repo(
+                "bastion",
+                &index,
+                &status_map,
+                &HashMap::new(),
+                &HashMap::new()
+            )
+            .is_empty()
         );
     }
 
@@ -933,7 +986,14 @@ mod tests {
         let index = track_block_index("bastion", &files);
         let status_map = block_status_map(&files);
         assert!(
-            finished_blocks_for_repo("bastion", &index, &status_map, &HashMap::new()).is_empty()
+            finished_blocks_for_repo(
+                "bastion",
+                &index,
+                &status_map,
+                &HashMap::new(),
+                &HashMap::new()
+            )
+            .is_empty()
         );
     }
 
@@ -1011,6 +1071,7 @@ mod tests {
             &sample_block("BA.1.A", Some("open"), Vec::new()),
             "bastion",
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         enrich_block(&mut dto, Some((&track_block, "Phase 11")));
@@ -1030,6 +1091,7 @@ mod tests {
             &sample_block("BA.1.A", Some("open"), Vec::new()),
             "bastion",
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         enrich_block(&mut dto, Some((&track_block, "Phase 11")));
@@ -1047,6 +1109,7 @@ mod tests {
         let mut dto = board_block_from(
             &sample_block("BA.1.A", Some("open"), Vec::new()),
             "bastion",
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -1189,6 +1252,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.scope, BoardScope::Tier);
@@ -1221,6 +1285,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.deferred.len(), 1);
@@ -1246,6 +1311,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.blocked[0].blocked_by.len(), 1);
@@ -1269,6 +1335,7 @@ mod tests {
             &rollups,
             &files,
             false,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -1315,6 +1382,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         let now = &dto.lanes.now[0];
@@ -1346,6 +1414,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.next[0].status, Some("open".to_owned()));
@@ -1368,6 +1437,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.now[0].status, Some("open".to_owned()));
@@ -1384,6 +1454,7 @@ mod tests {
             &rollups,
             &files,
             false,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -1452,6 +1523,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         let blocked_entry = dto.lanes.next.iter().find(|b| b.id == "BA.1.B").unwrap();
@@ -1488,6 +1560,7 @@ mod tests {
             &rollups,
             &files,
             false,
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -1538,7 +1611,15 @@ mod tests {
             "2026-07-28T12:00:00Z".to_owned(),
         );
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &last_touched,
+            &HashMap::new(),
+        );
 
         assert_eq!(
             dto.lanes.now[0].last_touched.as_deref(),
@@ -1578,7 +1659,15 @@ mod tests {
             "2026-07-28T12:00:00Z".to_owned(),
         );
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &last_touched,
+            &HashMap::new(),
+        );
 
         assert_eq!(dto.lanes.now[0].last_touched, None);
         assert_eq!(dto.lanes.next[0].last_touched, None);
@@ -1597,7 +1686,15 @@ mod tests {
         let mut last_touched = HashMap::new();
         last_touched.insert("bella:BA.1.A".to_owned(), "2026-07-28T12:00:00Z".to_owned());
 
-        let dto = build_board(BoardScope::Hq, None, &rollups, &files, false, &last_touched);
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &last_touched,
+            &HashMap::new(),
+        );
 
         let bastion_now = dto.lanes.now.iter().find(|b| b.repo == "bastion").unwrap();
         assert_eq!(
@@ -1624,6 +1721,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(dto.lanes.now[0].last_touched, None);
@@ -1633,9 +1731,165 @@ mod tests {
         assert_eq!(dto.lanes.finished[0].last_touched, None);
     }
 
+    // ── block_graph enrichment (dependent_count/ready/unmet_count) ──────────
+
+    /// A populated `block_graph` map with one entry for `bastion:BA.1.A` —
+    /// the id every `all_lanes_rollup`/`all_lanes_files` block shares — with
+    /// a distinguishable `dependent_count`/`ready`/`unmet_count` so lane
+    /// assertions can't pass by accident on a default value.
+    fn sample_block_graph_map() -> HashMap<String, BlockEnrichment> {
+        let mut map = HashMap::new();
+        map.insert(
+            "bastion:BA.1.A".to_owned(),
+            BlockEnrichment {
+                dependent_count: 7,
+                ready: true,
+                unmet_count: 2,
+            },
+        );
+        map
+    }
+
+    #[test]
+    fn build_board_populates_dependent_count_and_ready_on_every_lane_when_key_matches() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+        let block_graph = sample_block_graph_map();
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+            &block_graph,
+        );
+
+        for (lane_name, entry) in [
+            ("now", &dto.lanes.now[0]),
+            ("next", &dto.lanes.next[0]),
+            ("blocked", &dto.lanes.blocked[0]),
+            ("deferred", &dto.lanes.deferred[0]),
+            ("finished", &dto.lanes.finished[0]),
+        ] {
+            assert_eq!(
+                entry.dependent_count,
+                Some(7),
+                "{lane_name} lane dependent_count"
+            );
+            assert_eq!(entry.ready, Some(true), "{lane_name} lane ready");
+        }
+    }
+
+    #[test]
+    fn build_board_populates_unmet_count_only_on_blocked_lane() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+        let block_graph = sample_block_graph_map();
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+            &block_graph,
+        );
+
+        assert_eq!(
+            dto.lanes.blocked[0].unmet_count,
+            Some(2),
+            "blocked lane surfaces mev's raw unmet_count"
+        );
+        assert_eq!(dto.lanes.now[0].unmet_count, None, "now lane");
+        assert_eq!(dto.lanes.next[0].unmet_count, None, "next lane");
+        assert_eq!(dto.lanes.deferred[0].unmet_count, None, "deferred lane");
+        assert_eq!(dto.lanes.finished[0].unmet_count, None, "finished lane");
+    }
+
+    #[test]
+    fn build_board_block_absent_from_graph_map_yields_none_for_all_three_fields() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+        // Populated map, but with no entry for this fixture's block id —
+        // must yield `None`, never a fabricated `0`/`false`.
+        let mut block_graph = HashMap::new();
+        block_graph.insert(
+            "bastion:BA.9.Z".to_owned(),
+            BlockEnrichment {
+                dependent_count: 9,
+                ready: true,
+                unmet_count: 1,
+            },
+        );
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+            &block_graph,
+        );
+
+        for (lane_name, entry) in [
+            ("now", &dto.lanes.now[0]),
+            ("next", &dto.lanes.next[0]),
+            ("blocked", &dto.lanes.blocked[0]),
+            ("deferred", &dto.lanes.deferred[0]),
+            ("finished", &dto.lanes.finished[0]),
+        ] {
+            assert_eq!(
+                entry.dependent_count, None,
+                "{lane_name} lane dependent_count"
+            );
+            assert_eq!(entry.ready, None, "{lane_name} lane ready");
+            assert_eq!(entry.unmet_count, None, "{lane_name} lane unmet_count");
+        }
+    }
+
+    #[test]
+    fn build_board_empty_block_graph_map_leaves_every_lane_none() {
+        let rollups = vec![all_lanes_rollup("bastion")];
+        let files = all_lanes_files("bastion");
+
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &rollups,
+            &files,
+            false,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        for entry in [
+            &dto.lanes.now[0],
+            &dto.lanes.next[0],
+            &dto.lanes.blocked[0],
+            &dto.lanes.deferred[0],
+            &dto.lanes.finished[0],
+        ] {
+            assert_eq!(entry.dependent_count, None);
+            assert_eq!(entry.ready, None);
+            assert_eq!(entry.unmet_count, None);
+        }
+    }
+
     #[test]
     fn build_board_empty_rollups_yields_empty_board() {
-        let dto = build_board(BoardScope::Hq, None, &[], &[], false, &HashMap::new());
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &[],
+            &[],
+            false,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert!(dto.lanes.now.is_empty());
         assert!(dto.lanes.next.is_empty());
         assert!(dto.lanes.blocked.is_empty());
@@ -1645,7 +1899,15 @@ mod tests {
 
     #[test]
     fn build_board_threads_stale_flag() {
-        let dto = build_board(BoardScope::Hq, None, &[], &[], true, &HashMap::new());
+        let dto = build_board(
+            BoardScope::Hq,
+            None,
+            &[],
+            &[],
+            true,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert!(dto.stale);
     }
 
@@ -1715,6 +1977,7 @@ mod tests {
             &files,
             false,
             &HashMap::new(),
+            &HashMap::new(),
         )
     }
 
@@ -1764,6 +2027,7 @@ mod tests {
             &[rollup],
             &[(sample_source("mev"), file)],
             false,
+            &HashMap::new(),
             &HashMap::new(),
         );
         let filtered = filter_board_to_epic(board, "epic-alpha");
@@ -2296,6 +2560,7 @@ heading = "Bastion"
             &assembly.files,
             assembly.stale,
             &assembly.last_touched,
+            &assembly.block_graph,
         );
         let build_board_ms = t0.elapsed().as_millis();
 
@@ -2320,6 +2585,7 @@ heading = "Bastion"
             &assembly.files,
             assembly.stale,
             &assembly.last_touched,
+            &assembly.block_graph,
         );
         let _export = mev::build_block_graph_export(
             root,
