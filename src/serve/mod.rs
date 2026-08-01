@@ -1111,6 +1111,7 @@ mod tests {
     const STATUS_MD: &str = include_str!("status/fixtures/status_well_formed.md");
     const HANDOFF_MD: &str = include_str!("status/fixtures/handoff_minimal.md");
     const FLOW_JSON: &str = include_str!("status/fixtures/flow_state_valid.json");
+    const FLOW_JSON_WITH_RUN_ID: &str = include_str!("status/fixtures/flow_state_with_run_id.json");
 
     fn write_fixture(path: &std::path::Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -1322,6 +1323,62 @@ mod tests {
         assert!(body.is_array());
         assert_eq!(body[0]["spec_slug"], "phase6-blockA");
         assert_eq!(body[0]["status"], "done");
+    }
+
+    /// A1: `run_id` present on-disk must surface verbatim in the raw JSON
+    /// body of `GET /api/repos/{name}/workflows`.
+    #[actix_web::test]
+    async fn get_repo_workflows_surfaces_run_id_verbatim() {
+        let tmp = TempDir::new();
+        write_fixture(&tmp.path().join("planning/status.md"), STATUS_MD);
+        write_fixture(
+            &tmp.path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON_WITH_RUN_ID,
+        );
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("repo-with-run-id".to_string(), tmp.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/repo-with-run-id/workflows")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(
+            body[0]["run_id"], "a1b2c3d4-e5f6-4789-a012-3456789abcde",
+            "run_id must surface verbatim, got: {body}"
+        );
+    }
+
+    /// A1: a state file with no `run_id` key must produce an ABSENT key in
+    /// the raw serialized JSON — never `null` — so a consumer can
+    /// distinguish "predates the stamp" from "field not understood".
+    #[actix_web::test]
+    async fn get_repo_workflows_omits_run_id_key_when_unstamped() {
+        let (_tmp, registry) = registry_with_fixture_repo();
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/repo-x/workflows")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let entry = body[0]
+            .as_object()
+            .expect("workflow entry must be a JSON object");
+        assert!(
+            !entry.contains_key("run_id"),
+            "run_id should be an absent key when unstamped, got: {body}"
+        );
     }
 
     #[actix_web::test]

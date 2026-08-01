@@ -26,7 +26,9 @@ use std::path::{Path, PathBuf};
 use actix_web::{HttpResponse, web};
 
 use crate::config::{FileConfig, resolve_workspace_root};
-use crate::serve::dto::{ErrorPayload, RepoStatusDto, RepoSummaryDto, WorkflowStateDto};
+use crate::serve::dto::{
+    ErrorPayload, HandoffInfoDto, RepoStatusDto, RepoSummaryDto, WorkflowStateDto,
+};
 use crate::serve::status::flow::{FlowState, parse_flow_state};
 use crate::serve::status::handoff::{HandoffInfo, read_handoff};
 use crate::serve::status::repo::parse_status;
@@ -206,7 +208,7 @@ pub async fn get_repo_handoff(
     };
 
     match web::block(move || read_repo_handoff(&root)).await {
-        Ok(Some(info)) => HttpResponse::Ok().json(info),
+        Ok(Some(info)) => HttpResponse::Ok().json(HandoffInfoDto::from(info)),
         Ok(None) => HttpResponse::NotFound().json(ErrorPayload {
             code: "C002".to_owned(),
             message: "handoff.md not found".to_owned(),
