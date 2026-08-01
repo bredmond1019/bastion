@@ -11,6 +11,42 @@ timestamp: 2026-07-30T22:45:00Z
 
 ---
 
+## [run: 2026-08-01]
+
+### plan-board-graph-enrichment (A5) — DONE, all 8 tasks PASS, review PASS
+
+`/sdlc-flow --worktree` shipped the second spec of the four-spec arch-review train: `GET
+/api/board` now projects mev's corpus-wide `dependent_count` and `ready` onto `BoardBlockDto`
+(plus a lane-scoped `unmet_count`), so bastion-web can retire its two disagreeing, scope-dependent
+reverse-dep scans. Task 1 measured the added cost of `mev::build_block_graph_export` on the board
+path against a synthetic 500-block fixture and the live HQ brain root, and decided to gate the
+enrichment behind `?graph=1` since it roughly doubles per-request board-assembly time on the live
+corpus. Task 2 added the three new `Option`-typed fields to `BoardBlockDto` (`unmet_count`
+deliberately `None` off the blocked lane, per mev's own documented semantics, so a consumer can't
+misread a structural zero as "ready"). Task 3 threaded a corpus-wide enrichment map through
+`BoardAssembly`, derived once per `assemble_board` call behind a new `include_graph` bool wired to
+the query param, and along the way fixed an unrelated pre-existing compile break (`okf_core::Epic`
+test fixtures missing the `weight` field). Task 4 wired `build_board` to populate the fields across
+all five lanes. Task 5 added a corpus-invariance test and extended the existing one-derivation
+cross-check to also cover `dependent_count`/`ready`. Task 6 added route-level tests (present with
+the gate on, fully absent with it off, auth still enforced) plus a live-HQ-corpus smoke test. Task
+7 bumped `docs/serve-api.md` to v0.19 and regenerated `types/serve.ts`. Task 8 re-ran the full
+gated validation suite clean (1852 tests, release build, typeshare drift). Final verdict: PASS, no
+review findings. No matching authored block entry exists yet in `planning/state.json` for this
+arch-review-derived plan, so no block-graph flip was made this run. Next: continue the four-spec
+train with `ticket-workflows-aggregate` (A2, v0.20), then `plan-contract-corpus-goldens` (A4, last).
+
+```
+3ef1024 docs: update docs for plan-board-graph-enrichment
+4446b3d docs: regenerate types/serve.ts and document serve-api v0.19 (A5, task 7)
+57e8258 test: route-level tests + live-corpus smoke test for A5 enrichment (task 6)
+dbf3b51 test: corpus-invariance and one-derivation cross-check for A5 enrichment
+bc61736 feat: implement plan-board-graph-enrichment-task4
+95d9954 feat: implement plan-board-graph-enrichment-task3
+7920cfa feat: implement plan-board-graph-enrichment-task2
+ecbcbe7 test: measure build_block_graph_export cost on the board path (task 1)
+```
+
 ## [run: 2026-07-30]
 
 ### 11.T-run-summary-projection — DONE, close-out complete
