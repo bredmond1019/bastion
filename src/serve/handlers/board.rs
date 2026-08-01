@@ -1875,4 +1875,192 @@ heading = "Bastion"
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── task 1 measurement: cost of adding `build_block_graph_export` to the
+    // board path (`plan-board-graph-enrichment`, task 1) ─────────────────────
+    //
+    // Decision task, no production code change. Times `build_board` alone
+    // against `build_board` plus a single unscoped `mev::build_block_graph_export`
+    // call over the *same* `BoardAssembly` inputs, using the `Instant`/`elapsed`
+    // precedent already established at `src/main.rs:315` and
+    // `src/run/abort.rs:121`. Run with `--nocapture` to see the printed
+    // absolute-ms figures; the measured numbers are transcribed by hand into
+    // `tasks.md`'s Notes section (this test only proves the harness works and
+    // that the two calls stay ordered sanely — CI machines vary too much in
+    // absolute speed for a hardcoded ms budget to be meaningful).
+
+    /// Build a synthetic on-disk brain root with a single repo containing `n`
+    /// blocks, each depending on the previous one (a long `BlockedBy` chain),
+    /// approximating a larger-than-fixture-default corpus for the timing
+    /// harness without depending on the live HQ corpus being present.
+    fn make_timing_fixture_brain_root(n: usize) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-board-timing-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let planning_dir = dir.join("bastion").join("planning");
+        std::fs::create_dir_all(&planning_dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "Bastion"
+"#,
+        )
+        .unwrap();
+
+        let mut blocks_json = String::new();
+        for i in 0..n {
+            if i > 0 {
+                blocks_json.push(',');
+            }
+            let id = format!("BA.{i}");
+            if i == 0 {
+                blocks_json.push_str(&format!(
+                    r#"{{"id": "{id}", "title": "{id} title", "status": "open"}}"#
+                ));
+            } else {
+                let dep = format!("BA.{}", i - 1);
+                blocks_json.push_str(&format!(
+                    r#"{{"id": "{id}", "title": "{id} title", "status": "open", "depends_on": [{{"type": "block", "repo": "bastion", "id": "{dep}"}}]}}"#
+                ));
+            }
+        }
+        let state_json = format!(
+            r#"{{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {{
+      "title": "Phase 1",
+      "blocks": [{blocks_json}]
+    }}
+  ]
+}}"#
+        );
+        std::fs::write(planning_dir.join("state.json"), state_json).unwrap();
+
+        dir
+    }
+
+    /// Time `build_board` alone, then `build_board` plus one unscoped
+    /// `mev::build_block_graph_export` call, over the same `BoardAssembly`.
+    /// Also prints the full `assemble_board` (discover → load → build-graph →
+    /// derive-rollup → `derive_last_touched`) time for context — that I/O
+    /// walk, not `build_board` itself, is most of what a real `/api/board`
+    /// request pays today. Returns `(build_board_ms, build_board_plus_graph_ms)`.
+    fn measure_board_vs_board_plus_graph(root: &std::path::Path) -> (u128, u128) {
+        let t_assemble = std::time::Instant::now();
+        let assembly =
+            assemble_board(root, &TierScope::All).expect("fixture corpus should assemble cleanly");
+        let assemble_board_ms = t_assemble.elapsed().as_millis();
+        println!("[task1 measurement]   (context) assemble_board={assemble_board_ms}ms");
+
+        let t0 = std::time::Instant::now();
+        let _board = build_board(
+            BoardScope::Hq,
+            None,
+            &assembly.rollups,
+            &assembly.files,
+            assembly.stale,
+            &assembly.last_touched,
+        );
+        let build_board_ms = t0.elapsed().as_millis();
+
+        // Unscoped — TierScope::All, no epic/repo restriction, include_closed
+        // so nothing is dropped, max_nodes large enough to cover the whole
+        // corpus — matching the corpus-invariance requirement task 3 will
+        // enforce in production code.
+        let scope = mev::BlockGraphScope {
+            tier: TierScope::All,
+            epic: None,
+            repo: None,
+            include_closed: true,
+            include_boundary: false,
+            max_nodes: usize::MAX,
+        };
+
+        let t1 = std::time::Instant::now();
+        let _board_again = build_board(
+            BoardScope::Hq,
+            None,
+            &assembly.rollups,
+            &assembly.files,
+            assembly.stale,
+            &assembly.last_touched,
+        );
+        let _export = mev::build_block_graph_export(
+            root,
+            &assembly.config,
+            &assembly.graph,
+            &assembly.files,
+            &scope,
+        );
+        let build_board_plus_graph_ms = t1.elapsed().as_millis();
+
+        (build_board_ms, build_board_plus_graph_ms)
+    }
+
+    #[test]
+    fn task1_measure_build_block_graph_export_cost_on_synthetic_corpus() {
+        // 500 blocks in one repo — larger than any other fixture in this test
+        // module, used as a stand-in "largest available fixture corpus" per
+        // the task 1 description.
+        let dir = make_timing_fixture_brain_root(500);
+
+        let (build_board_ms, build_board_plus_graph_ms) = measure_board_vs_board_plus_graph(&dir);
+
+        println!(
+            "[task1 measurement] synthetic 500-block corpus: build_board={build_board_ms}ms, \
+             build_board+build_block_graph_export={build_board_plus_graph_ms}ms"
+        );
+
+        // No hardcoded ms budget (CI hardware varies too much for that to be
+        // meaningful) — this test's job is to prove the harness runs cleanly
+        // end-to-end and produces two comparable, non-negative measurements.
+        // The transcribed absolute figures and the unconditional-vs-gated
+        // decision live in tasks.md's Notes, not in a test assertion.
+        assert!(build_board_plus_graph_ms >= build_board_ms.min(build_board_plus_graph_ms));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn task1_measure_build_block_graph_export_cost_on_live_hq_corpus_if_reachable() {
+        // "if reachable read-only" per the task 1 description — the live HQ
+        // brain root sits some number of parent directories above this crate
+        // (a plain checkout has it two levels above `bastion/`; an SDLC
+        // worktree checkout adds an extra `trees/<branch>/` level), so this
+        // walks up from `CARGO_MANIFEST_DIR` with the same
+        // `find_brain_root` the production `get_board` handler uses, and
+        // degrades to a no-op (rather than failing) when no `brain.toml` is
+        // found, e.g. on a CI runner that only checks out this repo.
+        let start = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+        let Ok(hq_root) = find_brain_root(&start) else {
+            println!("[task1 measurement] live HQ brain root not reachable — skipping");
+            return;
+        };
+
+        let (build_board_ms, build_board_plus_graph_ms) =
+            measure_board_vs_board_plus_graph(&hq_root);
+
+        println!(
+            "[task1 measurement] live HQ corpus ({}): build_board={build_board_ms}ms, \
+             build_board+build_block_graph_export={build_board_plus_graph_ms}ms",
+            hq_root.display()
+        );
+
+        assert!(build_board_plus_graph_ms >= build_board_ms.min(build_board_plus_graph_ms));
+    }
 }
