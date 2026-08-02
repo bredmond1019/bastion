@@ -261,6 +261,24 @@ impl Drop for EnvVarGuard {
 ///   as a signal to check for exactly this overlap before suspecting a real
 ///   regression.
 ///
+/// **The restore's correctness depends on `fs::rename`'s atomic-replace
+/// semantics.** `Drop`'s `Owned`/`Adopted` arms restore by renaming the
+/// backup directly over `.env`, with no preceding `remove_file` — relying on
+/// the destination-replacing rename to be a single atomic step, so that two
+/// guards constructed with the *same* suffix and interleaved lifetimes
+/// (`A.new(S)`, `B.new(S)`, `A.drop`, `B.drop` — `B` adopts the backup `A`
+/// owns via the same-suffix fall-through above) each leave `.env` intact no
+/// matter which one drops second: the loser's rename simply fails `ENOENT`
+/// against a `backup` the winner already consumed, rather than first
+/// deleting what the winner restored. **This is Unix-specific.** POSIX
+/// `rename(2)` replaces an existing destination atomically; Windows
+/// `MoveFileEx`/`std::fs::rename` fails on an existing destination unless
+/// `MOVEFILE_REPLACE_EXISTING` is requested, which the standard library does
+/// not do by default. A future port of this guard to Windows must revisit
+/// this arm — the current code would need an explicit replace-capable move
+/// (or a remove-then-rename with its own same-suffix interleave analysis) to
+/// carry the same guarantee there.
+///
 /// The durable fix for all three is to stop touching the repo-root `.env` at all —
 /// point the process cwd at a disposable directory so `dotenvy`'s upward walk
 /// starts somewhere throwaway (what [`CwdGuard`] does inside this module's own
@@ -293,7 +311,15 @@ enum DotenvShadowState {
     NoOriginal,
     /// `backup` already existed at our suffix from an interrupted prior run;
     /// we adopted it without overwriting it and restore it on `Drop`.
-    Adopted(PathBuf),
+    /// `preadopt_backup` is the path `new()` would have written whatever was
+    /// live in `.env` to before overwriting it with the stand-in (see the
+    /// adopt branch below) — it may or may not actually exist on disk (only
+    /// created when `.env` was present at adopt time), so `Drop` removes it
+    /// unconditionally via a `let _ =` rather than checking first.
+    Adopted {
+        backup: PathBuf,
+        preadopt_backup: PathBuf,
+    },
     /// Another guard's marker was already present — a guard is already
     /// live under a different suffix. We touched nothing; do nothing on
     /// `Drop` either, so we never race the guard that actually owns the
@@ -421,8 +447,12 @@ impl DotenvShadow {
                 }
             }
             let _ = std::fs::write(env_path, "");
+            let preadopt_backup = PathBuf::from(format!(".env.{suffix}.pre-adopt.bak"));
             return Self {
-                state: DotenvShadowState::Adopted(backup_path),
+                state: DotenvShadowState::Adopted {
+                    backup: backup_path,
+                    preadopt_backup,
+                },
             };
         }
 
@@ -480,12 +510,64 @@ impl Drop for DotenvShadow {
         let marker_path = std::path::Path::new(DOTENV_SHADOW_MARKER);
 
         match &self.state {
-            DotenvShadowState::Owned(backup) | DotenvShadowState::Adopted(backup) => {
-                let _ = std::fs::remove_file(env_path);
+            DotenvShadowState::Owned(backup) => {
+                // No `remove_file(env_path)` before this rename — and that is
+                // deliberate, not an oversight. On Unix, `fs::rename`
+                // *atomically replaces* an existing destination, so the
+                // remove was never doing anything the rename didn't already
+                // do. Worse, it actively caused the same-suffix data-loss
+                // this fix exists for: two guards constructed with the same
+                // suffix (`A.new(S)`, `B.new(S)`) can interleave so that `B`
+                // adopts the backup `A` owns (see `DotenvShadowState::Adopted`
+                // and the same-suffix fall-through in `new()`), and with the
+                // remove in place, whichever guard's `Drop` ran second
+                // deleted the `.env` the first guard had just restored,
+                // leaving `.env` gone entirely once its own rename then
+                // failed `ENOENT` into a swallowed `let _ =`. Without the
+                // remove, the second `Drop`'s rename still fails `ENOENT`
+                // (the first `Drop` already consumed `backup`) but touches
+                // nothing else — content survives regardless of which of the
+                // two guards drops first.
                 let _ = std::fs::rename(backup, env_path);
                 let _ = std::fs::remove_file(marker_path);
             }
+            DotenvShadowState::Adopted {
+                backup,
+                preadopt_backup,
+            } => {
+                // Same atomic-replace reasoning as the `Owned` arm above.
+                let _ = std::fs::rename(backup, env_path);
+                // Clean up the pre-adopt backup `new()`'s adopt branch may
+                // have written (only when `.env` was present at adopt time —
+                // absent otherwise, so this is a harmless no-op then too).
+                let _ = std::fs::remove_file(preadopt_backup);
+                let _ = std::fs::remove_file(marker_path);
+            }
             DotenvShadowState::NoOriginal => {
+                // Unlike the arms above, this one *does* keep its
+                // unconditional `remove_file(env_path)` — there is no backup
+                // to atomically replace onto, only the empty stand-in to tear
+                // down. Walking the same same-suffix interleave this fix
+                // targets (`A` = `NoOriginal`, `B` = `Owned`, both suffix
+                // `S`): `A.new` finds no `.env`, writes the empty stand-in,
+                // and claims the marker. `B.new(S)` hits the same-suffix
+                // fall-through, finds no backup at `S` yet (`A` never wrote
+                // one), and falls into the `env_path.exists()` branch,
+                // renaming `A`'s empty stand-in aside to `backup` and writing
+                // a fresh empty stand-in of its own — `B` becomes
+                // `Owned(backup)`, where `backup`'s content is empty.
+                // Whichever drop order follows, the result is either an
+                // empty `.env` (if `NoOriginal`'s remove runs after `Owned`'s
+                // rename already restored the empty backup) or an absent one
+                // (if `NoOriginal`'s remove runs after `Owned`'s rename, or
+                // `Owned`'s rename never got to run because `NoOriginal`
+                // already deleted the file it targeted) — never anyone
+                // else's real content, since none ever existed. Accepted as
+                // a benign inconsistency (empty vs. absent) rather than
+                // fixed: closing it would mean giving `NoOriginal` the same
+                // atomic-rename treatment against a backup that by
+                // definition never exists for it, which buys nothing since
+                // there is nothing to lose.
                 let _ = std::fs::remove_file(env_path);
                 let _ = std::fs::remove_file(marker_path);
             }
@@ -852,6 +934,77 @@ mod tests {
             "two overlapping guards over the same fixture must not let the \
              later drop overwrite content an earlier drop already restored"
         );
+    }
+
+    #[test]
+    fn dotenv_shadow_same_suffix_interleaved_guards_preserve_content() {
+        // `ticket-dotenv-shadow-same-suffix-restore`: unlike the *distinct*-
+        // suffix interleave covered by
+        // `dotenv_shadow_concurrent_guards_do_not_destroy_content` above (a
+        // wave-280 fix), two guards constructed with the *same* suffix
+        // (`A.new(S)`, `B.new(S)`) take a different path through `new()`: `A`
+        // wins the marker claim and renames `.env` aside to
+        // `.env.S.bak`, becoming `Owned`. `B` then hits `AlreadyExists` on
+        // the marker, reads back **its own** suffix, and — per the
+        // same-suffix fall-through in `new()` — does not return `Nested`; it
+        // finds `.env.S.bak` already sitting there and *adopts* it, becoming
+        // `Adopted` over the exact same backup path `A` owns. Both guards'
+        // `Drop` then race to restore that one shared backup.
+        //
+        // Under the pre-fix implementation, `Drop`'s `Owned | Adopted` arm
+        // was `remove_file(env_path)` followed by `rename(backup, env_path)`.
+        // Whichever guard dropped *second* found the backup already
+        // consumed (renamed away) by the first guard's `Drop`, so its own
+        // `remove_file` still fired — deleting the `.env` the first guard
+        // had just restored — before its `rename` failed `ENOENT` into a
+        // swallowed `let _ =`, leaving no `.env` at all. The fix deletes
+        // that `remove_file`: `fs::rename` atomically replaces an existing
+        // destination on Unix, so the first guard's rename already puts the
+        // real content in place, and the second guard's rename harmlessly
+        // fails `ENOENT` against a backup that no longer exists, touching
+        // nothing else.
+        //
+        // This test asserts the property holds for **both** drop orders,
+        // each on its own disposable fixture.
+        let lock = lock_env();
+
+        {
+            let dir = fixture_dir("dotenv-shadow-same-suffix-a-then-b");
+            let _cwd = CwdGuard::enter(&lock, &dir);
+            std::fs::write(".env", FIXTURE_ENV_CONTENT).expect("seed fixture .env");
+
+            let guard_a = DotenvShadow::new(&lock, "same_suffix_fixture");
+            let guard_b = DotenvShadow::new(&lock, "same_suffix_fixture");
+            drop(guard_a);
+            drop(guard_b);
+
+            assert_eq!(
+                std::fs::read_to_string(".env").unwrap(),
+                FIXTURE_ENV_CONTENT,
+                "A-then-B: two same-suffix guards must not leave `.env` \
+                 destroyed or empty — the real content must survive \
+                 regardless of drop order"
+            );
+        }
+
+        {
+            let dir = fixture_dir("dotenv-shadow-same-suffix-b-then-a");
+            let _cwd = CwdGuard::enter(&lock, &dir);
+            std::fs::write(".env", FIXTURE_ENV_CONTENT).expect("seed fixture .env");
+
+            let guard_a = DotenvShadow::new(&lock, "same_suffix_fixture");
+            let guard_b = DotenvShadow::new(&lock, "same_suffix_fixture");
+            drop(guard_b);
+            drop(guard_a);
+
+            assert_eq!(
+                std::fs::read_to_string(".env").unwrap(),
+                FIXTURE_ENV_CONTENT,
+                "B-then-A: two same-suffix guards must not leave `.env` \
+                 destroyed or empty — the real content must survive \
+                 regardless of drop order"
+            );
+        }
     }
 
     #[test]
