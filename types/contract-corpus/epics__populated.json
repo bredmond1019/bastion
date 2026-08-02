@@ -1,0 +1,37 @@
+{
+  "body": [
+    {
+      "closed": 1,
+      "deferred": 0,
+      "description": "Cross-surface work",
+      "fully_deferred": false,
+      "in_progress": 1,
+      "open": 1,
+      "plan": "core/planning/master-plan.md",
+      "repos": [
+        "bastion"
+      ],
+      "slug": "bastion-surfaces",
+      "status": "active",
+      "title": "Bastion Surfaces",
+      "total": 3,
+      "weight": 85
+    },
+    {
+      "closed": 0,
+      "deferred": 0,
+      "description": null,
+      "fully_deferred": false,
+      "in_progress": 0,
+      "open": 1,
+      "plan": null,
+      "repos": [],
+      "slug": "brain-rag",
+      "status": null,
+      "title": "Brain RAG",
+      "total": 1,
+      "weight": null
+    }
+  ],
+  "status_code": 200
+}

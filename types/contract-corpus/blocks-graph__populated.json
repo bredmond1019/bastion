@@ -1,0 +1,100 @@
+{
+  "body": {
+    "cycles": [],
+    "edges": [
+      {
+        "blocking": true,
+        "from": "bastion:BA.11.S",
+        "kind": "blocked_by",
+        "target_node_id": "bastion:BA.11.R",
+        "to_ref": "bastion:BA.11.R"
+      }
+    ],
+    "epic": null,
+    "include_boundary": false,
+    "include_closed": false,
+    "nodes": [
+      {
+        "dependent_count": 1,
+        "due": "<TIMESTAMP>",
+        "effective_priority": 1,
+        "epics": [
+          "bastion-surfaces"
+        ],
+        "external_deps": [],
+        "id": "BA.11.R",
+        "in_cycle": false,
+        "in_scope": true,
+        "key": "bastion:BA.11.R",
+        "lane": "now",
+        "layer": 0,
+        "priority": 1,
+        "ready": false,
+        "repo": "bastion",
+        "status": "in_progress",
+        "title": "Epic ranking enrichment",
+        "topo_index": 0,
+        "track": "Phase 11",
+        "unmet_count": 0,
+        "wave": 3
+      },
+      {
+        "dependent_count": 0,
+        "due": null,
+        "effective_priority": null,
+        "epics": [
+          "bastion-surfaces"
+        ],
+        "external_deps": [],
+        "id": "BA.11.S",
+        "in_cycle": false,
+        "in_scope": true,
+        "key": "bastion:BA.11.S",
+        "lane": "blocked",
+        "layer": 1,
+        "priority": null,
+        "ready": false,
+        "repo": "bastion",
+        "status": "open",
+        "title": "Downstream consumer",
+        "topo_index": 1,
+        "track": "Phase 11",
+        "unmet_count": 1,
+        "wave": null
+      },
+      {
+        "dependent_count": 0,
+        "due": null,
+        "effective_priority": null,
+        "epics": [
+          "brain-rag"
+        ],
+        "external_deps": [],
+        "id": "BA.11.T",
+        "in_cycle": false,
+        "in_scope": true,
+        "key": "bastion:BA.11.T",
+        "lane": "next",
+        "layer": 1,
+        "priority": null,
+        "ready": true,
+        "repo": "bastion",
+        "status": "open",
+        "title": "Ready block",
+        "topo_index": 3,
+        "track": "Phase 11",
+        "unmet_count": 0,
+        "wave": null
+      }
+    ],
+    "repo": null,
+    "root": "<TMP_PATH>",
+    "scope": "hq",
+    "stale": true,
+    "tier": null,
+    "total_nodes": 3,
+    "truncated": false,
+    "version": "1"
+  },
+  "status_code": 200
+}

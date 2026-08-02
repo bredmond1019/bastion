@@ -141,6 +141,73 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// RAII guard that neutralizes `dotenvy::dotenv()` for tests that need
+/// `DATABASE_URL` (or any other `.env`-supplied var) to be genuinely absent —
+/// or genuinely theirs.
+///
+/// `Config::load` calls `dotenvy::dotenv()`, which **searches upward from the
+/// process cwd** and loads the first `.env` it finds, setting any var not
+/// already present in the environment. Simply removing this crate's own `.env`
+/// is therefore not enough: in a git worktree dotenvy walks past the deleted
+/// file and picks up the main checkout's `core/bastion/.env` instead, silently
+/// restoring a working `DATABASE_URL` and turning an expected 503 into a 200
+/// against the dev Postgres.
+///
+/// So instead of *removing* `.env`, we **replace it with an empty one**:
+/// dotenvy stops at the first file it finds, loads nothing from it, and never
+/// reaches any ancestor `.env`. Nothing outside this checkout is ever touched.
+/// The original file (if any) is restored on `Drop`, so a panicking assertion
+/// can't leave the checkout without its `.env`.
+///
+/// Mutates a process-wide (indeed repo-wide) resource, so — exactly like an env
+/// var — it may only be constructed while holding the crate-wide env lock;
+/// [`DotenvShadow::new`] takes the [`EnvLock`] as a witness.
+///
+/// Lives here rather than in `serve::mod`'s test module (where it was
+/// introduced) because `serve::contract_corpus`'s costs scenarios need the same
+/// guarantee, and a *second* copy of a global-resource guard is precisely the
+/// per-module-duplication mistake the crate-wide [`ENV_LOCK`] exists to undo.
+pub struct DotenvShadow {
+    /// Path of the saved original, or `None` when there was no `.env`.
+    backup: Option<PathBuf>,
+}
+
+impl DotenvShadow {
+    /// `suffix` disambiguates the backup filename so two guards can never
+    /// collide on it, even if the lock discipline is ever broken.
+    ///
+    /// `_lock` is the witness that the caller holds the crate-wide env lock —
+    /// the `.env` swap is a global mutation and must be serialized against
+    /// every reader of it (`dotenvy::dotenv()` inside `Config::load`) just as
+    /// an env var would be.
+    #[must_use]
+    pub fn new(_lock: &EnvLock, suffix: &str) -> Self {
+        let env_path = std::path::Path::new(".env");
+        let backup_path = PathBuf::from(format!(".env.{suffix}.bak"));
+
+        let backup = if env_path.exists() && std::fs::rename(env_path, &backup_path).is_ok() {
+            Some(backup_path)
+        } else {
+            None
+        };
+
+        // The empty stand-in is what actually stops dotenvy's upward walk.
+        let _ = std::fs::write(env_path, "");
+
+        Self { backup }
+    }
+}
+
+impl Drop for DotenvShadow {
+    fn drop(&mut self) {
+        let env_path = std::path::Path::new(".env");
+        let _ = std::fs::remove_file(env_path);
+        if let Some(backup) = &self.backup {
+            let _ = std::fs::rename(backup, env_path);
+        }
+    }
+}
+
 // ── 2. Collision-proof temp fixture directories ─────────────────────────────
 
 /// A path under `std::env::temp_dir()` that is unique **across threads of one
@@ -277,6 +344,35 @@ mod tests {
         }
         assert_eq!(std::env::var(KEY).unwrap(), "original");
         drop(baseline);
+    }
+
+    #[test]
+    fn dotenv_shadow_leaves_an_empty_env_and_restores_the_original() {
+        let env_lock = lock_env();
+
+        let env_path = std::path::Path::new(".env");
+        let before = std::fs::read_to_string(env_path).ok();
+
+        {
+            let _shadow = DotenvShadow::new(&env_lock, "testsupport_unit_test");
+            assert!(
+                env_path.exists(),
+                "DotenvShadow must leave an empty `.env` in place — an absent file \
+                 lets dotenvy walk up to an ancestor checkout's `.env`"
+            );
+            assert_eq!(
+                std::fs::read_to_string(env_path).unwrap(),
+                "",
+                "the stand-in `.env` must be empty so it sets no variables"
+            );
+        }
+
+        let after = std::fs::read_to_string(env_path).ok();
+        assert_eq!(
+            after, before,
+            "dropping the guard must restore the original `.env` byte-for-byte \
+             (and leave none behind when there was none)"
+        );
     }
 
     #[test]

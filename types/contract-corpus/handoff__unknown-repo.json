@@ -1,0 +1,7 @@
+{
+  "body": {
+    "code": "C005",
+    "message": "unknown workspace: no-such-repo"
+  },
+  "status_code": 404
+}

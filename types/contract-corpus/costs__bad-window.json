@@ -1,0 +1,7 @@
+{
+  "body": {
+    "code": "C006",
+    "message": "unknown window 'nonsense': expected one of '7d', '30d', 'all'"
+  },
+  "status_code": 400
+}

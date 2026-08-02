@@ -1,0 +1,7 @@
+{
+  "body": {
+    "code": "C005",
+    "message": "DATABASE_URL must be set (point to the Python orchestrator's PostgreSQL)"
+  },
+  "status_code": 503
+}

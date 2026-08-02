@@ -67,11 +67,17 @@
 //!    still prefer seeding with a fixed UUID (never `Uuid::new_v4()`) so the
 //!    *pre-redaction* value is also deterministic; this rule catches the
 //!    rest.
-//! 3. **Absolute temp-dir paths** — any string value that starts with the
-//!    process's own `std::env::temp_dir()` path (e.g. a fixture's scratch
+//! 3. **Absolute temp-dir paths** — any string value that starts with *any*
+//!    spelling of the process's own temp-dir root (e.g. a fixture's scratch
 //!    workspace root) is replaced with `"<TMP_PATH>"`, since that path
 //!    embeds a per-run/per-OS temp root that is never stable across
-//!    machines or invocations.
+//!    machines or invocations. "Any spelling" is load-bearing and was
+//!    tightened by `ticket-contract-corpus-uncovered-routes`: on macOS
+//!    `std::env::temp_dir()` yields `/var/folders/…/T/` while
+//!    `/var -> /private/var`, so a handler that canonicalizes its paths (as
+//!    `mev`'s block-graph export does for `BlockGraphDto::root`) emits
+//!    `/private/var/folders/…/T/` and slipped straight through the original
+//!    single-prefix check. See [`temp_dir_prefixes`].
 //! 4. **Key ordering** — `serde_json::Value::Object` in this crate's actual
 //!    build is confirmed (by this module's
 //!    `object_keys_serialize_in_sorted_order_not_insertion_order` test, not by
@@ -228,6 +234,40 @@ fn uuid_re() -> &'static Regex {
     })
 }
 
+/// Every spelling of the process's temp-dir root that a response body can
+/// legitimately contain, for redaction rule 3.
+///
+/// There is more than one. On macOS `std::env::temp_dir()` returns the
+/// `TMPDIR` value (`/var/folders/…/T/`), but `/var` is a symlink to
+/// `/private/var`, so any handler that *canonicalizes* a fixture path — as
+/// `mev`'s block-graph export does for its `root` field, via
+/// `find_brain_root`/`fs::canonicalize` — emits the `/private/var/folders/…/T/`
+/// spelling instead. Matching only the un-canonicalized prefix therefore let a
+/// live per-run temp path through into `blocks-graph__populated.json`'s `root`,
+/// which would have made that golden drift on literally every regeneration.
+/// Both spellings are checked, longest first so the more specific prefix wins.
+fn temp_dir_prefixes() -> &'static [String] {
+    static PREFIXES: OnceLock<Vec<String>> = OnceLock::new();
+    PREFIXES.get_or_init(|| {
+        let tmp = std::env::temp_dir();
+        let mut out: Vec<String> = Vec::new();
+        if let Some(s) = tmp.to_str() {
+            if !s.is_empty() {
+                out.push(s.to_owned());
+            }
+        }
+        if let Ok(canon) = std::fs::canonicalize(&tmp) {
+            if let Some(s) = canon.to_str() {
+                if !s.is_empty() && !out.iter().any(|p| p == s) {
+                    out.push(s.to_owned());
+                }
+            }
+        }
+        out.sort_by_key(|p| std::cmp::Reverse(p.len()));
+        out
+    })
+}
+
 /// Redact a single string *value* per the rules documented in the module
 /// docs' "Determinism (Task 2, redaction rules)" section. Returns `None`
 /// when the value should be left exactly as-is — in particular, run-status
@@ -241,10 +281,8 @@ fn redact_string_value(value: &str) -> Option<&'static str> {
     if uuid_re().is_match(value) {
         return Some("<UUID>");
     }
-    if let Some(tmp_dir) = std::env::temp_dir().to_str() {
-        if !tmp_dir.is_empty() && value.starts_with(tmp_dir) {
-            return Some("<TMP_PATH>");
-        }
+    if temp_dir_prefixes().iter().any(|p| value.starts_with(p)) {
+        return Some("<TMP_PATH>");
     }
     None
 }
@@ -667,6 +705,44 @@ mod harness_tests {
         let path_under_tmp = tmp_dir.join("some-fixture-workspace").join("file.txt");
         let path_str = path_under_tmp.to_str().unwrap();
         assert_eq!(redact_string_value(path_str), Some("<TMP_PATH>"));
+    }
+
+    /// Regression (`ticket-contract-corpus-uncovered-routes`): a path under
+    /// the **canonicalized** temp root must redact too. On macOS
+    /// `std::env::temp_dir()` is `/var/folders/…` while the canonical form is
+    /// `/private/var/folders/…`; `BlockGraphDto::root` wires the canonical
+    /// spelling, so the original single-prefix check let a live per-run temp
+    /// path into a checked-in golden.
+    #[test]
+    fn redact_string_value_redacts_canonicalized_temp_dir_path() {
+        let canonical = std::fs::canonicalize(std::env::temp_dir())
+            .expect("the system temp dir must be canonicalizable");
+        let path_under_tmp = canonical.join("some-fixture-workspace");
+        assert_eq!(
+            redact_string_value(path_under_tmp.to_str().unwrap()),
+            Some("<TMP_PATH>"),
+            "a path under the canonicalized temp root must redact — see redaction rule 3"
+        );
+    }
+
+    /// Both spellings must be covered simultaneously, and the un-canonicalized
+    /// one must not have regressed while fixing the canonical one.
+    #[test]
+    fn temp_dir_prefixes_covers_both_spellings_longest_first() {
+        let prefixes = super::temp_dir_prefixes();
+        assert!(
+            !prefixes.is_empty(),
+            "there must always be at least the raw temp_dir() prefix"
+        );
+        let raw = std::env::temp_dir().to_str().unwrap().to_owned();
+        assert!(
+            prefixes.contains(&raw),
+            "the raw temp_dir() spelling must always be present; got {prefixes:?}"
+        );
+        assert!(
+            prefixes.windows(2).all(|w| w[0].len() >= w[1].len()),
+            "prefixes must be ordered longest-first so the most specific wins; got {prefixes:?}"
+        );
     }
 
     #[test]
@@ -1153,13 +1229,16 @@ mod fixtures {
     pub(super) struct TempDir(PathBuf);
 
     impl TempDir {
+        /// Path construction is delegated to
+        /// [`crate::testsupport::unique_temp_dir`] — the one helper whose
+        /// `<prefix>-<pid>-<nanos>-<counter>` shape is collision-proof across
+        /// both threads (`cargo test`) and processes (`cargo nextest`). The
+        /// hand-rolled `{name}_{pid}_{id}` idiom this replaced was only
+        /// collision-free *within* this module's counter; a sibling module
+        /// choosing the same `name` could still land on the same path.
         pub(super) fn new(name: &str) -> Self {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static COUNTER: AtomicU64 = AtomicU64::new(0);
-            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let pid = std::process::id();
             let dir =
-                std::env::temp_dir().join(format!("bastion_contract_corpus_{name}_{pid}_{id}"));
+                crate::testsupport::unique_temp_dir(&format!("bastion-contract-corpus-{name}"));
             std::fs::create_dir_all(&dir).unwrap();
             TempDir(dir)
         }
@@ -1744,5 +1823,599 @@ mod docs_scenarios {
         let req = actix_web::test::TestRequest::get()
             .uri("/api/docs/myrepo/tree?path=docs/does-not-exist.md");
         dump("docs-tree", "unknown", req, &app).await;
+    }
+}
+
+/// `GET /api/workflows` corpus scenarios (`ticket-contract-corpus-uncovered-routes`,
+/// task 1) — the cross-repo flow-state aggregate added by A2 (serve-api
+/// v0.20), which the original A4 corpus never froze.
+///
+/// See `board_scenarios`' doc comment for the shared "minimal app wired to the
+/// real handler over a real on-disk fixture" approach — identical here, against
+/// `handlers::status::list_all_workflows`.
+///
+/// Both goldens are deterministic without any redaction trick: the two
+/// `sdlc-flow-state.json` fixtures reused here (`status/fixtures/`, the same
+/// files `src/serve/mod.rs`'s A2 route tests seed with) carry *authored*
+/// `started_at`/`updated_at`/`run_id` literals, never live-clock or
+/// `Uuid::new_v4()` values — [`super::redact_value`]'s timestamp/UUID rules
+/// then neutralize them a second time, as a backstop rather than as the source
+/// of determinism.
+#[cfg(test)]
+mod workflows_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::status::list_all_workflows;
+
+    /// Flow state **without** a `run_id` key — freezes the
+    /// `skip_serializing_if = "Option::is_none"` branch of
+    /// `RepoWorkflowStateDto::run_id` (the key is absent, not `null`).
+    const FLOW_JSON: &str = include_str!("status/fixtures/flow_state_valid.json");
+    /// Flow state **with** an authored `run_id` — freezes the present-key
+    /// branch of the same field (A1's `run_id` join key).
+    const FLOW_JSON_WITH_RUN_ID: &str = include_str!("status/fixtures/flow_state_with_run_id.json");
+
+    macro_rules! workflows_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(
+                        web::resource("/api/workflows").route(web::get().to(list_all_workflows)),
+                    ),
+            )
+            .await
+        };
+    }
+
+    fn registry(entries: &[(&str, &TempDir)]) -> FileConfig {
+        FileConfig {
+            workspaces: Some(
+                entries
+                    .iter()
+                    .map(|(name, tmp)| ((*name).to_owned(), tmp.path().to_path_buf()))
+                    .collect::<HashMap<_, _>>(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    /// Seed one repo's `planning/<spec>/sdlc/sdlc-flow-state.json`.
+    fn repo_with_flow(name: &str, flow_json: &str) -> TempDir {
+        let tmp = TempDir::new(name);
+        write(
+            &tmp.path()
+                .join("planning")
+                .join("phase6-blockA")
+                .join("sdlc")
+                .join("sdlc-flow-state.json"),
+            flow_json,
+        );
+        tmp
+    }
+
+    /// An empty workspace registry is explicitly **not** a 404 — the aggregate
+    /// degrades to `200 []` (`list_all_workflows`' documented contract). That
+    /// is exactly the kind of "does an absent thing 404 or empty-200?"
+    /// question a Surface's stub gets wrong, so it gets its own golden.
+    #[actix_web::test]
+    async fn workflows_corpus_empty() {
+        let app = workflows_service!(FileConfig::default());
+        let req = actix_web::test::TestRequest::get().uri("/api/workflows");
+        dump("workflows", "empty", req, &app).await;
+    }
+
+    /// Two registered repos, each carrying one flow state — freezes the
+    /// per-repo `repo` tagging, the (repo, spec_slug) sort order the handler
+    /// imposes over the `HashMap`-sourced registry (without which this golden
+    /// would flap run to run), and both `run_id` serialization branches in one
+    /// response.
+    #[actix_web::test]
+    async fn workflows_corpus_populated() {
+        let tmp_a = repo_with_flow("workflows-alpha", FLOW_JSON);
+        let tmp_b = repo_with_flow("workflows-beta", FLOW_JSON_WITH_RUN_ID);
+        let app = workflows_service!(registry(&[("repo-alpha", &tmp_a), ("repo-beta", &tmp_b)]));
+        let req = actix_web::test::TestRequest::get().uri("/api/workflows");
+        dump("workflows", "populated", req, &app).await;
+    }
+}
+
+/// `GET /api/repos/{name}/handoff` corpus scenarios
+/// (`ticket-contract-corpus-uncovered-routes`, task 2) — A3's `HandoffInfoDto`
+/// (serve-api v0.18), plus **both** of the route's 404s.
+///
+/// The two 404s are the point of this module. `get_repo_handoff` fails
+/// differently depending on *why* it failed — an unregistered workspace name is
+/// `C005` (registry/config miss) while a registered repo whose `handoff.md` is
+/// simply absent is `C002` (resource miss) — and a Surface that collapses the
+/// two into one "not found" branch is wrong in a way only a frozen error
+/// *code* catches. `src/serve/mod.rs`'s
+/// `get_repo_handoff_unknown_repo_vs_missing_handoff_have_distinct_codes`
+/// asserts the distinction; these goldens freeze the wire bodies carrying it.
+///
+/// See `board_scenarios`' doc comment for the shared fixture-app approach.
+#[cfg(test)]
+mod handoff_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::status::get_repo_handoff;
+
+    /// The same OKF-frontmatter handoff fixture `src/serve/mod.rs`'s A3 route
+    /// tests seed (`src/serve/mod.rs:1124`) — authored, static content, so the
+    /// frozen `title`/`body` pair is stable by construction.
+    const HANDOFF_MD: &str = include_str!("status/fixtures/handoff_minimal.md");
+
+    macro_rules! handoff_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(
+                        web::resource("/api/repos/{name}/handoff")
+                            .route(web::get().to(get_repo_handoff)),
+                    ),
+            )
+            .await
+        };
+    }
+
+    fn registry(name: &str, tmp: &TempDir) -> FileConfig {
+        FileConfig {
+            workspaces: Some(HashMap::from([(name.to_owned(), tmp.path().to_path_buf())])),
+            ..Default::default()
+        }
+    }
+
+    /// A registered repo whose `planning/handoff.md` exists.
+    fn fixture_with_handoff() -> TempDir {
+        let tmp = TempDir::new("handoff-populated");
+        write(&tmp.path().join("planning").join("handoff.md"), HANDOFF_MD);
+        tmp
+    }
+
+    /// A registered repo with a `planning/` tree but **no** `handoff.md` —
+    /// resolves through the registry fine, then 404s on the file.
+    fn fixture_without_handoff() -> TempDir {
+        let tmp = TempDir::new("handoff-missing");
+        write(&tmp.path().join("planning").join("status.md"), "# Status\n");
+        tmp
+    }
+
+    #[actix_web::test]
+    async fn handoff_corpus_populated() {
+        let tmp = fixture_with_handoff();
+        let app = handoff_service!(registry("repo-x", &tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/repos/repo-x/handoff");
+        dump("handoff", "populated", req, &app).await;
+    }
+
+    /// Registered repo, absent `handoff.md` → 404 + `C002`.
+    #[actix_web::test]
+    async fn handoff_corpus_missing() {
+        let tmp = fixture_without_handoff();
+        let app = handoff_service!(registry("repo-no-handoff", &tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/repos/repo-no-handoff/handoff");
+        dump("handoff", "missing", req, &app).await;
+    }
+
+    /// Unregistered workspace name → 404 + `C005`, a *different* code from the
+    /// scenario above. The registry is deliberately non-empty so this golden
+    /// pins "the name isn't in the registry", not "the registry is empty".
+    #[actix_web::test]
+    async fn handoff_corpus_unknown_repo() {
+        let tmp = fixture_with_handoff();
+        let app = handoff_service!(registry("repo-x", &tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/repos/no-such-repo/handoff");
+        dump("handoff", "unknown-repo", req, &app).await;
+    }
+}
+
+/// Shared on-disk fixture brain corpus for the `epics` and `blocks-graph`
+/// scenarios (`ticket-contract-corpus-uncovered-routes`, task 3).
+///
+/// Deliberately *one* corpus for both routes: `/api/epics` and
+/// `/api/blocks/graph` project two different views of the same
+/// `brain.toml` + `state.json` tree, and freezing them against a shared
+/// fixture means a fixture edit shows up as a coordinated diff across both
+/// routes' goldens rather than letting them silently describe different
+/// worlds.
+///
+/// Shape mirrors `src/serve/mod.rs`'s `make_temp_epics_brain_root`:
+/// - `brain.toml` — one `[[repos]]` entry, `bastion`, tier `core`,
+///   `repo_path = "bastion"` (deliberately not `"."`, so `tier_scope_for`
+///   can't mistake the HQ file for a tier-container self-entry).
+/// - `planning/state.json` (`kind: "brain"`) — the HQ `epics[]` registry:
+///   `bastion-surfaces` fully authored (**including `weight: 85`**, the field
+///   serve-api v0.21 added and which these goldens exist to freeze) and
+///   `brain-rag` carrying only the two required fields, so both the
+///   all-optionals-present and all-optionals-absent `EpicDto` shapes are
+///   frozen in one response.
+/// - `bastion/planning/state.json` (`kind: "project"`) — four blocks covering
+///   every `epic_progress` tally and every block-graph edge case: `BA.11.R`
+///   (in_progress, epic member), `BA.11.S` (open, unmet dep on the
+///   still-open `BA.11.R`), `BA.11.T` (open, met dep on the closed
+///   `BA.11.K`), `BA.11.K` (closed).
+///
+/// Every date in the fixture is an authored literal (never live-clock), so
+/// the pre-redaction values are already deterministic;
+/// [`super::redact_value`]'s bare-calendar-date rule then neutralizes them
+/// again as a backstop.
+#[cfg(test)]
+mod brain_fixture {
+    use std::collections::HashMap;
+
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+
+    const BRAIN_TOML: &str = r#"[vocab]
+layer = ["console"]
+status = ["active"]
+
+[crawl]
+skip_dirs = ["target", ".git"]
+
+[[repos]]
+slug = "bastion"
+tier = "core"
+repo_path = "bastion"
+status_file = "planning/status.md"
+cache_doc = "docs/projects/bastion.md"
+heading = "bastion"
+"#;
+
+    const HQ_STATE_JSON: &str = r#"{
+  "repo": "hq",
+  "kind": "brain",
+  "updated": "2026-07-25",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": [],
+  "epics": [
+    {
+      "slug": "bastion-surfaces",
+      "title": "Bastion Surfaces",
+      "description": "Cross-surface work",
+      "status": "active",
+      "weight": 85,
+      "plan": "core/planning/master-plan.md",
+      "repos": ["bastion"]
+    },
+    {
+      "slug": "brain-rag",
+      "title": "Brain RAG"
+    }
+  ]
+}"#;
+
+    /// The same tree with **no** `epics[]` key at all — the absent-HQ-registry
+    /// case, which `get_epics` answers `200 []` rather than treating as an
+    /// error.
+    const HQ_STATE_JSON_NO_EPICS: &str = r#"{
+  "repo": "hq",
+  "kind": "brain",
+  "updated": "2026-07-25",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": []
+}"#;
+
+    const LEAF_STATE_JSON: &str = r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-25",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": [
+    {
+      "title": "Phase 11",
+      "blocks": [
+        {
+          "id": "BA.11.R",
+          "title": "Epic ranking enrichment",
+          "status": "in_progress",
+          "epics": ["bastion-surfaces"],
+          "wave": 3,
+          "priority": 1,
+          "due": "2026-07-15"
+        },
+        {
+          "id": "BA.11.S",
+          "title": "Downstream consumer",
+          "status": "open",
+          "depends_on": [{ "type": "block", "repo": "bastion", "id": "BA.11.R" }],
+          "epics": ["bastion-surfaces"]
+        },
+        {
+          "id": "BA.11.T",
+          "title": "Ready block",
+          "status": "open",
+          "depends_on": [{ "type": "block", "repo": "bastion", "id": "BA.11.K" }],
+          "epics": ["brain-rag"]
+        },
+        {
+          "id": "BA.11.K",
+          "title": "Prior closed block",
+          "status": "closed",
+          "epics": ["bastion-surfaces"]
+        }
+      ]
+    }
+  ]
+}"#;
+
+    fn build(name: &str, hq_state: &str) -> TempDir {
+        let tmp = TempDir::new(name);
+        let root = tmp.path();
+        write(&root.join("brain.toml"), BRAIN_TOML);
+        write(&root.join("planning").join("state.json"), hq_state);
+        write(
+            &root.join("bastion").join("planning").join("state.json"),
+            LEAF_STATE_JSON,
+        );
+        tmp
+    }
+
+    /// Brain corpus with a populated HQ `epics[]` registry.
+    pub(super) fn populated(name: &str) -> TempDir {
+        build(name, HQ_STATE_JSON)
+    }
+
+    /// Identical corpus minus the `epics[]` registry.
+    pub(super) fn without_epics(name: &str) -> TempDir {
+        build(name, HQ_STATE_JSON_NO_EPICS)
+    }
+
+    /// Registry pointing `default_workspace` at the fixture brain root —
+    /// mirrors `src/serve/mod.rs`'s `registry_with_epics_fixture`.
+    pub(super) fn registry(tmp: &TempDir) -> FileConfig {
+        FileConfig {
+            workspaces: Some(HashMap::from([(
+                "brain-root".to_owned(),
+                tmp.path().to_path_buf(),
+            )])),
+            default_workspace: Some("brain-root".to_owned()),
+            ..Default::default()
+        }
+    }
+}
+
+/// `GET /api/epics` corpus scenarios (`ticket-contract-corpus-uncovered-routes`,
+/// task 3) — the HQ cross-repo initiative registry.
+///
+/// **v0.21 `weight`**: `EpicDto` gained `weight: Option<u8>` in serve-api
+/// v0.21 (merged hours before this ticket ran). Freezing the *post*-v0.21
+/// shape is a headline requirement, so [`super::brain_fixture`]'s registry
+/// authors `weight: 85` on `bastion-surfaces` and omits it entirely on
+/// `brain-rag` — pinning both the present-value and the `null` serialization
+/// in a single golden.
+///
+/// The route exposes no per-epic 404 (it takes no path/query params at all —
+/// see `handlers/epics.rs`'s route docs), so the second scenario is the
+/// *empty-registry* shape the task spec names as the alternative: an absent HQ
+/// `epics[]` is `200 []`, not an error.
+///
+/// See `board_scenarios`' doc comment for the shared fixture-app approach.
+#[cfg(test)]
+mod epics_scenarios {
+    use actix_web::web;
+
+    use super::brain_fixture;
+    use super::dump;
+    use crate::serve::handlers::epics::get_epics;
+
+    macro_rules! epics_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(web::resource("/api/epics").route(web::get().to(get_epics))),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn epics_corpus_populated() {
+        let tmp = brain_fixture::populated("epics-populated");
+        let app = epics_service!(brain_fixture::registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/epics");
+        dump("epics", "populated", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn epics_corpus_empty() {
+        let tmp = brain_fixture::without_epics("epics-empty");
+        let app = epics_service!(brain_fixture::registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/epics");
+        dump("epics", "empty", req, &app).await;
+    }
+
+    /// Guard rail, not a golden: assert directly that the populated response
+    /// actually carries the v0.21 `weight` field with the authored value. The
+    /// golden freezes it too, but a golden can be regenerated into agreement
+    /// with a *regression* — this assertion cannot, so it is what actually
+    /// prevents the corpus from quietly re-freezing a pre-v0.21 shape.
+    #[actix_web::test]
+    async fn epics_corpus_carries_the_v0_21_weight_field() {
+        let tmp = brain_fixture::populated("epics-weight-probe");
+        let app = epics_service!(brain_fixture::registry(&tmp));
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/epics")
+            .to_request();
+        let resp = actix_web::test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = actix_web::test::read_body_json(resp).await;
+        let entries = body.as_array().expect("body must be an array");
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected two registry entries; got {body}"
+        );
+        assert_eq!(entries[0]["slug"], "bastion-surfaces");
+        assert_eq!(
+            entries[0]["weight"], 85,
+            "the v0.21 `weight` field must reach the wire verbatim; got {body}"
+        );
+        assert!(
+            entries[1]
+                .as_object()
+                .expect("entry must be an object")
+                .contains_key("weight"),
+            "an unauthored weight must still wire the key (as null), not omit it; got {body}"
+        );
+        assert!(
+            entries[1]["weight"].is_null(),
+            "an unauthored weight must wire as null; got {body}"
+        );
+    }
+}
+
+/// `GET /api/blocks/graph` corpus scenarios
+/// (`ticket-contract-corpus-uncovered-routes`, task 3) — mev's enriched
+/// block-graph export (serve-api v0.13).
+///
+/// **Fixed `max_nodes`**: the request pins `max_nodes=50` explicitly rather
+/// than relying on the route's absent-param default (400). The default is a
+/// *tunable* — changing it would silently rewrite this golden's `truncated`
+/// flag and node set for reasons that have nothing to do with the wire
+/// contract — so the corpus pins the input instead, exactly as the task spec
+/// requires. 50 comfortably exceeds the fixture's four blocks, so the export
+/// is complete (`truncated: false`) and the golden freezes the full
+/// nodes/edges/topo shape rather than an arbitrary truncation.
+///
+/// `root` is the fixture's own temp path and is neutralized to `<TMP_PATH>` by
+/// [`super::redact_value`]'s rule 3 — the one volatile value on this route.
+///
+/// See `board_scenarios`' doc comment for the shared fixture-app approach.
+#[cfg(test)]
+mod blocks_graph_scenarios {
+    use actix_web::web;
+
+    use super::brain_fixture;
+    use super::dump;
+    use crate::serve::handlers::block_graph::get_block_graph;
+
+    macro_rules! block_graph_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(
+                        web::resource("/api/blocks/graph").route(web::get().to(get_block_graph)),
+                    ),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn blocks_graph_corpus_populated() {
+        let tmp = brain_fixture::populated("blocks-graph-populated");
+        let app = block_graph_service!(brain_fixture::registry(&tmp));
+        let req =
+            actix_web::test::TestRequest::get().uri("/api/blocks/graph?scope=hq&max_nodes=50");
+        dump("blocks-graph", "populated", req, &app).await;
+    }
+}
+
+/// `GET /api/costs` corpus scenarios (`ticket-contract-corpus-uncovered-routes`,
+/// task 4) — the **DB-free error shapes only** (serve-api v0.15).
+///
+/// # Why the 200 shape is deliberately absent
+/// A populated `CostSummaryDto` is aggregated from rows in the `events` table,
+/// which means a live Postgres. This corpus runs inside `cargo test`, which
+/// can assume no database at all — a golden that only regenerates on a machine
+/// with a seeded dev Postgres would fail `scripts/check-contract-corpus-drift.sh`
+/// everywhere else, which is worse than no golden. So the two shapes that are
+/// reachable with *no* database are frozen instead, and the exclusion is
+/// recorded in `docs/serve-api.md` §25 rather than silently left as a gap.
+/// Building a fixture seam to inject rows would be new production surface and
+/// is explicitly out of scope (task spec Notes) — it is logged as a follow-up.
+///
+/// # Env discipline (the reason this module is not like its siblings)
+/// `costs_corpus_no_database_url` genuinely mutates process-global state, so it
+/// follows `crate::testsupport`'s lock discipline to the letter:
+/// - `lock_env()` **once**, at the top, held for the whole test;
+/// - every mutation through `EnvVarGuard` (which takes the lock as a witness —
+///   an unlocked mutation is a compile error), never a bare `remove_var`;
+/// - `DotenvShadow` for the `.env` file, because `Config::load` calls
+///   `dotenvy::dotenv()`, which walks *upward* from the cwd and would restore a
+///   working `DATABASE_URL` from an ancestor checkout's `.env` the instant we
+///   unset it — turning the expected 503 into a 200 against the dev Postgres;
+/// - `dump_with(&CorpusConfig::from_env_locked(&env_lock), …)` rather than
+///   `dump`, because `dump` → `CorpusConfig::from_env` would take the same
+///   **non-reentrant** mutex a second time on this thread and deadlock.
+#[cfg(test)]
+mod costs_scenarios {
+    use actix_web::web;
+
+    use super::{CorpusConfig, dump, dump_with};
+    use crate::serve::handlers::costs::get_costs;
+    use crate::testsupport::{DotenvShadow, EnvVarGuard, lock_env, unique_temp_dir};
+
+    macro_rules! costs_service {
+        () => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .service(web::resource("/api/costs").route(web::get().to(get_costs))),
+            )
+            .await
+        };
+    }
+
+    /// Unparseable `?window=` → 400 + `C006`.
+    ///
+    /// No env handling needed, and that is itself part of the contract:
+    /// `resolve_window` runs *before* `Config::load`, so this response is
+    /// produced with no database access and regardless of whatever
+    /// `DATABASE_URL` happens to hold. Plain `dump` is therefore correct here —
+    /// this test holds no lock.
+    #[actix_web::test]
+    async fn costs_corpus_bad_window() {
+        let app = costs_service!();
+        let req = actix_web::test::TestRequest::get().uri("/api/costs?window=nonsense");
+        dump("costs", "bad-window", req, &app).await;
+    }
+
+    /// `DATABASE_URL` genuinely absent → 503 + `C005`.
+    #[actix_web::test]
+    async fn costs_corpus_no_database_url() {
+        // ONE acquisition, at the top, held for the whole test.
+        let env_lock = lock_env();
+
+        // Neutralize `dotenvy`'s upward `.env` walk before unsetting the var.
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "corpus_costs_c005");
+        let _database_url = EnvVarGuard::unset(&env_lock, "DATABASE_URL");
+
+        // `Config::load` also consults `~/.config/bastion/config.toml` (via
+        // XDG_CONFIG_HOME, then HOME) as a lower-precedence source for
+        // `database_url`. Point XDG_CONFIG_HOME at an empty temp dir so a
+        // developer's real config file can never supply one — without this the
+        // golden would be machine-dependent, which is precisely what a checked-in
+        // corpus must never be.
+        let empty_config_home = unique_temp_dir("bastion-corpus-costs-xdg");
+        std::fs::create_dir_all(&empty_config_home).unwrap();
+        let _xdg = EnvVarGuard::set(
+            &env_lock,
+            "XDG_CONFIG_HOME",
+            empty_config_home.to_str().expect("temp path must be UTF-8"),
+        );
+
+        // `from_env_locked`, not `from_env`/`dump`: we already hold the lock and
+        // it is not reentrant.
+        let config = CorpusConfig::from_env_locked(&env_lock);
+
+        let app = costs_service!();
+        let req = actix_web::test::TestRequest::get().uri("/api/costs");
+        dump_with(&config, "costs", "no-database-url", req, &app).await;
+
+        let _ = std::fs::remove_dir_all(&empty_config_home);
     }
 }
