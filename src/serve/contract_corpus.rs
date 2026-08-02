@@ -2328,36 +2328,62 @@ mod blocks_graph_scenarios {
 /// `GET /api/costs` corpus scenarios (`ticket-contract-corpus-uncovered-routes`,
 /// task 4) — the **DB-free error shapes only** (serve-api v0.15).
 ///
-/// # Why the 200 shape is deliberately absent
-/// A populated `CostSummaryDto` is aggregated from rows in the `events` table,
-/// which means a live Postgres. This corpus runs inside `cargo test`, which
-/// can assume no database at all — a golden that only regenerates on a machine
-/// with a seeded dev Postgres would fail `scripts/check-contract-corpus-drift.sh`
-/// everywhere else, which is worse than no golden. So the two shapes that are
-/// reachable with *no* database are frozen instead, and the exclusion is
-/// recorded in `docs/serve-api.md` §25 rather than silently left as a gap.
-/// Building a fixture seam to inject rows would be new production surface and
-/// is explicitly out of scope (task spec Notes) — it is logged as a follow-up.
+/// # The populated `200`, budget-breached, empty, windowed, and `C009` shapes
+/// `ticket-costs-200-contract-golden` added the missing seam:
+/// [`crate::serve::handlers::costs::get_costs_with`] takes the runs-fetching
+/// function as a compile-time generic parameter, so this module can dispatch
+/// through a real actix `Service` — real window resolution, real
+/// `Config::load`, real budget-gate evaluation, real `serde_json`
+/// serialization — while supplying fixture `WorkflowRun`s in place of
+/// `db::costs::fetch_all_runs`, with **no live Postgres**. The injection is
+/// reachable only from this test module (`#[cfg(test)]`, linking directly
+/// against `get_costs_with`); `get_costs` itself — the route production
+/// mounts — has no env var, config key, or `app_data` slot that could swap in
+/// a fixture at runtime. See `get_costs`'s own module docs for the full
+/// argument.
+///
+/// The `400`/`C006` (`bad-window`) and `503`/`C005` (`no-database-url`)
+/// scenarios below still dispatch through the real `get_costs` (they need no
+/// fetch at all, or fail before ever calling it) — they are unaffected by the
+/// seam and are unchanged from before this ticket.
 ///
 /// # Env discipline (the reason this module is not like its siblings)
-/// `costs_corpus_no_database_url` genuinely mutates process-global state, so it
-/// follows `crate::testsupport`'s lock discipline to the letter:
+/// Every scenario below that reaches `Config::load` — which is every one of
+/// them except `bad-window` — follows `crate::testsupport`'s lock discipline
+/// to the letter:
 /// - `lock_env()` **once**, at the top, held for the whole test;
 /// - every mutation through `EnvVarGuard` (which takes the lock as a witness —
-///   an unlocked mutation is a compile error), never a bare `remove_var`;
+///   an unlocked mutation is a compile error), never a bare `remove_var`/`set_var`;
 /// - `DotenvShadow` for the `.env` file, because `Config::load` calls
 ///   `dotenvy::dotenv()`, which walks *upward* from the cwd and would restore a
-///   working `DATABASE_URL` from an ancestor checkout's `.env` the instant we
-///   unset it — turning the expected 503 into a 200 against the dev Postgres;
+///   working `DATABASE_URL` (and, just as importantly, a developer's own
+///   `BASTION_MAX_TOTAL_TOKENS`/`BASTION_MAX_COST_USD`) from an ancestor
+///   checkout's `.env` the instant this module's guard unsets it;
+/// - `XDG_CONFIG_HOME` pointed at an empty, unique temp dir so
+///   `~/.config/bastion/config.toml` can never supply a `database_url` or a
+///   budget cap either — the populated/breached/empty/windowed/db-error
+///   goldens all read `Config::load`'s budget fields, so a developer's real
+///   config file leaking a cap through would silently change `budget.breached`;
+/// - `DATABASE_URL` set to an unroutable dummy
+///   (`postgres://corpus@127.0.0.1:1/corpus`) so `Config::load` succeeds —
+///   it is never actually connected to, since the fetch function is faked;
+/// - **both** `BASTION_MAX_TOTAL_TOKENS` and `BASTION_MAX_COST_USD` are
+///   explicitly pinned (unset for the no-cap scenarios, set for
+///   `budget-breached`) rather than left to whatever the invoking shell
+///   happens to export — proven by regenerating with both vars exported to
+///   arbitrary values in the invoking shell and confirming no golden changes
+///   (recorded in `tasks.md`'s `## Notes`);
 /// - `dump_with(&CorpusConfig::from_env_locked(&env_lock), …)` rather than
 ///   `dump`, because `dump` → `CorpusConfig::from_env` would take the same
 ///   **non-reentrant** mutex a second time on this thread and deadlock.
 #[cfg(test)]
 mod costs_scenarios {
     use actix_web::web;
+    use chrono::{Duration, Utc};
 
     use super::{CorpusConfig, dump, dump_with};
-    use crate::serve::handlers::costs::get_costs;
+    use crate::db::workflows::{NodeState, RunStatus, WorkflowRun};
+    use crate::serve::handlers::costs::{CostsQuery, get_costs, get_costs_with};
     use crate::testsupport::{DotenvShadow, EnvVarGuard, lock_env, unique_temp_dir};
 
     macro_rules! costs_service {
@@ -2368,6 +2394,193 @@ mod costs_scenarios {
             )
             .await
         };
+    }
+
+    /// A fixture-backed `costs_service!` equivalent: routes `/api/costs`
+    /// through the given async handler fn instead of the real `get_costs`, so
+    /// the corpus can dispatch through real actix `Service`/`serde_json`
+    /// machinery while injecting fixture rows.
+    macro_rules! costs_fixture_service {
+        ($handler:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .service(web::resource("/api/costs").route(web::get().to($handler))),
+            )
+            .await
+        };
+    }
+
+    // ── Fixture builders ────────────────────────────────────────────────────
+
+    /// Build a single-node [`NodeState`] with reported (not tiktoken-derived)
+    /// token counts — `input`/`output` stay `None` so
+    /// `costs::exact_or_reported_tokens` falls back to `tokens_in`/`tokens_out`
+    /// verbatim, giving exact, hand-checkable USD figures instead of a
+    /// tokenizer-derived count.
+    fn node(model: &str, tokens_in: u64, tokens_out: u64) -> NodeState {
+        NodeState {
+            id: "n1".to_owned(),
+            name: "n1".to_owned(),
+            status: RunStatus::Success,
+            depends_on: vec![],
+            input: None,
+            output: None,
+            error: None,
+            tokens_in: Some(tokens_in),
+            tokens_out: Some(tokens_out),
+            model: Some(model.to_owned()),
+            started_at: Some("2026-06-20T09:00:00Z".to_owned()),
+            elapsed_secs: None,
+        }
+    }
+
+    /// Build a [`WorkflowRun`] with an explicit `started_at`.
+    fn run_at(
+        id: &str,
+        workflow_name: &str,
+        started_at: &str,
+        nodes: Vec<NodeState>,
+    ) -> WorkflowRun {
+        WorkflowRun {
+            id: id.to_owned(),
+            workflow_name: workflow_name.to_owned(),
+            status: RunStatus::Success,
+            budget_halt: None,
+            nodes,
+            started_at: Some(started_at.to_owned()),
+            elapsed_secs: None,
+        }
+    }
+
+    /// Three runs across two workflow names, mixed priced (`claude-haiku-4-5`,
+    /// $1.00 in / $5.00 out per MTok) and unpriced (`some-unpriced-model`)
+    /// models. Token counts are whole-MTok multiples so every USD figure is
+    /// an exact `f64` (no `0.1 + 0.2`-style artifacts):
+    /// - `content-pipeline` run 1: 1,000,000 in / 200,000 out → $1.00 + $1.00 = $2.00
+    /// - `content-pipeline` run 2: 500,000 in / 0 out → $0.50
+    ///   → `content-pipeline` totals: 2 runs, $2.50
+    /// - `research-pipeline` run 1: unpriced model → $0.00, surfaces in
+    ///   `unpriced_models`
+    ///
+    /// Row order (usd descending): `content-pipeline` ($2.50), then
+    /// `research-pipeline` ($0.00). Grand total: $2.50.
+    fn populated_runs() -> Vec<WorkflowRun> {
+        vec![
+            run_at(
+                "run-content-1",
+                "content-pipeline",
+                "2026-06-20T09:00:00Z",
+                vec![node("claude-haiku-4-5", 1_000_000, 200_000)],
+            ),
+            run_at(
+                "run-content-2",
+                "content-pipeline",
+                "2026-06-20T10:00:00Z",
+                vec![node("claude-haiku-4-5", 500_000, 0)],
+            ),
+            run_at(
+                "run-research-1",
+                "research-pipeline",
+                "2026-06-20T11:00:00Z",
+                vec![node("some-unpriced-model", 1_000, 1_000)],
+            ),
+        ]
+    }
+
+    /// Two runs relative to `Utc::now()` at fixture-build time (Notes point
+    /// 5: no fixed calendar date, so the in/out-of-window decision is stable
+    /// at any wall clock) — one 1 day old (inside a `7d` window), one 40 days
+    /// old (outside it). Same priced model as [`populated_runs`] so the USD
+    /// figures stay exact.
+    fn windowed_runs() -> Vec<WorkflowRun> {
+        let now = Utc::now();
+        let in_window = (now - Duration::days(1)).to_rfc3339();
+        let out_of_window = (now - Duration::days(40)).to_rfc3339();
+        vec![
+            run_at(
+                "run-in-window",
+                "in-window-pipeline",
+                &in_window,
+                vec![node("claude-haiku-4-5", 1_000_000, 0)],
+            ),
+            run_at(
+                "run-out-of-window",
+                "out-of-window-pipeline",
+                &out_of_window,
+                vec![node("claude-haiku-4-5", 1_000_000, 0)],
+            ),
+        ]
+    }
+
+    // ── Fixture-backed handlers ──────────────────────────────────────────────
+
+    async fn populated_handler(query: web::Query<CostsQuery>) -> actix_web::HttpResponse {
+        let runs = populated_runs();
+        get_costs_with(query, move |_db_url| async move { Ok(runs) }).await
+    }
+
+    async fn budget_breached_handler(query: web::Query<CostsQuery>) -> actix_web::HttpResponse {
+        let runs = populated_runs();
+        get_costs_with(query, move |_db_url| async move { Ok(runs) }).await
+    }
+
+    async fn empty_handler(query: web::Query<CostsQuery>) -> actix_web::HttpResponse {
+        get_costs_with(
+            query,
+            |_db_url| async move { Ok(Vec::<WorkflowRun>::new()) },
+        )
+        .await
+    }
+
+    async fn windowed_handler(query: web::Query<CostsQuery>) -> actix_web::HttpResponse {
+        let runs = windowed_runs();
+        get_costs_with(query, move |_db_url| async move { Ok(runs) }).await
+    }
+
+    async fn db_error_handler(query: web::Query<CostsQuery>) -> actix_web::HttpResponse {
+        get_costs_with(query, |_db_url| async move {
+            Err::<Vec<WorkflowRun>, _>(anyhow::anyhow!("simulated database failure"))
+        })
+        .await
+    }
+
+    /// Common env pinning every scenario below (except `bad-window`) shares:
+    /// `DATABASE_URL` (dummy, unroutable), `XDG_CONFIG_HOME` (empty temp
+    /// dir), and `DotenvShadow`. Caller still owns pinning the two
+    /// `BASTION_MAX_*` vars explicitly (unset or set) per scenario — that
+    /// choice is scenario-specific and must not have a shared default.
+    struct PinnedCorpusEnv {
+        _dotenv: DotenvShadow,
+        _database_url: EnvVarGuard,
+        _xdg: EnvVarGuard,
+        empty_config_home: std::path::PathBuf,
+    }
+
+    impl PinnedCorpusEnv {
+        fn new(lock: &crate::testsupport::EnvLock, label: &str) -> Self {
+            let dotenv = DotenvShadow::new(lock, label);
+            let database_url =
+                EnvVarGuard::set(lock, "DATABASE_URL", "postgres://corpus@127.0.0.1:1/corpus");
+            let empty_config_home = unique_temp_dir(&format!("bastion-corpus-costs-{label}"));
+            std::fs::create_dir_all(&empty_config_home).unwrap();
+            let xdg = EnvVarGuard::set(
+                lock,
+                "XDG_CONFIG_HOME",
+                empty_config_home.to_str().expect("temp path must be UTF-8"),
+            );
+            Self {
+                _dotenv: dotenv,
+                _database_url: database_url,
+                _xdg: xdg,
+                empty_config_home,
+            }
+        }
+    }
+
+    impl Drop for PinnedCorpusEnv {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.empty_config_home);
+        }
     }
 
     /// Unparseable `?window=` → 400 + `C006`.
@@ -2417,5 +2630,91 @@ mod costs_scenarios {
         dump_with(&config, "costs", "no-database-url", req, &app).await;
 
         let _ = std::fs::remove_dir_all(&empty_config_home);
+    }
+
+    /// Populated `200` — 3 runs across 2 workflow names, mixed priced/unpriced
+    /// models, `?window=all`, both budget caps unset. Freezes `rows[]`
+    /// ordering (usd descending), the `"TOTAL"` totals sentinel,
+    /// `unpriced_models[]`, and `budget` with `null` caps and
+    /// `breached: false` / `breach: null`.
+    #[actix_web::test]
+    async fn costs_corpus_populated() {
+        let env_lock = lock_env();
+        let _pinned = PinnedCorpusEnv::new(&env_lock, "populated");
+        let _max_total_tokens = EnvVarGuard::unset(&env_lock, "BASTION_MAX_TOTAL_TOKENS");
+        let _max_cost_usd = EnvVarGuard::unset(&env_lock, "BASTION_MAX_COST_USD");
+
+        let config = CorpusConfig::from_env_locked(&env_lock);
+        let app = costs_fixture_service!(populated_handler);
+        let req = actix_web::test::TestRequest::get().uri("/api/costs?window=all");
+        dump_with(&config, "costs", "populated", req, &app).await;
+    }
+
+    /// Budget-breached `200` — same rows as [`costs_corpus_populated`], but
+    /// `BASTION_MAX_COST_USD` is pinned below the fixture total ($2.50), so
+    /// `budget.breached == true` and `budget.breach.cap == "max_cost_usd"`
+    /// (the exact `Cap::as_str` wire string consumers switch on).
+    #[actix_web::test]
+    async fn costs_corpus_budget_breached() {
+        let env_lock = lock_env();
+        let _pinned = PinnedCorpusEnv::new(&env_lock, "budget-breached");
+        let _max_total_tokens = EnvVarGuard::unset(&env_lock, "BASTION_MAX_TOTAL_TOKENS");
+        let _max_cost_usd = EnvVarGuard::set(&env_lock, "BASTION_MAX_COST_USD", "2.0");
+
+        let config = CorpusConfig::from_env_locked(&env_lock);
+        let app = costs_fixture_service!(budget_breached_handler);
+        let req = actix_web::test::TestRequest::get().uri("/api/costs?window=all");
+        dump_with(&config, "costs", "budget-breached", req, &app).await;
+    }
+
+    /// Empty `200` — the fetch fn returns `vec![]`. Zero rows is `200` with
+    /// `rows: []` and a zeroed `"TOTAL"` totals row, never a 404 — mirrors the
+    /// `workflows__empty` contract.
+    #[actix_web::test]
+    async fn costs_corpus_empty() {
+        let env_lock = lock_env();
+        let _pinned = PinnedCorpusEnv::new(&env_lock, "empty");
+        let _max_total_tokens = EnvVarGuard::unset(&env_lock, "BASTION_MAX_TOTAL_TOKENS");
+        let _max_cost_usd = EnvVarGuard::unset(&env_lock, "BASTION_MAX_COST_USD");
+
+        let config = CorpusConfig::from_env_locked(&env_lock);
+        let app = costs_fixture_service!(empty_handler);
+        let req = actix_web::test::TestRequest::get().uri("/api/costs?window=all");
+        dump_with(&config, "costs", "empty", req, &app).await;
+    }
+
+    /// Windowed `200` — `?window=7d`, one fixture row inside the window (1
+    /// day old), one outside it (40 days old). Freezes that the window filter
+    /// reaches the wire (only the in-window row's workflow appears) and that
+    /// `window` echoes `"7d"`, not `"all"`.
+    #[actix_web::test]
+    async fn costs_corpus_windowed() {
+        let env_lock = lock_env();
+        let _pinned = PinnedCorpusEnv::new(&env_lock, "windowed");
+        let _max_total_tokens = EnvVarGuard::unset(&env_lock, "BASTION_MAX_TOTAL_TOKENS");
+        let _max_cost_usd = EnvVarGuard::unset(&env_lock, "BASTION_MAX_COST_USD");
+
+        let config = CorpusConfig::from_env_locked(&env_lock);
+        let app = costs_fixture_service!(windowed_handler);
+        let req = actix_web::test::TestRequest::get().uri("/api/costs?window=7d");
+        dump_with(&config, "costs", "windowed", req, &app).await;
+    }
+
+    /// `503` + `C009` — the fetch fn returns `Err`, exercising the branch
+    /// that had no test (and no corpus golden) before this ticket. The
+    /// message text is fixture-derived, not from a real Postgres failure; the
+    /// golden pins the `{code, message}` shape, and consumers are documented
+    /// to switch on `code` only.
+    #[actix_web::test]
+    async fn costs_corpus_db_error() {
+        let env_lock = lock_env();
+        let _pinned = PinnedCorpusEnv::new(&env_lock, "db-error");
+        let _max_total_tokens = EnvVarGuard::unset(&env_lock, "BASTION_MAX_TOTAL_TOKENS");
+        let _max_cost_usd = EnvVarGuard::unset(&env_lock, "BASTION_MAX_COST_USD");
+
+        let config = CorpusConfig::from_env_locked(&env_lock);
+        let app = costs_fixture_service!(db_error_handler);
+        let req = actix_web::test::TestRequest::get().uri("/api/costs?window=all");
+        dump_with(&config, "costs", "db-error", req, &app).await;
     }
 }
