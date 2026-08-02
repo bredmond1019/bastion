@@ -163,16 +163,15 @@ impl Drop for EnvVarGuard {
 /// moment ago is either freshly made or was already sitting, untouched, at
 /// this guard's own backup path. Three things make that hold:
 ///
-/// - **A failed backup leaves `.env` completely untouched.** If the rename to
+/// - **A failed backup panics instead of proceeding.** If the rename to
 ///   `.env.{suffix}.bak` fails (stale file/directory at that path, a full
-///   disk, permissions), the guard does **not** write the empty stand-in —
-///   it becomes an inert no-op for its whole lifetime instead of gambling the
-///   original content on a write it can't undo. (Residual hazard: an inert
-///   guard no longer neutralizes `dotenvy`'s upward walk, so a test relying on
-///   `DATABASE_URL` being absent could silently see the real one. This is
-///   judged safer than the alternative of destroying data on the failure
-///   path; the pre-existing round-trip test still proves the happy path
-///   shadows correctly.)
+///   disk, permissions), the guard does **not** write the empty stand-in over
+///   an unbacked-up `.env` — it `panic!`s, naming both the original file and
+///   the backup path a human should investigate, and leaves `.env`
+///   byte-for-byte untouched. A loud, immediate failure here is deliberate:
+///   the whole reason this ticket exists is that the prior silent-truncation
+///   behavior went unnoticed until a human happened to look at the file by
+///   chance.
 /// - **A per-suffix marker (`.env.dotenv-shadow.active`) makes the guard
 ///   nesting-aware.** A guard that finds this marker already present treats
 ///   itself as *nested* under whichever guard created it and touches nothing
@@ -225,10 +224,6 @@ enum DotenvShadowState {
     /// `Drop` either, so we never race the guard that actually owns the
     /// backup.
     Nested,
-    /// The backup rename failed (e.g. a stale file/directory occupies the
-    /// backup path). `.env` was left completely untouched; do nothing on
-    /// `Drop`.
-    BackupFailed,
 }
 
 /// Fixed (not suffix-scoped) marker recording that *some* guard currently has
@@ -282,13 +277,27 @@ impl DotenvShadow {
                         state: DotenvShadowState::Owned(backup_path),
                     }
                 }
-                Err(_) => {
-                    // The backup failed — leave `.env` completely untouched
-                    // rather than truncating a file we could not save a copy
-                    // of. See the type doc's "residual hazard" note.
-                    Self {
-                        state: DotenvShadowState::BackupFailed,
-                    }
+                Err(err) => {
+                    // The backup failed — `.env` is still intact at this
+                    // point (the rename never moved it), and it must stay
+                    // that way: panic rather than proceed to the
+                    // unconditional `write(env_path, "")` that used to run
+                    // regardless of whether the backup actually succeeded.
+                    panic!(
+                        "DotenvShadow: failed to back up `{}` to `{}` before \
+                         shadowing it ({err}) — refusing to proceed, since \
+                         doing so would truncate the original with no copy \
+                         saved. `{}` has NOT been modified. Investigate why \
+                         the rename failed (a stale file or directory at the \
+                         backup path, a permissions issue, or a full disk), \
+                         clear whatever occupies `{}`, and retry. If `.env` \
+                         is ever found empty despite this guard, restore it \
+                         from your out-of-tree backup.",
+                        env_path.display(),
+                        backup_path.display(),
+                        env_path.display(),
+                        backup_path.display(),
+                    );
                 }
             }
         } else {
@@ -316,7 +325,7 @@ impl Drop for DotenvShadow {
                 let _ = std::fs::remove_file(env_path);
                 let _ = std::fs::remove_file(marker_path);
             }
-            DotenvShadowState::Nested | DotenvShadowState::BackupFailed => {
+            DotenvShadowState::Nested => {
                 // We never wrote anything; there is nothing to undo.
             }
         }
@@ -573,12 +582,14 @@ mod tests {
 
     #[test]
     fn dotenv_shadow_failed_backup_must_not_truncate() {
-        // Failure mode 1: `DotenvShadow::new` discards the rename error with
-        // `let _ =` and truncates `.env` regardless of whether the backup
-        // actually succeeded. Force the rename to fail by pre-creating a
-        // *directory* at the backup path, then assert the original content
-        // is still intact. Under the current implementation this fails —
-        // the file gets truncated to "" even though no backup exists.
+        // Failure mode 1: `DotenvShadow::new` used to discard the rename
+        // error with `let _ =` and truncate `.env` regardless of whether the
+        // backup actually succeeded. Force the rename to fail by
+        // pre-creating a *directory* at the backup path, then assert (a) the
+        // guard panics instead of proceeding and (b) the original content is
+        // still intact afterward. Under the pre-fix implementation this
+        // fails — `new()` returns normally and the file is truncated to ""
+        // even though no backup exists.
         let lock = lock_env();
         let dir = fixture_dir("dotenv-shadow-failed-backup");
         let _cwd = CwdGuard::enter(&lock, &dir);
@@ -587,14 +598,33 @@ mod tests {
         std::fs::create_dir_all(".env.failed_backup_fixture.bak")
             .expect("pre-create a directory at the backup path so rename fails");
 
-        let shadow = DotenvShadow::new(&lock, "failed_backup_fixture");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            DotenvShadow::new(&lock, "failed_backup_fixture")
+        }));
+
+        let panic_payload = match result {
+            Ok(_) => panic!(
+                "a failed backup must panic naming the file and the recovery \
+                 path instead of proceeding to truncate it"
+            ),
+            Err(payload) => payload,
+        };
+        let message = panic_payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic_payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        assert!(
+            message.contains(".env") && message.contains("failed_backup_fixture"),
+            "panic message must name both the original file and the backup \
+             (recovery) path; got: {message}"
+        );
+
         assert_eq!(
             std::fs::read_to_string(".env").unwrap(),
             FIXTURE_ENV_CONTENT,
-            "a failed backup must never truncate the original .env — it must \
-             panic naming the file and the recovery path instead of proceeding"
+            "a failed backup must never truncate the original .env"
         );
-        drop(shadow);
     }
 
     #[test]
