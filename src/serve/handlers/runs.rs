@@ -23,10 +23,15 @@
 
 use actix_web::{HttpResponse, web};
 use engine_serve::live_state::LiveStateStore;
+use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::config::FileConfig;
 use crate::db::workflows::{self, NodeState, RunStatus};
-use crate::serve::dto::{ErrorPayload, NodeTransitionDto, RunStateDto, RunSummaryDto, RunUsageDto};
+use crate::serve::dto::{
+    ErrorPayload, NodeTransitionDto, RepoWorkflowStateDto, RunStateDto, RunSummaryDto, RunUsageDto,
+};
+use crate::serve::handlers::status;
 use engine_contract::task_context::{NodeRunStatus, TaskContext};
 
 // ── Pure projection ──────────────────────────────────────────────────────────
@@ -191,8 +196,13 @@ fn run_timestamps(ctx: &TaskContext) -> (Option<String>, Option<String>) {
 /// `workflow_type` is always `None` today — see `RunSummaryDto`'s doc comment
 /// and the task spec's Notes for why.
 ///
+/// `repo` is passed in already-resolved (via [`resolve_repo_for_run`]) rather
+/// than resolved here, so this projection stays pure — the registry walk that
+/// resolution requires is the caller's ([`list_runs`]'s) I/O concern, gated
+/// behind `?with_repo=1` (A7).
+///
 /// Pure — no I/O.
-pub fn project_run_summary(run_id: Uuid, ctx: &TaskContext) -> RunSummaryDto {
+pub fn project_run_summary(run_id: Uuid, ctx: &TaskContext, repo: Option<String>) -> RunSummaryDto {
     let nodes = node_states_from(ctx);
     let (status, _budget_halt) = workflows::derive_run_status(&nodes, &ctx.metadata);
     let (started_at, updated_at) = run_timestamps(ctx);
@@ -204,10 +214,50 @@ pub fn project_run_summary(run_id: Uuid, ctx: &TaskContext) -> RunSummaryDto {
         spec_slug: spec_slug_from_event(&ctx.event),
         started_at,
         updated_at,
-        // The `run_id` -> `repo` join lands in Task 3 of this spec; until then this stays
-        // `None` (absent on the wire), matching today's behaviour.
-        repo: None,
+        repo,
     }
+}
+
+// ── run_id -> repo join (A7) ─────────────────────────────────────────────────
+
+/// `GET /api/runs` query params.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub struct RunsQuery {
+    /// `?with_repo=1` opts into the `run_id -> repo` join ([`resolve_repo_for_run`])
+    /// against every registered workspace's flow state (`collect_all_workflows`,
+    /// A2). Defaults to `false` (mirrors `/api/board`'s `?graph=1`, A5): Task 1's
+    /// measurement found the registry walk ~6x the unenriched baseline at 0
+    /// active runs against the live HQ registry (23 repos), so an unopted poll
+    /// (this route's hottest consumer, bastion-web's ~2-6s run rail) must not pay
+    /// for it — see `planning/ticket-run-summary-repo-join/tasks.md`'s Notes.
+    #[serde(default)]
+    pub with_repo: bool,
+}
+
+/// Resolve the repo that owns `run_id` by an **exact match** on
+/// `RepoWorkflowStateDto::run_id` — never substring, prefix, or spec-slug
+/// similarity (A7: a wrong label is strictly worse than an absent one).
+///
+/// A flow state with `run_id: None` never matches any run, including a run
+/// whose own id is (hypothetically) absent — absence must not match absence,
+/// so this function only ever compares against a concrete `run_id` string.
+///
+/// **Ambiguity guard:** if more than one flow state reports the same
+/// `run_id` (a misconfigured registry — two repos racing the same run id —
+/// should not happen in practice, but the registry is untrusted input), the
+/// **first** match in `workflows`' iteration order wins. `workflows` is
+/// expected to be `collect_all_workflows`'s output, which is already ordered
+/// `(repo name, then spec_slug)`; taking the first match therefore means the
+/// alphabetically-first repo wins, deterministically, on every call — never
+/// left to `HashMap` iteration order, which would make the response flap
+/// between requests.
+///
+/// Pure — no I/O.
+fn resolve_repo_for_run(run_id: &str, workflows: &[RepoWorkflowStateDto]) -> Option<String> {
+    workflows
+        .iter()
+        .find(|w| w.run_id.as_deref() == Some(run_id))
+        .map(|w| w.repo.clone())
 }
 
 // ── Handler helpers ──────────────────────────────────────────────────────────
@@ -230,18 +280,52 @@ fn unknown_run_response(id: Uuid) -> HttpResponse {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-/// `GET /api/runs` — the projected `RunSummaryDto` for every run currently
-/// tracked by the shared `LiveStateStore` (BA.11.T).
+/// `GET /api/runs[?with_repo=1]` — the projected `RunSummaryDto` for every
+/// run currently tracked by the shared `LiveStateStore` (BA.11.T), optionally
+/// enriched with `repo` via an exact `run_id` join against every registered
+/// workspace's flow state (A7).
 ///
 /// Returns 200 with a JSON array; `[]` when the store is empty (including
 /// when the engine is not mounted). Any run id that races out of the store
 /// between `list_active()` and `get()` (evicted by `mark_terminal`) is
 /// silently dropped from the response rather than erroring.
-pub async fn list_runs(live: web::Data<LiveStateStore>) -> HttpResponse {
-    let summaries: Vec<RunSummaryDto> = live
+///
+/// **The registry walk (`collect_all_workflows`) only runs when `with_repo`
+/// is set.** Without it, `workflows` stays an empty `Vec` and
+/// [`resolve_repo_for_run`] trivially returns `None` for every run — the
+/// unopted poll path (this route's hottest consumer, bastion-web's ~2-6s run
+/// rail) pays nothing for the join it never asked for, per Task 1's
+/// measurement and A7's Notes.
+pub async fn list_runs(
+    query: web::Query<RunsQuery>,
+    live: web::Data<LiveStateStore>,
+    registry: web::Data<FileConfig>,
+) -> HttpResponse {
+    let with_repo = query.with_repo;
+
+    let active: Vec<(Uuid, TaskContext)> = live
         .list_active()
         .into_iter()
-        .filter_map(|id| live.get(id).map(|ctx| project_run_summary(id, &ctx)))
+        .filter_map(|id| live.get(id).map(|ctx| (id, ctx)))
+        .collect();
+
+    // Thread-pool failure degrades to "no matches" rather than a 500 — `repo`
+    // absence is always a valid outcome (A7), unlike the `/api/repos*`
+    // routes' hard error mapping.
+    let workflows: Vec<RepoWorkflowStateDto> = if with_repo {
+        web::block(move || status::collect_all_workflows(&registry))
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let summaries: Vec<RunSummaryDto> = active
+        .into_iter()
+        .map(|(id, ctx)| {
+            let repo = resolve_repo_for_run(&id.to_string(), &workflows);
+            project_run_summary(id, &ctx, repo)
+        })
         .collect();
     HttpResponse::Ok().json(summaries)
 }
@@ -474,7 +558,12 @@ mod tests {
     #[actix_web::test]
     async fn list_runs_empty_store_returns_200_empty_array() {
         let live = web::Data::new(LiveStateStore::new());
-        let resp = list_runs(live).await;
+        let resp = list_runs(
+            web::Query(RunsQuery::default()),
+            live,
+            web::Data::new(FileConfig::default()),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
 
         let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
@@ -497,7 +586,12 @@ mod tests {
         );
         let live = web::Data::new(store);
 
-        let resp = list_runs(live).await;
+        let resp = list_runs(
+            web::Query(RunsQuery::default()),
+            live,
+            web::Data::new(FileConfig::default()),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
     }
 
@@ -525,7 +619,12 @@ mod tests {
         );
         let live = web::Data::new(store);
 
-        let resp = list_runs(live).await;
+        let resp = list_runs(
+            web::Query(RunsQuery::default()),
+            live,
+            web::Data::new(FileConfig::default()),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
 
         let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
@@ -561,7 +660,12 @@ mod tests {
         );
         let live = web::Data::new(store);
 
-        let resp = list_runs(live).await;
+        let resp = list_runs(
+            web::Query(RunsQuery::default()),
+            live,
+            web::Data::new(FileConfig::default()),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
 
         let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
@@ -594,7 +698,12 @@ mod tests {
         store.mark_terminal(run_id, &ctx, "SDLC_FLOW", now, now);
         let live = web::Data::new(store);
 
-        let resp = list_runs(live).await;
+        let resp = list_runs(
+            web::Query(RunsQuery::default()),
+            live,
+            web::Data::new(FileConfig::default()),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
 
         let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
@@ -857,7 +966,7 @@ mod tests {
         };
         let run_id = Uuid::new_v4();
 
-        let dto = project_run_summary(run_id, &ctx);
+        let dto = project_run_summary(run_id, &ctx, None);
 
         assert_eq!(dto.run_id, run_id.to_string());
         assert_eq!(dto.workflow_type, None);
@@ -879,7 +988,7 @@ mod tests {
             node_runs: HashMap::new(),
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx);
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None);
 
         assert_eq!(dto.spec_slug, None);
         assert_eq!(dto.status, "success");
@@ -898,7 +1007,7 @@ mod tests {
             node_runs,
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx);
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None);
         assert_eq!(dto.status, "cancelled");
     }
 
@@ -922,7 +1031,7 @@ mod tests {
             node_runs,
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx);
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None);
         assert_eq!(dto.status, "budget_halted");
     }
 
@@ -940,7 +1049,230 @@ mod tests {
             node_runs,
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx);
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None);
         assert_eq!(dto.status, "suspended");
+    }
+
+    #[test]
+    fn project_run_summary_carries_resolved_repo() {
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: HashMap::new(),
+        };
+
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, Some("bastion".to_string()));
+        assert_eq!(dto.repo, Some("bastion".to_string()));
+    }
+
+    // -- resolve_repo_for_run (A7) --
+
+    fn workflow(repo: &str, run_id: Option<&str>) -> RepoWorkflowStateDto {
+        RepoWorkflowStateDto {
+            repo: repo.to_string(),
+            spec_slug: "spec".to_string(),
+            branch: "branch".to_string(),
+            status: "running".to_string(),
+            current_task: 1,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            run_id: run_id.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn resolve_repo_for_run_exact_match_resolves() {
+        let workflows = vec![
+            workflow("bastion", Some("run-1")),
+            workflow("bella", Some("run-2")),
+        ];
+        assert_eq!(
+            resolve_repo_for_run("run-2", &workflows),
+            Some("bella".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_repo_for_run_no_match_yields_none() {
+        let workflows = vec![workflow("bastion", Some("run-1"))];
+        assert_eq!(resolve_repo_for_run("run-9", &workflows), None);
+    }
+
+    #[test]
+    fn resolve_repo_for_run_none_run_id_never_matches() {
+        // A flow state that has never seen A1's `run_id` stamp must never
+        // match a run -- absence must not match absence.
+        let workflows = vec![workflow("bastion", None)];
+        assert_eq!(resolve_repo_for_run("run-1", &workflows), None);
+    }
+
+    #[test]
+    fn resolve_repo_for_run_empty_workflows_yields_none() {
+        assert_eq!(resolve_repo_for_run("run-1", &[]), None);
+    }
+
+    #[test]
+    fn resolve_repo_for_run_ambiguous_run_id_picks_first_deterministically() {
+        // Two repos racing the same run_id (a misconfigured registry) --
+        // resolution must be deterministic (first match in `workflows`'
+        // order), never left to HashMap iteration order.
+        let workflows = vec![
+            workflow("alpha", Some("run-dup")),
+            workflow("zeta", Some("run-dup")),
+        ];
+        assert_eq!(
+            resolve_repo_for_run("run-dup", &workflows),
+            Some("alpha".to_string())
+        );
+
+        // Same duplicate pair, reversed order in the slice: the guarantee is
+        // "first in `workflows`' order", not "alphabetically first repo" --
+        // callers get alphabetical-first for free only because
+        // `collect_all_workflows` sorts by `(repo, spec_slug)` first.
+        let reversed = vec![
+            workflow("zeta", Some("run-dup")),
+            workflow("alpha", Some("run-dup")),
+        ];
+        assert_eq!(
+            resolve_repo_for_run("run-dup", &reversed),
+            Some("zeta".to_string())
+        );
+    }
+
+    // -- list_runs: ?with_repo=1 gate (A7) ---------------------------------------
+
+    /// Minimal temp-dir helper that cleans up on drop (mirrors
+    /// `handlers/status.rs`'s test helper).
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let pid = std::process::id();
+            let dir = std::env::temp_dir().join(format!("bastion_runs_handler_test_{pid}_{id}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Register one workspace (`repo-a`) with a real `sdlc-flow-state.json`
+    /// on disk whose `run_id` is `run_id`, so a test can prove whether the
+    /// registry walk that would find it actually ran.
+    fn registry_with_flow_state(run_id: &str) -> (TempDir, FileConfig) {
+        let tmp = TempDir::new();
+        let flow_path = tmp.path().join("planning/spec-a/sdlc/sdlc-flow-state.json");
+        std::fs::create_dir_all(flow_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &flow_path,
+            serde_json::json!({
+                "spec_slug": "spec-a",
+                "branch": "spec-a-flow",
+                "started_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "status": "running",
+                "current_task": 1,
+                "run_id": run_id,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-a".to_string(), tmp.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+        (tmp, registry)
+    }
+
+    fn empty_ctx() -> TaskContext {
+        TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: HashMap::new(),
+        }
+    }
+
+    #[actix_web::test]
+    async fn list_runs_without_with_repo_skips_the_registry_walk() {
+        let run_id = Uuid::new_v4();
+        let (_tmp, registry) = registry_with_flow_state(&run_id.to_string());
+
+        let live = LiveStateStore::new();
+        live.record(run_id, &empty_ctx());
+
+        let resp = list_runs(
+            web::Query(RunsQuery { with_repo: false }),
+            web::Data::new(live),
+            web::Data::new(registry),
+        )
+        .await;
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let summaries: Vec<RunSummaryDto> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(summaries.len(), 1);
+        // A real flow state with a matching run_id exists on disk, but without
+        // `?with_repo=1` the registry walk must never run: proven by the
+        // absence of the join's effect. If the walk had run, `repo` would
+        // have resolved to `Some("repo-a")` (see the sibling test below).
+        assert_eq!(
+            summaries[0].repo, None,
+            "repo must stay absent when with_repo is unset, proving the registry walk did not run"
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_runs_with_with_repo_resolves_the_join() {
+        let run_id = Uuid::new_v4();
+        let (_tmp, registry) = registry_with_flow_state(&run_id.to_string());
+
+        let live = LiveStateStore::new();
+        live.record(run_id, &empty_ctx());
+
+        let resp = list_runs(
+            web::Query(RunsQuery { with_repo: true }),
+            web::Data::new(live),
+            web::Data::new(registry),
+        )
+        .await;
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let summaries: Vec<RunSummaryDto> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].repo, Some("repo-a".to_string()));
+    }
+
+    #[actix_web::test]
+    async fn list_runs_with_with_repo_no_matching_flow_state_stays_absent() {
+        let (_tmp, registry) = registry_with_flow_state("some-other-run-id");
+
+        let live = LiveStateStore::new();
+        live.record(Uuid::new_v4(), &empty_ctx());
+
+        let resp = list_runs(
+            web::Query(RunsQuery { with_repo: true }),
+            web::Data::new(live),
+            web::Data::new(registry),
+        )
+        .await;
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let summaries: Vec<RunSummaryDto> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].repo, None);
     }
 }

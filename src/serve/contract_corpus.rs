@@ -952,6 +952,7 @@ mod runs_scenarios {
             actix_web::test::init_service(
                 actix_web::App::new()
                     .app_data(web::Data::new($store))
+                    .app_data(web::Data::new(crate::config::FileConfig::default()))
                     .service(web::resource("/api/runs").route(web::get().to(list_runs))),
             )
             .await
@@ -1149,7 +1150,12 @@ mod runs_scenarios {
         for (scenario, ctx, expected_status) in variant_scenarios() {
             let store = LiveStateStore::new();
             store.record(Uuid::new_v4(), &ctx);
-            let resp = list_runs(web::Data::new(store)).await;
+            let resp = list_runs(
+                web::Query(crate::serve::handlers::runs::RunsQuery::default()),
+                web::Data::new(store),
+                web::Data::new(crate::config::FileConfig::default()),
+            )
+            .await;
             assert_eq!(resp.status(), 200, "scenario {scenario} must return 200");
 
             let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
