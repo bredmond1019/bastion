@@ -17,9 +17,17 @@
 //! # Pure core vs I/O shell (Rule 6)
 //! [`resolve_window`], [`budget_state_dto`], [`cost_summary_dto`], and
 //! [`budget_from_config`] are pure — unit-tested directly, no filesystem/DB
-//! access. [`get_costs`] is the thin async handler: it resolves the window,
-//! loads [`Config`], fetches every run via `db::costs::fetch_all_runs` under
-//! `web::block`, then hands the pure functions the resulting `CostSummary`.
+//! access. [`get_costs_with`] carries the entire handler body — resolve
+//! window, load [`Config`], fetch every run, then hand the pure functions
+//! the resulting `CostSummary` — parameterized over the fetch function
+//! (a generic `F: FnOnce(String) -> Fut` parameter) so the contract corpus
+//! can freeze the populated `200`, budget-breached, empty, windowed, and
+//! `C009` shapes without a live Postgres. [`get_costs`] is a
+//! **compile-time-only** delegation to
+//! [`get_costs_with`] passing `db::costs::fetch_all_runs` — there is no env
+//! var, config key, or `app_data` slot by which fixture rows could reach a
+//! running `bastion serve`; the only way to supply fake rows is test code
+//! linking against `get_costs_with` directly.
 //!
 //! # Error mapping
 //! - Unparseable `window` → 400 + `C006` (invalid input).
@@ -31,6 +39,8 @@
 //! - `web::block` thread-pool failure → 500 + `C010`, mirroring
 //!   `handlers/board.rs::blocking_error_response`.
 
+use std::future::Future;
+
 use actix_web::{HttpResponse, web};
 use serde::Deserialize;
 
@@ -38,6 +48,7 @@ use crate::config::Config;
 use crate::costs::budget::{Budget, GateVerdict, Spend, evaluate};
 use crate::costs::{CostSummary, Window, aggregate, parse_window};
 use crate::db::costs as db_costs;
+use crate::db::workflows::WorkflowRun;
 use crate::serve::dto::{BudgetBreachDto, BudgetStateDto, CostSummaryDto, ErrorPayload};
 
 /// Window applied when `?window=` is absent or empty: the last 7 days,
@@ -202,7 +213,38 @@ fn blocking_error_response(err: actix_web::error::BlockingError) -> HttpResponse
 /// a request without a valid token never reaches this handler (401
 /// upstream). Mounts unconditionally: a missing/unreachable database is
 /// answered as a typed error response here, not an absent route.
+///
+/// A thin, **compile-time-only** delegation to [`get_costs_with`], passing
+/// `db::costs::fetch_all_runs` as the fetch function. There is deliberately
+/// no env var, config key, `app_data` entry, or CLI flag that could swap
+/// this for a different fetch function at runtime — only test code linking
+/// against `get_costs_with` directly can supply fixture rows.
 pub async fn get_costs(query: web::Query<CostsQuery>) -> HttpResponse {
+    get_costs_with(query, |db_url| async move {
+        db_costs::fetch_all_runs(&db_url).await
+    })
+    .await
+}
+
+/// The entire `GET /api/costs` handler body, parameterized over the
+/// runs-fetching function `fetch_runs`.
+///
+/// `fetch_runs` is resolved at **compile time** as a generic type parameter
+/// (`F: FnOnce(String) -> Fut`), not injected via any runtime mechanism.
+/// Production calls this through [`get_costs`] with `db::costs::fetch_all_runs`;
+/// the contract corpus (`serve::contract_corpus::costs_scenarios`) calls it
+/// directly with a closure over fixture rows so the populated `200`,
+/// budget-breached, empty, windowed, and `C009` shapes can be frozen without
+/// a live Postgres.
+///
+/// Resolves the window first — an unparseable `?window=` returns 400/`C006`
+/// **before `fetch_runs` is ever invoked** (see the corpus's `bad-window`
+/// golden, and the `unparseable_window_never_invokes_fetch` test below).
+pub async fn get_costs_with<F, Fut>(query: web::Query<CostsQuery>, fetch_runs: F) -> HttpResponse
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = anyhow::Result<Vec<WorkflowRun>>>,
+{
     let window = match resolve_window(query.window.as_deref()) {
         Ok(w) => w,
         Err(e) => return invalid_window_response(e),
@@ -213,7 +255,7 @@ pub async fn get_costs(query: web::Query<CostsQuery>) -> HttpResponse {
         Err(e) => return config_error_response(e),
     };
 
-    let runs = match db_costs::fetch_all_runs(&config.database_url).await {
+    let runs = match fetch_runs(config.database_url.clone()).await {
         Ok(runs) => runs,
         Err(e) => return db_error_response(e),
     };
@@ -502,5 +544,151 @@ mod tests {
         assert_eq!(dto.totals.tokens_out, summary.totals.tokens_out);
         assert_eq!(dto.totals.usd, summary.totals.usd);
         assert_eq!(dto.unpriced_models, summary.unpriced_models);
+    }
+
+    // ─── get_costs_with (compile-time fetch seam) ──────────────────────────
+
+    /// Env discipline mirrors `contract_corpus::costs_scenarios`: one
+    /// [`crate::testsupport::lock_env`] per test held for the whole test,
+    /// every mutation through `EnvVarGuard`, `DotenvShadow` to neutralize
+    /// `dotenvy`'s upward `.env` walk, `XDG_CONFIG_HOME` pointed at an empty
+    /// temp dir so no developer config file can supply a `database_url` or a
+    /// budget cap, and `DATABASE_URL` set to an unroutable dummy that is
+    /// never actually connected to (the fetch function is faked).
+    struct PinnedEnv {
+        _lock: crate::testsupport::EnvLock,
+        _dotenv: crate::testsupport::DotenvShadow,
+        _database_url: crate::testsupport::EnvVarGuard,
+        _max_total_tokens: crate::testsupport::EnvVarGuard,
+        _max_cost_usd: crate::testsupport::EnvVarGuard,
+        _xdg: crate::testsupport::EnvVarGuard,
+        empty_config_home: std::path::PathBuf,
+    }
+
+    impl PinnedEnv {
+        fn new(label: &str) -> Self {
+            let lock = crate::testsupport::lock_env();
+            let dotenv = crate::testsupport::DotenvShadow::new(&lock, label);
+            let database_url = crate::testsupport::EnvVarGuard::set(
+                &lock,
+                "DATABASE_URL",
+                "postgres://corpus@127.0.0.1:1/corpus",
+            );
+            let max_total_tokens =
+                crate::testsupport::EnvVarGuard::unset(&lock, "BASTION_MAX_TOTAL_TOKENS");
+            let max_cost_usd =
+                crate::testsupport::EnvVarGuard::unset(&lock, "BASTION_MAX_COST_USD");
+
+            let empty_config_home =
+                crate::testsupport::unique_temp_dir(&format!("bastion-costs-handler-{label}"));
+            std::fs::create_dir_all(&empty_config_home).unwrap();
+            let xdg = crate::testsupport::EnvVarGuard::set(
+                &lock,
+                "XDG_CONFIG_HOME",
+                empty_config_home.to_str().expect("temp path must be UTF-8"),
+            );
+
+            Self {
+                _lock: lock,
+                _dotenv: dotenv,
+                _database_url: database_url,
+                _max_total_tokens: max_total_tokens,
+                _max_cost_usd: max_cost_usd,
+                _xdg: xdg,
+                empty_config_home,
+            }
+        }
+    }
+
+    impl Drop for PinnedEnv {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.empty_config_home);
+        }
+    }
+
+    async fn body_json<T: serde::de::DeserializeOwned>(resp: HttpResponse) -> T {
+        let bytes = actix_web::body::to_bytes(resp.into_body())
+            .await
+            .expect("response body must be readable");
+        serde_json::from_slice(&bytes).expect("response body must be valid JSON for T")
+    }
+
+    #[actix_web::test]
+    async fn get_costs_with_fixture_rows_matches_aggregate_and_dto() {
+        let _env = PinnedEnv::new("populated");
+
+        let cheap = make_run(
+            "cheap-pipeline",
+            vec![make_node("claude-3-5-haiku-20241022", 100, 50)],
+        );
+        let expensive = make_run(
+            "expensive-pipeline",
+            vec![make_node("some-unpriced-model", 1000, 500)],
+        );
+        let runs = vec![cheap, expensive];
+        let expected_summary = aggregate(&runs, &Window::All, chrono::Utc::now());
+        let expected_dto = cost_summary_dto(&expected_summary, &Window::All, &Budget::default());
+
+        let query = web::Query::<CostsQuery>(CostsQuery {
+            window: Some("all".to_owned()),
+        });
+        let resp = get_costs_with(query, move |_db_url| async move { Ok(runs) }).await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+        let dto: CostSummaryDto = body_json(resp).await;
+        assert_eq!(dto.window, expected_dto.window);
+        assert_eq!(dto.rows.len(), expected_dto.rows.len());
+        for (got, want) in dto.rows.iter().zip(expected_dto.rows.iter()) {
+            assert_eq!(got.workflow_name, want.workflow_name);
+            assert_eq!(got.usd, want.usd);
+        }
+        assert_eq!(dto.totals.usd, expected_dto.totals.usd);
+        assert_eq!(dto.unpriced_models, expected_dto.unpriced_models);
+        assert!(!dto.budget.breached);
+    }
+
+    #[actix_web::test]
+    async fn get_costs_with_fetch_err_returns_503_c009() {
+        let _env = PinnedEnv::new("db-error");
+
+        let query = web::Query::<CostsQuery>(CostsQuery { window: None });
+        let resp = get_costs_with(query, |_db_url| async move {
+            Err::<Vec<WorkflowRun>, _>(anyhow::anyhow!("simulated fetch failure"))
+        })
+        .await;
+
+        assert_eq!(
+            resp.status(),
+            actix_web::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        let payload: ErrorPayload = body_json(resp).await;
+        assert_eq!(payload.code, "C009");
+    }
+
+    #[actix_web::test]
+    async fn get_costs_with_unparseable_window_never_invokes_fetch() {
+        // No env pinning needed at all — this is itself part of the
+        // contract: `resolve_window` must run before any `Config::load` or
+        // fetch call, so this response is produced with no env/database
+        // dependency whatsoever.
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let invoked_for_closure = std::sync::Arc::clone(&invoked);
+
+        let query = web::Query::<CostsQuery>(CostsQuery {
+            window: Some("nonsense".to_owned()),
+        });
+        let resp = get_costs_with(query, move |_db_url| {
+            invoked_for_closure.store(true, std::sync::atomic::Ordering::SeqCst);
+            async move { Ok(Vec::<WorkflowRun>::new()) }
+        })
+        .await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::BAD_REQUEST);
+        let payload: ErrorPayload = body_json(resp).await;
+        assert_eq!(payload.code, "C006");
+        assert!(
+            !invoked.load(std::sync::atomic::Ordering::SeqCst),
+            "fetch_runs must not be invoked when the window fails to parse"
+        );
     }
 }
