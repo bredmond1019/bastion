@@ -691,6 +691,19 @@ export interface EpicDto {
 	description?: string;
 	/** Lifecycle: `"active"` · `"paused"` · `"complete"`. */
 	status?: string;
+	/**
+	 * Authored initiative weight, carried verbatim from `okf_core::Epic.weight`.
+	 * 
+	 * Range policy (`0..=100`) is mev's, enforced by its `check_epics`
+	 * (`E_STATE_EPIC_BAD_WEIGHT`) — bastion never clamps, defaults, or
+	 * range-checks it, so an out-of-policy authored value reaches the wire
+	 * unchanged rather than being silently corrected here.
+	 * 
+	 * `null` on the wire means unauthored (a consumer default applies —
+	 * bastion-web currently falls back to 60), which stays distinguishable
+	 * from an authored `0`.
+	 */
+	weight?: number;
 	/** Repo-relative path to the owning master-plan / plan doc, when one exists. */
 	plan?: string;
 	/** Repos the initiative is expected to touch — an authored hint for readers. */

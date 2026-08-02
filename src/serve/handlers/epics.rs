@@ -88,6 +88,9 @@ pub fn build_epics(registry: &[Epic], files: &[(StateSource, StateFile)]) -> Vec
                 title: epic.title.clone(),
                 description: epic.description.clone(),
                 status: epic.status.clone(),
+                // Verbatim passthrough — mev's `check_epics` owns the 0..=100
+                // range policy, so bastion never clamps or defaults it.
+                weight: epic.weight,
                 plan: epic.plan.clone(),
                 repos: epic.repos.clone(),
                 closed: p.closed as u32,
@@ -413,13 +416,13 @@ mod tests {
     }
 
     #[test]
-    fn build_epics_maps_all_six_fields() {
+    fn build_epics_maps_all_seven_fields() {
         let epic = Epic {
             slug: "bastion-surfaces".to_owned(),
             title: "Bastion Surfaces".to_owned(),
             description: Some("Cross-repo surfaces initiative".to_owned()),
             status: Some("active".to_owned()),
-            weight: None,
+            weight: Some(80),
             plan: Some("core/planning/master-plan.md".to_owned()),
             repos: vec!["bastion".to_owned(), "bastion-ui".to_owned()],
         };
@@ -434,6 +437,11 @@ mod tests {
             Some("Cross-repo surfaces initiative")
         );
         assert_eq!(dto.status.as_deref(), Some("active"));
+        assert_eq!(
+            dto.weight,
+            Some(80),
+            "authored weight must survive verbatim"
+        );
         assert_eq!(dto.plan.as_deref(), Some("core/planning/master-plan.md"));
         assert_eq!(
             dto.repos,
@@ -452,6 +460,39 @@ mod tests {
         assert!(dtos[0].status.is_none());
         assert!(dtos[0].plan.is_none());
         assert!(dtos[0].repos.is_empty());
+        assert!(
+            dtos[0].weight.is_none(),
+            "an unauthored weight must stay None"
+        );
+    }
+
+    #[test]
+    fn build_epics_passes_out_of_policy_weight_through_untouched() {
+        // mev's `check_epics` owns the 0..=100 range policy
+        // (`E_STATE_EPIC_BAD_WEIGHT`). bastion derives nothing: an out-of-policy
+        // authored value must reach the DTO unclamped, not be silently corrected.
+        let epic = Epic {
+            weight: Some(200),
+            ..sample_epic("out-of-policy")
+        };
+        let dtos = build_epics(std::slice::from_ref(&epic), &[]);
+        assert_eq!(dtos[0].weight, Some(200));
+    }
+
+    #[test]
+    fn build_epics_preserves_boundary_weights_verbatim() {
+        for authored in [0u8, 100u8, 255u8] {
+            let epic = Epic {
+                weight: Some(authored),
+                ..sample_epic("boundary")
+            };
+            let dtos = build_epics(std::slice::from_ref(&epic), &[]);
+            assert_eq!(
+                dtos[0].weight,
+                Some(authored),
+                "weight {authored} must pass through unchanged"
+            );
+        }
     }
 
     #[test]
