@@ -285,31 +285,24 @@ impl DotenvShadow {
         let marker_path = std::path::Path::new(DOTENV_SHADOW_MARKER);
         let backup_path = PathBuf::from(format!(".env.{suffix}.bak"));
 
-        // A backup already sitting at *our own* suffix means a prior guard
-        // using this exact suffix was interrupted before its `Drop` ran.
-        // Adopt it rather than overwriting it — it is the only copy of the
-        // real content that guard captured.
-        if backup_path.is_file() {
-            let _ = std::fs::write(env_path, "");
-            let _ = std::fs::write(marker_path, suffix);
-            return Self {
-                state: DotenvShadowState::Adopted(backup_path),
-            };
-        }
-
-        // Claim the marker **atomically, before touching `.env` at all**.
-        // `create_new(true)` is `O_CREAT | O_EXCL`: exactly one caller can
-        // win, even across processes, so this is a real mutex rather than an
-        // advisory check.
+        // Claim the marker **atomically, before touching `.env` at all —
+        // including before checking whether a stale backup already sits at
+        // our own suffix.** `create_new(true)` is `O_CREAT | O_EXCL`: exactly
+        // one caller can win, even across processes, so this is a real mutex
+        // rather than an advisory check.
         //
-        // The ordering is load-bearing. Claiming *after* the rename (as the
-        // first cut of this guard did) leaves a window in which `.env` has
-        // already been moved aside but no marker exists yet — a second
-        // process arriving there sees no marker *and* no `.env`, takes the
-        // `NoOriginal` branch, and on `Drop` removes the `.env` the first
-        // guard had just restored. That window was microseconds rather than
-        // the whole test duration, but it was reachable with *distinct*
-        // suffixes, which is exactly the case the marker exists to cover.
+        // The ordering is load-bearing, for two distinct reasons. Claiming
+        // *after* the rename (as the first cut of this guard did) leaves a
+        // window in which `.env` has already been moved aside but no marker
+        // exists yet — a second process arriving there sees no marker *and*
+        // no `.env`, takes the `NoOriginal` branch, and on `Drop` removes the
+        // `.env` the first guard had just restored. And claiming *after* the
+        // adopt check (the bug this ordering fixes) let a guard that finds a
+        // stale `.bak` at its own suffix truncate `.env` and clobber the
+        // marker unconditionally, even while a *different* suffix's guard
+        // currently owns it — destroying that live owner's state. Winning
+        // this claim first means every branch below already knows no other
+        // guard is live.
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -320,11 +313,28 @@ impl DotenvShadow {
                 let _ = marker.write_all(suffix.as_bytes());
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Some other guard is already shadowing `.env`. Its backup is
-                // the only one that matters; touch nothing, undo nothing.
-                return Self {
-                    state: DotenvShadowState::Nested,
-                };
+                // A marker is already on disk. Distinguish *whose* it is
+                // before deciding what to do: the marker's own content is
+                // the suffix that claimed it, so a marker holding **our**
+                // suffix is not a live competing guard — it is the stale
+                // remnant of an earlier run using this exact suffix that was
+                // killed before its `Drop` released the claim (the recovery
+                // case this whole type exists for). Reclaiming it is safe
+                // because it is, in every sense that matters, the *same*
+                // guard resuming: nothing else can be using this suffix
+                // concurrently without itself already having lost this same
+                // race. A marker holding any *other* suffix is a genuinely
+                // live guard; its backup is the only one that matters, so we
+                // touch nothing and undo nothing — including when we happen
+                // to have a stale `.bak` sitting at our own suffix. That
+                // stale copy is not going anywhere; it stays parked for our
+                // next attempt.
+                let existing_suffix = std::fs::read_to_string(marker_path).unwrap_or_default();
+                if existing_suffix != suffix {
+                    return Self {
+                        state: DotenvShadowState::Nested,
+                    };
+                }
             }
             Err(err) => panic!(
                 "DotenvShadow: failed to claim the shadow marker `{}` ({err}) \
@@ -335,6 +345,49 @@ impl DotenvShadow {
                 env_path.display(),
                 env_path.display(),
             ),
+        }
+
+        // A backup already sitting at *our own* suffix means a prior guard
+        // using this exact suffix was interrupted before its `Drop` ran.
+        // Adopt it rather than overwriting it — it is the only copy of the
+        // real content that guard captured. We only reach this check after
+        // winning the marker claim above, so no live owner under another
+        // suffix can be disturbed by taking it.
+        //
+        // Whatever currently occupies `.env` is not necessarily the same
+        // thing as that stale backup's content — it may be live, more-recent
+        // content that arrived after the killed run wrote its `.bak` — so it
+        // is backed up to a distinct, non-restored path before the empty
+        // stand-in is written over it. That keeps the adopt path from ever
+        // truncating unbacked-up content, without discarding the recovery
+        // this branch exists for (the adopted `.bak` remains what `Drop`
+        // restores).
+        if backup_path.is_file() {
+            if env_path.exists() {
+                let preadopt_backup = PathBuf::from(format!(".env.{suffix}.pre-adopt.bak"));
+                if let Err(err) = std::fs::rename(env_path, &preadopt_backup) {
+                    // Release the claim first — see the matching rationale on
+                    // the owned-path panic below.
+                    let _ = std::fs::remove_file(marker_path);
+                    panic!(
+                        "DotenvShadow: found a stale backup at `{}` (from an \
+                         interrupted prior run) but failed to back up the \
+                         *current* `{}` to `{}` before adopting it ({err}) — \
+                         refusing to proceed, since doing so would discard \
+                         whatever is currently in `{}` with no copy saved. \
+                         `{}` has NOT been modified.",
+                        backup_path.display(),
+                        env_path.display(),
+                        preadopt_backup.display(),
+                        env_path.display(),
+                        env_path.display(),
+                    );
+                }
+            }
+            let _ = std::fs::write(env_path, "");
+            return Self {
+                state: DotenvShadowState::Adopted(backup_path),
+            };
         }
 
         if env_path.exists() {
@@ -828,6 +881,153 @@ mod tests {
             !std::path::Path::new(DOTENV_SHADOW_MARKER).exists(),
             "the owner must release the marker on drop — a leaked marker makes \
              every later guard a silent no-op"
+        );
+    }
+
+    #[test]
+    fn adopted_branch_does_not_truncate_an_unbacked_env() {
+        // The adopted-branch defect (`ticket-dotenv-shadow-adopted-branch`):
+        // the pre-fix implementation checked for a stale backup at its own
+        // suffix *before* claiming the marker, and truncated `.env` on the
+        // spot with no fresh backup — on the assumption that the stale
+        // `.bak` was still the authoritative copy of current content. Seed a
+        // fixture where that assumption is false: content A is currently in
+        // `.env`, but the stale `.bak` holds *different* content B (as if
+        // captured by an interrupted run before A ever arrived). Constructing
+        // and dropping a guard must never leave A irrecoverable — under the
+        // pre-fix code A is destroyed outright and B is restored over it.
+        let lock = lock_env();
+        let dir = fixture_dir("dotenv-shadow-adopt-unbacked");
+        let _cwd = CwdGuard::enter(&lock, &dir);
+
+        const CONTENT_A: &str = "DATABASE_URL=postgres://current-a@localhost/a\n";
+        const CONTENT_B: &str = "DATABASE_URL=postgres://stale-b@localhost/b\n";
+
+        std::fs::write(".env", CONTENT_A).expect("seed fixture .env with content A");
+        std::fs::write(".env.adopt_unbacked.bak", CONTENT_B)
+            .expect("seed a stale backup at this guard's own suffix with content B");
+
+        let guard = DotenvShadow::new(&lock, "adopt_unbacked");
+
+        // Content A must have been preserved somewhere on disk the moment the
+        // guard decided to overwrite `.env` — not silently discarded.
+        let preadopt_backup = std::path::Path::new(".env.adopt_unbacked.pre-adopt.bak");
+        assert!(
+            preadopt_backup.is_file(),
+            "adopting a stale backup must first save whatever is currently in \
+             `.env` to a distinct, non-clobbered path — found no such file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(preadopt_backup).unwrap(),
+            CONTENT_A,
+            "the pre-adopt backup must hold content A byte-for-byte — it is \
+             the only remaining copy of what was live in `.env`"
+        );
+
+        drop(guard);
+
+        // `Drop` restores the adopted backup (content B, the recovery this
+        // branch exists for) — but A must still be recoverable from the
+        // pre-adopt backup left beside it, not gone.
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            CONTENT_B,
+            "dropping an adopted guard must restore the adopted backup"
+        );
+        assert_eq!(
+            std::fs::read_to_string(preadopt_backup).unwrap(),
+            CONTENT_A,
+            "content A must still be sitting, untouched, at the pre-adopt \
+             backup path after the guard has dropped — it is never left \
+             irrecoverable"
+        );
+    }
+
+    #[test]
+    fn adopted_branch_does_not_clobber_a_live_owners_marker() {
+        // The second half of the adopted-branch defect: a latecomer whose own
+        // suffix happens to have a stale `.bak` sitting next to it must not
+        // be able to steal or overwrite a live owner's marker claim. Under
+        // the pre-fix code the adopt check ran *before* the marker claim, so
+        // the latecomer unconditionally `fs::write`'d the marker (clobbering
+        // the owner's claim) and truncated `.env` — actively destroying the
+        // owner's stand-in while the owner still believed it held the lock.
+        let lock = lock_env();
+        let dir = fixture_dir("dotenv-shadow-adopt-clobber");
+        let _cwd = CwdGuard::enter(&lock, &dir);
+
+        std::fs::write(".env", FIXTURE_ENV_CONTENT).expect("seed fixture .env");
+
+        // Owner claims the marker under suffix X first.
+        let owner = DotenvShadow::new(&lock, "adopt_clobber_owner_x");
+        assert!(
+            std::path::Path::new(DOTENV_SHADOW_MARKER).exists(),
+            "sanity check: the owner must hold the marker"
+        );
+        let marker_contents_before =
+            std::fs::read_to_string(DOTENV_SHADOW_MARKER).expect("read the claimed marker");
+        assert_eq!(marker_contents_before, "adopt_clobber_owner_x");
+
+        // A stale backup sitting at a *different* suffix Y, as if left behind
+        // by some earlier interrupted run that used that suffix.
+        std::fs::write(
+            ".env.adopt_clobber_latecomer_y.bak",
+            "stale content from suffix Y",
+        )
+        .expect("seed a stale backup at the latecomer's suffix");
+
+        // The latecomer arrives while the owner is still live.
+        let latecomer = DotenvShadow::new(&lock, "adopt_clobber_latecomer_y");
+
+        // The owner's marker claim must survive untouched — not overwritten
+        // with the latecomer's suffix.
+        assert_eq!(
+            std::fs::read_to_string(DOTENV_SHADOW_MARKER).unwrap(),
+            "adopt_clobber_owner_x",
+            "a latecomer with a stale backup at its own suffix must not \
+             overwrite a live owner's marker claim"
+        );
+
+        // The owner's stand-in `.env` must be untouched by the latecomer's
+        // construction.
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            "",
+            "the latecomer must not touch `.env` while the owner is live"
+        );
+
+        drop(latecomer);
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            "",
+            "a latecomer's drop must not disturb the owner's stand-in either"
+        );
+        assert_eq!(
+            std::fs::read_to_string(DOTENV_SHADOW_MARKER).unwrap(),
+            "adopt_clobber_owner_x",
+            "the owner's marker must still be intact after the latecomer has \
+             come and gone"
+        );
+
+        drop(owner);
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            FIXTURE_ENV_CONTENT,
+            "the owner must still restore the real content after a latecomer \
+             that lost the race has come and gone"
+        );
+        assert!(
+            !std::path::Path::new(DOTENV_SHADOW_MARKER).exists(),
+            "the owner must release the marker on drop"
+        );
+        // The latecomer's stale backup at suffix Y must have been left
+        // completely alone — it was never adopted because the latecomer lost
+        // the marker race before ever reaching the adopt check.
+        assert_eq!(
+            std::fs::read_to_string(".env.adopt_clobber_latecomer_y.bak").unwrap(),
+            "stale content from suffix Y",
+            "a latecomer that loses the marker race must never touch its own \
+             stale backup either"
         );
     }
 
