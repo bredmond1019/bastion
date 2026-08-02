@@ -539,8 +539,12 @@ mod tests {
     /// a DATABASE_URL. This test removes it and calls every pure helper.
     #[test]
     fn pure_helpers_require_no_database_url() {
-        // Safety: single-threaded test; no other thread reads this env var.
-        unsafe { std::env::remove_var("DATABASE_URL") };
+        // The old "single-threaded test" safety note was wrong — under
+        // `cargo test` this is one thread of a shared process, and the bare
+        // `remove_var` both raced concurrent readers and never restored the
+        // value. See `crate::testsupport` for the crate-wide discipline.
+        let env_lock = crate::testsupport::lock_env();
+        let _database_url = crate::testsupport::EnvVarGuard::unset(&env_lock, "DATABASE_URL");
 
         let prompt = PathBuf::from("/tmp/prompt.txt");
         let out = PathBuf::from("/tmp/answer.json");

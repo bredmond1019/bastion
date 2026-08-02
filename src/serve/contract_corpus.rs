@@ -146,6 +146,65 @@ fn should_write() -> bool {
     std::env::var(DUMP_ENV_VAR).as_deref() == Ok("1")
 }
 
+/// The corpus root + generate-vs-verify mode a [`dump`] call should use,
+/// **taken by parameter** rather than re-read from process env at each use
+/// site (CLAUDE.md rule 6: a thin I/O shell over a pure core).
+///
+/// This split is what makes the harness's own tests race-free: they construct
+/// a `CorpusConfig` directly and never touch process env, so they cannot
+/// clobber the `BASTION_*` values a concurrently-running scenario test is
+/// reading. Only [`CorpusConfig::from_env`] reads env, and it does so under
+/// the one process-wide env lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorpusConfig {
+    /// Root directory goldens are written to / verified against.
+    pub dir: PathBuf,
+    /// `true` = GENERATE (write); `false` = VERIFY (compare). Fail-safe
+    /// default is VERIFY.
+    pub write: bool,
+}
+
+impl CorpusConfig {
+    /// Snapshot the env-driven configuration (`BASTION_DUMP_CORPUS`,
+    /// `BASTION_CONTRACT_CORPUS_DIR`) **under the process-wide env lock**,
+    /// then release it.
+    ///
+    /// Releasing before returning is deliberate and load-bearing:
+    /// `crate::testsupport::lock_env` is a non-reentrant `std::sync::Mutex`
+    /// and [`dump`] goes on to `.await` real actix dispatch. Holding across
+    /// the await would both deadlock any caller that already holds the lock
+    /// and trip clippy's `await_holding_lock`. A snapshot is sufficient: any
+    /// test that mutates these vars holds the same lock for the whole
+    /// lifetime of its [`crate::testsupport::EnvVarGuard`], so this read can
+    /// never interleave with a mutation.
+    ///
+    /// Callers must **not** already hold the env lock — see the lock
+    /// discipline in `crate::testsupport`.
+    #[must_use]
+    pub fn from_env() -> Self {
+        let env = crate::testsupport::lock_env();
+        Self::from_env_locked(&env)
+    }
+
+    /// [`CorpusConfig::from_env`] for a caller that **already holds** the env
+    /// lock. Split out precisely so that acquiring the lock twice on one
+    /// thread — which would deadlock — is never necessary.
+    #[must_use]
+    pub fn from_env_locked(_lock: &crate::testsupport::EnvLock) -> Self {
+        Self {
+            dir: corpus_dir(),
+            write: should_write(),
+        }
+    }
+
+    /// Compute the on-disk path for a given (route, scenario) pair:
+    /// `<dir>/<route_name>__<scenario>.json`. Pure — no I/O, no env.
+    #[must_use]
+    pub fn golden_path(&self, route_name: &str, scenario: &str) -> PathBuf {
+        self.dir.join(format!("{route_name}__{scenario}.json"))
+    }
+}
+
 /// Matches an RFC3339 timestamp value (e.g. `2026-07-31T12:00:00Z` or
 /// `2026-07-31T12:00:00.123456+00:00`) **or** a bare `YYYY-MM-DD` calendar
 /// date (e.g. `2026-07-31`, as `AttentionDto::as_of` and the
@@ -265,9 +324,14 @@ fn build_golden(status_code: u16, body_bytes: &[u8]) -> serde_json::Value {
 /// Write the golden to disk (GENERATE mode) or verify it against the
 /// checked-in copy (VERIFY mode — the default, so a normal `cargo test` run
 /// enforces the corpus rather than rewriting it).
-fn write_or_verify(route_name: &str, scenario: &str, golden: &serde_json::Value) {
-    let path = golden_path(route_name, scenario);
-    if should_write() {
+fn write_or_verify(
+    config: &CorpusConfig,
+    route_name: &str,
+    scenario: &str,
+    golden: &serde_json::Value,
+) {
+    let path = config.golden_path(route_name, scenario);
+    if config.write {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap_or_else(|e| {
                 panic!("contract corpus dump: could not create {parent:?}: {e}")
@@ -317,11 +381,31 @@ where
     E: std::fmt::Debug,
     B: MessageBody,
 {
+    dump_with(&CorpusConfig::from_env(), route_name, scenario, req, app).await;
+}
+
+/// [`dump`] with the corpus root + mode supplied explicitly instead of read
+/// from process env.
+///
+/// This is the real work; `dump` is the thin env-reading shell over it. Tests
+/// of the harness itself use this form so they need no env mutation at all —
+/// which is why they can no longer race the scenario tests that call `dump`.
+pub async fn dump_with<S, B, E>(
+    config: &CorpusConfig,
+    route_name: &str,
+    scenario: &str,
+    req: test::TestRequest,
+    app: &S,
+) where
+    S: Service<actix_http::Request, Response = ServiceResponse<B>, Error = E>,
+    E: std::fmt::Debug,
+    B: MessageBody,
+{
     let resp = test::call_service(app, req.to_request()).await;
     let status_code = resp.status().as_u16();
     let body_bytes = test::read_body(resp).await;
     let golden = build_golden(status_code, &body_bytes);
-    write_or_verify(route_name, scenario, &golden);
+    write_or_verify(config, route_name, scenario, &golden);
 }
 
 #[cfg(test)]
@@ -332,63 +416,50 @@ mod harness_tests {
     // macro used below. `actix_web::test::*` items are referenced with their
     // full path (`actix_web::test::TestRequest`, etc.) instead.
     use super::{
-        CORPUS_DIR_OVERRIDE_ENV_VAR, DUMP_ENV_VAR, build_golden, dump, golden_path,
-        redact_string_value, redact_value, should_write,
+        CORPUS_DIR_OVERRIDE_ENV_VAR, CorpusConfig, DUMP_ENV_VAR, build_golden, dump_with,
+        golden_path, redact_string_value, redact_value, should_write,
     };
+    use crate::testsupport::{EnvVarGuard, lock_env};
     use actix_web::{App, HttpResponse, web};
     use std::path::PathBuf;
 
-    /// Serializes every test in this module that mutates the process-wide
-    /// `DUMP_ENV_VAR`/`CORPUS_DIR_OVERRIDE_ENV_VAR` env vars via
-    /// [`EnvVarGuard`]. `cargo test`'s default in-process thread parallelism
-    /// means two tests racing to set/unset the same env var can observe each
-    /// other's state (this bit in practice: one test's
-    /// `CORPUS_DIR_OVERRIDE_ENV_VAR` override was briefly overwritten by a
-    /// concurrently-running sibling test's own override, so `dump()` wrote to
-    /// or looked for the golden in the *wrong* temp dir); `cargo nextest`
-    /// isolates each test in its own process and would not need this, but the
-    /// lock keeps both runners correct. Mirrors `DATABASE_URL_ENV_LOCK` in
-    /// `src/serve/mod.rs`'s test module.
-    static CORPUS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// RAII guard that sets an env var for the duration of a test and always
-    /// restores the previous value on drop (including on panic/unwind), so a
-    /// `#[should_panic]` test never leaks its override into a sibling test
-    /// within the same process. Every caller must hold
-    /// [`CORPUS_ENV_LOCK`] for as long as the guard is alive.
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: serialized by `CORPUS_ENV_LOCK`, held by every caller —
-            // no other test in this module reads or writes these env vars
-            // while the guard is held; mirrors the existing
-            // `unsafe { std::env::set_var(..) }` pattern already used by
-            // `src/serve/mod.rs`'s test module for `DATABASE_URL`.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            unsafe {
-                match &self.previous {
-                    Some(v) => std::env::set_var(self.key, v),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    // ── Env discipline ─────────────────────────────────────────────────────
+    //
+    // The module-local `CORPUS_ENV_LOCK` + `EnvVarGuard` that used to live
+    // here were **not enough**, and that was the bug: they serialized the
+    // *writers* in this module against each other, but the ~60 corpus
+    // scenario tests in the sibling `*_scenarios` modules read
+    // `BASTION_DUMP_CORPUS` / `BASTION_CONTRACT_CORPUS_DIR` (via `dump`)
+    // while holding no lock at all. A harness test's temp-dir override was
+    // therefore routinely observed by a scenario test, which then looked for
+    // its golden in the harness's scratch directory and failed with
+    // "missing checked-in golden" — reproducible in roughly half of all full
+    // `cargo test` runs at `--test-threads=24`, and never once under
+    // `cargo nextest` (process-per-test).
+    //
+    // Both halves are now fixed, and the two halves are independent:
+    //
+    // 1. **Readers**: `dump` snapshots its config through
+    //    `CorpusConfig::from_env`, which takes `crate::testsupport::lock_env`
+    //    for the duration of the read.
+    // 2. **Writers**: the three end-to-end `dump*` tests below no longer
+    //    mutate env at all — they pass a `CorpusConfig` by parameter. Only
+    //    the four tests that exist *to* exercise the env plumbing still
+    //    mutate it, and they do so through the crate-wide
+    //    `crate::testsupport::EnvVarGuard` under `lock_env()`.
+    //
+    // Any new test here that touches env must take `lock_env()` once at the
+    // top and mutate only via `EnvVarGuard`. See `crate::testsupport`'s
+    // module docs for the full discipline (it is not reentrant).
 
     #[test]
     fn golden_path_builds_expected_route_scenario_filename() {
-        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _dir_guard = EnvVarGuard::set(CORPUS_DIR_OVERRIDE_ENV_VAR, "types/contract-corpus");
+        let env_lock = lock_env();
+        let _dir_guard = EnvVarGuard::set(
+            &env_lock,
+            CORPUS_DIR_OVERRIDE_ENV_VAR,
+            "types/contract-corpus",
+        );
         let path = golden_path("runs", "empty");
         assert_eq!(
             path,
@@ -398,10 +469,48 @@ mod harness_tests {
 
     #[test]
     fn golden_path_respects_corpus_dir_override() {
-        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _dir_guard = EnvVarGuard::set(CORPUS_DIR_OVERRIDE_ENV_VAR, "/tmp/some-override-dir");
+        let env_lock = lock_env();
+        let _dir_guard = EnvVarGuard::set(
+            &env_lock,
+            CORPUS_DIR_OVERRIDE_ENV_VAR,
+            "/tmp/some-override-dir",
+        );
         let path = golden_path("board", "hq");
         assert_eq!(path, PathBuf::from("/tmp/some-override-dir/board__hq.json"));
+    }
+
+    /// `CorpusConfig::from_env` is the single place the `BASTION_*` knobs are
+    /// read, so it carries the env-wiring coverage the three end-to-end
+    /// `dump*` tests used to provide before they moved to config-by-parameter.
+    #[test]
+    fn corpus_config_from_env_snapshots_both_knobs() {
+        let env_lock = lock_env();
+        let _dir = EnvVarGuard::set(&env_lock, CORPUS_DIR_OVERRIDE_ENV_VAR, "/tmp/cfg-probe");
+        let _dump = EnvVarGuard::set(&env_lock, DUMP_ENV_VAR, "1");
+        // `from_env_locked`, not `from_env`: we already hold the lock, and it
+        // is not reentrant.
+        let config = CorpusConfig::from_env_locked(&env_lock);
+        assert_eq!(config.dir, PathBuf::from("/tmp/cfg-probe"));
+        assert!(
+            config.write,
+            "BASTION_DUMP_CORPUS=1 must mean GENERATE mode"
+        );
+        assert_eq!(
+            config.golden_path("runs", "empty"),
+            PathBuf::from("/tmp/cfg-probe/runs__empty.json")
+        );
+    }
+
+    #[test]
+    fn corpus_config_golden_path_is_pure() {
+        let config = CorpusConfig {
+            dir: PathBuf::from("some/dir"),
+            write: false,
+        };
+        assert_eq!(
+            config.golden_path("board", "hq"),
+            PathBuf::from("some/dir/board__hq.json")
+        );
     }
 
     #[test]
@@ -426,16 +535,11 @@ mod harness_tests {
 
     #[test]
     fn should_write_is_false_when_env_var_unset() {
-        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var(DUMP_ENV_VAR).ok();
-        unsafe { std::env::remove_var(DUMP_ENV_VAR) };
-        let result = should_write();
-        unsafe {
-            match previous {
-                Some(v) => std::env::set_var(DUMP_ENV_VAR, v),
-                None => std::env::remove_var(DUMP_ENV_VAR),
-            }
-        }
+        let env_lock = lock_env();
+        let result = {
+            let _unset = EnvVarGuard::unset(&env_lock, DUMP_ENV_VAR);
+            should_write()
+        };
         assert!(
             !result,
             "should_write() must default to VERIFY (false) when unset"
@@ -444,13 +548,13 @@ mod harness_tests {
 
     #[test]
     fn should_write_is_true_only_for_exact_value_one() {
-        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let env_lock = lock_env();
         {
-            let _guard = EnvVarGuard::set(DUMP_ENV_VAR, "1");
+            let _guard = EnvVarGuard::set(&env_lock, DUMP_ENV_VAR, "1");
             assert!(should_write());
         }
         {
-            let _guard = EnvVarGuard::set(DUMP_ENV_VAR, "true");
+            let _guard = EnvVarGuard::set(&env_lock, DUMP_ENV_VAR, "true");
             assert!(
                 !should_write(),
                 "only the literal value \"1\" should enable GENERATE mode"
@@ -464,15 +568,13 @@ mod harness_tests {
     /// `dump` itself (not just the pure helpers) writes to the right place.
     #[actix_web::test]
     async fn dump_writes_golden_at_expected_path_in_generate_mode() {
-        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "bastion-contract-corpus-test-{}-{}",
-            std::process::id(),
-            "generate"
-        ));
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        let _dump_guard = EnvVarGuard::set(DUMP_ENV_VAR, "1");
-        let _dir_guard = EnvVarGuard::set(CORPUS_DIR_OVERRIDE_ENV_VAR, tmp_dir.to_str().unwrap());
+        // No env mutation and no lock: the config is passed by parameter, so
+        // this test cannot race the scenario tests that read env via `dump`.
+        let tmp_dir = crate::testsupport::unique_temp_dir("bastion-contract-corpus-test-generate");
+        let config = CorpusConfig {
+            dir: tmp_dir.clone(),
+            write: true,
+        };
 
         let app = actix_web::test::init_service(App::new().route(
             "/x",
@@ -483,7 +585,7 @@ mod harness_tests {
         .await;
 
         let req = actix_web::test::TestRequest::get().uri("/x");
-        dump("widget", "not-found", req, &app).await;
+        dump_with(&config, "widget", "not-found", req, &app).await;
 
         let written_path = tmp_dir.join("widget__not-found.json");
         assert!(written_path.exists(), "expected golden at {written_path:?}");
@@ -500,17 +602,15 @@ mod harness_tests {
     #[actix_web::test]
     #[should_panic(expected = "missing checked-in golden")]
     async fn dump_verify_mode_fails_loudly_when_golden_missing() {
-        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "bastion-contract-corpus-test-{}-{}",
-            std::process::id(),
-            "verify-missing"
-        ));
-        let _ = std::fs::remove_dir_all(&tmp_dir);
+        // No env mutation and no lock — see the GENERATE-mode sibling above.
+        let tmp_dir =
+            crate::testsupport::unique_temp_dir("bastion-contract-corpus-test-verify-missing");
         let _ = std::fs::create_dir_all(&tmp_dir);
-        // BASTION_DUMP_CORPUS deliberately left unset: VERIFY mode.
-        let _dump_guard = EnvVarGuard::set(DUMP_ENV_VAR, "0");
-        let _dir_guard = EnvVarGuard::set(CORPUS_DIR_OVERRIDE_ENV_VAR, tmp_dir.to_str().unwrap());
+        // `write: false` is VERIFY mode — the default a normal run gets.
+        let config = CorpusConfig {
+            dir: tmp_dir.clone(),
+            write: false,
+        };
 
         let app = actix_web::test::init_service(App::new().route(
             "/y",
@@ -519,7 +619,7 @@ mod harness_tests {
         .await;
 
         let req = actix_web::test::TestRequest::get().uri("/y");
-        dump("widget", "no-golden-yet", req, &app).await;
+        dump_with(&config, "widget", "no-golden-yet", req, &app).await;
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -691,15 +791,13 @@ mod harness_tests {
     /// through unredacted, this test would flap.
     #[actix_web::test]
     async fn dump_generates_byte_identical_golden_across_two_runs() {
-        let _env_lock = CORPUS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "bastion-contract-corpus-test-{}-{}",
-            std::process::id(),
-            "determinism"
-        ));
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        let _dump_guard = EnvVarGuard::set(DUMP_ENV_VAR, "1");
-        let _dir_guard = EnvVarGuard::set(CORPUS_DIR_OVERRIDE_ENV_VAR, tmp_dir.to_str().unwrap());
+        // No env mutation and no lock — see the GENERATE-mode sibling above.
+        let tmp_dir =
+            crate::testsupport::unique_temp_dir("bastion-contract-corpus-test-determinism");
+        let config = CorpusConfig {
+            dir: tmp_dir.clone(),
+            write: true,
+        };
 
         // A handler whose response embeds exactly the volatile shapes this
         // task's redaction rules must neutralize: a UUID and an RFC3339
@@ -719,12 +817,12 @@ mod harness_tests {
         .await;
 
         let req1 = actix_web::test::TestRequest::get().uri("/z");
-        dump("widget", "determinism", req1, &app).await;
+        dump_with(&config, "widget", "determinism", req1, &app).await;
         let path = tmp_dir.join("widget__determinism.json");
         let first_write = std::fs::read(&path).unwrap();
 
         let req2 = actix_web::test::TestRequest::get().uri("/z");
-        dump("widget", "determinism", req2, &app).await;
+        dump_with(&config, "widget", "determinism", req2, &app).await;
         let second_write = std::fs::read(&path).unwrap();
 
         assert_eq!(
