@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn find_rust_files_empty_dir_returns_empty() {
         // Use a temp dir with no .rs files.
-        let tmp = std::env::temp_dir().join("bastion_find_rust_files_test_empty");
+        let tmp = crate::testsupport::unique_temp_dir("bastion-find-rust-files-empty");
         let _ = std::fs::create_dir_all(&tmp);
         let files = find_rust_files(&tmp);
         assert!(files.is_empty(), "empty dir must return no files");
