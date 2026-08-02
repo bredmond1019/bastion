@@ -375,6 +375,176 @@ mod tests {
         );
     }
 
+    // ── `DotenvShadow` data-loss regression tests ──────────────────────────
+    //
+    // `planning/ticket-dotenv-shadow-data-loss/tasks.md` documents three
+    // independent failure modes in `DotenvShadow` that have destroyed the
+    // real, gitignored, unrecoverable `core/bastion/.env` at least twice.
+    // Every test below operates on a **temp-dir fixture `.env`, never the
+    // real repo-root file** — a test for this defect that itself risks the
+    // developer's `.env` would be self-defeating.
+    //
+    // `DotenvShadow::new`/`Drop` hardcode cwd-relative paths (`.env`,
+    // `.env.{suffix}.bak`), so the only way to exercise the *actual* guard
+    // against a disposable fixture is to point the process cwd at the
+    // fixture directory for the guard's lifetime. [`CwdGuard`] does that,
+    // and — like [`EnvVarGuard`] — only while the caller holds [`EnvLock`],
+    // so it is serialized against every other test that participates in the
+    // crate's env-lock discipline. `cargo nextest run` (this module's own
+    // validation command) additionally runs each test in its own process,
+    // so cwd is not even shared with sibling tests there.
+
+    /// RAII guard that points the process cwd at `dir` and restores the
+    /// original cwd on drop — including on panic/unwind, so a failing
+    /// assertion inside one of these tests can never leave a later test
+    /// running from the wrong directory.
+    struct CwdGuard {
+        original: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(_lock: &EnvLock, dir: &std::path::Path) -> Self {
+            let original =
+                std::env::current_dir().expect("current dir must be readable to save it");
+            std::env::set_current_dir(dir)
+                .expect("must be able to chdir into the disposable fixture dir");
+            Self { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    /// Create a fresh, empty, disposable fixture directory under the system
+    /// temp dir.
+    fn fixture_dir(prefix: &str) -> PathBuf {
+        let dir = unique_temp_dir(prefix);
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+
+    const FIXTURE_ENV_CONTENT: &str =
+        "DATABASE_URL=postgres://fixture-user:fixture-pass@localhost/fixture\n";
+
+    #[test]
+    fn dotenv_shadow_round_trip_preserves_content_on_a_fixture() {
+        let lock = lock_env();
+        let dir = fixture_dir("dotenv-shadow-roundtrip");
+        let _cwd = CwdGuard::enter(&lock, &dir);
+
+        std::fs::write(".env", FIXTURE_ENV_CONTENT).expect("seed fixture .env");
+
+        {
+            let shadow = DotenvShadow::new(&lock, "roundtrip_fixture");
+            assert_eq!(
+                std::fs::read_to_string(".env").unwrap(),
+                "",
+                "the stand-in must be empty while the guard is alive"
+            );
+            drop(shadow);
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            FIXTURE_ENV_CONTENT,
+            "the fixture .env must be byte-identical after new() -> drop() \
+             — this is the baseline the current implementation already \
+             passes and must not regress"
+        );
+    }
+
+    #[test]
+    fn dotenv_shadow_failed_backup_must_not_truncate() {
+        // Failure mode 1: `DotenvShadow::new` discards the rename error with
+        // `let _ =` and truncates `.env` regardless of whether the backup
+        // actually succeeded. Force the rename to fail by pre-creating a
+        // *directory* at the backup path, then assert the original content
+        // is still intact. Under the current implementation this fails —
+        // the file gets truncated to "" even though no backup exists.
+        let lock = lock_env();
+        let dir = fixture_dir("dotenv-shadow-failed-backup");
+        let _cwd = CwdGuard::enter(&lock, &dir);
+
+        std::fs::write(".env", FIXTURE_ENV_CONTENT).expect("seed fixture .env");
+        std::fs::create_dir_all(".env.failed_backup_fixture.bak")
+            .expect("pre-create a directory at the backup path so rename fails");
+
+        let shadow = DotenvShadow::new(&lock, "failed_backup_fixture");
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            FIXTURE_ENV_CONTENT,
+            "a failed backup must never truncate the original .env — it must \
+             panic naming the file and the recovery path instead of proceeding"
+        );
+        drop(shadow);
+    }
+
+    #[test]
+    fn dotenv_shadow_interrupted_run_does_not_poison_the_next_guard() {
+        // Failure mode 2: the backup filename is a hardcoded literal, so a
+        // process that dies between `new()` and `drop()` (Ctrl-C, a kill,
+        // a timeout) leaves an empty `.env` and a real `.env.{suffix}.bak`.
+        // `std::mem::forget` simulates that: the guard's value is leaked, so
+        // its `Drop` never runs, exactly like a killed process. A second run
+        // with the same (hardcoded) suffix must not let the empty stand-in
+        // clobber the real backup left behind by the first.
+        let lock = lock_env();
+        let dir = fixture_dir("dotenv-shadow-interrupted");
+        let _cwd = CwdGuard::enter(&lock, &dir);
+
+        std::fs::write(".env", FIXTURE_ENV_CONTENT).expect("seed fixture .env");
+
+        let first_run = DotenvShadow::new(&lock, "interrupted_fixture");
+        std::mem::forget(first_run);
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            "",
+            "sanity check: the simulated-killed first run must have left the \
+             empty stand-in in place, with the real content parked in its backup"
+        );
+
+        let second_run = DotenvShadow::new(&lock, "interrupted_fixture");
+        drop(second_run);
+
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            FIXTURE_ENV_CONTENT,
+            "an interrupted first run must not let a second run over the same \
+             fixture destroy the real content the first run backed up"
+        );
+    }
+
+    #[test]
+    fn dotenv_shadow_concurrent_guards_do_not_destroy_content() {
+        // Failure mode 3: `ENV_LOCK` is process-local, so it gives no
+        // protection across the separate OS processes `cargo nextest` uses
+        // per test. Two guards with interleaved lifetimes — `A.new, B.new,
+        // A.drop, B.drop` — reproduce, within a single process, the exact
+        // sequence that destroys `.env` across two real processes: A's drop
+        // restores the real content, then B's drop removes it again and
+        // replaces it with its own (empty) backup.
+        let lock = lock_env();
+        let dir = fixture_dir("dotenv-shadow-concurrent");
+        let _cwd = CwdGuard::enter(&lock, &dir);
+
+        std::fs::write(".env", FIXTURE_ENV_CONTENT).expect("seed fixture .env");
+
+        let guard_a = DotenvShadow::new(&lock, "concurrent_fixture_a");
+        let guard_b = DotenvShadow::new(&lock, "concurrent_fixture_b");
+        drop(guard_a);
+        drop(guard_b);
+
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            FIXTURE_ENV_CONTENT,
+            "two overlapping guards over the same fixture must not let the \
+             later drop overwrite content an earlier drop already restored"
+        );
+    }
+
     #[test]
     fn lock_env_recovers_from_a_poisoned_mutex() {
         // Poison the lock from a scoped thread, then prove `lock_env()` still
