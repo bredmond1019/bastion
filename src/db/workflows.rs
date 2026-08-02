@@ -1022,6 +1022,10 @@ mod tests {
         if std::env::var("BASTION_INTEGRATION_TEST").is_err() {
             return;
         }
+        // See the matching comment in `src/db/costs.rs` — read `.env` the way
+        // `Config::load` does, or the documented `--ignored` recipe panics
+        // `NotPresent` against a fully populated file.
+        dotenvy::dotenv().ok();
         let db_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
         let runs = list_active_runs(&db_url)
@@ -1037,6 +1041,8 @@ mod tests {
         if std::env::var("BASTION_INTEGRATION_TEST").is_err() {
             return;
         }
+        // See the matching comment in `src/db/costs.rs`.
+        dotenvy::dotenv().ok();
         let db_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
         // A UUID that will never exist in the events table.
