@@ -1,0 +1,23 @@
+{
+  "body": {
+    "budget": {
+      "breach": null,
+      "breached": false,
+      "max_cost_usd": null,
+      "max_total_tokens": null,
+      "total_cost_usd": -0.0,
+      "total_tokens": 0
+    },
+    "rows": [],
+    "totals": {
+      "runs": 0,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "usd": -0.0,
+      "workflow_name": "TOTAL"
+    },
+    "unpriced_models": [],
+    "window": "all"
+  },
+  "status_code": 200
+}

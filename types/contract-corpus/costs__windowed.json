@@ -1,0 +1,31 @@
+{
+  "body": {
+    "budget": {
+      "breach": null,
+      "breached": false,
+      "max_cost_usd": null,
+      "max_total_tokens": null,
+      "total_cost_usd": 1.0,
+      "total_tokens": 1000000
+    },
+    "rows": [
+      {
+        "runs": 1,
+        "tokens_in": 1000000,
+        "tokens_out": 0,
+        "usd": 1.0,
+        "workflow_name": "in-window-pipeline"
+      }
+    ],
+    "totals": {
+      "runs": 1,
+      "tokens_in": 1000000,
+      "tokens_out": 0,
+      "usd": 1.0,
+      "workflow_name": "TOTAL"
+    },
+    "unpriced_models": [],
+    "window": "7d"
+  },
+  "status_code": 200
+}

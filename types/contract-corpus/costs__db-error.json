@@ -1,0 +1,7 @@
+{
+  "body": {
+    "code": "C009",
+    "message": "simulated database failure"
+  },
+  "status_code": 503
+}

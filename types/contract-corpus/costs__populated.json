@@ -1,0 +1,40 @@
+{
+  "body": {
+    "budget": {
+      "breach": null,
+      "breached": false,
+      "max_cost_usd": null,
+      "max_total_tokens": null,
+      "total_cost_usd": 2.5,
+      "total_tokens": 1702000
+    },
+    "rows": [
+      {
+        "runs": 2,
+        "tokens_in": 1500000,
+        "tokens_out": 200000,
+        "usd": 2.5,
+        "workflow_name": "content-pipeline"
+      },
+      {
+        "runs": 1,
+        "tokens_in": 1000,
+        "tokens_out": 1000,
+        "usd": 0.0,
+        "workflow_name": "research-pipeline"
+      }
+    ],
+    "totals": {
+      "runs": 3,
+      "tokens_in": 1501000,
+      "tokens_out": 201000,
+      "usd": 2.5,
+      "workflow_name": "TOTAL"
+    },
+    "unpriced_models": [
+      "some-unpriced-model"
+    ],
+    "window": "all"
+  },
+  "status_code": 200
+}
