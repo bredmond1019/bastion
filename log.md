@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-02T08:08:58Z
+timestamp: 2026-08-02T17:18:06Z
 ---
 
 # Log — bastion
@@ -12,6 +12,65 @@ timestamp: 2026-08-02T08:08:58Z
 ---
 
 ## [run: 2026-08-02]
+
+### Serialized ticket queue drained (waves 276 → 278) + wave 280 from its own review findings
+
+- **What:** Drove the 2026-08-02 handoff's three-ticket chain to completion **serially in the main
+  tree** (all three edit `docs/serve-api.md`, two claim a contract version — the 2026-08-01 train
+  proved parallel worktrees collide on that shape), then specced and shipped a fourth ticket from
+  findings surfaced while reviewing the first three.
+  - **Wave 276 `costs-200-contract-golden`** — 6/6. Compile-time fetch seam; corpus **32 → 37**; no
+    version bump (correct — it freezes existing shape). Cleared the
+    `costs-200-golden-needs-events-fixture-seam` carryover.
+  - **Wave 277 `run-summary-repo-join` (A7)** — **serve-api v0.22**, corpus 38, gated behind
+    `?with_repo=1` (not `?repo=1`; `repo` already means *filter*), with the "registry walk must not
+    run when unset" condition proven by a test rather than only documented. **Bailed at task 5 on an
+    environment failure**: `check-typeshare-drift.sh` probed `~/.cargo/bin/typeshare`, confirmed it
+    executable, printed a correct diagnosis — and then `exit 1`. Root-caused and fixed (`d58ddae`):
+    both drift scripts now prepend the discovered dir to `PATH`, warn, and continue; a genuinely
+    missing binary still exits 1. Task 6 then run by hand.
+  - **Wave 278 `stream-ownership-decision` (A8)** — 5/5. **D17** records the operator's choice of
+    option (c) (bastion pushes run transitions over the existing bearer-authed `/ws` hub), with (a)
+    and (b) written up as rejected and bastion-web's three conditions carried verbatim as binding
+    constraints. `BA.11.N` promoted to a tracked block (wave 279). §14's false "There is no SSE/WS
+    push" claim corrected in both locations.
+  - **Wave 280 `dotenv-shadow-adopted-branch`** — 5/5, filed from this session's own review pass.
+    The adopt path had been returning *before* the `create_new` marker claim, clobbering a live
+    owner's marker and truncating `.env` with no fresh backup.
+  - Also: operator-approved integration run against live Postgres — **5/5 pass**, closing wave 276's
+    fidelity gap (real `events` rows do deserialize into `WorkflowRun` as the fixtures assume).
+  - Final gate: fmt, clippy, **`cargo test` 2005 / 0 failed**, release, corpus drift (38), typeshare
+    drift, `mev validate-brain --state` 0 errors, `.env` sha256 unchanged.
+- **Why:** The handoff left the chain queued, consumer-agreed, and explicitly serialized. Draining
+  it unblocks bastion-web on both `repo` attribution and the streaming ambiguity, and clears the
+  serve-api edit queue so `BA.11.N` and `BA.11.O` can start from a settled contract.
+- **Refs:** `planning/queue-run-2026-08-02-issues.md`; `planning/decisions/D17-live-run-stream-ownership.md`;
+  the four `planning/ticket-*/` specs; `docs/serve-api.md` §14/§17 (v0.22), §25.6.
+
+### HIGH: two same-suffix DotenvShadow guards delete the real `.env` (proven, unfixed)
+
+- **What:** While verifying wave 280, probed an interleaving its spec did not cover and proved a
+  **pre-existing** data-loss defect: two `DotenvShadow` guards with the **same suffix** and
+  interleaved lifetimes (`A.new(S)`, `B.new(S)`, `A.drop`, `B.drop`) leave **no `.env` at all** —
+  deleted, not truncated. `A` takes `Owned` and parks real content in `.env.S.bak`; `B` sees that
+  backup and takes `Adopted` of the same path; `A.drop` restores it; `B.drop` removes the restored
+  file and renames a backup that no longer exists, with `let _ =` swallowing the failure.
+  Reproduced identically against `addb4a4` and `cfbe057`, so it is **not** a wave-280 regression —
+  wave 280 closed only the distinct-suffix hole. Recorded as carryover
+  `same-suffix-dotenv-guards-delete-env` and item 7 of the issues tab, with a copy-pasteable
+  reproduction and three candidate fixes. **Deliberately not fixed** — the repair is a design
+  choice, not a mechanical patch.
+- **Why:** Suffixes are per-test constants, so this needs the same test in two processes — and the
+  colliding test is `dotenv_shadow_leaves_an_empty_env_and_restores_the_original`
+  (`src/testsupport.rs:638`), the one test that touches the **real** repo-root `.env` under a fixed
+  suffix. Two concurrent `cargo nextest` runs can therefore destroy the developer's real, gitignored,
+  unrecoverable `.env`, and concurrent agent sessions here are routine. Existing coverage misses it
+  because `dotenv_shadow_concurrent_guards_do_not_destroy_content` uses *distinct* suffixes.
+- **Refs:** `planning/queue-run-2026-08-02-issues.md` item 7; `planning/handoff.md`;
+  `planning/state.json` `carryover[]`.
+
+---
+
 
 ### Carryover knock-out — four of six entries cleared, registry down to the two durable ones
 
