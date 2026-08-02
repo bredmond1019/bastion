@@ -1,0 +1,24 @@
+{
+  "body": [
+    {
+      "branch": "phase6-blockA-flow",
+      "current_task": 5,
+      "repo": "repo-alpha",
+      "spec_slug": "phase6-blockA",
+      "started_at": "<TIMESTAMP>",
+      "status": "done",
+      "updated_at": "<TIMESTAMP>"
+    },
+    {
+      "branch": "phase6-blockA-flow",
+      "current_task": 5,
+      "repo": "repo-beta",
+      "run_id": "<UUID>",
+      "spec_slug": "phase6-blockA",
+      "started_at": "<TIMESTAMP>",
+      "status": "done",
+      "updated_at": "<TIMESTAMP>"
+    }
+  ],
+  "status_code": 200
+}

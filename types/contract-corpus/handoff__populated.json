@@ -1,0 +1,7 @@
+{
+  "body": {
+    "body": "---\ntype: Handoff\ntitle: Handoff — minimal fixture\ndescription: Minimal handoff fixture for the read_handoff unit tests.\ndoc_id: handoff_minimal\nlayer: [console]\nproject: bastion\nstatus: active\nkeywords: [fixture, handoff, test]\nrelated: []\n---\n\n# Handoff — minimal fixture\n\n> **For the next agent:** this is a fixture, not a real handoff.\n\n## What we're doing and why\n\nNothing — this file exists only to exercise `read_handoff` in unit tests.\n",
+    "title": "Handoff — minimal fixture"
+  },
+  "status_code": 200
+}

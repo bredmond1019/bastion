@@ -1,0 +1,7 @@
+{
+  "body": {
+    "code": "C002",
+    "message": "handoff.md not found"
+  },
+  "status_code": 404
+}

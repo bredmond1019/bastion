@@ -2517,7 +2517,12 @@ header comment for the authoritative, line-numbered version of these rules):
 2. UUIDs (`run_id`, …) → `"<UUID>"`. Fixtures still seed a fixed UUID rather than
    `Uuid::new_v4()` so the pre-redaction value is deterministic too; this rule catches anything
    that slips through.
-3. Absolute temp-dir paths (fixture scratch workspaces) → `"<TMP_PATH>"`.
+3. Absolute temp-dir paths (fixture scratch workspaces) → `"<TMP_PATH>"`. **Every spelling** of
+   the temp root is matched, not just `std::env::temp_dir()`'s: on macOS that returns
+   `/var/folders/…/T/` while `/var` symlinks to `/private/var`, so a handler that canonicalizes its
+   paths — `BlockGraphDto.root` does — emits the `/private/var/…` form. Tightened 2026-08-01 by
+   `ticket-contract-corpus-uncovered-routes`, which found the un-tightened rule leaking a live
+   per-run temp path into `blocks-graph__populated.json`.
 4. Object key ordering is confirmed sorted (not insertion-order) by a dedicated unit test rather
    than assumed from `serde_json`'s default configuration.
 5. `age_days` (a live-clock-derived `Number`, not a string, so rule 1 cannot pattern-match it) is
@@ -2557,9 +2562,90 @@ out what changed, not as routine churn to regenerate past.
 No `serve` runtime behaviour changed as part of adding this section — the dump harness is
 `#[cfg(test)]`-gated throughout and never compiles into the production binary.
 
+### 25.6 Scenario inventory
+
+As of 2026-08-01 (`ticket-contract-corpus-uncovered-routes`) **every route the original A4 corpus
+left uncovered is frozen.** The corpus holds 32 goldens across ten routes:
+
+| Route | Scenarios (`<route>__<scenario>.json`) |
+|---|---|
+| `GET /api/runs` | `empty`, `active`, plus one per `RunStatus` variant: `pending`, `running`, `success`, `failed`, `cancelled`, `budget_halted`, `suspended` |
+| `GET /api/board` | `hq`, `tier`, `epic`, `epic-404`, `last_touched`, `dependent_count` |
+| `GET /api/attention` | `populated`, `empty` |
+| `GET /api/pipeline` | `populated`, `keyless` |
+| `GET /api/docs/{repo}/tree` | `dir`, `file`, `unknown` |
+| `GET /api/workflows` (v0.20) | `workflows__empty`, `workflows__populated` |
+| `GET /api/repos/{name}/handoff` (v0.18) | `handoff__populated`, `handoff__missing`, `handoff__unknown-repo` |
+| `GET /api/epics` (v0.21) | `epics__populated`, `epics__empty` |
+| `GET /api/blocks/graph` (v0.13) | `blocks-graph__populated` |
+| `GET /api/costs` (v0.15) | `costs__bad-window`, `costs__no-database-url` |
+
+Notes on the five routes added by `ticket-contract-corpus-uncovered-routes`:
+
+- **`workflows`** — `empty` freezes the "absent registry is `200 []`, never a 404" contract;
+  `populated` seeds two repos so the per-repo `repo` tagging, the handler's `(repo, spec_slug)`
+  sort (without which the `HashMap`-sourced registry would make the golden flap), and *both*
+  `run_id` serialization branches (absent key vs present) are frozen in one response.
+- **`handoff`** — the two 404s carry **different** structured error codes and both are frozen:
+  `handoff__unknown-repo` is `404 + C005` (workspace name not in the registry) while
+  `handoff__missing` is `404 + C002` (registered repo, absent `handoff.md`). A consumer that
+  collapses them into one "not found" branch is wrong in a way only a frozen `code` catches.
+- **`epics`** — `epics__populated` freezes the **post-v0.21** shape: one registry entry authoring
+  `weight: 85` and one omitting it (wiring `null`, per `EpicDto`'s no-`skip_serializing_if`
+  convention), so both branches are pinned. The route takes no path or query params and so exposes
+  no per-epic 404; the second scenario is therefore the empty-registry shape — an absent HQ
+  `epics[]` is `200 []`, not an error.
+- **`blocks-graph`** — dispatched at an **explicit `max_nodes=50`**, never the route's absent-param
+  default (400). The default is a tunable; pinning the input keeps the golden's node set and
+  `truncated` flag from being rewritten by a change that has nothing to do with the wire contract.
+  50 comfortably exceeds the fixture's block count, so the export is complete (`truncated: false`).
+- **`costs`** — **error shapes only**, deliberately: `costs__bad-window` (`400 + C006`, an
+  unparseable `?window=`, produced by `resolve_window` before any database access) and
+  `costs__no-database-url` (`503 + C005`, `DATABASE_URL` genuinely absent).
+
+**Why `costs`' populated `200` shape is not in the corpus.** A populated `CostSummaryDto` is
+aggregated from rows in the `events` table, which requires a live, seeded Postgres. The corpus runs
+inside `cargo test`, which cannot assume one — a golden that only regenerates on a machine with a
+dev database would fail `scripts/check-contract-corpus-drift.sh` everywhere else, which is strictly
+worse than no golden. Building a fixture seam to inject rows was considered and rejected: that is
+new production surface, out of scope for a test-only ticket, and is logged as a follow-up rather
+than smuggled in. The `200` shape remains specified in Section 24 and enforced by
+`handlers/costs.rs`'s own unit tests over `aggregate`/`cost_summary_dto`; only the *wire freeze* is
+absent.
+
+Env discipline for the `costs__no-database-url` scenario is non-negotiable and documented at its
+call site in `src/serve/contract_corpus.rs`: it takes `crate::testsupport::lock_env()` once, mutates
+`DATABASE_URL` (and `XDG_CONFIG_HOME`, so a developer's real `~/.config/bastion/config.toml` cannot
+supply a `database_url` and make the golden machine-dependent) only through `EnvVarGuard`, shadows
+the repo `.env` with `DotenvShadow` (otherwise `dotenvy`'s upward walk restores a working
+`DATABASE_URL` from an ancestor checkout and the expected 503 becomes a 200), and calls
+`dump_with(&CorpusConfig::from_env_locked(&lock), …)` rather than `dump` — because `dump` would take
+the same **non-reentrant** mutex a second time on the same thread and deadlock.
+
 ---
 
 ## Amendment Log
+
+- **2026-08-01 — contract corpus extended to the five uncovered routes
+  (`ticket-contract-corpus-uncovered-routes`; no version bump):** `types/contract-corpus/` grows
+  from 22 to 32 goldens, adding `GET /api/workflows` (v0.20, 2 scenarios),
+  `GET /api/repos/{name}/handoff` (v0.18 `HandoffInfoDto`, 3 scenarios — including both distinct
+  404 codes, `C005` unknown-repo and `C002` missing-file), `GET /api/epics` (post-v0.21, 2
+  scenarios, freezing both the authored `weight: 85` and the unauthored `weight: null` branches),
+  `GET /api/blocks/graph` (v0.13, 1 scenario at a pinned `max_nodes=50`), and `GET /api/costs`
+  (v0.15, 2 scenarios — `400 C006` and `503 C005`; the populated `200` shape is deliberately
+  excluded because it needs a live Postgres the corpus cannot assume, rationale in Section 25.6).
+  New Section 25.6 carries the full scenario inventory. **No wire shape changed** — every addition
+  is `#[cfg(test)]` scenario code plus generated goldens plus documentation, so **no version bump**
+  and `types/serve.ts` is untouched. One genuine fix rode along: redaction rule 3 now matches the
+  *canonicalized* temp root as well as `std::env::temp_dir()`'s, because macOS's
+  `/var → /private/var` symlink meant `BlockGraphDto.root` (which is canonicalized upstream in
+  `mev`) leaked a live per-run temp path past the old single-prefix check — caught by generating
+  the golden, which is exactly the failure mode Section 25.5 says to stop and diagnose rather than
+  regenerate past. `DotenvShadow` moved from `serve::mod`'s test module into `crate::testsupport`
+  beside the env lock it requires as a witness, so the costs scenario and the `serve` route tests
+  share one implementation. Corpus regenerated twice byte-identically;
+  `scripts/check-contract-corpus-drift.sh` passes clean.
 
 - **2026-08-01 — v0.20 → v0.21 (`BA.ticket.epic-weight-dto`):** Section 17.2's `EpicDto` gains
   `weight: Option<u8>`, the authored initiative weight `okf_core::Epic` has carried since
