@@ -173,25 +173,42 @@ impl Drop for EnvVarGuard {
 ///   behavior went unnoticed until a human happened to look at the file by
 ///   chance.
 /// - **A marker (`.env.dotenv-shadow.active`) claimed atomically, before
-///   `.env` is touched, makes the guard nesting-aware.** The claim is
-///   `OpenOptions::create_new` (`O_CREAT | O_EXCL`), so exactly one caller
-///   wins even across processes — a real mutex, not an advisory check. A
-///   guard that loses the race treats itself as *nested* under the winner and
-///   touches nothing at all, neither on construction nor on `Drop`, leaving
-///   the winner's backup as the sole source of truth. This is what keeps two
-///   overlapping guards (interleaved `A.new, B.new, A.drop, B.drop`) from
-///   destroying each other's restores. Claiming *before* the rename is
-///   load-bearing: the reverse order leaves a window where `.env` is already
-///   moved aside and no marker exists yet, so a second guard sees neither and
-///   takes the `NoOriginal` path — then removes on `Drop` the `.env` the
-///   first guard had just restored.
+///   `.env` is touched, makes the guard nesting-aware — and this now covers
+///   *every* branch of `new()`, including the adopt-a-stale-backup case
+///   below, not just the common path.** The claim is `OpenOptions::create_new`
+///   (`O_CREAT | O_EXCL`), so exactly one caller wins even across processes —
+///   a real mutex, not an advisory check. A guard that loses the race treats
+///   itself as *nested* under the winner and touches nothing at all, neither
+///   on construction nor on `Drop`, leaving the winner's backup as the sole
+///   source of truth. This is what keeps two overlapping guards (interleaved
+///   `A.new, B.new, A.drop, B.drop`) from destroying each other's restores —
+///   including the case where `B` happens to find a stale `.bak` sitting at
+///   its own suffix while `A` is live under a different suffix: `B` still
+///   loses the marker race and still becomes `Nested`, so it never clobbers
+///   `A`'s claim or touches `.env` while `A` owns it. Claiming *before either
+///   the rename or the adopt* is load-bearing: any ordering that lets `.env`
+///   or the marker move first leaves a window where a second guard sees an
+///   inconsistent world (e.g. no marker yet but `.env` already touched) and
+///   takes a branch that ends up undoing the first guard's state on `Drop`.
 /// - **A pre-existing backup at *this exact* suffix is adopted, never
-///   overwritten.** If `.env.{suffix}.bak` already exists when `new()` runs
-///   (a prior guard using the same suffix was killed — Ctrl-C, a timeout, a
-///   crash — before its `Drop` ran), this guard does not blindly rename over
-///   it. It adopts the existing backup as its own and restores *that* file on
-///   `Drop`, recovering the original content the interrupted run captured
-///   instead of clobbering it with a fresh empty stand-in.
+///   overwritten — and adopting it never discards whatever is *currently* in
+///   `.env` without saving a copy first.** If `.env.{suffix}.bak` already
+///   exists when `new()` runs (a prior guard using the same suffix was killed
+///   — Ctrl-C, a timeout, a crash — before its `Drop` ran), this guard
+///   reaches that check only *after* it has already won the marker claim
+///   above, so no live owner under another suffix can have its state
+///   disturbed by an adopt. Having won the claim, the guard does not blindly
+///   rename over the stale `.bak`: it adopts the existing backup as its own
+///   and will restore *that* file on `Drop`, recovering the original content
+///   the interrupted run captured. But whatever currently occupies `.env` at
+///   this moment is not the same thing as that stale backup's content — it
+///   may be live, more-recent content that arrived after the killed run wrote
+///   its `.bak` — so before writing the empty stand-in over it, this guard
+///   backs *that* up too, to a distinct path from the adopted `.bak` (so
+///   neither copy overwrites the other). That second copy is not
+///   auto-restored on `Drop` (the adopted `.bak` is the one `Drop` restores,
+///   matching the recovery this branch exists for), but it is never left
+///   irrecoverable: a human can always find it on disk next to `.env`.
 ///
 /// **Residual hazard.** `ENV_LOCK` is only meaningful within one process; the
 /// *marker* is what carries the guarantee across processes, and it does so
