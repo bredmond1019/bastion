@@ -204,6 +204,9 @@ pub fn project_run_summary(run_id: Uuid, ctx: &TaskContext) -> RunSummaryDto {
         spec_slug: spec_slug_from_event(&ctx.event),
         started_at,
         updated_at,
+        // The `run_id` -> `repo` join lands in Task 3 of this spec; until then this stays
+        // `None` (absent on the wire), matching today's behaviour.
+        repo: None,
     }
 }
 

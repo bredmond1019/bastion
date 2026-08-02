@@ -1357,6 +1357,15 @@ pub struct RunSummaryDto {
     /// nodes, as RFC3339. `null` when the run has no recorded node transitions yet.
     #[serde(default)]
     pub updated_at: Option<String>,
+    /// The repo that owns this run, resolved by an **exact `run_id` match** against the
+    /// registry's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2). Absent
+    /// (never `null`) when no flow state carries this run's `run_id` — the run could not be
+    /// attributed to a repo. A wrong label would be strictly worse than an absent one, so this
+    /// field is never guessed via substring, prefix, or spec-slug similarity matching (A7).
+    /// Only populated when the request opts in via `?with_repo=1`; otherwise always absent, to
+    /// keep the unopted poll path free of the registry walk that resolving `repo` requires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 // ── Docs read API (BA.11.Q) ─────────────────────────────────────────────────────
@@ -3401,6 +3410,7 @@ mod tests {
             spec_slug: Some("11.T-run-summary-projection".to_owned()),
             started_at: Some("2026-07-24T12:00:00Z".to_owned()),
             updated_at: Some("2026-07-24T12:00:01Z".to_owned()),
+            repo: Some("bastion".to_owned()),
         }
     }
 
@@ -3421,10 +3431,11 @@ mod tests {
             spec_slug: None,
             started_at: None,
             updated_at: None,
+            repo: None,
         };
         let v = serde_json::to_value(&dto).expect("serialize");
 
-        // workflow_type / spec_slug: `None` -> absent key, not `null`.
+        // workflow_type / spec_slug / repo: `None` -> absent key, not `null`.
         assert!(
             !v.as_object().expect("object").contains_key("workflow_type"),
             "workflow_type should be an absent key when None, got: {v}"
@@ -3432,6 +3443,10 @@ mod tests {
         assert!(
             !v.as_object().expect("object").contains_key("spec_slug"),
             "spec_slug should be an absent key when None, got: {v}"
+        );
+        assert!(
+            !v.as_object().expect("object").contains_key("repo"),
+            "repo should be an absent key when None, got: {v}"
         );
 
         // started_at / updated_at: `None` -> explicit `null`, key present.
@@ -3456,6 +3471,40 @@ mod tests {
         assert_eq!(v["spec_slug"], "11.T-run-summary-projection");
         assert_eq!(v["started_at"], "2026-07-24T12:00:00Z");
         assert_eq!(v["updated_at"], "2026-07-24T12:00:01Z");
+        assert_eq!(v["repo"], "bastion");
+    }
+
+    #[test]
+    fn run_summary_dto_repo_round_trips_when_present() {
+        let dto = sample_run_summary_dto();
+        assert_eq!(dto.repo.as_deref(), Some("bastion"));
+
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["repo"], "bastion");
+
+        let back: RunSummaryDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.repo.as_deref(), Some("bastion"));
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn run_summary_dto_repo_absent_key_when_none() {
+        let mut dto = sample_run_summary_dto();
+        dto.repo = None;
+
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert!(
+            !v.as_object().expect("object").contains_key("repo"),
+            "repo should be an absent key (not null) when unattributed, got: {v}"
+        );
+
+        // Deserializing a payload with no `repo` key at all (e.g. a pre-A7 golden) still
+        // works and yields `None`, thanks to `#[serde(default)]`.
+        let json = serde_json::to_string(&v).expect("serialize value");
+        let back: RunSummaryDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.repo, None);
+        assert_eq!(dto, back);
     }
 
     // ── DocTreeDto / DocEntryDto / DocFileDto (BA.11.Q) ────────────────────
