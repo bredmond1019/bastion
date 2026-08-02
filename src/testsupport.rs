@@ -155,9 +155,47 @@ impl Drop for EnvVarGuard {
 ///
 /// So instead of *removing* `.env`, we **replace it with an empty one**:
 /// dotenvy stops at the first file it finds, loads nothing from it, and never
-/// reaches any ancestor `.env`. Nothing outside this checkout is ever touched.
-/// The original file (if any) is restored on `Drop`, so a panicking assertion
-/// can't leave the checkout without its `.env`.
+/// reaches any ancestor `.env`.
+///
+/// **Guarantee actually provided, and its residual hazard**
+/// (`planning/ticket-dotenv-shadow-data-loss/`): no code path here ever writes
+/// to, truncates, or removes `.env` unless a backup of whatever was there a
+/// moment ago is either freshly made or was already sitting, untouched, at
+/// this guard's own backup path. Three things make that hold:
+///
+/// - **A failed backup leaves `.env` completely untouched.** If the rename to
+///   `.env.{suffix}.bak` fails (stale file/directory at that path, a full
+///   disk, permissions), the guard does **not** write the empty stand-in —
+///   it becomes an inert no-op for its whole lifetime instead of gambling the
+///   original content on a write it can't undo. (Residual hazard: an inert
+///   guard no longer neutralizes `dotenvy`'s upward walk, so a test relying on
+///   `DATABASE_URL` being absent could silently see the real one. This is
+///   judged safer than the alternative of destroying data on the failure
+///   path; the pre-existing round-trip test still proves the happy path
+///   shadows correctly.)
+/// - **A per-suffix marker (`.env.dotenv-shadow.active`) makes the guard
+///   nesting-aware.** A guard that finds this marker already present treats
+///   itself as *nested* under whichever guard created it and touches nothing
+///   at all — neither on construction nor on `Drop` — leaving the outer
+///   guard's backup as the sole source of truth. This is what keeps two
+///   overlapping guards (interleaved `A.new, B.new, A.drop, B.drop`) from
+///   destroying each other's restores.
+/// - **A pre-existing backup at *this exact* suffix is adopted, never
+///   overwritten.** If `.env.{suffix}.bak` already exists when `new()` runs
+///   (a prior guard using the same suffix was killed — Ctrl-C, a timeout, a
+///   crash — before its `Drop` ran), this guard does not blindly rename over
+///   it. It adopts the existing backup as its own and restores *that* file on
+///   `Drop`, recovering the original content the interrupted run captured
+///   instead of clobbering it with a fresh empty stand-in.
+///
+/// **Residual hazard.** `ENV_LOCK` (and this guard's marker file) are only
+/// meaningful *within one process*. `cargo nextest` runs each test in its own
+/// process, so two truly concurrent processes racing on the exact same
+/// backup suffix simultaneously (rather than one after another, which the
+/// adoption rule above handles) are not synchronized by anything here. In
+/// practice every production call site uses a distinct, hardcoded suffix, so
+/// this residual case does not arise in this crate's own suite — but it is
+/// not a guarantee this guard enforces.
 ///
 /// Mutates a process-wide (indeed repo-wide) resource, so — exactly like an env
 /// var — it may only be constructed while holding the crate-wide env lock;
@@ -168,9 +206,36 @@ impl Drop for EnvVarGuard {
 /// guarantee, and a *second* copy of a global-resource guard is precisely the
 /// per-module-duplication mistake the crate-wide [`ENV_LOCK`] exists to undo.
 pub struct DotenvShadow {
-    /// Path of the saved original, or `None` when there was no `.env`.
-    backup: Option<PathBuf>,
+    state: DotenvShadowState,
 }
+
+/// What [`DotenvShadow::new`] actually did, and therefore what [`Drop`] must
+/// undo (see the type-level doc for the full rationale of each variant).
+enum DotenvShadowState {
+    /// We renamed a real `.env` aside to `backup` and wrote the empty
+    /// stand-in; restore `backup` on `Drop`.
+    Owned(PathBuf),
+    /// There was no `.env` to back up; remove the stand-in on `Drop`.
+    NoOriginal,
+    /// `backup` already existed at our suffix from an interrupted prior run;
+    /// we adopted it without overwriting it and restore it on `Drop`.
+    Adopted(PathBuf),
+    /// Another guard's marker was already present — a guard is already
+    /// live under a different suffix. We touched nothing; do nothing on
+    /// `Drop` either, so we never race the guard that actually owns the
+    /// backup.
+    Nested,
+    /// The backup rename failed (e.g. a stale file/directory occupies the
+    /// backup path). `.env` was left completely untouched; do nothing on
+    /// `Drop`.
+    BackupFailed,
+}
+
+/// Fixed (not suffix-scoped) marker recording that *some* guard currently has
+/// `.env` shadowed. Its presence — regardless of which suffix owns the real
+/// backup — is what lets a second, differently-suffixed guard recognize it
+/// must not touch `.env` itself (see [`DotenvShadowState::Nested`]).
+const DOTENV_SHADOW_MARKER: &str = ".env.dotenv-shadow.active";
 
 impl DotenvShadow {
     /// `suffix` disambiguates the backup filename so two guards can never
@@ -183,27 +248,77 @@ impl DotenvShadow {
     #[must_use]
     pub fn new(_lock: &EnvLock, suffix: &str) -> Self {
         let env_path = std::path::Path::new(".env");
+        let marker_path = std::path::Path::new(DOTENV_SHADOW_MARKER);
         let backup_path = PathBuf::from(format!(".env.{suffix}.bak"));
 
-        let backup = if env_path.exists() && std::fs::rename(env_path, &backup_path).is_ok() {
-            Some(backup_path)
+        // A backup already sitting at *our own* suffix means a prior guard
+        // using this exact suffix was interrupted before its `Drop` ran.
+        // Adopt it rather than overwriting it — it is the only copy of the
+        // real content that guard captured.
+        if backup_path.is_file() {
+            let _ = std::fs::write(env_path, "");
+            let _ = std::fs::write(marker_path, suffix);
+            return Self {
+                state: DotenvShadowState::Adopted(backup_path),
+            };
+        }
+
+        // Some other guard (a different suffix) is already shadowing `.env`
+        // right now. Its backup is the only one that matters; do nothing.
+        if marker_path.exists() {
+            return Self {
+                state: DotenvShadowState::Nested,
+            };
+        }
+
+        if env_path.exists() {
+            match std::fs::rename(env_path, &backup_path) {
+                Ok(()) => {
+                    // The empty stand-in is what actually stops dotenvy's
+                    // upward walk.
+                    let _ = std::fs::write(env_path, "");
+                    let _ = std::fs::write(marker_path, suffix);
+                    Self {
+                        state: DotenvShadowState::Owned(backup_path),
+                    }
+                }
+                Err(_) => {
+                    // The backup failed — leave `.env` completely untouched
+                    // rather than truncating a file we could not save a copy
+                    // of. See the type doc's "residual hazard" note.
+                    Self {
+                        state: DotenvShadowState::BackupFailed,
+                    }
+                }
+            }
         } else {
-            None
-        };
-
-        // The empty stand-in is what actually stops dotenvy's upward walk.
-        let _ = std::fs::write(env_path, "");
-
-        Self { backup }
+            let _ = std::fs::write(env_path, "");
+            let _ = std::fs::write(marker_path, suffix);
+            Self {
+                state: DotenvShadowState::NoOriginal,
+            }
+        }
     }
 }
 
 impl Drop for DotenvShadow {
     fn drop(&mut self) {
         let env_path = std::path::Path::new(".env");
-        let _ = std::fs::remove_file(env_path);
-        if let Some(backup) = &self.backup {
-            let _ = std::fs::rename(backup, env_path);
+        let marker_path = std::path::Path::new(DOTENV_SHADOW_MARKER);
+
+        match &self.state {
+            DotenvShadowState::Owned(backup) | DotenvShadowState::Adopted(backup) => {
+                let _ = std::fs::remove_file(env_path);
+                let _ = std::fs::rename(backup, env_path);
+                let _ = std::fs::remove_file(marker_path);
+            }
+            DotenvShadowState::NoOriginal => {
+                let _ = std::fs::remove_file(env_path);
+                let _ = std::fs::remove_file(marker_path);
+            }
+            DotenvShadowState::Nested | DotenvShadowState::BackupFailed => {
+                // We never wrote anything; there is nothing to undo.
+            }
         }
     }
 }
