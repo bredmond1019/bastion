@@ -710,6 +710,49 @@ mod tests {
             .service(ws_scope)
     }
 
+    /// Minimal `/api/runs` + `/api/runs/{id}` test app carrying a caller-supplied
+    /// [`LiveStateStore`] (A7) — `build_app` always seeds a fresh empty store, so
+    /// the `?with_repo=1` join tests (which need an *active* run to enrich) build
+    /// their own scope here rather than growing `build_app`'s signature, which
+    /// ~90 unrelated call sites across this test module would otherwise have to
+    /// thread a store through. Auth policy mirrors `build_app` exactly (bearer
+    /// token required, same middleware), just scoped to the two run routes.
+    fn build_runs_test_app(
+        registry: FileConfig,
+        live: LiveStateStore,
+    ) -> actix_web::App<
+        impl actix_web::dev::ServiceFactory<
+            actix_web::dev::ServiceRequest,
+            Config = (),
+            Response = actix_web::dev::ServiceResponse,
+            Error = actix_web::Error,
+            InitError = (),
+        >,
+    > {
+        let registry_data = web::Data::new(registry);
+        let live_data = web::Data::new(live);
+
+        let protected = web::scope("/api")
+            .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
+            .service(web::resource("/runs").route(web::get().to(handlers::runs::list_runs)))
+            .service(web::resource("/runs/{id}").route(web::get().to(handlers::runs::get_run)))
+            .app_data(live_data);
+
+        App::new().app_data(registry_data).service(protected)
+    }
+
+    /// A minimal `TaskContext` snapshot suitable for [`LiveStateStore::record`] —
+    /// empty event/nodes/metadata/node_runs, sufficient for the `?with_repo=1`
+    /// join tests, which only care about `RunSummaryDto.repo`.
+    fn empty_task_context() -> engine_contract::task_context::TaskContext {
+        engine_contract::task_context::TaskContext {
+            event: serde_json::json!({}),
+            nodes: std::collections::HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: std::collections::HashMap::new(),
+        }
+    }
+
     // ── health handler — happy path ────────────────────────────────────────
 
     #[actix_web::test]
@@ -1143,6 +1186,29 @@ mod tests {
             &tmp.path()
                 .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
             FLOW_JSON,
+        );
+
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("repo-x".to_string(), tmp.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+        (tmp, registry)
+    }
+
+    /// Same shape as [`registry_with_fixture_repo`], but the workspace's
+    /// `sdlc-flow-state.json` carries a `run_id` (`FLOW_JSON_WITH_RUN_ID`) —
+    /// used by the `?with_repo=1` join tests (A7) to exercise a repo-resolvable
+    /// run id.
+    fn registry_with_fixture_repo_with_run_id() -> (TempDir, FileConfig) {
+        let tmp = TempDir::new();
+        write_fixture(&tmp.path().join("planning/status.md"), STATUS_MD);
+        write_fixture(&tmp.path().join("planning/handoff.md"), HANDOFF_MD);
+        write_fixture(
+            &tmp.path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON_WITH_RUN_ID,
         );
 
         let mut workspaces = std::collections::HashMap::new();
@@ -2933,6 +2999,115 @@ heading = "bastion"
             404,
             "GET /api/runs/{{id}} for an unknown run must return 404; got {}",
             resp.status()
+        );
+    }
+
+    // ── run_id -> repo join route tests (A7, ?with_repo=1) ──────────────────
+
+    #[actix_web::test]
+    async fn list_runs_with_repo_rejects_missing_token_with_401() {
+        let app = test::init_service(build_runs_test_app(
+            FileConfig::default(),
+            LiveStateStore::new(),
+        ))
+        .await;
+        let req = test::TestRequest::get()
+            .uri("/api/runs?with_repo=1")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/runs?with_repo=1 without a token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_runs_with_repo_returns_repo_for_run_matching_flow_state() {
+        // Flow-state fixture carries run_id "a1b2c3d4-e5f6-4789-a012-3456789abcde"
+        // (FLOW_JSON_WITH_RUN_ID) under workspace "repo-x".
+        let (_tmp, registry) = registry_with_fixture_repo_with_run_id();
+        let live = LiveStateStore::new();
+        let run_id: uuid::Uuid = "a1b2c3d4-e5f6-4789-a012-3456789abcde".parse().unwrap();
+        live.record(run_id, &empty_task_context());
+
+        let app = test::init_service(build_runs_test_app(registry, live)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/runs?with_repo=1")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let runs = body.as_array().expect("response must be a JSON array");
+        assert_eq!(runs.len(), 1, "expected exactly one active run; got {body}");
+        assert_eq!(
+            runs[0]["repo"], "repo-x",
+            "run whose id matches a flow state's run_id must carry that repo; got {body}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_runs_with_repo_omits_repo_key_for_unmatched_run() {
+        // Same fixture repo/flow-state as above, but the *active* run id is a
+        // fresh UUID that appears in no flow state — the honest-degradation path.
+        let (_tmp, registry) = registry_with_fixture_repo_with_run_id();
+        let live = LiveStateStore::new();
+        let run_id = uuid::Uuid::new_v4();
+        live.record(run_id, &empty_task_context());
+
+        let app = test::init_service(build_runs_test_app(registry, live)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/runs?with_repo=1")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let runs = body.as_array().expect("response must be a JSON array");
+        assert_eq!(runs.len(), 1, "expected exactly one active run; got {body}");
+        assert!(
+            !runs[0]
+                .as_object()
+                .expect("run entry must be an object")
+                .contains_key("repo"),
+            "an unmatched run must omit the repo key entirely, never null; got {body}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_runs_with_repo_empty_registry_returns_200_with_repo_absent() {
+        // Empty registry (no registered workspaces) must still be 200, never a
+        // 404/500 — matches A2's "absent registry is 200 [], never a 404".
+        let live = LiveStateStore::new();
+        let run_id = uuid::Uuid::new_v4();
+        live.record(run_id, &empty_task_context());
+
+        let app = test::init_service(build_runs_test_app(FileConfig::default(), live)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/runs?with_repo=1")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/runs?with_repo=1 against an empty registry must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let runs = body.as_array().expect("response must be a JSON array");
+        assert_eq!(runs.len(), 1, "expected exactly one active run; got {body}");
+        assert!(
+            !runs[0]
+                .as_object()
+                .expect("run entry must be an object")
+                .contains_key("repo"),
+            "empty registry must leave repo absent, never null or an error; got {body}"
         );
     }
 

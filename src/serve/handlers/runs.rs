@@ -220,6 +220,26 @@ pub fn project_run_summary(run_id: Uuid, ctx: &TaskContext, repo: Option<String>
 
 // ── run_id -> repo join (A7) ─────────────────────────────────────────────────
 
+/// Deserialize a query-string flag as a bool, accepting `1`/`0` in addition to
+/// `true`/`false` — `serde_urlencoded` (the wire format `web::Query` uses)
+/// only recognizes the literal tokens `true`/`false` for a plain `bool`
+/// field, which would reject the exact param this route documents and A7
+/// pins (`?with_repo=1`, AC 5a — deliberately not `?with_repo=true`, to
+/// stay consistent with other boolean query flags in this API).
+fn bool_flag_from_str<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    match raw.as_str() {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        other => Err(serde::de::Error::custom(format!(
+            "invalid boolean flag value: {other:?} (expected 1/0 or true/false)"
+        ))),
+    }
+}
+
 /// `GET /api/runs` query params.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub struct RunsQuery {
@@ -230,7 +250,7 @@ pub struct RunsQuery {
     /// active runs against the live HQ registry (23 repos), so an unopted poll
     /// (this route's hottest consumer, bastion-web's ~2-6s run rail) must not pay
     /// for it — see `planning/ticket-run-summary-repo-join/tasks.md`'s Notes.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_flag_from_str")]
     pub with_repo: bool,
 }
 

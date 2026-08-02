@@ -957,6 +957,15 @@ mod runs_scenarios {
             )
             .await
         };
+        ($store:expr, $registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($store))
+                    .app_data(web::Data::new($registry))
+                    .service(web::resource("/api/runs").route(web::get().to(list_runs))),
+            )
+            .await
+        };
     }
 
     /// Fixed, non-random run ids (determinism rule 2 — never
@@ -1082,7 +1091,67 @@ mod runs_scenarios {
         }
     }
 
+    // ---- run_id -> repo join fixtures (A7, ?with_repo=1) ---------------
+
+    /// The `run_id` `FLOW_JSON_WITH_RUN_ID` carries — the join key the
+    /// `with-repo` golden below resolves against.
+    const FLOW_RUN_ID: &str = "a1b2c3d4-e5f6-4789-a012-3456789abcde";
+
+    const FLOW_JSON_WITH_RUN_ID: &str = include_str!("status/fixtures/flow_state_with_run_id.json");
+
+    /// A single-repo registry (`"repo-x"`) whose flow state carries
+    /// [`FLOW_RUN_ID`] — used to exercise a repo-resolvable run id without
+    /// pulling in `workflows_scenarios`' private helpers (a different
+    /// `#[cfg(test)] mod`, so its `TempDir`/`registry`/`repo_with_flow` are
+    /// not visible here).
+    fn registry_with_run_id_flow() -> (super::fixtures::TempDir, crate::config::FileConfig) {
+        let tmp = super::fixtures::TempDir::new("runs-with-repo");
+        super::fixtures::write(
+            &tmp.path()
+                .join("planning")
+                .join("phase6-blockA")
+                .join("sdlc")
+                .join("sdlc-flow-state.json"),
+            FLOW_JSON_WITH_RUN_ID,
+        );
+        let registry = crate::config::FileConfig {
+            workspaces: Some(HashMap::from([(
+                "repo-x".to_owned(),
+                tmp.path().to_path_buf(),
+            )])),
+            ..Default::default()
+        };
+        (tmp, registry)
+    }
+
     // ---- corpus goldens -----------------------------------------------
+
+    /// `?with_repo=1` scenario (A7): the active run's id equals
+    /// [`FLOW_RUN_ID`], so the join resolves `repo: "repo-x"` — freezing the
+    /// one new field this ticket adds. All nine pre-existing `runs__*`
+    /// goldens (the empty store + `runs_corpus_active_run` + the seven
+    /// `RunStatus` variant scenarios) must stay byte-identical, since `repo`
+    /// uses `skip_serializing_if = "Option::is_none"` and none of those
+    /// scenarios pass `?with_repo=1`.
+    #[actix_web::test]
+    async fn runs_corpus_with_repo() {
+        let (_tmp, registry) = registry_with_run_id_flow();
+        let store = LiveStateStore::new();
+        let run_id = Uuid::parse_str(FLOW_RUN_ID).expect("fixture run_id must parse as a UUID");
+        store.record(
+            run_id,
+            &TaskContext {
+                event: serde_json::json!({ "spec_slug": "contract-corpus-with-repo-fixture" }),
+                nodes: HashMap::new(),
+                metadata: serde_json::json!({}),
+                node_runs: HashMap::new(),
+            },
+        );
+
+        let app = runs_service!(store, registry);
+        let req = actix_web::test::TestRequest::get().uri("/api/runs?with_repo=1");
+        dump("runs", "with-repo", req, &app).await;
+    }
 
     #[actix_web::test]
     async fn runs_corpus_empty_store() {

@@ -1,0 +1,13 @@
+{
+  "body": [
+    {
+      "repo": "repo-x",
+      "run_id": "<UUID>",
+      "spec_slug": "contract-corpus-with-repo-fixture",
+      "started_at": null,
+      "status": "success",
+      "updated_at": null
+    }
+  ],
+  "status_code": 200
+}
