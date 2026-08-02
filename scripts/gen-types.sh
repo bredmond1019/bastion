@@ -19,19 +19,24 @@ OUTPUT_FILE="${1:-$REPO_ROOT/types/serve.ts}"
 # into ~/.cargo/bin, which is not on PATH on every machine (cargo itself often
 # resolves from Homebrew instead). Probe that directory before prescribing an
 # install, so a PATH gap is never misreported as a missing binary.
+#
+# When the probe finds the binary, **use it and carry on** rather than refusing
+# to run — see the companion comment in check-typeshare-drift.sh for why the
+# earlier exit-1 form made this unrunnable from SDLC subagent shells.
 if ! command -v typeshare >/dev/null 2>&1; then
     CARGO_BIN_TYPESHARE="${CARGO_HOME:-${HOME:-}/.cargo}/bin/typeshare"
     if [ -x "$CARGO_BIN_TYPESHARE" ]; then
-        echo "error: 'typeshare' is installed at $CARGO_BIN_TYPESHARE, but that directory is not on PATH." >&2
-        echo "do NOT reinstall it. Add the directory to PATH instead:" >&2
-        echo "    export PATH=\"\$HOME/.cargo/bin:\$PATH\"   # add to ~/.zshrc to make it durable" >&2
-        echo "or symlink the binary into a directory already on PATH:" >&2
-        echo "    ln -s \"$CARGO_BIN_TYPESHARE\" ~/.local/bin/typeshare" >&2
+        echo "warning: 'typeshare' is installed at $CARGO_BIN_TYPESHARE, but that directory is not on PATH." >&2
+        echo "do NOT reinstall it — using the installed binary directly and continuing." >&2
+        echo "to silence this, add the directory to PATH in the environment that runs this script:" >&2
+        echo "    export PATH=\"\$HOME/.cargo/bin:\$PATH\"" >&2
+        PATH="$(dirname "$CARGO_BIN_TYPESHARE"):$PATH"
+        export PATH
+    else
+        echo "error: 'typeshare' CLI not found on PATH." >&2
+        echo "install it with: cargo install typeshare-cli --locked" >&2
         exit 1
     fi
-    echo "error: 'typeshare' CLI not found on PATH." >&2
-    echo "install it with: cargo install typeshare-cli --locked" >&2
-    exit 1
 fi
 
 typeshare "$REPO_ROOT/src/serve" \
