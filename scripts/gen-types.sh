@@ -15,7 +15,20 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 OUTPUT_FILE="${1:-$REPO_ROOT/types/serve.ts}"
 
+# `command -v typeshare` failing does NOT mean "not installed": cargo installs
+# into ~/.cargo/bin, which is not on PATH on every machine (cargo itself often
+# resolves from Homebrew instead). Probe that directory before prescribing an
+# install, so a PATH gap is never misreported as a missing binary.
 if ! command -v typeshare >/dev/null 2>&1; then
+    CARGO_BIN_TYPESHARE="${CARGO_HOME:-${HOME:-}/.cargo}/bin/typeshare"
+    if [ -x "$CARGO_BIN_TYPESHARE" ]; then
+        echo "error: 'typeshare' is installed at $CARGO_BIN_TYPESHARE, but that directory is not on PATH." >&2
+        echo "do NOT reinstall it. Add the directory to PATH instead:" >&2
+        echo "    export PATH=\"\$HOME/.cargo/bin:\$PATH\"   # add to ~/.zshrc to make it durable" >&2
+        echo "or symlink the binary into a directory already on PATH:" >&2
+        echo "    ln -s \"$CARGO_BIN_TYPESHARE\" ~/.local/bin/typeshare" >&2
+        exit 1
+    fi
     echo "error: 'typeshare' CLI not found on PATH." >&2
     echo "install it with: cargo install typeshare-cli --locked" >&2
     exit 1

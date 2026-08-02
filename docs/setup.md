@@ -82,11 +82,45 @@ bastion run <workflow_name>
 
 ---
 
+## Developer tooling: `~/.cargo/bin` must be on PATH
+
+Cargo-installed CLIs — currently `typeshare` (used by `scripts/gen-types.sh` and
+`scripts/check-typeshare-drift.sh` to regenerate/verify `types/serve.ts`) — install into
+`~/.cargo/bin`. That directory is **not** on PATH by default on macOS: `cargo` itself usually
+resolves from Homebrew (`/opt/homebrew/bin`), so the gap stays invisible until a script goes
+looking for a cargo-installed binary and reports it "not found on PATH".
+
+Put it on PATH durably in your shell profile:
+
+```bash
+# ~/.zshrc
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Verify with `zsh -ic 'command -v typeshare'`.
+
+The Mac Mini automation needs the same thing: cron/launchd runs with a bare
+`/usr/bin:/bin:/usr/sbin:/sbin` PATH and never sources `~/.zshrc`, so the HQ
+`scripts/routine.sh` exports an explicit PATH (`$HOME/.cargo/bin:$HOME/.local/bin:/opt/homebrew/bin:…`)
+near the top, which every delegated step inherits.
+
+The drift scripts diagnose this case specifically: when `command -v typeshare` fails they probe
+`$HOME/.cargo/bin/typeshare` and, if the binary is there, report *"installed at … but that
+directory is not on PATH"* with the PATH remediation instead of prescribing a pointless
+`cargo install`. The `cargo install typeshare-cli --locked` hint appears only when the binary is
+genuinely absent.
+
+---
+
 ## Troubleshooting
 
 - **Error: `relation "task_context" does not exist`**
   This means Bastion connected to the database, but the Alembic migrations haven't run. Go back to `orchestrator` and ensure `./scripts/dev-setup.sh` completes successfully, or run `uv run python -m alembic upgrade head` manually in `orchestrator/app`.
 - **Error: `connection to server on socket "/tmp/.s.PGSQL.5432" failed`**
   Postgres isn't running. Start it via `brew services start postgresql@17`.
+- **Error: `'typeshare' is installed at ~/.cargo/bin/typeshare, but that directory is not on PATH`**
+  Exactly what it says — do **not** run `cargo install`. Add `export PATH="$HOME/.cargo/bin:$PATH"`
+  to `~/.zshrc` (see "Developer tooling" above), or symlink the binary into a directory already on
+  PATH: `ln -s ~/.cargo/bin/typeshare ~/.local/bin/typeshare`.
 - **Config file ignored?**
   Ensure your config file is at `~/.config/bastion/config.toml` (or `$XDG_CONFIG_HOME/bastion/config.toml`). A malformed TOML file will cause a hard exit, but a missing file will silently fall back to environment variables.
