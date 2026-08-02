@@ -1968,8 +1968,8 @@ heading = "bastion"
     ///   collide with the HQ file's path and so `tier_scope_for` doesn't
     ///   mistake the HQ file for a tier-container self-entry).
     ///
-    /// The leaf's `tracks[]` authors four blocks exercising every enrichment
-    /// + `blocked_by` case: `BA.11.R` (in-progress, fully authored
+    /// The leaf's `tracks[]` authors four blocks exercising every enrichment +
+    /// `blocked_by` case: `BA.11.R` (in-progress, fully authored
     /// epics/wave/priority/due), `BA.11.S` (open, depends on `BA.11.R` which
     /// is not `closed` — unmet), `BA.11.T` (open, depends on `BA.11.K` which
     /// is `closed` — met/ready), `BA.11.K` (closed — lands in `finished`).

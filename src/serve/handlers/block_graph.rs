@@ -302,8 +302,8 @@ mod tests {
 
     #[test]
     fn resolve_max_nodes_default_below_clamp_when_absent_and_default_smaller() {
-        // Sanity: DEFAULT_MAX_NODES itself must be within the clamp.
-        assert!(DEFAULT_MAX_NODES <= MAX_NODES_CLAMP);
+        // Sanity: the absent-param default must itself be within the clamp.
+        assert!(resolve_max_nodes(None) <= MAX_NODES_CLAMP);
     }
 
     // ── block_graph_scope_from_query ─────────────────────────────────────────

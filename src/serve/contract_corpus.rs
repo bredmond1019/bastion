@@ -251,17 +251,17 @@ fn temp_dir_prefixes() -> &'static [String] {
     PREFIXES.get_or_init(|| {
         let tmp = std::env::temp_dir();
         let mut out: Vec<String> = Vec::new();
-        if let Some(s) = tmp.to_str() {
-            if !s.is_empty() {
-                out.push(s.to_owned());
-            }
+        if let Some(s) = tmp.to_str()
+            && !s.is_empty()
+        {
+            out.push(s.to_owned());
         }
-        if let Ok(canon) = std::fs::canonicalize(&tmp) {
-            if let Some(s) = canon.to_str() {
-                if !s.is_empty() && !out.iter().any(|p| p == s) {
-                    out.push(s.to_owned());
-                }
-            }
+        if let Ok(canon) = std::fs::canonicalize(&tmp)
+            && let Some(s) = canon.to_str()
+            && !s.is_empty()
+            && !out.iter().any(|p| p == s)
+        {
+            out.push(s.to_owned());
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.len()));
         out
