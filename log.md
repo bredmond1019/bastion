@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-02T02:15:00Z
+timestamp: 2026-08-02T08:08:58Z
 ---
 
 # Log — bastion
@@ -12,6 +12,39 @@ timestamp: 2026-08-02T02:15:00Z
 ---
 
 ## [run: 2026-08-02]
+
+### Carryover knock-out — four of six entries cleared, registry down to the two durable ones
+
+- **What:** Worked the `carryover[]` registry directly instead of starting a block. Cleared four
+  entries, each against its `clears_when` condition:
+  - `cargo-bin-path-not-on-path` — applied the proposed `export PATH="$HOME/.cargo/bin:$PATH"` to
+    **both** `~/.zshrc` and `~/.zprofile` (login non-interactive shells — what scripts get — source
+    only the latter; `.zshrc` alone left `zsh -lc` unfixed). Removed the `~/.local/bin/typeshare`
+    symlink and verified `command -v typeshare` → `~/.cargo/bin/typeshare` (1.13.4) in both shell
+    types.
+  - `dotenv-truncated-env-restored` — the reconstructed `DATABASE_URL`
+    (`…/orchestration_dev`) verified against live Postgres: connects, `events` table has the
+    contract shape (29 rows, latest 2026-08-01), and `bastion costs --last 7d` agrees end-to-end
+    (22 SDLC_FLOW runs, $0.0859).
+  - `clippy-all-targets-5-preexisting` — fixed all warnings (7 by this point; the corpus ticket had
+    added two): let-chain collapse in `contract_corpus.rs`'s `temp_dir_prefixes`, the
+    `block_graph.rs` constant assertion re-asserted through `resolve_max_nodes(None)`, and a doc
+    comment whose `+`-leading wrap line parsed as a markdown list. **`cargo clippy --all-targets --
+    -D warnings` is now clean**, so adopting it as a gate is a free choice. fmt clean, nextest
+    1970/1970. Bastion commit `f7fa021`.
+  - `pid-nanos-temp-dir-antipattern` — tier-wide `rg -L` sweep (Rust + non-Rust repos): the idiom
+    exists nowhere else; every other temp-dir site uses pid+atomic-counter or a unique per-test
+    prefix, and engine-rs already pre-removes against pid recycling. Nothing to fix.
+  - Also fixed a pre-existing schema error on the two surviving entries
+    (`bastion-worktree-must-be-core-sibling`, `costs-200-golden-needs-events-fixture-seam`): their
+    `scope` carried all three keys where `E_STATE_SCHEMA_MALFORMED_SCOPE` demands exactly one. `mev
+    validate-brain --state` now reports zero state errors. Brain commit `67d180fa` (path-scoped —
+    a concurrent bastion-web session had ~20 uncommitted files in the shared index; none absorbed),
+    which also deletes the consumed 2026-08-02 handoff.
+- **Why:** The 2026-08-02 handoff left the queue open with six fresh carryover entries, two of them
+  flagged as needing a human (`~/.zshrc`, `DATABASE_URL`). Clearing the registry before starting
+  `BA.11.O` means the next block begins from a clean environment with no ambient caveats.
+- **Refs:** `planning/state.json` `carryover[]`; bastion `f7fa021`; brain `67d180fa`.
 
 ### Arch-review follow-up train (4 tickets) — ALL SHIPPED, serve-api v0.21, corpus 22 → 32
 
