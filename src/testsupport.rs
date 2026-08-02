@@ -537,10 +537,19 @@ impl Drop for DotenvShadow {
             } => {
                 // Same atomic-replace reasoning as the `Owned` arm above.
                 let _ = std::fs::rename(backup, env_path);
-                // Clean up the pre-adopt backup `new()`'s adopt branch may
-                // have written (only when `.env` was present at adopt time —
-                // absent otherwise, so this is a harmless no-op then too).
-                let _ = std::fs::remove_file(preadopt_backup);
+                // Deliberately NOT cleaned up: `preadopt_backup` (written by
+                // `new()`'s adopt branch only when `.env` held content at
+                // adopt time) is the *only* remaining copy of whatever was
+                // live in `.env` the moment this guard adopted a stale
+                // backup written by a different, killed run — see
+                // `adopted_branch_does_not_truncate_an_unbacked_env`. Deleting
+                // it here would silently discard that content the instant
+                // this guard drops, with no recovery path left at all.
+                // `preadopt_backup` is intentionally left on disk for a
+                // human to find and reconcile; it is a distinct, prefixed
+                // filename (`.env.{suffix}.pre-adopt.bak`) so it never
+                // collides with a live shadow cycle.
+                let _ = preadopt_backup;
                 let _ = std::fs::remove_file(marker_path);
             }
             DotenvShadowState::NoOriginal => {
