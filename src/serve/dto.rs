@@ -1027,6 +1027,18 @@ pub struct EpicDto {
     /// Lifecycle: `"active"` · `"paused"` · `"complete"`.
     #[serde(default)]
     pub status: Option<String>,
+    /// Authored initiative weight, carried verbatim from `okf_core::Epic.weight`.
+    ///
+    /// Range policy (`0..=100`) is mev's, enforced by its `check_epics`
+    /// (`E_STATE_EPIC_BAD_WEIGHT`) — bastion never clamps, defaults, or
+    /// range-checks it, so an out-of-policy authored value reaches the wire
+    /// unchanged rather than being silently corrected here.
+    ///
+    /// `null` on the wire means unauthored (a consumer default applies —
+    /// bastion-web currently falls back to 60), which stays distinguishable
+    /// from an authored `0`.
+    #[serde(default)]
+    pub weight: Option<u8>,
     /// Repo-relative path to the owning master-plan / plan doc, when one exists.
     #[serde(default)]
     pub plan: Option<String>,
@@ -3679,6 +3691,7 @@ mod tests {
             title: "Bastion Surfaces".to_string(),
             description: Some("Surfaces initiative".to_string()),
             status: Some("active".to_string()),
+            weight: Some(80),
             plan: Some("core/planning/master-plan.md".to_string()),
             repos: vec!["bastion".to_string(), "bastion-web".to_string()],
             closed: 3,
@@ -3701,6 +3714,70 @@ mod tests {
         assert!(dto.status.is_none());
         assert!(dto.plan.is_none());
         assert!(dto.repos.is_empty());
+        assert!(
+            dto.weight.is_none(),
+            "absent weight key must decode to None via #[serde(default)]"
+        );
+    }
+
+    #[test]
+    fn epic_dto_authored_weight_serializes_as_number() {
+        let dto = EpicDto {
+            weight: Some(80),
+            ..epic_dto_fixture()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(v["weight"], serde_json::json!(80));
+    }
+
+    #[test]
+    fn epic_dto_unauthored_weight_serializes_as_null() {
+        let dto = EpicDto {
+            weight: None,
+            ..epic_dto_fixture()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize");
+        assert!(
+            v.get("weight").is_some(),
+            "weight must be present on the wire (EpicDto does not skip_serializing Options)"
+        );
+        assert!(
+            v["weight"].is_null(),
+            "unauthored weight must serialize as null, not be omitted"
+        );
+    }
+
+    #[test]
+    fn epic_dto_out_of_policy_weight_round_trips_unchanged() {
+        // mev owns the 0..=100 range policy (E_STATE_EPIC_BAD_WEIGHT); the DTO
+        // must carry whatever was authored, unclamped.
+        let original = EpicDto {
+            weight: Some(200),
+            ..epic_dto_fixture()
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: EpicDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.weight, Some(200));
+    }
+
+    /// Minimal `EpicDto` used by the `weight` cases — every field but `weight`
+    /// held constant so each test varies exactly one thing.
+    fn epic_dto_fixture() -> EpicDto {
+        EpicDto {
+            slug: "bastion-surfaces".to_string(),
+            title: "Bastion Surfaces".to_string(),
+            description: None,
+            status: None,
+            weight: None,
+            plan: None,
+            repos: Vec::new(),
+            closed: 0,
+            in_progress: 0,
+            open: 0,
+            deferred: 0,
+            total: 0,
+            fully_deferred: false,
+        }
     }
 
     #[test]

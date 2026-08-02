@@ -2123,6 +2123,7 @@ heading = "bastion"
       "title": "Bastion Surfaces",
       "description": "Cross-surface work",
       "status": "active",
+      "weight": 85,
       "plan": "core/planning/master-plan.md",
       "repos": ["bastion"]
     },
@@ -2240,10 +2241,19 @@ heading = "bastion"
         assert_eq!(entries[0]["status"], "active");
         assert_eq!(entries[0]["plan"], "core/planning/master-plan.md");
         assert_eq!(entries[0]["repos"][0], "bastion");
+        assert_eq!(
+            entries[0]["weight"], 85,
+            "authored weight must reach the wire verbatim"
+        );
         assert_eq!(entries[1]["slug"], "brain-rag");
         assert!(
             entries[1]["repos"].as_array().unwrap().is_empty(),
             "minimal registry entry must default repos to []"
+        );
+        assert!(
+            entries[1]["weight"].is_null(),
+            "unauthored weight must be null on the wire, not omitted; got {:?}",
+            entries[1].get("weight")
         );
 
         let _ = std::fs::remove_dir_all(&dir);
