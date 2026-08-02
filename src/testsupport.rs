@@ -42,8 +42,21 @@
 //!   `serve::contract_corpus::CorpusConfig::from_env`), while low-level env
 //!   readers (`corpus_dir()`, `should_write()`) stay lock-free so a
 //!   lock-holding test can call them directly.
-//! - **Never hold it across an `.await`** — snapshot what you need, drop the
-//!   guard, then await (also keeps clippy's `await_holding_lock` quiet).
+//! - **Never hold it across an `.await`, with one sanctioned exception.** The
+//!   default is: snapshot what you need, drop the guard, then await (also
+//!   keeps clippy's `await_holding_lock` quiet). The exception is
+//!   `serve::contract_corpus::costs_corpus_no_database_url`
+//!   (`src/serve/contract_corpus.rs`), which holds [`EnvLock`] across its
+//!   `dump_with(...).await` on purpose: that test's whole point is exclusive
+//!   env access spanning an async dispatch — it exists to pin the `503`/`C005`
+//!   response `Config::load` produces when `DATABASE_URL` is absent, and
+//!   dropping the lock before the await would let a sibling test's env
+//!   mutation race the dispatch and make the golden flaky. It is safe *only*
+//!   because `#[actix_web::test]` runs on a single-threaded runtime — the
+//!   await yields to no other task that could need the lock, so there is
+//!   nothing to deadlock against. Do not generalize this exception to a
+//!   multi-threaded runtime or to a test that awaits anything other than the
+//!   one locked dispatch it holds the lock for.
 //! - Mutating env without the lock is not possible through [`EnvVarGuard`]:
 //!   its constructors take `&EnvLock` as a witness, so the type system records
 //!   that the caller holds it. `grep -rn 'set_var\|remove_var' src/` should
