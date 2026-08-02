@@ -172,13 +172,19 @@ impl Drop for EnvVarGuard {
 ///   the whole reason this ticket exists is that the prior silent-truncation
 ///   behavior went unnoticed until a human happened to look at the file by
 ///   chance.
-/// - **A per-suffix marker (`.env.dotenv-shadow.active`) makes the guard
-///   nesting-aware.** A guard that finds this marker already present treats
-///   itself as *nested* under whichever guard created it and touches nothing
-///   at all — neither on construction nor on `Drop` — leaving the outer
-///   guard's backup as the sole source of truth. This is what keeps two
+/// - **A marker (`.env.dotenv-shadow.active`) claimed atomically, before
+///   `.env` is touched, makes the guard nesting-aware.** The claim is
+///   `OpenOptions::create_new` (`O_CREAT | O_EXCL`), so exactly one caller
+///   wins even across processes — a real mutex, not an advisory check. A
+///   guard that loses the race treats itself as *nested* under the winner and
+///   touches nothing at all, neither on construction nor on `Drop`, leaving
+///   the winner's backup as the sole source of truth. This is what keeps two
 ///   overlapping guards (interleaved `A.new, B.new, A.drop, B.drop`) from
-///   destroying each other's restores.
+///   destroying each other's restores. Claiming *before* the rename is
+///   load-bearing: the reverse order leaves a window where `.env` is already
+///   moved aside and no marker exists yet, so a second guard sees neither and
+///   takes the `NoOriginal` path — then removes on `Drop` the `.env` the
+///   first guard had just restored.
 /// - **A pre-existing backup at *this exact* suffix is adopted, never
 ///   overwritten.** If `.env.{suffix}.bak` already exists when `new()` runs
 ///   (a prior guard using the same suffix was killed — Ctrl-C, a timeout, a
@@ -187,14 +193,30 @@ impl Drop for EnvVarGuard {
 ///   `Drop`, recovering the original content the interrupted run captured
 ///   instead of clobbering it with a fresh empty stand-in.
 ///
-/// **Residual hazard.** `ENV_LOCK` (and this guard's marker file) are only
-/// meaningful *within one process*. `cargo nextest` runs each test in its own
-/// process, so two truly concurrent processes racing on the exact same
-/// backup suffix simultaneously (rather than one after another, which the
-/// adoption rule above handles) are not synchronized by anything here. In
-/// practice every production call site uses a distinct, hardcoded suffix, so
-/// this residual case does not arise in this crate's own suite — but it is
-/// not a guarantee this guard enforces.
+/// **Residual hazard.** `ENV_LOCK` is only meaningful within one process; the
+/// *marker* is what carries the guarantee across processes, and it does so
+/// only for guards that go through this constructor. Two remaining cases are
+/// therefore not covered, both non-destructive:
+///
+/// - A run killed between claiming the marker and its `Drop` leaves a stale
+///   marker behind. Every later guard then reads it, returns `Nested`, and
+///   stops shadowing — so `Config::load` starts seeing the real `.env` again
+///   and the `C005` scenarios fail loudly. Recovery is to delete the stale
+///   `.env.dotenv-shadow.active`; the real content is safe in whichever
+///   `.env.{suffix}.bak` the killed run wrote, and that suffix's next run
+///   adopts it.
+/// - Anything that writes `.env` *without* going through this guard is
+///   unsynchronized, as it always was.
+///
+/// The durable fix for both is to stop touching the repo-root `.env` at all —
+/// point the process cwd at a disposable directory so `dotenvy`'s upward walk
+/// starts somewhere throwaway (what [`CwdGuard`] does inside this module's own
+/// tests). That was considered and deferred: cwd is process-global, so under
+/// `cargo test`'s threaded model it is shared with sibling tests that resolve
+/// relative paths, and auditing that blast radius is a larger change than this
+/// guard's own hardening.
+///
+/// [`CwdGuard`]: self::tests::CwdGuard
 ///
 /// Mutates a process-wide (indeed repo-wide) resource, so — exactly like an env
 /// var — it may only be constructed while holding the crate-wide env lock;
@@ -258,12 +280,44 @@ impl DotenvShadow {
             };
         }
 
-        // Some other guard (a different suffix) is already shadowing `.env`
-        // right now. Its backup is the only one that matters; do nothing.
-        if marker_path.exists() {
-            return Self {
-                state: DotenvShadowState::Nested,
-            };
+        // Claim the marker **atomically, before touching `.env` at all**.
+        // `create_new(true)` is `O_CREAT | O_EXCL`: exactly one caller can
+        // win, even across processes, so this is a real mutex rather than an
+        // advisory check.
+        //
+        // The ordering is load-bearing. Claiming *after* the rename (as the
+        // first cut of this guard did) leaves a window in which `.env` has
+        // already been moved aside but no marker exists yet — a second
+        // process arriving there sees no marker *and* no `.env`, takes the
+        // `NoOriginal` branch, and on `Drop` removes the `.env` the first
+        // guard had just restored. That window was microseconds rather than
+        // the whole test duration, but it was reachable with *distinct*
+        // suffixes, which is exactly the case the marker exists to cover.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(marker_path)
+        {
+            Ok(mut marker) => {
+                use std::io::Write as _;
+                let _ = marker.write_all(suffix.as_bytes());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Some other guard is already shadowing `.env`. Its backup is
+                // the only one that matters; touch nothing, undo nothing.
+                return Self {
+                    state: DotenvShadowState::Nested,
+                };
+            }
+            Err(err) => panic!(
+                "DotenvShadow: failed to claim the shadow marker `{}` ({err}) \
+                 — refusing to proceed, since shadowing `{}` without holding \
+                 the claim is what allows two guards to destroy each other's \
+                 restore. `{}` has NOT been modified.",
+                marker_path.display(),
+                env_path.display(),
+                env_path.display(),
+            ),
         }
 
         if env_path.exists() {
@@ -272,7 +326,6 @@ impl DotenvShadow {
                     // The empty stand-in is what actually stops dotenvy's
                     // upward walk.
                     let _ = std::fs::write(env_path, "");
-                    let _ = std::fs::write(marker_path, suffix);
                     Self {
                         state: DotenvShadowState::Owned(backup_path),
                     }
@@ -283,6 +336,12 @@ impl DotenvShadow {
                     // that way: panic rather than proceed to the
                     // unconditional `write(env_path, "")` that used to run
                     // regardless of whether the backup actually succeeded.
+                    //
+                    // Release the claim first. Leaking it would make every
+                    // subsequent guard in this working tree see the marker,
+                    // return `Nested`, and silently stop shadowing at all —
+                    // turning a loud failure into a quiet one.
+                    let _ = std::fs::remove_file(marker_path);
                     panic!(
                         "DotenvShadow: failed to back up `{}` to `{}` before \
                          shadowing it ({err}) — refusing to proceed, since \
@@ -302,7 +361,6 @@ impl DotenvShadow {
             }
         } else {
             let _ = std::fs::write(env_path, "");
-            let _ = std::fs::write(marker_path, suffix);
             Self {
                 state: DotenvShadowState::NoOriginal,
             }
@@ -687,6 +745,72 @@ mod tests {
             FIXTURE_ENV_CONTENT,
             "two overlapping guards over the same fixture must not let the \
              later drop overwrite content an earlier drop already restored"
+        );
+    }
+
+    #[test]
+    fn dotenv_shadow_claims_its_marker_before_moving_env() {
+        // Failure mode 3, the narrow residual left by the first fix: the
+        // marker used to be written *after* the rename, so a second guard
+        // arriving in that window saw neither a marker nor a `.env`, took the
+        // `NoOriginal` branch, and on `Drop` deleted the `.env` the first
+        // guard had just restored. Reachable with *distinct* suffixes — the
+        // very case the marker exists to cover.
+        //
+        // **What this test does and does not prove.** It is an invariant
+        // guard, *not* a regression test for the ordering change — and the
+        // difference matters, so it is stated rather than left implied. The
+        // fix is unobservable from a single process: both the old
+        // (write-marker-after-rename) and new (claim-before-rename) forms
+        // leave exactly the same on-disk state by the time `new()` returns,
+        // so every assertion below passes against both. Catching the actual
+        // interleaving would need two real processes suspended mid-`new()`,
+        // or a fault-injection seam threaded through production code to widen
+        // a microsecond window — more machinery than the window warrants.
+        //
+        // What it does earn: it pins the marker's *lifecycle* (claimed by
+        // construction, released on drop, and never disturbed by a nested
+        // guard), so a future refactor that leaks the marker — which would
+        // silently turn every later guard into a no-op and stop `.env` being
+        // shadowed at all — fails here loudly instead of in whichever
+        // `C005` scenario happens to notice.
+        let lock = lock_env();
+        let dir = fixture_dir("dotenv-shadow-claim-order");
+        let _cwd = CwdGuard::enter(&lock, &dir);
+
+        std::fs::write(".env", FIXTURE_ENV_CONTENT).expect("seed fixture .env");
+
+        let owner = DotenvShadow::new(&lock, "claim_order_fixture");
+        assert!(
+            std::path::Path::new(DOTENV_SHADOW_MARKER).exists(),
+            "the marker must be claimed by the time `new` returns — if it is \
+             written after the rename instead, a concurrent guard can slip \
+             into the gap and delete the restored `.env`"
+        );
+
+        // A second guard arriving at any point after that must lose the race
+        // and become a no-op, even though `.env` is currently the empty
+        // stand-in rather than the real file.
+        let latecomer = DotenvShadow::new(&lock, "claim_order_other_suffix");
+        drop(latecomer);
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            "",
+            "a nested guard's drop must not disturb the stand-in the owner \
+             still relies on"
+        );
+
+        drop(owner);
+        assert_eq!(
+            std::fs::read_to_string(".env").unwrap(),
+            FIXTURE_ENV_CONTENT,
+            "the owner must still restore the real content after a latecomer \
+             has come and gone"
+        );
+        assert!(
+            !std::path::Path::new(DOTENV_SHADOW_MARKER).exists(),
+            "the owner must release the marker on drop — a leaked marker makes \
+             every later guard a silent no-op"
         );
     }
 
