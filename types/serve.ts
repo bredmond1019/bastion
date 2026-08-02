@@ -1181,6 +1181,16 @@ export interface RunSummaryDto {
 	 * nodes, as RFC3339. `null` when the run has no recorded node transitions yet.
 	 */
 	updated_at?: string;
+	/**
+	 * The repo that owns this run, resolved by an **exact `run_id` match** against the
+	 * registry's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2). Absent
+	 * (never `null`) when no flow state carries this run's `run_id` — the run could not be
+	 * attributed to a repo. A wrong label would be strictly worse than an absent one, so this
+	 * field is never guessed via substring, prefix, or spec-slug similarity matching (A7).
+	 * Only populated when the request opts in via `?with_repo=1`; otherwise always absent, to
+	 * keep the unopted poll path free of the registry walk that resolving `repo` requires.
+	 */
+	repo?: string;
 }
 
 /**

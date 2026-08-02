@@ -1,7 +1,13 @@
 ---
 type: Guideline
-title: "serve-api contract v0.21"
-description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight."
+title: "serve-api contract v0.22"
+description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
+the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
+every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
+absent (never guessed) when no flow state carries a run's `run_id`, gated behind an opt-in
+`?with_repo=1` query param (mirroring `/api/board`'s `?graph=1`, A5) since task 1's measurement
+found the registry walk roughly 6x the unenriched baseline against the live HQ registry (23 repos),
+so the route's hottest consumer (bastion-web's ~2-6s run rail) does not pay for it unless it asks."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -10,9 +16,9 @@ keywords: [serve, api, websocket, sessions, status, actions, quick-action, board
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.21 Contract
+# serve-api — v0.22 Contract
 
-**Version:** v0.21  
+**Version:** v0.22  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–25 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -1320,7 +1326,7 @@ token / transition-by-transition) is split into a follow-on block (proposed `BA.
 `tokio::sync::broadcast` tee added to `engine-serve`'s `on_progress` closure. Until that ships,
 `BW.3.A`'s ~2s client polling against these two routes is the standing fallback.
 
-### 14.1 `GET /api/runs` — currently-tracked run summaries (v0.16, BA.11.T; `suspended` status added v0.17)
+### 14.1 `GET /api/runs` — currently-tracked run summaries (v0.16, BA.11.T; `suspended` status added v0.17; `repo` added v0.22)
 
 **Request:**
 
@@ -1328,6 +1334,12 @@ token / transition-by-transition) is split into a follow-on block (proposed `BA.
 GET /api/runs HTTP/1.1
 Authorization: Bearer <token>
 ```
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `with_repo` (v0.22) | boolean | No | `false` | Opt-in gate for the A7 `repo` enrichment (below), accepting `1`/`0` in addition to `true`/`false`. When `false`/absent, `list_runs` skips the registry walk (`collect_all_workflows`) **entirely** and `repo` is omitted from every entry. When `true` (`?with_repo=1`), the walk runs once per request and `repo` is resolved per run via an exact `run_id` match. This is an **enrichment flag, not a repo filter** — unlike `?repo=` elsewhere in this API (`BlockGraphQuery.repo`, Section 23.1; the documented "No `?repo=` filter" on `/api/costs`, Section 24), `?with_repo=1` never narrows which runs are returned, it only adds a field to each one. Mirrors `/api/board`'s `?graph=1` gate (Section 13.1, A5): task 1 measured the registry walk as ~6x the unenriched baseline against the live HQ registry (23 repos), so the route's hottest consumer (bastion-web's ~2-6s run rail) must not pay for it unless it opts in. |
 
 **Response (200 OK): `Vec<RunSummaryDto>`** — one entry per run currently tracked by the shared
 `LiveStateStore` (`list_active()`), each projected via `project_run_summary` (`src/serve/handlers/
@@ -1371,6 +1383,7 @@ No query parameters. No 404 case — an empty store is a normal 200.
 | `spec_slug` | string \| absent | The triggering event's `spec_slug` field, when present. Omitted (not `null`) when the run's event carries no `spec_slug` key. |
 | `started_at` | string \| null | Earliest non-null `node_runs[*].started_at` across all tracked nodes, as RFC3339. `null` when the run has no recorded node transitions yet. |
 | `updated_at` | string \| null | Latest non-null `node_runs[*].started_at` **or** `completed_at` across all tracked nodes, as RFC3339. `null` when the run has no recorded node transitions yet. |
+| `repo` (v0.22) | string \| absent | The repo that owns this run, resolved by an **exact `run_id` match** against the registry's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, Section 11.6, A2). Absent (never `null`, never guessed via substring/prefix/spec-slug similarity) when no flow state carries this run's `run_id` — a wrong label is strictly worse than an absent one (A7). Also absent whenever the request omits `?with_repo=1`, regardless of whether a match would exist, since the registry walk that resolution requires does not run at all in that case. |
 
 ### 14.2 `GET /api/runs/{id}` — one run's per-node snapshot
 
@@ -2355,7 +2368,13 @@ matches how `bastion costs` itself degrades (an actionable message, never a pani
 no `repo` field — and `costs::aggregate` groups by `workflow_name` only. This is a deliberate
 deviation from the block definition, decided with the owner 2026-07-29 (see
 `planning/11.J-cost-read-endpoint/tasks.md`'s Amendment Log); `repo` is **not** silently aliased
-onto `workflow_name`.
+onto `workflow_name`. This remains true here in v0.22: the events contract itself still carries no
+repo dimension, and that has not changed. What changed is `GET /api/runs` (Section 14.1, A7) —
+its `repo` field is **not** sourced from the events contract at all. It is joined from a different
+source entirely: `RepoWorkflowStateDto` (Section 11.6, A2), which pairs each registered workspace's
+on-disk flow state with the `run_id` A1 stamped onto it. So the exact-`run_id` join `/api/runs`
+performs sidesteps this cost gap rather than closing it — `/api/costs` still cannot filter or
+group by repo, and this note's underlying constraint is unchanged.
 
 ### 24.1 `GET /api/costs` — cost + budget-state summary
 
@@ -2638,6 +2657,31 @@ a real Postgres being up or down cannot change any golden.
 ---
 
 ## Amendment Log
+
+- **2026-08-02 — v0.21 → v0.22 (`ticket-run-summary-repo-join`, ask A7,
+  `planning/arch-review-asks-bastion-web/notes.md`):** Section 14.1's `RunSummaryDto` gains
+  `repo: Option<String>`, resolved by an **exact `run_id` match** against every registered
+  workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, Section 11.6, A2) —
+  never a substring, prefix, or spec-slug similarity guess, since a wrong repo label is strictly
+  worse than an absent one. Absent (not `null`) when no flow state carries a run's `run_id`,
+  preserving the honest-degradation posture bastion-web already built for the bare-UUID fallback.
+  Gated behind an opt-in `?with_repo=1` query param (Section 14.1), mirroring `/api/board`'s
+  `?graph=1` (A5): task 1 measured the registry walk `collect_all_workflows` requires as ~6x the
+  unenriched `GET /api/runs` baseline (median 2.51ms vs. 0.41ms/request over 20 requests against
+  the live HQ registry, 23 repos, 0 active runs — see `planning/ticket-run-summary-repo-join/
+  tasks.md`'s Notes), so the route's hottest consumer (bastion-web's ~2-6s run rail) does not pay
+  for the walk unless it opts in — settled with bastion-web ahead of this ticket, 2026-08-02.
+  `?with_repo=1`, not `?repo=1`: `repo` already carries filter semantics elsewhere in this contract
+  (`BlockGraphQuery.repo`, Section 23.1; the documented "No `?repo=` filter" on `/api/costs`,
+  Section 24), and `?with_repo=1` is an enrichment flag, never a filter — it narrows nothing.
+  Section 24's "No `?repo=` filter" note is amended to clarify it still holds: the `events`
+  contract still carries no repo dimension, and `/api/runs`' new `repo` field sidesteps that gap
+  via the flow-state join rather than closing it. Serialized with
+  `#[serde(skip_serializing_if = "Option::is_none")]`, matching `spec_slug`/`workflow_type`'s
+  absent-key convention — the nine pre-existing `runs__*` contract-corpus goldens stay
+  byte-identical, and a tenth, `runs__with-repo`, freezes the populated shape.
+  `types/serve.ts` regenerated (`scripts/gen-types.sh`); `scripts/check-typeshare-drift.sh` and
+  `scripts/check-contract-corpus-drift.sh` both pass clean.
 
 - **2026-08-02 — costs' populated 200 shape frozen via a compile-time fetch seam
   (`ticket-costs-200-contract-golden`; no version bump):** `get_costs` (`src/serve/handlers/costs.rs`)
