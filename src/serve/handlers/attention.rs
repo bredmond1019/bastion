@@ -963,14 +963,7 @@ mod tests {
 
     #[test]
     fn assemble_attention_on_missing_brain_toml_errors_cleanly() {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-attention-assemble-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-attention-assemble-test");
         std::fs::create_dir_all(&dir).unwrap();
         let result = assemble_attention(&dir);
         assert!(

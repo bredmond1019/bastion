@@ -592,6 +592,7 @@ mod engine_mount_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testsupport::{EnvLock, EnvVarGuard, lock_env};
     use actix_web::{App, test};
 
     const TEST_TOKEN: &str = "test-secret-token";
@@ -1683,14 +1684,7 @@ mod tests {
     /// successfully. Mirrors `brainval::tests::make_temp_brain_root`. Returns the
     /// directory — callers are responsible for `remove_dir_all` teardown.
     fn make_temp_board_brain_root() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-serve-board-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-serve-board");
         let planning_dir = dir.join("planning");
         std::fs::create_dir_all(&planning_dir).unwrap();
 
@@ -1816,12 +1810,18 @@ heading = "bastion"
     // `planning/11.J-cost-read-endpoint/tasks.md`): a missing/unreachable
     // database is a typed error response from the handler, never a 404.
 
-    /// Serializes tests that mutate the process-wide `DATABASE_URL` env var.
-    /// `cargo test`'s default in-process thread parallelism means two tests
-    /// racing to set/unset the same env var can observe each other's state;
-    /// `cargo nextest` isolates each test in its own process and would not
-    /// need this, but the lock keeps both runners correct.
-    static DATABASE_URL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // The former module-local `DATABASE_URL_ENV_LOCK` is gone. Process-global
+    // env (and the repo-cwd `.env` file `DotenvShadow` swaps) is now
+    // serialized by the **one** crate-wide lock in `crate::testsupport` —
+    // deliberately one lock, so ordering between modules is moot and
+    // deadlock between them impossible. A per-module lock is exactly what
+    // failed here before: `serve::contract_corpus` had its own, and the two
+    // never excluded each other.
+    //
+    // Discipline (full version in `crate::testsupport`'s module docs):
+    // take `lock_env()` **once**, at the top of the test; mutate only through
+    // `EnvVarGuard`; never hold it across an `.await`. It is a plain
+    // `std::sync::Mutex` — not reentrant.
 
     /// RAII guard that neutralizes `dotenvy::dotenv()` for the tests that need
     /// `DATABASE_URL` to be genuinely absent (or genuinely theirs).
@@ -1841,8 +1841,9 @@ heading = "bastion"
     /// touched. The original file (if any) is restored on `Drop`, so a panicking
     /// assertion can't leave the checkout without its `.env`.
     ///
-    /// Must be held together with [`DATABASE_URL_ENV_LOCK`] — it mutates a
-    /// process-wide (indeed repo-wide) resource.
+    /// Mutates a process-wide (indeed repo-wide) resource, so — exactly like
+    /// an env var — it may only be constructed while holding the crate-wide
+    /// env lock; [`DotenvShadow::new`] takes the [`EnvLock`] as a witness.
     struct DotenvShadow {
         /// Path of the saved original, or `None` when there was no `.env`.
         backup: Option<std::path::PathBuf>,
@@ -1851,7 +1852,12 @@ heading = "bastion"
     impl DotenvShadow {
         /// `suffix` disambiguates the backup filename so two guards can never
         /// collide on it, even if the lock discipline is ever broken.
-        fn new(suffix: &str) -> Self {
+        ///
+        /// `_lock` is the witness that the caller holds the crate-wide env
+        /// lock — the `.env` swap is a global mutation and must be serialized
+        /// against every reader of it (`dotenvy::dotenv()` inside
+        /// `Config::load`) just as an env var would be.
+        fn new(_lock: &EnvLock, suffix: &str) -> Self {
             let env_path = std::path::Path::new(".env");
             let backup_path = std::path::PathBuf::from(format!(".env.{suffix}.bak"));
 
@@ -1882,15 +1888,13 @@ heading = "bastion"
     // `use actix_web::test;`, which shadows the built-in attribute.
     #[actix_web::test]
     async fn dotenv_shadow_leaves_an_empty_env_and_restores_the_original() {
-        let _guard = DATABASE_URL_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let env_lock = lock_env();
 
         let env_path = std::path::Path::new(".env");
         let before = std::fs::read_to_string(env_path).ok();
 
         {
-            let _shadow = DotenvShadow::new("unit_test");
+            let _shadow = DotenvShadow::new(&env_lock, "unit_test");
             assert!(
                 env_path.exists(),
                 "DotenvShadow must leave an empty `.env` in place — an absent file \
@@ -1965,10 +1969,7 @@ heading = "bastion"
 
     #[actix_web::test]
     async fn get_costs_missing_database_url_returns_503_c005() {
-        let _guard = DATABASE_URL_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var("DATABASE_URL").ok();
+        let env_lock = lock_env();
 
         // `Config::load` calls `dotenvy::dotenv()`, which repopulates
         // DATABASE_URL from a `.env` the moment we remove it from the process
@@ -1976,11 +1977,13 @@ heading = "bastion"
         // isn't enough to simulate "unset" in a dev checkout that has a working
         // local Postgres. `DotenvShadow` neutralizes that lookup, including the
         // ancestor-`.env` case that bites inside a git worktree; see its docs.
-        let _dotenv_shadow = DotenvShadow::new("get_costs_c005");
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "get_costs_c005");
 
-        // Safety: serialized by DATABASE_URL_ENV_LOCK above — no other test
-        // reads or writes this env var while the guard is held.
-        unsafe { std::env::remove_var("DATABASE_URL") };
+        // Serialized by `env_lock` above — no other test that participates in
+        // the discipline reads or writes env while these guards are held. The
+        // guard also restores the previous value on unwind, so a failing
+        // assertion below cannot leak an unset DATABASE_URL into a sibling.
+        let _database_url = EnvVarGuard::unset(&env_lock, "DATABASE_URL");
 
         let app = test::init_service(build_app(FileConfig::default())).await;
         let req = test::TestRequest::get()
@@ -1991,14 +1994,6 @@ heading = "bastion"
 
         let status = resp.status();
         let body: serde_json::Value = test::read_body_json(resp).await;
-
-        // Safety: still under DATABASE_URL_ENV_LOCK.
-        unsafe {
-            match &previous {
-                Some(v) => std::env::set_var("DATABASE_URL", v),
-                None => std::env::remove_var("DATABASE_URL"),
-            }
-        }
 
         assert_eq!(
             status, 503,
@@ -2009,26 +2004,23 @@ heading = "bastion"
 
     #[actix_web::test]
     async fn get_costs_unreachable_database_returns_503_c009() {
-        let _guard = DATABASE_URL_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var("DATABASE_URL").ok();
+        let env_lock = lock_env();
 
         // Same `.env` shadowing as the C005 test above — `Config::load`
         // would otherwise repopulate DATABASE_URL from the repo's dev
         // `.env` via `dotenvy::dotenv()` before we get to set our own
         // (present-but-unreachable) value.
-        let _dotenv_shadow = DotenvShadow::new("get_costs_c009");
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "get_costs_c009");
 
-        // Safety: serialized by DATABASE_URL_ENV_LOCK above — no other test
-        // reads or writes this env var while the guard is held. A
+        // Serialized by `env_lock` above — no other participating test reads
+        // or writes env while these guards are held. A
         // syntactically-invalid connection string fails `PgPoolOptions::
         // connect` at URL-parse time, before any TCP attempt — so this
         // exercises the same `fetch_all_runs` `Err` -> `db_error_response`
         // path as a genuinely unreachable Postgres, without incurring
         // sqlx's ~30s default `acquire_timeout` retry/backoff on an
         // actually-refused connection.
-        unsafe { std::env::set_var("DATABASE_URL", "not-a-valid-postgres-url") };
+        let _database_url = EnvVarGuard::set(&env_lock, "DATABASE_URL", "not-a-valid-postgres-url");
 
         let app = test::init_service(build_app(FileConfig::default())).await;
         let req = test::TestRequest::get()
@@ -2039,14 +2031,6 @@ heading = "bastion"
 
         let status = resp.status();
         let body: serde_json::Value = test::read_body_json(resp).await;
-
-        // Safety: still under DATABASE_URL_ENV_LOCK.
-        unsafe {
-            match &previous {
-                Some(v) => std::env::set_var("DATABASE_URL", v),
-                None => std::env::remove_var("DATABASE_URL"),
-            }
-        }
 
         assert_eq!(
             status, 503,
@@ -2076,14 +2060,7 @@ heading = "bastion"
     /// is not `closed` — unmet), `BA.11.T` (open, depends on `BA.11.K` which
     /// is `closed` — met/ready), `BA.11.K` (closed — lands in `finished`).
     fn make_temp_epics_brain_root() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-serve-epics-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-serve-epics");
         let planning_dir = dir.join("planning");
         std::fs::create_dir_all(&planning_dir).unwrap();
         let leaf_planning_dir = dir.join("bastion").join("planning");
@@ -3057,14 +3034,7 @@ heading = "bastion"
     /// far enough in the past (or future, for the snooze) to be deterministic
     /// regardless of when the test runs.
     fn make_temp_attention_brain_root() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-serve-attention-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-serve-attention");
         let planning_dir = dir.join("planning");
         std::fs::create_dir_all(&planning_dir).unwrap();
 
@@ -3307,14 +3277,7 @@ heading = "bastion"
     ///
     /// Returns `(repo_dir, vault_dir)` — callers own teardown of both.
     fn make_temp_docs_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
-        let base = std::env::temp_dir().join(format!(
-            "bastion-serve-docs-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let base = crate::testsupport::unique_temp_dir("bastion-serve-docs");
         let repo_dir = base.join("repo");
         let vault_dir = base.join("vault");
         std::fs::create_dir_all(repo_dir.join("docs")).unwrap();
@@ -3555,14 +3518,7 @@ heading = "bastion"
     /// `default_workspace` points at it so `resolve_workspace_root(None, None)`
     /// resolves the start path there.
     fn make_temp_pipeline_brain_root() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-pipeline-route-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-pipeline-route-test");
         let docs = dir.join("business").join("docs");
         std::fs::create_dir_all(docs.join("opportunities")).unwrap();
         std::fs::create_dir_all(docs.join("leads")).unwrap();

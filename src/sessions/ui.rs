@@ -877,14 +877,7 @@ mod tests {
     fn hq_space_overview_render_hides_html_sentinel_comments() {
         use ratatui::{Terminal, backend::TestBackend};
 
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-ui-sentinel-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-ui-sentinel-test");
         std::fs::create_dir_all(&dir).expect("create temp dir");
 
         std::fs::write(

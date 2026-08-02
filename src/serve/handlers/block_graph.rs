@@ -609,14 +609,7 @@ mod tests {
     /// left with no spec folder at all, so it must come back `None` on both
     /// read paths.
     fn make_cross_check_brain_root() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-block-graph-cross-check-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-block-graph-cross-check");
         let planning_dir = dir.join("bastion").join("planning");
         std::fs::create_dir_all(&planning_dir).unwrap();
 

@@ -436,15 +436,7 @@ mod tests {
 
     impl TempDir {
         fn new(name: &str) -> Self {
-            let mut path = std::env::temp_dir();
-            path.push(format!(
-                "bastion-docs-test-{name}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+            let path = crate::testsupport::unique_temp_dir(&format!("bastion-docs-test-{name}"));
             fs::create_dir_all(&path).expect("create temp dir");
             Self(path)
         }

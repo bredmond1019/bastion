@@ -514,8 +514,15 @@ mod tests {
     fn sessions_render_path_requires_no_database_url() {
         // Remove DATABASE_URL from the environment for this test.
         // (In CI it may never be set; either way, these functions must not care.)
-        // Safety: single-threaded test; no other thread reads this env var.
-        unsafe { std::env::remove_var("DATABASE_URL") };
+        //
+        // The old "single-threaded test" safety note was wrong: under
+        // `cargo test` every test in this binary is a *thread* of one process,
+        // so this bare `remove_var` raced every concurrent reader of env — and
+        // it never restored the value, so it silently unset DATABASE_URL for
+        // the rest of the run. Both halves are fixed by the crate-wide lock +
+        // an RAII guard that restores on drop. See `crate::testsupport`.
+        let env_lock = crate::testsupport::lock_env();
+        let _database_url = crate::testsupport::EnvVarGuard::unset(&env_lock, "DATABASE_URL");
 
         // These are the only functions on the sessions command path that
         // process data; neither should require config.

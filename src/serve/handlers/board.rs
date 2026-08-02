@@ -2181,14 +2181,7 @@ mod tests {
 
     #[test]
     fn assemble_board_on_missing_brain_toml_errors_cleanly() {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-board-assemble-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-board-assemble-test");
         std::fs::create_dir_all(&dir).unwrap();
         let result = assemble_board(&dir, &TierScope::All, false);
         assert!(
@@ -2200,14 +2193,7 @@ mod tests {
 
     #[test]
     fn assemble_board_returns_graph_matching_loaded_fixture_corpus() {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-board-assemble-graph-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-board-assemble-graph-test");
         let repo_planning_dir = dir.join("bastion").join("planning");
         std::fs::create_dir_all(&repo_planning_dir).unwrap();
 
@@ -2265,14 +2251,8 @@ heading = "Bastion"
     /// shape and a non-zero `dependent_count` without depending on the larger
     /// timing fixtures below.
     fn make_block_graph_enrichment_fixture_brain_root() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-board-block-graph-enrichment-fixture-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir =
+            crate::testsupport::unique_temp_dir("bastion-board-block-graph-enrichment-fixture");
         let alpha_planning = dir.join("alpha").join("planning");
         let beta_planning = dir.join("beta").join("planning");
         std::fs::create_dir_all(&alpha_planning).unwrap();
@@ -2414,14 +2394,7 @@ heading = "Beta"
 
     #[test]
     fn assemble_board_block_graph_is_empty_not_panicking_for_corpus_with_no_blocks() {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-board-block-graph-no-blocks-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-board-block-graph-no-blocks");
         let planning_dir = dir.join("bastion").join("planning");
         std::fs::create_dir_all(&planning_dir).unwrap();
 
@@ -2478,14 +2451,7 @@ heading = "Bastion"
     /// dependents instead of `1`. `alpha` stays in scope at both tiers so the
     /// same block can be compared across both boards.
     fn make_corpus_invariance_fixture_brain_root() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-board-corpus-invariance-fixture-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-board-corpus-invariance-fixture");
         let alpha_planning = dir.join("alpha").join("planning");
         let beta_planning = dir.join("beta").join("planning");
         std::fs::create_dir_all(&alpha_planning).unwrap();
@@ -2645,14 +2611,7 @@ heading = "Beta"
     /// approximating a larger-than-fixture-default corpus for the timing
     /// harness without depending on the live HQ corpus being present.
     fn make_timing_fixture_brain_root(n: usize) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-board-timing-fixture-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-board-timing-fixture");
         let planning_dir = dir.join("bastion").join("planning");
         std::fs::create_dir_all(&planning_dir).unwrap();
 
@@ -2765,7 +2724,24 @@ heading = "Bastion"
         (build_board_ms, build_board_plus_graph_ms)
     }
 
+    // ── Manual benchmarks (not part of the default suite) ──────────────────────
+    //
+    // The two `task1_measure_*` tests below are **benchmarks, not tests**:
+    // their only assertion (`a >= a.min(b)`) is mathematically true for every
+    // possible pair of measurements, so they can never fail and carry no
+    // signal. Meanwhile each default-suite pass rebuilt a 500-block on-disk
+    // fixture and re-walked the live HQ corpus. The numbers they produce were
+    // transcribed once into `plan-board-graph-enrichment`'s Notes and
+    // `docs/serve-api.md`; re-run them by hand when that cost-model question
+    // is reopened:
+    //
+    //     cargo test -- --ignored task1_measure --nocapture
+    //
+    // (The live-HQ one still early-returns off-machine, so it is safe to run
+    // anywhere.)
+
     #[test]
+    #[ignore = "manual benchmark: vacuous assertion, expensive fixture — run with `cargo test -- --ignored task1_measure`"]
     fn task1_measure_build_block_graph_export_cost_on_synthetic_corpus() {
         // 500 blocks in one repo — larger than any other fixture in this test
         // module, used as a stand-in "largest available fixture corpus" per
@@ -2790,6 +2766,7 @@ heading = "Bastion"
     }
 
     #[test]
+    #[ignore = "manual benchmark: vacuous assertion, expensive fixture — run with `cargo test -- --ignored task1_measure`"]
     fn task1_measure_build_block_graph_export_cost_on_live_hq_corpus_if_reachable() {
         // "if reachable read-only" per the task 1 description — the live HQ
         // brain root sits some number of parent directories above this crate

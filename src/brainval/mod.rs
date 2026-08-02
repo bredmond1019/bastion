@@ -451,14 +451,7 @@ mod tests {
     fn run_on_path_without_brain_toml_errors_cleanly() {
         // A path with no brain.toml anywhere up its ancestry (a fresh tempdir under the
         // OS temp root) surfaces as an anyhow error from find_brain_root — no panic.
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-brainval-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-brainval-test");
         std::fs::create_dir_all(&dir).unwrap();
         let result = run(dir.clone(), false, false, false, false, false, false);
         assert!(
@@ -470,14 +463,7 @@ mod tests {
 
     #[test]
     fn run_manifest_on_path_without_brain_toml_errors_cleanly() {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-brainval-manifest-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-brainval-manifest-test");
         std::fs::create_dir_all(&dir).unwrap();
         let result = run_manifest(dir.clone(), false);
         assert!(
@@ -489,14 +475,7 @@ mod tests {
 
     #[test]
     fn run_graph_on_path_without_brain_toml_errors_cleanly() {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-brainval-graph-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-brainval-graph-test");
         std::fs::create_dir_all(&dir).unwrap();
         let result = run_graph(dir.clone());
         assert!(
@@ -512,15 +491,7 @@ mod tests {
     /// `load_state`) has something well-formed to load. Returns the directory —
     /// callers are responsible for `remove_dir_all` teardown.
     fn make_temp_brain_root(name_prefix: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-{}-{}-{}",
-            name_prefix,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir(&format!("bastion-{name_prefix}"));
         let planning_dir = dir.join("planning");
         std::fs::create_dir_all(&planning_dir).unwrap();
 
@@ -600,14 +571,7 @@ heading = "bastion"
         // run_emit_state resolves the root via find_brain_root first (same as the other
         // handlers) — a path with no brain.toml anywhere up its ancestry surfaces as an
         // anyhow error there, before mev::emit_state is ever called.
-        let dir = std::env::temp_dir().join(format!(
-            "bastion-brainval-emit-state-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::testsupport::unique_temp_dir("bastion-brainval-emit-state-test");
         std::fs::create_dir_all(&dir).unwrap();
         let result = run_emit_state(dir.clone(), false);
         assert!(
