@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-02T17:18:06Z
+timestamp: 2026-08-02T23:42:46Z
 ---
 
 # Log — bastion
@@ -12,6 +12,57 @@ timestamp: 2026-08-02T17:18:06Z
 ---
 
 ## [run: 2026-08-02]
+
+### Wave 281 — the same-suffix `.env` deletion is CLOSED, and no test can reach the real `.env` any more
+
+- **What:** Reviewed the handoff's carryover registry, verified every claim against source rather
+  than the writeups, then specced and shipped `BA.ticket.dotenv-shadow-same-suffix-restore` (wave
+  281, 4/4 tasks) plus two smaller items.
+  - **The fix is one deleted line, and none of the three candidate fixes were used.** Reading
+    `Drop` showed that on Unix `fs::rename` *atomically replaces* an existing destination, so the
+    `remove_file(env_path)` preceding the restore was never doing anything the rename didn't
+    already do — and it **was** the entire defect. Removing it makes the restore correct in *both*
+    drop orders (the second guard's rename simply fails `ENOENT` and touches nothing). It is also
+    strictly safer than the issues tab's candidate 1 (`if backup.exists()`), which leaves a TOCTOU
+    window where two processes both pass the check and the loser still calls `remove_file`.
+    `DotenvShadow::new` was not touched — the marker claim, the same-suffix fall-through, and the
+    adopt branch are load-bearing recovery paths.
+  - **Defense in depth, and the more durable half.**
+    `dotenv_shadow_leaves_an_empty_env_and_restores_the_original` — the one test that operated on
+    the real repo-root `.env` — was converted to a `CwdGuard` fixture. **All 9 `DotenvShadow` tests
+    now enter a disposable fixture dir first, so no test in the suite touches the real file**,
+    regardless of any future bug in the guard.
+  - Also landed: the `NoOriginal` arm audited against the same interleave (benign empty-vs-absent
+    inconsistency documented, not fixed); the adopt branch's `.env.{suffix}.pre-adopt.bak` now
+    deliberately *retained* as the only surviving copy of content live at adopt time, with the
+    reasoning recorded in `Drop`; bastion's last fixed-name temp dir (`src/brain/code_graph.rs:812`)
+    moved to `unique_temp_dir`, and a re-sweep confirmed the carryover's "bastion (1)" count was
+    accurate.
+  - **Item 6 closed** (`042024b`): the three `BASTION_INTEGRATION_TEST` tests read
+    `std::env::var("DATABASE_URL")` directly, skipping the `dotenvy::dotenv()` that `Config::load`
+    makes, so the documented `--ignored` recipe panicked `NotPresent` against a fully populated
+    `.env`. Added `dotenvy::dotenv().ok()` ahead of each read — `dotenvy` directly rather than
+    `Config::load`, which would have added unrelated workspace-registry failure surface to a DB test.
+  - **Item 4 closed by audit.** Bastion's harness surface is clean: `harness.json`'s gating checks
+    shell out only to `cargo` (×4) and the two already-hardened `check-*-drift.sh`; `cargo nextest`
+    resolves through cargo's own `$CARGO_HOME/bin` subcommand lookup, so if `cargo` runs, nextest
+    runs. `mev`/`uv`/`node` belong to HQ's `routine.sh`, not bastion's harness. Carryover
+    `rc-path-exports-miss-subagent-shells` downgraded `known_issue` → `constraint`.
+- **Why:** The handoff framed item 7 as a design decision and deliberately stopped. Reading the
+  source showed it wasn't one — the correct repair is mechanical, cheaper than all three proposed
+  candidates, and doesn't touch the recovery paths. The `.env` had already been destroyed twice by
+  earlier variants of this guard, and concurrent agent sessions in this workspace are routine, so
+  the fixture conversion mattered more than the fix itself.
+- **Verification, run by the operator rather than inherited from the engine's self-report:** the
+  regression test was confirmed to **fail** against pre-fix code by re-introducing the `remove_file`
+  line — it reproduced the original signature exactly (`Os { code: 2, kind: NotFound }`) — then
+  reverted. Full gate: fmt ✓ · `clippy -D warnings` ✓ · authoritative full suite **2006 passed / 0
+  failed** ✓ · release ✓ · contract-corpus drift ✓ (34) · typeshare drift ✓. **The interim
+  mitigation is LIFTED**, proven by executing the forbidden scenario: **two concurrent `cargo
+  nextest` runs × 3 iterations — 6/6 green, `.env` byte-identical after every iteration, zero stray
+  `.bak`/marker artifacts.**
+- **Refs:** `planning/ticket-dotenv-shadow-same-suffix-restore/`;
+  `planning/queue-run-2026-08-02-issues.md` items 4, 6, 7; `planning/state.json` `carryover[]`.
 
 ### Serialized ticket queue drained (waves 276 → 278) + wave 280 from its own review findings
 
