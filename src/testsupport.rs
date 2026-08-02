@@ -727,13 +727,22 @@ mod tests {
 
     #[test]
     fn dotenv_shadow_leaves_an_empty_env_and_restores_the_original() {
-        let env_lock = lock_env();
+        // This test used to operate on the real repo-root `.env` under the
+        // hardcoded suffix `testsupport_unit_test` — the only test in the
+        // suite that did. That made it (and any future guard bug reachable
+        // from it) capable of destroying the developer's real, gitignored,
+        // unrecoverable `.env`. It now runs against a disposable fixture
+        // like its siblings, with a unique per-test suffix so it can never
+        // collide with another test's marker/backup.
+        let lock = lock_env();
+        let dir = fixture_dir("dotenv-shadow-repo-root-unreachable");
+        let _cwd = CwdGuard::enter(&lock, &dir);
 
         let env_path = std::path::Path::new(".env");
-        let before = std::fs::read_to_string(env_path).ok();
+        std::fs::write(env_path, FIXTURE_ENV_CONTENT).expect("seed fixture .env");
 
         {
-            let _shadow = DotenvShadow::new(&env_lock, "testsupport_unit_test");
+            let _shadow = DotenvShadow::new(&lock, "repo_root_unreachable_fixture");
             assert!(
                 env_path.exists(),
                 "DotenvShadow must leave an empty `.env` in place — an absent file \
@@ -746,11 +755,10 @@ mod tests {
             );
         }
 
-        let after = std::fs::read_to_string(env_path).ok();
         assert_eq!(
-            after, before,
-            "dropping the guard must restore the original `.env` byte-for-byte \
-             (and leave none behind when there was none)"
+            std::fs::read_to_string(env_path).unwrap(),
+            FIXTURE_ENV_CONTENT,
+            "dropping the guard must restore the original fixture `.env` byte-for-byte"
         );
     }
 
