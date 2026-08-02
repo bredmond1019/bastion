@@ -1320,11 +1320,24 @@ absent), the store still exists but stays empty for the lifetime of the process:
 returns `200 []` and `GET /api/runs/{id}` returns `404` for every id — the same graceful-degradation
 posture as the rest of this contract, not an error.
 
-**This is a read-only snapshot, not a stream.** There is no SSE/WS push and no `engine-serve` change
-in this API — a client observes the current state only when it requests it. Live push (token-by-
-token / transition-by-transition) is split into a follow-on block (proposed `BA.11.N`): SSE over a
-`tokio::sync::broadcast` tee added to `engine-serve`'s `on_progress` closure. Until that ships,
-`BW.3.A`'s ~2s client polling against these two routes is the standing fallback.
+**`GET /api/runs` and `GET /api/runs/{id}` are a read-only snapshot, not a transition-by-transition
+run stream.** A client observes the current state only when it requests it — there is no fine-grained
+push of individual node transitions in this API, and no `engine-serve` change is introduced here.
+That said, bastion does ship a **bearer-authed `/ws` hub** (Section 4), carrying a `sessions`/`pane`
+topic vocabulary (Section 6), plus an `event{workflow_done}` push (`src/serve/poll.rs`'s
+`FlowWatcher::observe`) that fires once when a flow transitions to a terminal status (`"done"` or
+`"blocked"`) — **completion-only, not transition-by-transition**: it tells a subscriber a run finished,
+not what happened along the way. Fine-grained live push (token-by-token / transition-by-transition)
+over `/ws` is tracked as `BA.11.N` (D17: bastion pushes run transitions over this existing hub by
+polling the in-process `LiveStateStore` and diffing per `BA.11.D`'s pattern — no `engine-serve`
+change, no second streaming protocol). Until `BA.11.N` ships, `BW.3.A`'s ~2s client polling against
+these two routes is the standing fallback.
+
+**Gotcha for whoever builds `BA.11.N`:** the embedded engine's `publish_suspended` sends
+`terminal: true` **together with** `status: "suspended"` (`engine-rs/crates/engine-serve/src/
+stream.rs:185-191`) — wire-terminal is not lifecycle-terminal. A naive `if (frame.terminal) done`
+would silently treat a paused run as finished; any run-transition push must preserve the
+suspended/finished distinction, exactly as the engine's own stream does.
 
 ### 14.1 `GET /api/runs` — currently-tracked run summaries (v0.16, BA.11.T; `suspended` status added v0.17; `repo` added v0.22)
 
@@ -2658,6 +2671,25 @@ a real Postgres being up or down cannot change any golden.
 
 ## Amendment Log
 
+- **2026-08-02 — Section 14 corrected (`ticket-stream-ownership-decision`, ask A8,
+  `planning/arch-review-asks-bastion-web/notes.md`; no version bump — wire shape unchanged):**
+  Section 14 previously stated "There is no SSE/WS push and no `engine-serve` change in this API,"
+  which was false — bastion ships a bearer-authed `GET /ws` hub (Section 4) with a `sessions`/`pane`
+  topic vocabulary (Section 6) and an `event{workflow_done}` completion push (`BA.11.D`,
+  `src/serve/poll.rs`) that predates this correction. Reworded to state accurately that
+  `GET /api/runs`/`GET /api/runs/{id}` are a read-only snapshot with no fine-grained
+  transition-by-transition push, while `/ws`'s `workflow_done` event exists and is completion-only.
+  Replaced the unqualified "proposed `BA.11.N`" phrasing (here and in the v0.7 → v0.8 log entry
+  below) with a reference to **D17** (`planning/decisions/D17-live-run-stream-ownership.md`), which
+  resolves the ambiguity A8 raised: `BA.11.N` is promoted to a tracked block scoped to bastion
+  pushing run transitions over the existing `/ws` hub (poll-diff against the in-process
+  `LiveStateStore`, per `BA.11.D`'s pattern) — no `engine-serve` change, no second streaming
+  protocol. Also documented the suspended/terminal gotcha D17 carries forward as a binding
+  constraint: the engine's `publish_suspended` sends `terminal: true` **with** `status: "suspended"`
+  (`engine-rs/crates/engine-serve/src/stream.rs:185-191`), so a naive `if (frame.terminal) done`
+  would misclassify a paused run as finished. No route, DTO, or wire shape changed — documentation
+  correction only.
+
 - **2026-08-02 — v0.21 → v0.22 (`ticket-run-summary-repo-join`, ask A7,
   `planning/arch-review-asks-bastion-web/notes.md`):** Section 14.1's `RunSummaryDto` gains
   `repo: Option<String>`, resolved by an **exact `run_id` match** against every registered
@@ -3008,10 +3040,12 @@ a real Postgres being up or down cannot change any golden.
   the embedded engine's in-memory `LiveStateStore`, which is now shared as a single instance
   between the engine's `on_progress` writer (when the Section 15 engine mount is active) and these
   read handlers; with the engine unmounted the store stays empty (`200 []` / `404`) rather than
-  erroring. This is a read-only snapshot — no SSE/WS stream and no `engine-serve` change are
-  introduced; the D42 live **stream** half of the original `BA.11.M` scope is split into a
-  follow-on block (proposed `BA.11.N` — SSE over an `engine-serve` broadcast tee), with
-  `BW.3.A`'s ~2s polling as the standing fallback until then. Renumbered Embedded engine route
+  erroring. This is a read-only snapshot — no fine-grained SSE/WS run-transition stream and no
+  `engine-serve` change are introduced by this block; the D42 live **stream** half of the original
+  `BA.11.M` scope is split into a follow-on block, `BA.11.N` (per D17: bastion pushes run
+  transitions over the existing bearer-authed `/ws` hub by polling the in-process `LiveStateStore`
+  and diffing per `BA.11.D`'s pattern — no `engine-serve` change, no second streaming protocol),
+  with `BW.3.A`'s ~2s polling as the standing fallback until then. Renumbered Embedded engine route
   table → Section 15 (subsections 15.1–15.3), Generated TypeScript types → Section 16
   (subsections 16.1–16.3), Configuration reference → Section 17, Versioning policy → Section 18.
   Updated frontmatter title, description, `keywords`, and the current-contract version note.
