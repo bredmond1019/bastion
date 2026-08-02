@@ -212,8 +212,8 @@ impl Drop for EnvVarGuard {
 ///
 /// **Residual hazard.** `ENV_LOCK` is only meaningful within one process; the
 /// *marker* is what carries the guarantee across processes, and it does so
-/// only for guards that go through this constructor. Two remaining cases are
-/// therefore not covered, both non-destructive:
+/// only for guards that go through this constructor. Three remaining cases
+/// are therefore not covered, all non-destructive:
 ///
 /// - A run killed between claiming the marker and its `Drop` leaves a stale
 ///   marker behind. Every later guard then reads it, returns `Nested`, and
@@ -224,8 +224,31 @@ impl Drop for EnvVarGuard {
 ///   adopts it.
 /// - Anything that writes `.env` *without* going through this guard is
 ///   unsynchronized, as it always was.
+/// - **A `Nested` guard has no guarantee that the shadow stays in place for
+///   its *own* lifetime, only that it never disturbs it.** `Nested` exists so
+///   a second guard doesn't fight the owner for the marker — it touches
+///   nothing on construction *or* `Drop`, on the premise that the owner's
+///   backup is the sole source of truth for as long as both are alive. But
+///   nothing stops the *owner* from dropping first: if the guard that holds
+///   the claim finishes (and restores the real `.env`) while a `Nested`
+///   guard's test body is still running, that test observes the real,
+///   unshadowed `.env` mid-test — turning an expected "no `DATABASE_URL`"
+///   503 into a live-Postgres 200. This is reachable under
+///   `cargo nextest run`'s process-per-test model whenever two tests that
+///   both construct a `DotenvShadow` happen to overlap and use different
+///   suffixes; it is a **test flake**, not data loss — `Nested` never writes
+///   anything, so there is nothing for it to destroy. Accepted rather than
+///   fixed: closing it would mean a `Nested` guard blocking until the owner
+///   drops (turning two independently-scheduled tests into a serialization
+///   dependency neither author asked for) or the marker carrying a
+///   reference count so the *last* holder restores `.env` (a bigger change
+///   to a guard whose contract is otherwise "exactly one owner, everyone
+///   else is a no-op"). Mitigation: keep suffixes distinct per test (already
+///   the convention) and treat an unexpected 200 in a `C005`-style scenario
+///   as a signal to check for exactly this overlap before suspecting a real
+///   regression.
 ///
-/// The durable fix for both is to stop touching the repo-root `.env` at all —
+/// The durable fix for all three is to stop touching the repo-root `.env` at all —
 /// point the process cwd at a disposable directory so `dotenvy`'s upward walk
 /// starts somewhere throwaway (what [`CwdGuard`] does inside this module's own
 /// tests). That was considered and deferred: cwd is process-global, so under
