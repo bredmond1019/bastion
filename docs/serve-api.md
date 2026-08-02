@@ -2564,8 +2564,9 @@ No `serve` runtime behaviour changed as part of adding this section — the dump
 
 ### 25.6 Scenario inventory
 
-As of 2026-08-01 (`ticket-contract-corpus-uncovered-routes`) **every route the original A4 corpus
-left uncovered is frozen.** The corpus holds 32 goldens across ten routes:
+As of 2026-08-02 (`ticket-costs-200-contract-golden`) **every route the original A4 corpus left
+uncovered is frozen, and `costs`' populated `200` shape is frozen too.** The corpus holds 37
+goldens across ten routes:
 
 | Route | Scenarios (`<route>__<scenario>.json`) |
 |---|---|
@@ -2578,7 +2579,7 @@ left uncovered is frozen.** The corpus holds 32 goldens across ten routes:
 | `GET /api/repos/{name}/handoff` (v0.18) | `handoff__populated`, `handoff__missing`, `handoff__unknown-repo` |
 | `GET /api/epics` (v0.21) | `epics__populated`, `epics__empty` |
 | `GET /api/blocks/graph` (v0.13) | `blocks-graph__populated` |
-| `GET /api/costs` (v0.15) | `costs__bad-window`, `costs__no-database-url` |
+| `GET /api/costs` (v0.15) | `costs__bad-window`, `costs__no-database-url`, `costs__populated`, `costs__budget-breached`, `costs__empty`, `costs__windowed`, `costs__db-error` |
 
 Notes on the five routes added by `ticket-contract-corpus-uncovered-routes`:
 
@@ -2599,32 +2600,62 @@ Notes on the five routes added by `ticket-contract-corpus-uncovered-routes`:
   default (400). The default is a tunable; pinning the input keeps the golden's node set and
   `truncated` flag from being rewritten by a change that has nothing to do with the wire contract.
   50 comfortably exceeds the fixture's block count, so the export is complete (`truncated: false`).
-- **`costs`** — **error shapes only**, deliberately: `costs__bad-window` (`400 + C006`, an
-  unparseable `?window=`, produced by `resolve_window` before any database access) and
-  `costs__no-database-url` (`503 + C005`, `DATABASE_URL` genuinely absent).
+- **`costs`** — seven scenarios. `costs__bad-window` (`400 + C006`, an unparseable `?window=`,
+  produced by `resolve_window` before any database access) and `costs__no-database-url`
+  (`503 + C005`, `DATABASE_URL` genuinely absent) freeze the error shapes. `costs__populated`,
+  `costs__budget-breached`, `costs__empty`, `costs__windowed`, and `costs__db-error` freeze the
+  populated `200` (`CostSummaryDto`, including the nested `BudgetStateDto`/`BudgetBreachDto`) and
+  its remaining error branch, via the compile-time fetch seam described below.
 
-**Why `costs`' populated `200` shape is not in the corpus.** A populated `CostSummaryDto` is
-aggregated from rows in the `events` table, which requires a live, seeded Postgres. The corpus runs
-inside `cargo test`, which cannot assume one — a golden that only regenerates on a machine with a
-dev database would fail `scripts/check-contract-corpus-drift.sh` everywhere else, which is strictly
-worse than no golden. Building a fixture seam to inject rows was considered and rejected: that is
-new production surface, out of scope for a test-only ticket, and is logged as a follow-up rather
-than smuggled in. The `200` shape remains specified in Section 24 and enforced by
-`handlers/costs.rs`'s own unit tests over `aggregate`/`cost_summary_dto`; only the *wire freeze* is
-absent.
+**Residual gap.** These goldens exercise the real handler from `Config::load` onward — window
+resolution, budget construction, every error mapping, and the real `aggregate`/`cost_summary_dto`
+serialization — but the row-fetching step itself is faked (`get_costs_with`'s `fetch_runs`
+parameter, `src/serve/handlers/costs.rs`). They do not prove that `db::costs::fetch_all_runs`
+deserializes real `events` rows into `WorkflowRun` in the shape the fixtures assume; that remains
+covered only by the `#[ignore]`d `integration_fetch_all_runs_returns_vec` test in `src/db/costs.rs`
+(run with `BASTION_INTEGRATION_TEST=1 cargo test -- --ignored`).
 
-Env discipline for the `costs__no-database-url` scenario is non-negotiable and documented at its
-call site in `src/serve/contract_corpus.rs`: it takes `crate::testsupport::lock_env()` once, mutates
+**Pricing-table coupling (accepted).** `costs__populated`'s `usd` values derive from
+`src/costs/pricing.rs`'s hardcoded price table. Editing a model's price changes this golden. That
+churn is expected and mildly useful — it makes a pricing edit visible in review — but it is *not*
+a wire-contract change; do not read it as one.
+
+Env discipline for all seven `costs` scenarios is non-negotiable and documented at their call sites
+in `src/serve/contract_corpus.rs`: each takes `crate::testsupport::lock_env()` once, mutates
 `DATABASE_URL` (and `XDG_CONFIG_HOME`, so a developer's real `~/.config/bastion/config.toml` cannot
-supply a `database_url` and make the golden machine-dependent) only through `EnvVarGuard`, shadows
-the repo `.env` with `DotenvShadow` (otherwise `dotenvy`'s upward walk restores a working
-`DATABASE_URL` from an ancestor checkout and the expected 503 becomes a 200), and calls
-`dump_with(&CorpusConfig::from_env_locked(&lock), …)` rather than `dump` — because `dump` would take
-the same **non-reentrant** mutex a second time on the same thread and deadlock.
+supply a `database_url` or a budget cap and make the golden machine-dependent) only through
+`EnvVarGuard`, shadows the repo `.env` with `DotenvShadow` (otherwise `dotenvy`'s upward walk
+restores a working `DATABASE_URL` from an ancestor checkout and the expected 503 becomes a 200), and
+calls `dump_with(&CorpusConfig::from_env_locked(&lock), …)` rather than `dump` — because `dump`
+would take the same **non-reentrant** mutex a second time on the same thread and deadlock. The five
+`get_costs_with` scenarios additionally pin **both** `BASTION_MAX_TOTAL_TOKENS` and
+`BASTION_MAX_COST_USD` explicitly (unset for the no-cap scenarios, set for `budget-breached`) —
+`Config::load` reads both from env, so an unpinned cap on the developer's machine would regenerate a
+different `budget` block. `DATABASE_URL` is set to an unroutable dummy
+(`postgres://corpus@127.0.0.1:1/corpus`) and never connected to, since the fetch function is faked;
+a real Postgres being up or down cannot change any golden.
 
 ---
 
 ## Amendment Log
+
+- **2026-08-02 — costs' populated 200 shape frozen via a compile-time fetch seam
+  (`ticket-costs-200-contract-golden`; no version bump):** `get_costs` (`src/serve/handlers/costs.rs`)
+  is reduced to a delegation to `get_costs_with<F, Fut>`, a generic taking the row-fetching function
+  as a compile-time parameter — production passes `db::costs::fetch_all_runs`, and only test code
+  linking against `get_costs_with` directly can supply fixture rows. There is no env var, config
+  key, `app_data` entry, or CLI flag by which a deployed `bastion serve` could serve fabricated cost
+  figures. `types/contract-corpus/` grows from 32 to 37 goldens, adding `costs__populated`,
+  `costs__budget-breached`, `costs__empty`, `costs__windowed`, and `costs__db-error` (the previously
+  untested `503 + C009` branch). Section 25.6 rewritten: the "why costs' populated 200 shape is not
+  in the corpus" exclusion is removed and replaced by a residual-gap note — the goldens cover
+  `Config::load` onward but not the `events`-row-to-`WorkflowRun` deserialization itself, which
+  stays covered by the `#[ignore]`d integration test in `src/db/costs.rs`. **No wire shape
+  changed** — `get_costs_with` is a pure extraction of the existing handler body, so no version bump
+  and `types/serve.ts` is untouched. Regenerated three times (plain, second run for idempotency, and
+  a third with both `BASTION_MAX_*` env vars exported to arbitrary values in the invoking shell) with
+  zero diff each time — proof the budget caps are pinned inside the scenarios via `EnvVarGuard`
+  rather than inherited from the environment; `scripts/check-contract-corpus-drift.sh` passes clean.
 
 - **2026-08-01 — contract corpus extended to the five uncovered routes
   (`ticket-contract-corpus-uncovered-routes`; no version bump):** `types/contract-corpus/` grows
