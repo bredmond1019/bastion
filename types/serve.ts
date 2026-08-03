@@ -1122,6 +1122,38 @@ export interface RunStateDto {
 }
 
 /**
+ * Payload for the server→client `event{run_stream_status}` WS push.
+ * 
+ * Sent inside an [`EventPayload`]-shaped frame: the `event` field is fixed
+ * to `"run_stream_status"` and the extra `available`/`reason` fields are
+ * flattened into the same JSON object by the caller. Pushed immediately to
+ * a connection when it subscribes to the `runs` topic, before any
+ * `run_transition` frame (D17 constraint 2).
+ * 
+ * Wire format: `{ "available": true }` or
+ * `{ "available": false, "reason": "DATABASE_URL not set" }`.
+ * 
+ * `available: false` means the engine was not mounted for this `bastion
+ * serve` process, so `LiveStateStore` can never be written and no
+ * `run_transition` frame will ever arrive on this connection — the client
+ * must fall back to polling `GET /api/runs` / `GET /api/runs/{id}`, which
+ * remain the source of truth regardless of `runs`-topic availability (D17
+ * constraints 2 and 3).
+ */
+export interface RunStreamStatusPayload {
+	/**
+	 * Whether the `runs` topic can ever emit a `run_transition` frame on
+	 * this connection (i.e. whether the engine is mounted).
+	 */
+	available: boolean;
+	/**
+	 * Human-readable reason when `available` is `false`. Absent (not
+	 * `null`) when `available` is `true`.
+	 */
+	reason?: string;
+}
+
+/**
  * One live run's summary projection — `GET /api/runs` (BA.11.T).
  * 
  * A widened successor to the bare-UUID `Vec<String>` `GET /api/runs` used to return: each
@@ -1191,6 +1223,46 @@ export interface RunSummaryDto {
 	 * keep the unopted poll path free of the registry walk that resolving `repo` requires.
 	 */
 	repo?: string;
+}
+
+/**
+ * Payload for the server→client `event{run_transition}` WS push.
+ * 
+ * Sent inside an [`EventPayload`]-shaped frame: the `event` field is fixed
+ * to `"run_transition"` and the extra `run_id`/`status`/`terminal`/`spec_slug`
+ * fields are flattened into the same JSON object by the caller (`runs`-topic
+ * WS wiring, `src/serve/ws/server.rs`).
+ * 
+ * Wire format: `{ "run_id": "…", "status": "running", "terminal": false }`
+ * (`spec_slug` present only when known).
+ * 
+ * `terminal` means **lifecycle**-terminal — the run left `LiveStateStore`'s
+ * live map (`list_active()` no longer returns its id) — not "wire-terminal"
+ * in the engine's own `publish_suspended` sense. A suspended run is still in
+ * the live map, so it is reported as `status: "suspended"` paired with
+ * `terminal: false`; only a run's genuine disappearance from the live set
+ * (completed, failed, or otherwise retired into the completed ring) emits
+ * `terminal: true` (D17 constraint 1).
+ */
+export interface RunTransitionPayload {
+	/** The run's UUID, as a string. */
+	run_id: string;
+	/**
+	 * Aggregate run status string, from `db::workflows::derive_run_status`
+	 * via `run_status_str` — the same derivation `GET /api/runs` uses.
+	 */
+	status: string;
+	/**
+	 * `true` only when the run has left `LiveStateStore`'s live map
+	 * (lifecycle-terminal); `false` for every live-map status, including
+	 * `"suspended"`.
+	 */
+	terminal: boolean;
+	/**
+	 * `sdlc-flow-state.json` spec slug, when known. Absent (not `null`)
+	 * when unknown, matching the repo's established DTO convention.
+	 */
+	spec_slug?: string;
 }
 
 /**

@@ -1,30 +1,39 @@
 ---
 type: Guideline
-title: "serve-api contract v0.22"
+title: "serve-api contract v0.23"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
 absent (never guessed) when no flow state carries a run's `run_id`, gated behind an opt-in
 `?with_repo=1` query param (mirroring `/api/board`'s `?graph=1`, A5) since task 1's measurement
 found the registry walk roughly 6x the unenriched baseline against the live HQ registry (23 repos),
-so the route's hottest consumer (bastion-web's ~2-6s run rail) does not pay for it unless it asks."
+so the route's hottest consumer (bastion-web's ~2-6s run rail) does not pay for it unless it asks,
+and the v0.23 subscribable `runs` WebSocket topic (`BA.11.N`, D17) — bastion pushes run-level
+aggregate status transitions over the existing bearer-authed `/ws` hub by polling and diffing the
+in-process `LiveStateStore` (`RunWatcher`, mirroring `FlowWatcher`), delivered as a new
+`event{run_transition}` frame (`RunTransitionPayload`: run_id/status/terminal/spec_slug) gated on
+subscription to the `\"runs\"` topic, plus an `event{run_stream_status}` frame
+(`RunStreamStatusPayload`: available/reason) pushed immediately at subscribe time so a client learns
+engine-mount availability without inferring it from silence; `terminal` means lifecycle-terminal
+(the run left `LiveStateStore`'s live map), so `status: \"suspended\"` always pairs with
+`terminal: false`; `GET /api/runs`/`GET /api/runs/{id}` are unchanged and remain the poll fallback."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff, dependent_count, ready, unmet_count, block-graph-enrichment, corpus-wide, one-derivation, a5, workflows-aggregate, RepoWorkflowStateDto, cross-repo, n-plus-one, a2, contract-corpus, goldens, stub-fidelity, redaction, drift-check, a4]
+keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff, dependent_count, ready, unmet_count, block-graph-enrichment, corpus-wide, one-derivation, a5, workflows-aggregate, RepoWorkflowStateDto, cross-repo, n-plus-one, a2, contract-corpus, goldens, stub-fidelity, redaction, drift-check, a4, run_transition, run_stream_status, RunTransitionPayload, RunStreamStatusPayload, RunWatcher, d17, runs-topic, live-run-stream]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.22 Contract
+# serve-api — v0.23 Contract
 
-**Version:** v0.22  
+**Version:** v0.23  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–25 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
 bastion-web (`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web
 (`BW.2.A`) for Section 16; `bastion abort` (`src/run/abort.rs`, this repo) for Section 18's abort
-route; bastion-web (`BW.9.B`) for Section 23.
+route; bastion-web (`BW.9.B`) for Section 23; bastion-web (`BW.3.C`) for Section 6/8.3's `runs` topic.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -241,6 +250,7 @@ All pushes are server-initiated after subscription.
 |---|---|---|
 | `"sessions"` | `sessions` frame (session list snapshot) | Every poll interval (~2 s) when output changes |
 | `"pane:<name>"` | `pane` frame (pane output diff) | Every poll interval (~2 s) when pane output changes |
+| `"runs"` (v0.23, `BA.11.N`) | An `event{run_stream_status}` frame immediately on subscribe (availability), then `event{run_transition}` frames (Section 8.3) | `BASTION_POLL_INTERVAL` (~2 s), only while at least one connection is subscribed — the poller starts on the first `runs` subscriber and stops on the last |
 
 `<name>` is the tmux session name (e.g. `"pane:work"`, `"pane:claude-1"`).
 
@@ -259,7 +269,7 @@ per-connection and are released automatically on disconnect.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `topic` | string | Yes | Topic to subscribe to (`"sessions"` or `"pane:<name>"` — name must be non-empty) |
+| `topic` | string | Yes | Topic to subscribe to (`"sessions"`, `"pane:<name>"` — name must be non-empty — or `"runs"`, v0.23) |
 
 ### 7.2 `"unsubscribe"` payload (client → server)
 
@@ -350,6 +360,8 @@ Pushed when a significant event is detected.
 |---|---|---|
 | `"needs_input"` | v0.2 | Session pane is on a permission/approval prompt (`Blocked` state with `visible_blocker`, per `detect::detect()` over the Claude manifest).  Emitted once per rising edge (Blocked→not-Blocked→Blocked emits again; continuous Blocked does not repeat). |
 | `"workflow_done"` | v0.3 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` (e.g. `"running"`) to a terminal one (`"done"` or `"blocked"`), per `FlowWatcher::observe()` (`src/serve/poll.rs`).  Carries `repo`, `spec_slug`, and `status` fields alongside the `event` field (see Section 11.5). |
+| `"run_transition"` | v0.23 | A `runs`-topic subscriber's tracked run's aggregate status changes, or the run disappears from `LiveStateStore::list_active()` (gone lifecycle-terminal), per `RunWatcher::observe()` (`src/serve/poll.rs`). Carries `run_id`, `status`, `terminal`, and an optional `spec_slug` field alongside the `event` field (see Section 8.3). |
+| `"run_stream_status"` | v0.23 | Pushed once, immediately, to a connection when it subscribes to the `runs` topic — reports whether the engine is mounted (`available`) and, when not, why (`reason`). Not tied to any run; fires exactly once per subscribe (see Section 8.3). |
 
 ### 7.8 `"error"` payload (server → client)
 
@@ -424,6 +436,81 @@ This push is wired: `Hub` owns a `FlowWatcher` and runs an always-on poll
 (`src/serve/ws/server.rs`, cadence = `BASTION_POLL_INTERVAL`, not gated on
 subscribers) that broadcasts each emitted frame to every connected `/ws`
 client, regardless of topic subscription.
+
+### 8.3 `event{run_transition}` / `event{run_stream_status}` (v0.23, `BA.11.N`, D17)
+
+Unlike `workflow_done` (Section 8.2), which is completion-only and broadcast to every connection,
+this push is **run-level aggregate status**, transition-by-transition (not only on completion), and
+**subscription-gated** — only connections subscribed to the `"runs"` topic (Section 6) receive it.
+[`RunWatcher`](../src/serve/poll.rs) tracks the last-known aggregate `status` for every run id it has
+observed from `LiveStateStore` (`../engine-rs/crates/engine-serve/src/live_state.rs`), derived via
+`db::workflows::derive_run_status` — the same function `GET /api/runs` uses (Section 14.1), so the
+stream and the poll fallback can never disagree.
+
+**Availability, pushed at subscribe time (D17 constraint 2).** The instant a connection subscribes to
+`"runs"`, the hub pushes one `event{run_stream_status}` frame to that connection (and only that
+connection) before any `run_transition` frame can arrive:
+
+```json
+{ "session": "", "event": "run_stream_status", "available": true }
+```
+
+```json
+{ "session": "", "event": "run_stream_status", "available": false, "reason": "DATABASE_URL not set" }
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `available` | boolean | Whether the engine is mounted (Section 18.1), i.e. whether `LiveStateStore` can ever be written and a `run_transition` frame can ever arrive on this connection. |
+| `reason` | string \| absent | Human-readable reason the engine is not mounted (e.g. a missing env var or a failed pool connect). Absent (not `null`) when `available` is `true`. |
+
+`available: false` means the client must fall back to polling `GET /api/runs` / `GET /api/runs/{id}`
+(Section 14) — those routes remain the retained, unconditional poll fallback (D17 constraint 3) and
+are unaffected by this section either way.
+
+**Run-transition emit predicate.** `RunWatcher::observe()` runs once per poll tick (only while
+`runs_subs` is non-empty — Section 6's cadence row) over every id currently in
+`LiveStateStore::list_active()`, and emits a `run_transition` payload for exactly two edges:
+
+1. **Status change on a live run** — a previous status was recorded for this run id and the current
+   one differs → emit with `terminal: false`. Nothing is emitted on the **first** observation of a
+   run id (no previous status to compare against), nor when the status is unchanged.
+2. **Disappearance** — a run id previously observed is no longer present in `list_active()` (it went
+   lifecycle-terminal and `mark_terminal` moved it out of the live map into the completed ring). Its
+   final status is read back via `LiveStateStore::get_record(run_id)` and emitted with
+   `terminal: true`. When the record has since been evicted from the bounded completed ring, the
+   watcher still emits `terminal: true`, carrying the last-known status rather than silently dropping
+   the transition.
+
+```json
+{ "session": "", "event": "run_transition", "run_id": "b6a1c1e0-0000-4000-8000-000000000000", "status": "running", "terminal": false, "spec_slug": "11.N-run-transition-ws-push" }
+```
+
+```json
+{ "session": "", "event": "run_transition", "run_id": "b6a1c1e0-0000-4000-8000-000000000000", "status": "success", "terminal": true }
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `run_id` | string | The run's UUID as a string. |
+| `status` | string | Aggregate run status string, from `db::workflows::derive_run_status` — the same values `RunSummaryDto.status` reports (Section 14.1: `pending`/`running`/`success`/`failed`/`cancelled`/`budget_halted`/`suspended`). |
+| `terminal` | boolean | `true` only when the run has left `LiveStateStore`'s live map (lifecycle-terminal — the disappearance edge above); `false` for every other emitted status, including `"suspended"`. |
+| `spec_slug` | string \| absent | The triggering event's `spec_slug`, when known. Absent (not `null`) when unknown. |
+
+**D17 constraint 1 — wire-terminal is not lifecycle-terminal.** The embedded engine's own
+`publish_suspended` push (`engine-rs/crates/engine-serve/src/stream.rs:185-191`) sends
+`terminal: true` **together with** `status: "suspended"` on its own protocol — a naive
+`if (frame.terminal) done` on that stream would misclassify a paused run as finished. This section's
+`run_transition.terminal` deliberately means the opposite kind of terminal: lifecycle-terminal only.
+A suspended run stays in `list_active()` (it is paused, not gone), so it flows through edge 1 above
+and always emits `status: "suspended", terminal: false` — never `terminal: true`. A client doing
+`if (frame.terminal) done` on **this** stream is safe.
+
+This push is wired: `Hub` extends `runs_subs` (a `HashSet<ConnId>`) and starts a poll
+(`src/serve/ws/server.rs`, cadence = `BASTION_POLL_INTERVAL`) only while at least one connection is
+subscribed to `"runs"`, stopping it when the last such subscriber unsubscribes or disconnects —
+unlike `workflow_done`'s always-on, ungated poll. Frames are fanned out only to `runs_subs`, never
+broadcast to every connection.
 
 ---
 
@@ -1321,23 +1408,28 @@ returns `200 []` and `GET /api/runs/{id}` returns `404` for every id — the sam
 posture as the rest of this contract, not an error.
 
 **`GET /api/runs` and `GET /api/runs/{id}` are a read-only snapshot, not a transition-by-transition
-run stream.** A client observes the current state only when it requests it — there is no fine-grained
-push of individual node transitions in this API, and no `engine-serve` change is introduced here.
-That said, bastion does ship a **bearer-authed `/ws` hub** (Section 4), carrying a `sessions`/`pane`
-topic vocabulary (Section 6), plus an `event{workflow_done}` push (`src/serve/poll.rs`'s
-`FlowWatcher::observe`) that fires once when a flow transitions to a terminal status (`"done"` or
-`"blocked"`) — **completion-only, not transition-by-transition**: it tells a subscriber a run finished,
-not what happened along the way. Fine-grained live push (token-by-token / transition-by-transition)
-over `/ws` is tracked as `BA.11.N` (D17: bastion pushes run transitions over this existing hub by
-polling the in-process `LiveStateStore` and diffing per `BA.11.D`'s pattern — no `engine-serve`
-change, no second streaming protocol). Until `BA.11.N` ships, `BW.3.A`'s ~2s client polling against
-these two routes is the standing fallback.
+run stream.** A client observes the current state only when it requests it, and no `engine-serve`
+change is introduced here. There is still no fine-grained push of **individual node** transitions in
+this API — that remains out of scope (Section 14.4). Bastion does, however, ship a **bearer-authed
+`/ws` hub** (Section 4), carrying a `sessions`/`pane`/`runs` topic vocabulary (Section 6), plus two
+pushes built on it: an `event{workflow_done}` push (`src/serve/poll.rs`'s `FlowWatcher::observe`)
+that fires once when a flow transitions to a terminal status (`"done"` or `"blocked"`) —
+**completion-only**, it tells a subscriber a run finished, not what happened along the way — and, as
+of v0.23 (`BA.11.N`, D17), an `event{run_transition}` push (Section 8.3) that fires on every
+**run-level aggregate status change**, not only on completion, for connections subscribed to the
+`"runs"` topic. Node-level (per-`NodeTransitionDto`) granularity is still not pushed — only the
+run's aggregate `status` (Section 8.3, Section 14.1's same derivation) is. `BW.3.A`'s ~2s client
+polling against these two routes remains the retained fallback (D17 constraint 3), used whenever a
+client is not subscribed to `runs` or `run_stream_status.available` is `false`.
 
-**Gotcha for whoever builds `BA.11.N`:** the embedded engine's `publish_suspended` sends
-`terminal: true` **together with** `status: "suspended"` (`engine-rs/crates/engine-serve/src/
-stream.rs:185-191`) — wire-terminal is not lifecycle-terminal. A naive `if (frame.terminal) done`
-would silently treat a paused run as finished; any run-transition push must preserve the
-suspended/finished distinction, exactly as the engine's own stream does.
+**How `BA.11.N` resolved the wire-terminal/lifecycle-terminal gotcha:** the embedded engine's own
+`publish_suspended` push sends `terminal: true` **together with** `status: "suspended"`
+(`engine-rs/crates/engine-serve/src/stream.rs:185-191`) on its own protocol — wire-terminal there is
+not lifecycle-terminal. Section 8.3's `run_transition.terminal` deliberately means the opposite:
+lifecycle-terminal only (the run left `LiveStateStore`'s live map). A suspended run stays in the live
+map, so it always emits `status: "suspended", terminal: false` on this stream — a client doing
+`if (frame.terminal) done` against `run_transition` is safe from the engine's own gotcha by
+construction.
 
 ### 14.1 `GET /api/runs` — currently-tracked run summaries (v0.16, BA.11.T; `suspended` status added v0.17; `repo` added v0.22)
 
@@ -2064,7 +2156,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.18**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.23**.
 
 ---
 
@@ -2670,6 +2762,32 @@ a real Postgres being up or down cannot change any golden.
 ---
 
 ## Amendment Log
+
+- **2026-08-03 — v0.22 → v0.23 (`BA.11.N`, D17 — `planning/decisions/
+  D17-live-run-stream-ownership.md`):** Bastion now pushes run-level aggregate status transitions
+  over the existing bearer-authed `/ws` hub, as a new subscribable `"runs"` topic (Section 6). Two
+  deliberate design decisions, settled at spec time rather than left open: **delivery is a
+  subscribable topic** (the `sessions` precedent — a poller gated on subscriber count, starting on
+  the first `runs` subscriber and stopping on the last), not the always-on `broadcast_all` the
+  `workflow_done` push uses and not a per-run `run:<uuid>` topic; and **unavailability is signalled
+  explicitly**, via a new `event{run_stream_status}` frame (`available`/`reason`) pushed to a
+  connection the instant it subscribes to `runs`, so a client learns engine-mount availability
+  without inferring it from silence (Section 8.3). Added `RunTransitionPayload`
+  (`run_id`/`status`/`terminal`/`spec_slug`) and `RunStreamStatusPayload` (`available`/`reason`) as
+  typeshared DTOs; added Section 8.3 documenting the emit predicate (status change on a live run,
+  and the `list_active()`-disappearance edge read back via `get_record`), no-first-observation and
+  no-unchanged-status rules, and D17 constraint 1 (`terminal` here is lifecycle-terminal only — a
+  `"suspended"` run always pairs with `terminal: false`, unlike the embedded engine's own
+  `publish_suspended`, which sends `terminal: true` with `status: "suspended"` on its own protocol).
+  Corrected Section 14's now-stale "no fine-grained push" framing: node-level granularity is still
+  not pushed (Section 14.4, unchanged), but run-level aggregate status now is; the former "Gotcha for
+  whoever builds `BA.11.N`" paragraph is replaced with a statement of how this block resolved it.
+  `GET /api/runs` and `GET /api/runs/{id}` — request shape, response shape, status codes — are
+  byte-identical to v0.22 (D17 constraint 3): no route, DTO field, or contract-corpus golden under
+  `types/contract-corpus/` moved. `types/serve.ts` regenerated (`scripts/gen-types.sh`), adding only
+  `RunTransitionPayload`/`RunStreamStatusPayload`; `scripts/check-typeshare-drift.sh` passes clean.
+  Also corrected Section 21's versioning-policy line, which had lagged four version bumps behind the
+  frontmatter (stuck at "the current contract is v0.18" since v0.19) — it now reads v0.23.
 
 - **2026-08-02 — Section 14 corrected (`ticket-stream-ownership-decision`, ask A8,
   `planning/arch-review-asks-bastion-web/notes.md`; no version bump — wire shape unchanged):**
