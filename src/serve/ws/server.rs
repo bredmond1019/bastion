@@ -473,6 +473,12 @@ impl Handler<Subscribe> for Hub {
                     self.pane_handles.insert(name.clone(), handle);
                 }
             }
+
+            // TODO(BA.11.N task 2+): wire the `runs` topic poller (RunWatcher,
+            // run_stream_status push at subscribe time). No behaviour yet —
+            // this arm exists only to keep the match exhaustive now that
+            // `Topic::Runs` was introduced by task 1.
+            Topic::Runs => {}
         }
     }
 }
@@ -509,6 +515,11 @@ impl Handler<Unsubscribe> for Hub {
                     self.pane_cursors.remove(&name);
                 }
             }
+
+            // TODO(BA.11.N task 2+): wire the `runs` topic teardown (stop the
+            // shared poller on last unsubscribe). No behaviour yet — see the
+            // matching arm in Handler<Subscribe>.
+            Topic::Runs => {}
         }
     }
 }
