@@ -11,6 +11,41 @@ timestamp: 2026-08-02T23:42:46Z
 
 ---
 
+## [run: 2026-08-03]
+
+### `11.N-run-transition-ws-push` (BA.11.N) — 6 tasks, all PASS
+
+Shipped the subscribable `runs` WS topic per D17: task 1 added the `Topic::Runs` variant plus the
+`RunTransitionPayload`/`RunStreamStatusPayload` DTOs; task 2 built the pure `RunWatcher` cursor-diff
+tracker and `run_transition_frame`/`run_stream_status_frame` builders in `poll.rs`, exhaustively
+unit-tested (first-observation, unchanged, suspended, disappearance with/without a retained record);
+task 3 wired the `runs` topic into the WS hub — subscribe pushes an immediate `run_stream_status`
+frame and starts a shared poll cycle over `LiveStateStore` on first subscriber, torn down on last
+leaver or disconnect; task 4 hoisted the engine-mount decision above `Hub::new` in `src/serve/mod.rs`
+so both production and test app factories construct the hub with the real `(available, reason)`
+verdict, and added an integration test proving a real poll-cycle tick emits a terminal
+`run_transition` frame from a seeded store; task 5 bumped `docs/serve-api.md` v0.22 → v0.23 (new
+§8.3, corrected §14) and regenerated `types/serve.ts`; task 6 ran the full authoritative gate (fmt,
+clippy `-D warnings`, `cargo test`, release build, contract-corpus + typeshare drift — all green),
+confirmed the diff touched exactly the 7 spec-named files, and recorded a live-server manual smoke
+test (both `available:true/false` branches and a real terminal `run_transition` frame) in the spec's
+Notes. Review verdict: PASS, no findings. The poll fallback (`GET /api/runs`) and its contract-corpus
+goldens are byte-identical to v0.22, and `/ws`'s bearer-auth gate is unchanged. Block `BA.11.N`
+flipped closed in `state.json`.
+
+Next: BA.11.O — Brain-rag CLI bridge (`GET /api/brain/recall`, `/walk`, `/pulse`).
+
+```
+874c5e9 docs: update docs for 11.N-run-transition-ws-push
+3b84dab chore(harness): pull base-template b410add — gate-skip-count-regression + triage-verify-pre-existing-claims
+879bafa feat: implement 11.N-run-transition-ws-push-task5
+99b2ec9 feat: implement 11.N-run-transition-ws-push-task4
+9205d44 feat: implement 11.N-run-transition-ws-push-task3
+762996b feat: implement 11.N-run-transition-ws-push-task2
+dce2665 fix: fix pass 1 for 11.N-run-transition-ws-push-task1
+7884a8b feat: implement 11.N-run-transition-ws-push-task1
+```
+
 ## [run: 2026-08-02]
 
 ### Wave 281 — the same-suffix `.env` deletion is CLOSED, and no test can reach the real `.env` any more
