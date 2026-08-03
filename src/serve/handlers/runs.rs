@@ -131,7 +131,12 @@ fn node_states_from(ctx: &TaskContext) -> Vec<NodeState> {
 /// Lowercase wire string for a `db::workflows::RunStatus` (contract §6
 /// casing), mirroring [`status_str`]'s style for the run-level enum, which
 /// additionally carries the three run-level-only variants.
-fn run_status_str(status: RunStatus) -> String {
+///
+/// `pub(crate)` (widened from private for BA.11.N) so `src/serve/poll.rs`'s
+/// `RunWatcher` can reuse the exact same status-string derivation `GET
+/// /api/runs` uses, rather than reimplementing it — the two must never
+/// disagree.
+pub(crate) fn run_status_str(status: RunStatus) -> String {
     match status {
         RunStatus::Pending => "pending",
         RunStatus::Running => "running",

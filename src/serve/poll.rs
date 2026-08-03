@@ -11,11 +11,20 @@
 //!   [`SessionDto`]s for the `sessions` topic push.
 //! - [`FlowWatcher`] — stateful non-terminal→terminal `sdlc-flow-state.json`
 //!   transition tracker for the `workflow_done` WS push (BA.11.D).
+//! - [`RunWatcher`] — stateful `LiveStateStore` run-status diff tracker for
+//!   the `run_transition` WS push (BA.11.N).
 
 use std::collections::HashMap;
 
+use engine_contract::task_context::{NodeRunStatus, TaskContext};
+use uuid::Uuid;
+
+use crate::db::workflows::{self, NodeState, RunStatus};
 use crate::detect::AgentState;
-use crate::serve::dto::{SessionDto, WorkflowDonePayload, WsFrame, WsFrameKind};
+use crate::serve::dto::{
+    RunTransitionPayload, SessionDto, WorkflowDonePayload, WsFrame, WsFrameKind,
+};
+use crate::serve::handlers::runs::run_status_str;
 use crate::serve::status::flow::{FlowState, detect_transition};
 use crate::sessions::model::parse_sessions;
 
@@ -254,6 +263,221 @@ pub fn workflow_done_frame(payload: &WorkflowDonePayload) -> WsFrame {
             "spec_slug": payload.spec_slug,
             "status": payload.status,
         }),
+    }
+}
+
+// ── Run watcher (BA.11.N) ────────────────────────────────────────────────────
+
+/// Map `ctx.node_runs` into the minimal `NodeState` values
+/// `db::workflows::derive_run_status` needs. Only `status` is load-bearing for
+/// the aggregate logic; every other field is a cheap per-class default.
+///
+/// Mirrors `src/serve/handlers/runs.rs`'s private `node_states_from` (kept
+/// separate rather than shared, since only `run_status_str` was widened for
+/// this block — see that function's doc comment).
+///
+/// Pure — no I/O.
+fn node_states_for_status(ctx: &TaskContext) -> Vec<NodeState> {
+    ctx.node_runs
+        .iter()
+        .map(|(class, run)| NodeState {
+            id: class.clone(),
+            name: class.clone(),
+            status: match run.status {
+                NodeRunStatus::Pending => RunStatus::Pending,
+                NodeRunStatus::Running => RunStatus::Running,
+                NodeRunStatus::Success => RunStatus::Success,
+                NodeRunStatus::Failed => RunStatus::Failed,
+            },
+            depends_on: vec![],
+            input: None,
+            output: None,
+            error: None,
+            tokens_in: None,
+            tokens_out: None,
+            model: None,
+            started_at: None,
+            elapsed_secs: None,
+        })
+        .collect()
+}
+
+/// Derive a run's aggregate wire status string from its `TaskContext`
+/// snapshot, via the exact same `derive_run_status` + `run_status_str` pair
+/// `GET /api/runs` uses, so the stream and the poll fallback can never
+/// disagree (D17).
+///
+/// Pure — no I/O.
+fn derive_status_str(ctx: &TaskContext) -> String {
+    let nodes = node_states_for_status(ctx);
+    let (status, _budget_halt) = workflows::derive_run_status(&nodes, &ctx.metadata);
+    run_status_str(status)
+}
+
+/// Read `event.spec_slug` when present as a string. `None` when the key is
+/// absent, non-string, or `event` is not an object.
+///
+/// Mirrors `src/serve/handlers/runs.rs`'s private `spec_slug_from_event`
+/// (kept separate for the same reason as [`node_states_for_status`]).
+///
+/// Pure — no I/O.
+fn spec_slug_from_event(event: &serde_json::Value) -> Option<String> {
+    event
+        .get("spec_slug")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Stateful tracker for `LiveStateStore` run-status transitions across
+/// observation cycles, keyed by run id.
+///
+/// Wraps [`derive_status_str`] with a map of last-known statuses so a poll
+/// loop (`src/serve/ws/server.rs`'s `run_watch_cycle`) can call
+/// [`RunWatcher::observe`] on every cycle and only get back payloads for runs
+/// that just transitioned — either a live-map status change, or a
+/// disappearance from the live map (D17's lifecycle-terminal edge).
+#[derive(Debug, Default)]
+pub struct RunWatcher {
+    /// Run id → last-observed aggregate status string.
+    last_status: HashMap<Uuid, String>,
+}
+
+impl RunWatcher {
+    /// Construct an empty watcher (no runs observed yet).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Observe the current set of live runs, returning a
+    /// [`RunTransitionPayload`] for every run that just transitioned.
+    ///
+    /// - `live` — every run id currently returned by `LiveStateStore::list_active()`,
+    ///   paired with its latest `TaskContext` snapshot (the caller has already
+    ///   done the store reads; this stays pure).
+    /// - `terminal_lookup` — resolves a disappeared run id's retained snapshot
+    ///   (`LiveStateStore::get_record(id).map(|r| r.snapshot)`, in the caller).
+    ///   Returns `None` when the run was evicted from the bounded completed
+    ///   ring before this cycle observed its disappearance.
+    ///
+    /// Two edges, both handled:
+    /// 1. **Status change on a live run** — a previous status exists and
+    ///    differs from the current one → emit `terminal: false`. Nothing is
+    ///    emitted on the first observation of an id (no previous status) or
+    ///    when the status is unchanged.
+    /// 2. **Disappearance** — an id present in the cursor map but absent from
+    ///    `live` has gone lifecycle-terminal. Its final status is resolved via
+    ///    `terminal_lookup`; when that yields nothing, the last-known status is
+    ///    carried instead of dropping the transition. Either way `terminal: true`
+    ///    is emitted and the id is removed from the cursor map, so a later
+    ///    re-appearance is treated as a fresh first observation.
+    ///
+    /// Always updates the internal map for every id passed in `live`,
+    /// regardless of whether an event was emitted.
+    pub fn observe(
+        &mut self,
+        live: &[(Uuid, TaskContext)],
+        terminal_lookup: impl Fn(Uuid) -> Option<TaskContext>,
+    ) -> Vec<RunTransitionPayload> {
+        let mut events = Vec::new();
+        let mut seen: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::with_capacity(live.len());
+
+        for (run_id, ctx) in live {
+            seen.insert(*run_id);
+            let status = derive_status_str(ctx);
+            let prev = self.last_status.get(run_id);
+
+            if let Some(prev_status) = prev
+                && prev_status != &status
+            {
+                events.push(RunTransitionPayload {
+                    run_id: run_id.to_string(),
+                    status: status.clone(),
+                    terminal: false,
+                    spec_slug: spec_slug_from_event(&ctx.event),
+                });
+            }
+
+            self.last_status.insert(*run_id, status);
+        }
+
+        let disappeared: Vec<Uuid> = self
+            .last_status
+            .keys()
+            .filter(|id| !seen.contains(id))
+            .copied()
+            .collect();
+
+        for run_id in disappeared {
+            let last_known = self
+                .last_status
+                .remove(&run_id)
+                .expect("id came from last_status's own key set");
+
+            let (status, spec_slug) = match terminal_lookup(run_id) {
+                Some(ctx) => (derive_status_str(&ctx), spec_slug_from_event(&ctx.event)),
+                None => (last_known, None),
+            };
+
+            events.push(RunTransitionPayload {
+                run_id: run_id.to_string(),
+                status,
+                terminal: true,
+                spec_slug,
+            });
+        }
+
+        events
+    }
+}
+
+/// Build the `event{run_transition}` [`WsFrame`] for a transitioned run.
+///
+/// Wire format (serve-api §8.3, flattened `EventPayload` + run-transition
+/// fields): `{ "session": "", "event": "run_transition", "run_id": …,
+/// "status": …, "terminal": …, "spec_slug": … }` (`spec_slug` omitted when
+/// `None`, matching [`RunTransitionPayload`]'s own `skip_serializing_if`).
+/// `session` is always the empty string — this event is not scoped to a tmux
+/// session — mirroring [`workflow_done_frame`].
+///
+/// Pure function: no I/O, no actor messaging.
+pub fn run_transition_frame(payload: &RunTransitionPayload) -> WsFrame {
+    let mut json = serde_json::json!({
+        "session": "",
+        "event": "run_transition",
+        "run_id": payload.run_id,
+        "status": payload.status,
+        "terminal": payload.terminal,
+    });
+    if let Some(spec_slug) = &payload.spec_slug {
+        json["spec_slug"] = serde_json::Value::String(spec_slug.clone());
+    }
+    WsFrame {
+        kind: WsFrameKind::Event,
+        payload: json,
+    }
+}
+
+/// Build the `event{run_stream_status}` [`WsFrame`] pushed immediately when a
+/// connection subscribes to the `runs` topic (D17 constraint 2).
+///
+/// Wire format (serve-api §8.3): `{ "session": "", "event":
+/// "run_stream_status", "available": …, "reason": … }` (`reason` omitted when
+/// `None`).
+///
+/// Pure function: no I/O, no actor messaging.
+pub fn run_stream_status_frame(available: bool, reason: Option<&str>) -> WsFrame {
+    let mut json = serde_json::json!({
+        "session": "",
+        "event": "run_stream_status",
+        "available": available,
+    });
+    if let Some(reason) = reason {
+        json["reason"] = serde_json::Value::String(reason.to_owned());
+    }
+    WsFrame {
+        kind: WsFrameKind::Event,
+        payload: json,
     }
 }
 
@@ -818,5 +1042,290 @@ background\t0\t1\t1718000100\tzsh\n";
         assert_eq!(frame.payload["status"], serde_json::json!("blocked"));
         assert_eq!(frame.payload["repo"], serde_json::json!("bella"));
         assert_eq!(frame.payload["spec_slug"], serde_json::json!("some-spec"));
+    }
+
+    // ── RunWatcher (BA.11.N) ──────────────────────────────────────────────────
+
+    use engine_contract::task_context::NodeRun;
+
+    fn node_run(status: NodeRunStatus) -> NodeRun {
+        NodeRun {
+            status,
+            started_at: None,
+            completed_at: None,
+            error: None,
+            input: None,
+            usage: None,
+        }
+    }
+
+    /// Build a `TaskContext` with one node `"NodeA"` at `status`, an optional
+    /// `spec_slug` on `event`, and empty `metadata` (no suspension/cancel/budget
+    /// annotation) — the plain node-aggregate path.
+    fn ctx_with_node_status(status: NodeRunStatus, spec_slug: Option<&str>) -> TaskContext {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("NodeA".to_owned(), node_run(status));
+        let event = match spec_slug {
+            Some(slug) => serde_json::json!({ "spec_slug": slug }),
+            None => serde_json::json!({}),
+        };
+        TaskContext {
+            event,
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        }
+    }
+
+    /// A `TaskContext` whose `metadata` marks the run suspended — the
+    /// `derive_run_status` branch that must win over the node-aggregate
+    /// fallback regardless of node statuses (D17 constraint 1).
+    fn ctx_suspended() -> TaskContext {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("NodeA".to_owned(), node_run(NodeRunStatus::Pending));
+        TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({ "suspension": { "suspended": true } }),
+            node_runs,
+        }
+    }
+
+    #[test]
+    fn run_watcher_first_observation_emits_nothing() {
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+        let ctx = ctx_with_node_status(NodeRunStatus::Pending, None);
+
+        let events = watcher.observe(&[(run_id, ctx)], |_| None);
+
+        assert!(
+            events.is_empty(),
+            "first observation of an id must emit nothing"
+        );
+    }
+
+    #[test]
+    fn run_watcher_unchanged_status_emits_nothing() {
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+        let ctx1 = ctx_with_node_status(NodeRunStatus::Pending, None);
+        let ctx2 = ctx_with_node_status(NodeRunStatus::Pending, None);
+
+        watcher.observe(&[(run_id, ctx1)], |_| None);
+        let events = watcher.observe(&[(run_id, ctx2)], |_| None);
+
+        assert!(events.is_empty(), "unchanged status must emit nothing");
+    }
+
+    #[test]
+    fn run_watcher_pending_to_running_emits_transition() {
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+        let pending = ctx_with_node_status(NodeRunStatus::Pending, Some("phase11-blockN"));
+        let running = ctx_with_node_status(NodeRunStatus::Running, Some("phase11-blockN"));
+
+        watcher.observe(&[(run_id, pending)], |_| None);
+        let events = watcher.observe(&[(run_id, running)], |_| None);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].run_id, run_id.to_string());
+        assert_eq!(events[0].status, "running");
+        assert!(!events[0].terminal);
+        assert_eq!(events[0].spec_slug.as_deref(), Some("phase11-blockN"));
+    }
+
+    #[test]
+    fn run_watcher_running_to_suspended_emits_terminal_false() {
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+        let running = ctx_with_node_status(NodeRunStatus::Running, None);
+        let suspended = ctx_suspended();
+
+        watcher.observe(&[(run_id, running)], |_| None);
+        let events = watcher.observe(&[(run_id, suspended)], |_| None);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].status, "suspended",
+            "D17 constraint 1: suspended status must be reported"
+        );
+        assert!(
+            !events[0].terminal,
+            "D17 constraint 1: a suspended run must never be reported terminal"
+        );
+    }
+
+    #[test]
+    fn run_watcher_disappearance_with_record_emits_derived_status_terminal_true() {
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+        let running = ctx_with_node_status(NodeRunStatus::Running, Some("phase11-blockN"));
+
+        watcher.observe(&[(run_id, running)], |_| None);
+
+        let record_ctx = ctx_with_node_status(NodeRunStatus::Success, Some("phase11-blockN"));
+        let events = watcher.observe(&[], |id| {
+            if id == run_id {
+                Some(record_ctx.clone())
+            } else {
+                None
+            }
+        });
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].run_id, run_id.to_string());
+        assert_eq!(
+            events[0].status, "success",
+            "disappearance must read the final status back from the record"
+        );
+        assert!(events[0].terminal);
+        assert_eq!(events[0].spec_slug.as_deref(), Some("phase11-blockN"));
+    }
+
+    #[test]
+    fn run_watcher_disappearance_without_record_emits_last_known_status_terminal_true() {
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+        let running = ctx_with_node_status(NodeRunStatus::Running, None);
+
+        watcher.observe(&[(run_id, running)], |_| None);
+        let events = watcher.observe(&[], |_| None);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].status, "running",
+            "an evicted record must fall back to the last-known status, not drop the transition"
+        );
+        assert!(events[0].terminal);
+    }
+
+    #[test]
+    fn run_watcher_reappearance_after_disappearance_is_a_fresh_first_observation() {
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+        let running = ctx_with_node_status(NodeRunStatus::Running, None);
+
+        watcher.observe(&[(run_id, running.clone())], |_| None);
+        let disappearance_events = watcher.observe(&[], |_| None);
+        assert_eq!(disappearance_events.len(), 1);
+
+        // The id re-appears (e.g. a new run reusing... in practice a fresh
+        // uuid, but the watcher's cursor was cleared either way) — treated as
+        // a brand-new first observation, emitting nothing.
+        let reappearance_events = watcher.observe(&[(run_id, running)], |_| None);
+        assert!(
+            reappearance_events.is_empty(),
+            "a re-appearing id after disappearance must be a fresh first observation"
+        );
+    }
+
+    #[test]
+    fn run_watcher_disappearance_removes_id_so_it_cannot_refire() {
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+        let running = ctx_with_node_status(NodeRunStatus::Running, None);
+
+        watcher.observe(&[(run_id, running)], |_| None);
+        let first = watcher.observe(&[], |_| None);
+        assert_eq!(first.len(), 1);
+
+        // A second empty cycle must not re-emit the same disappearance.
+        let second = watcher.observe(&[], |_| None);
+        assert!(second.is_empty());
+    }
+
+    // ── run_transition_frame ─────────────────────────────────────────────────
+
+    #[test]
+    fn run_transition_frame_has_event_kind_and_flattened_fields() {
+        let payload = RunTransitionPayload {
+            run_id: "11111111-1111-1111-1111-111111111111".to_owned(),
+            status: "running".to_owned(),
+            terminal: false,
+            spec_slug: Some("phase11-blockN".to_owned()),
+        };
+        let frame = run_transition_frame(&payload);
+
+        assert_eq!(frame.kind, WsFrameKind::Event);
+        assert_eq!(frame.payload["session"], serde_json::json!(""));
+        assert_eq!(frame.payload["event"], serde_json::json!("run_transition"));
+        assert_eq!(
+            frame.payload["run_id"],
+            serde_json::json!("11111111-1111-1111-1111-111111111111")
+        );
+        assert_eq!(frame.payload["status"], serde_json::json!("running"));
+        assert_eq!(frame.payload["terminal"], serde_json::json!(false));
+        assert_eq!(
+            frame.payload["spec_slug"],
+            serde_json::json!("phase11-blockN")
+        );
+
+        let obj = frame
+            .payload
+            .as_object()
+            .expect("payload must be an object");
+        assert_eq!(obj.len(), 6, "payload must have exactly 6 fields");
+    }
+
+    #[test]
+    fn run_transition_frame_omits_absent_spec_slug() {
+        let payload = RunTransitionPayload {
+            run_id: "22222222-2222-2222-2222-222222222222".to_owned(),
+            status: "success".to_owned(),
+            terminal: true,
+            spec_slug: None,
+        };
+        let frame = run_transition_frame(&payload);
+
+        assert_eq!(frame.payload["terminal"], serde_json::json!(true));
+        let obj = frame
+            .payload
+            .as_object()
+            .expect("payload must be an object");
+        assert!(
+            !obj.contains_key("spec_slug"),
+            "spec_slug must be absent, not null, when unknown"
+        );
+        assert_eq!(obj.len(), 5, "payload must have exactly 5 fields");
+    }
+
+    // ── run_stream_status_frame ──────────────────────────────────────────────
+
+    #[test]
+    fn run_stream_status_frame_available_omits_reason() {
+        let frame = run_stream_status_frame(true, None);
+
+        assert_eq!(frame.kind, WsFrameKind::Event);
+        assert_eq!(frame.payload["session"], serde_json::json!(""));
+        assert_eq!(
+            frame.payload["event"],
+            serde_json::json!("run_stream_status")
+        );
+        assert_eq!(frame.payload["available"], serde_json::json!(true));
+
+        let obj = frame
+            .payload
+            .as_object()
+            .expect("payload must be an object");
+        assert!(!obj.contains_key("reason"));
+        assert_eq!(obj.len(), 3, "payload must have exactly 3 fields");
+    }
+
+    #[test]
+    fn run_stream_status_frame_unavailable_carries_reason() {
+        let frame = run_stream_status_frame(false, Some("DATABASE_URL not set"));
+
+        assert_eq!(frame.payload["available"], serde_json::json!(false));
+        assert_eq!(
+            frame.payload["reason"],
+            serde_json::json!("DATABASE_URL not set")
+        );
+
+        let obj = frame
+            .payload
+            .as_object()
+            .expect("payload must be an object");
+        assert_eq!(obj.len(), 4, "payload must have exactly 4 fields");
     }
 }
