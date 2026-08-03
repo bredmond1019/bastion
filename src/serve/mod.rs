@@ -231,12 +231,6 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     )
     .unwrap_or_default();
 
-    // Start the hub actor once (process-singleton within this actix System).
-    // All per-connection WsConn actors hold an Addr<Hub> clone.
-    let hub = Hub::new(poll_secs, registry.clone()).start();
-
-    let registry = web::Data::new(registry);
-
     // ── Live run-state store (BA.11.M) ──────────────────────────────────────
     //
     // Hoisted above the engine-mount decision so it exists (and is shareable
@@ -246,7 +240,27 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // `/api/runs` read routes below observe. When the engine is skipped, the
     // store simply stays empty (`GET /api/runs` → `[]`, `GET /api/runs/{id}`
     // → 404) — the same graceful-degradation posture as the engine routes.
+    //
+    // Also hoisted above `Hub::new` (BA.11.N task 3) so the hub can hold its
+    // own clone for the `runs`-topic poller.
     let live_store = LiveStateStore::new();
+
+    // Start the hub actor once (process-singleton within this actix System).
+    // All per-connection WsConn actors hold an Addr<Hub> clone.
+    //
+    // TODO(BA.11.N task 4): the `(false, None)` availability placeholder
+    // below is wrong once the engine-mount decision (just below) is hoisted
+    // above this call — task 4 derives the real `stream_available` pair from
+    // `EngineMountDecision` and threads it through here.
+    let hub = Hub::new(
+        poll_secs,
+        registry.clone(),
+        live_store.clone(),
+        (false, None),
+    )
+    .start();
+
+    let registry = web::Data::new(registry);
 
     // ── Engine embed (BA.7.C task 2) ────────────────────────────────────────
     //
@@ -615,10 +629,13 @@ mod tests {
         >,
     > {
         // Start a hub for test routing — mirrors production (Hub::start inside the actix System).
-        let hub = Hub::new(2, registry.clone()).start();
+        let live_store = LiveStateStore::new();
+        // TODO(BA.11.N task 4): `(false, None)` is a placeholder — task 4
+        // threads a real availability verdict through the test app factory.
+        let hub = Hub::new(2, registry.clone(), live_store.clone(), (false, None)).start();
         let hub_data = web::Data::new(hub);
         let registry_data = web::Data::new(registry);
-        let live_data = web::Data::new(LiveStateStore::new());
+        let live_data = web::Data::new(live_store);
 
         // Mirror production routing exactly (same web::resource groupings for
         // correct 405 behaviour on wrong methods).
