@@ -201,6 +201,8 @@ mod tests {
                         sdlc_workflow: None,
                         model: None,
                         epics: vec![],
+                        note: None,
+                        description: None,
                     },
                     TrackBlock {
                         id: "A.2".to_string(),
@@ -214,6 +216,8 @@ mod tests {
                         sdlc_workflow: None,
                         model: None,
                         epics: vec![],
+                        note: None,
+                        description: None,
                     },
                 ],
             }],

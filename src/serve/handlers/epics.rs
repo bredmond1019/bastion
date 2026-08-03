@@ -324,6 +324,8 @@ mod tests {
                         sdlc_workflow: None,
                         model: None,
                         epics: vec![slug.to_owned()],
+                        note: None,
+                        description: None,
                     })
                     .collect(),
             }],
