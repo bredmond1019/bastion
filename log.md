@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-02T17:18:06Z
+timestamp: 2026-08-02T23:42:46Z
 ---
 
 # Log — bastion
@@ -11,7 +11,93 @@ timestamp: 2026-08-02T17:18:06Z
 
 ---
 
+## [run: 2026-08-03]
+
+### `11.N-run-transition-ws-push` (BA.11.N) — 6 tasks, all PASS
+
+Shipped the subscribable `runs` WS topic per D17: task 1 added the `Topic::Runs` variant plus the
+`RunTransitionPayload`/`RunStreamStatusPayload` DTOs; task 2 built the pure `RunWatcher` cursor-diff
+tracker and `run_transition_frame`/`run_stream_status_frame` builders in `poll.rs`, exhaustively
+unit-tested (first-observation, unchanged, suspended, disappearance with/without a retained record);
+task 3 wired the `runs` topic into the WS hub — subscribe pushes an immediate `run_stream_status`
+frame and starts a shared poll cycle over `LiveStateStore` on first subscriber, torn down on last
+leaver or disconnect; task 4 hoisted the engine-mount decision above `Hub::new` in `src/serve/mod.rs`
+so both production and test app factories construct the hub with the real `(available, reason)`
+verdict, and added an integration test proving a real poll-cycle tick emits a terminal
+`run_transition` frame from a seeded store; task 5 bumped `docs/serve-api.md` v0.22 → v0.23 (new
+§8.3, corrected §14) and regenerated `types/serve.ts`; task 6 ran the full authoritative gate (fmt,
+clippy `-D warnings`, `cargo test`, release build, contract-corpus + typeshare drift — all green),
+confirmed the diff touched exactly the 7 spec-named files, and recorded a live-server manual smoke
+test (both `available:true/false` branches and a real terminal `run_transition` frame) in the spec's
+Notes. Review verdict: PASS, no findings. The poll fallback (`GET /api/runs`) and its contract-corpus
+goldens are byte-identical to v0.22, and `/ws`'s bearer-auth gate is unchanged. Block `BA.11.N`
+flipped closed in `state.json`.
+
+Next: BA.11.O — Brain-rag CLI bridge (`GET /api/brain/recall`, `/walk`, `/pulse`).
+
+```
+874c5e9 docs: update docs for 11.N-run-transition-ws-push
+3b84dab chore(harness): pull base-template b410add — gate-skip-count-regression + triage-verify-pre-existing-claims
+879bafa feat: implement 11.N-run-transition-ws-push-task5
+99b2ec9 feat: implement 11.N-run-transition-ws-push-task4
+9205d44 feat: implement 11.N-run-transition-ws-push-task3
+762996b feat: implement 11.N-run-transition-ws-push-task2
+dce2665 fix: fix pass 1 for 11.N-run-transition-ws-push-task1
+7884a8b feat: implement 11.N-run-transition-ws-push-task1
+```
+
 ## [run: 2026-08-02]
+
+### Wave 281 — the same-suffix `.env` deletion is CLOSED, and no test can reach the real `.env` any more
+
+- **What:** Reviewed the handoff's carryover registry, verified every claim against source rather
+  than the writeups, then specced and shipped `BA.ticket.dotenv-shadow-same-suffix-restore` (wave
+  281, 4/4 tasks) plus two smaller items.
+  - **The fix is one deleted line, and none of the three candidate fixes were used.** Reading
+    `Drop` showed that on Unix `fs::rename` *atomically replaces* an existing destination, so the
+    `remove_file(env_path)` preceding the restore was never doing anything the rename didn't
+    already do — and it **was** the entire defect. Removing it makes the restore correct in *both*
+    drop orders (the second guard's rename simply fails `ENOENT` and touches nothing). It is also
+    strictly safer than the issues tab's candidate 1 (`if backup.exists()`), which leaves a TOCTOU
+    window where two processes both pass the check and the loser still calls `remove_file`.
+    `DotenvShadow::new` was not touched — the marker claim, the same-suffix fall-through, and the
+    adopt branch are load-bearing recovery paths.
+  - **Defense in depth, and the more durable half.**
+    `dotenv_shadow_leaves_an_empty_env_and_restores_the_original` — the one test that operated on
+    the real repo-root `.env` — was converted to a `CwdGuard` fixture. **All 9 `DotenvShadow` tests
+    now enter a disposable fixture dir first, so no test in the suite touches the real file**,
+    regardless of any future bug in the guard.
+  - Also landed: the `NoOriginal` arm audited against the same interleave (benign empty-vs-absent
+    inconsistency documented, not fixed); the adopt branch's `.env.{suffix}.pre-adopt.bak` now
+    deliberately *retained* as the only surviving copy of content live at adopt time, with the
+    reasoning recorded in `Drop`; bastion's last fixed-name temp dir (`src/brain/code_graph.rs:812`)
+    moved to `unique_temp_dir`, and a re-sweep confirmed the carryover's "bastion (1)" count was
+    accurate.
+  - **Item 6 closed** (`042024b`): the three `BASTION_INTEGRATION_TEST` tests read
+    `std::env::var("DATABASE_URL")` directly, skipping the `dotenvy::dotenv()` that `Config::load`
+    makes, so the documented `--ignored` recipe panicked `NotPresent` against a fully populated
+    `.env`. Added `dotenvy::dotenv().ok()` ahead of each read — `dotenvy` directly rather than
+    `Config::load`, which would have added unrelated workspace-registry failure surface to a DB test.
+  - **Item 4 closed by audit.** Bastion's harness surface is clean: `harness.json`'s gating checks
+    shell out only to `cargo` (×4) and the two already-hardened `check-*-drift.sh`; `cargo nextest`
+    resolves through cargo's own `$CARGO_HOME/bin` subcommand lookup, so if `cargo` runs, nextest
+    runs. `mev`/`uv`/`node` belong to HQ's `routine.sh`, not bastion's harness. Carryover
+    `rc-path-exports-miss-subagent-shells` downgraded `known_issue` → `constraint`.
+- **Why:** The handoff framed item 7 as a design decision and deliberately stopped. Reading the
+  source showed it wasn't one — the correct repair is mechanical, cheaper than all three proposed
+  candidates, and doesn't touch the recovery paths. The `.env` had already been destroyed twice by
+  earlier variants of this guard, and concurrent agent sessions in this workspace are routine, so
+  the fixture conversion mattered more than the fix itself.
+- **Verification, run by the operator rather than inherited from the engine's self-report:** the
+  regression test was confirmed to **fail** against pre-fix code by re-introducing the `remove_file`
+  line — it reproduced the original signature exactly (`Os { code: 2, kind: NotFound }`) — then
+  reverted. Full gate: fmt ✓ · `clippy -D warnings` ✓ · authoritative full suite **2006 passed / 0
+  failed** ✓ · release ✓ · contract-corpus drift ✓ (34) · typeshare drift ✓. **The interim
+  mitigation is LIFTED**, proven by executing the forbidden scenario: **two concurrent `cargo
+  nextest` runs × 3 iterations — 6/6 green, `.env` byte-identical after every iteration, zero stray
+  `.bak`/marker artifacts.**
+- **Refs:** `planning/ticket-dotenv-shadow-same-suffix-restore/`;
+  `planning/queue-run-2026-08-02-issues.md` items 4, 6, 7; `planning/state.json` `carryover[]`.
 
 ### Serialized ticket queue drained (waves 276 → 278) + wave 280 from its own review findings
 

@@ -231,12 +231,6 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     )
     .unwrap_or_default();
 
-    // Start the hub actor once (process-singleton within this actix System).
-    // All per-connection WsConn actors hold an Addr<Hub> clone.
-    let hub = Hub::new(poll_secs, registry.clone()).start();
-
-    let registry = web::Data::new(registry);
-
     // ── Live run-state store (BA.11.M) ──────────────────────────────────────
     //
     // Hoisted above the engine-mount decision so it exists (and is shareable
@@ -246,6 +240,9 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // `/api/runs` read routes below observe. When the engine is skipped, the
     // store simply stays empty (`GET /api/runs` → `[]`, `GET /api/runs/{id}`
     // → 404) — the same graceful-degradation posture as the engine routes.
+    //
+    // Also hoisted above `Hub::new` (BA.11.N task 3) so the hub can hold its
+    // own clone for the `runs`-topic poller.
     let live_store = LiveStateStore::new();
 
     // ── Engine embed (BA.7.C task 2) ────────────────────────────────────────
@@ -256,7 +253,14 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // the engine routes are simply left unmounted, and we say so on stderr
     // plus an `observ` event rather than failing to boot or mounting a route
     // that would 500 on every request.
-    let engine_data: Option<web::Data<EngineAppState>> = match decide_engine_mount(
+    //
+    // Hoisted above `Hub::new` (BA.11.N task 4) — the hub is constructed with
+    // the real `stream_available` verdict this decision produces (D17
+    // constraint 2), rather than a placeholder wired up after the fact.
+    let (engine_data, stream_available): (
+        Option<web::Data<EngineAppState>>,
+        (bool, Option<String>),
+    ) = match decide_engine_mount(
         std::env::var("DATABASE_URL").ok().as_deref(),
         std::env::var("BASTION_ENGINE_API_KEY").ok().as_deref(),
     ) {
@@ -294,7 +298,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         runs: RunRegistry::new(),
                         api_key: engine_api_key,
                     };
-                    Some(web::Data::new(state))
+                    (Some(web::Data::new(state)), (true, None))
                 }
                 Err(e) => {
                     tracing::error!(
@@ -302,20 +306,32 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         error = %e,
                         "engine routes not mounted — failed to connect to DATABASE_URL"
                     );
-                    eprintln!(
-                        "bastion serve: engine routes not mounted — could not connect to \
-                         DATABASE_URL: {e}"
+                    let reason = format!(
+                        "engine routes not mounted — could not connect to DATABASE_URL: {e}"
                     );
-                    None
+                    eprintln!("bastion serve: {reason}");
+                    (None, (false, Some(reason)))
                 }
             }
         }
         EngineMountDecision::Skip { reason } => {
             tracing::warn!(target: "bastion::serve", %reason);
             eprintln!("bastion serve: {reason}");
-            None
+            (None, (false, Some(reason)))
         }
     };
+
+    // Start the hub actor once (process-singleton within this actix System).
+    // All per-connection WsConn actors hold an Addr<Hub> clone.
+    let hub = Hub::new(
+        poll_secs,
+        registry.clone(),
+        live_store.clone(),
+        stream_available,
+    )
+    .start();
+
+    let registry = web::Data::new(registry);
 
     let live_data = web::Data::new(live_store);
 
@@ -601,6 +617,11 @@ mod tests {
     /// and the given workspace registry (use `FileConfig::default()` for tests that don't
     /// exercise the repo/workflow status routes).
     ///
+    /// A fresh, empty [`LiveStateStore`] is used and `runs`-stream availability is reported
+    /// as `(false, None)` (no engine mounted) — callers that need to seed the store before
+    /// connecting, or assert `available: true`, should use
+    /// [`build_app_with_live_store`] instead.
+    ///
     /// Must be called from within an actix test context (`#[actix_web::test]`) so that
     /// `Hub::start()` can register with the current actix System arbiter.
     fn build_app(
@@ -614,11 +635,46 @@ mod tests {
             InitError = (),
         >,
     > {
+        build_app_with_live_store(registry, LiveStateStore::new(), (false, None)).0
+    }
+
+    /// Same routing as [`build_app`], but threading a caller-supplied [`LiveStateStore`]
+    /// and `runs`-stream availability pair through to the hub (BA.11.N task 4) — mirrors
+    /// how production's `run_server` hoists the engine-mount decision above `Hub::new` and
+    /// gives the hub and `EngineAppState.live` the *same* store instance. Lets tests seed
+    /// the store before connecting a `/ws` client (so a later mutation produces a
+    /// `run_transition` frame on that already-open connection) and assert the
+    /// `run_stream_status` frame's `available`/`reason` fields for both mount outcomes.
+    ///
+    /// Also returns the `Addr<Hub>` the built `App` is wired to — real end-to-end WS wire
+    /// traffic has no test client in this crate's dependency graph (no `awc`/`actix-test`;
+    /// see `src/serve/ws/session.rs`'s "live behaviour is smoke-tested" note), so tests that
+    /// need to prove a *specific, App-mounted* hub instance reacts correctly message it
+    /// directly (the same `Connect`/`Subscribe` pattern `ws/server.rs`'s `RecorderActor`
+    /// tests use) rather than re-deriving the Hub's internal logic, which task 3 already
+    /// covers exhaustively.
+    fn build_app_with_live_store(
+        registry: FileConfig,
+        live_store: LiveStateStore,
+        stream_available: (bool, Option<String>),
+    ) -> (
+        actix_web::App<
+            impl actix_web::dev::ServiceFactory<
+                actix_web::dev::ServiceRequest,
+                Config = (),
+                Response = actix_web::dev::ServiceResponse,
+                Error = actix_web::Error,
+                InitError = (),
+            >,
+        >,
+        Addr<Hub>,
+    ) {
         // Start a hub for test routing — mirrors production (Hub::start inside the actix System).
-        let hub = Hub::new(2, registry.clone()).start();
+        let hub = Hub::new(2, registry.clone(), live_store.clone(), stream_available).start();
+        let hub_for_return = hub.clone();
         let hub_data = web::Data::new(hub);
         let registry_data = web::Data::new(registry);
-        let live_data = web::Data::new(LiveStateStore::new());
+        let live_data = web::Data::new(live_store);
 
         // Mirror production routing exactly (same web::resource groupings for
         // correct 405 behaviour on wrong methods).
@@ -701,13 +757,15 @@ mod tests {
             .app_data(hub_data.clone())
             .route("", web::get().to(hub_ws_handler));
 
-        App::new()
+        let app = App::new()
             .app_data(hub_data)
             .app_data(registry_data)
             .app_data(json_config())
             .service(web::resource("/health").route(web::get().to(health)))
             .service(protected)
-            .service(ws_scope)
+            .service(ws_scope);
+
+        (app, hub_for_return)
     }
 
     /// Minimal `/api/runs` + `/api/runs/{id}` test app carrying a caller-supplied
@@ -1133,6 +1191,218 @@ mod tests {
             "GET /ws with valid token and WS upgrade headers must return 101; got {}",
             resp.status()
         );
+    }
+
+    // ── `runs` topic wired through the real App (BA.11.N task 4) ───────────
+    //
+    // `run_server`'s engine-mount hoist and `build_app_with_live_store`'s test mirror both
+    // construct `Hub::new` with a real `LiveStateStore` clone and a real availability verdict
+    // *before* the App is built. These tests exercise that exact wiring: the `App`-mounted
+    // hub is messaged directly (no WS wire round-trip is available in this crate's
+    // dependency graph — see `build_app_with_live_store`'s doc comment), proving the specific
+    // hub instance the running App would serve `/ws` traffic through reacts as task 3's
+    // Hub-level tests predict, not a freshly constructed stand-in.
+
+    /// Records every [`ServerFrame`] it receives — a local, `mod tests`-scoped stand-in
+    /// for a `WsConn` recipient (the `ws/server.rs` `RecorderActor` used for the equivalent
+    /// hub-level tests is private to that module, so this is a small deliberate duplicate
+    /// rather than a visibility change to another task's file).
+    #[derive(Default)]
+    struct RunsFrameRecorder {
+        received: std::sync::Arc<std::sync::Mutex<Vec<crate::serve::dto::WsFrame>>>,
+    }
+
+    impl actix::Actor for RunsFrameRecorder {
+        type Context = actix::Context<Self>;
+    }
+
+    impl actix::Handler<crate::serve::ws::server::ServerFrame> for RunsFrameRecorder {
+        type Result = ();
+
+        fn handle(
+            &mut self,
+            msg: crate::serve::ws::server::ServerFrame,
+            _ctx: &mut actix::Context<Self>,
+        ) {
+            self.received.lock().unwrap().push(msg.0);
+        }
+    }
+
+    /// Round-trips through the recorder's mailbox so the caller can await it and be sure
+    /// every earlier `do_send`/`send` in the (single-threaded, FIFO) mailbox has already
+    /// been processed — mirrors `ws/server.rs`'s `DrainReceived`.
+    #[derive(actix::Message)]
+    #[rtype(result = "Vec<crate::serve::dto::WsFrame>")]
+    struct DrainRunsFrames;
+
+    impl actix::Handler<DrainRunsFrames> for RunsFrameRecorder {
+        type Result = Vec<crate::serve::dto::WsFrame>;
+
+        fn handle(
+            &mut self,
+            _msg: DrainRunsFrames,
+            _ctx: &mut actix::Context<Self>,
+        ) -> Vec<crate::serve::dto::WsFrame> {
+            // Genuinely destructive (unlike `ws/server.rs`'s otherwise-identical
+            // `DrainReceived`, which only clones): the seeded-store test below calls this
+            // twice on the same recorder and must see only *new* frames on the second call.
+            std::mem::take(&mut *self.received.lock().unwrap())
+        }
+    }
+
+    #[actix_web::test]
+    async fn ws_upgrade_still_401s_without_token_when_engine_mounted() {
+        // D17 constraint: threading a real (mounted) availability verdict through the app
+        // factory must not change the unrelated bearer-auth gate on the `/ws` upgrade.
+        let (app, _hub) =
+            build_app_with_live_store(FileConfig::default(), LiveStateStore::new(), (true, None));
+        let app = test::init_service(app).await;
+
+        let req = test::TestRequest::get().uri("/ws").to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /ws without token must still return 401 with the engine mounted; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn app_mounted_hub_pushes_run_stream_status_on_runs_subscribe() {
+        use crate::serve::dto::Topic;
+        use crate::serve::ws::server::{ConnId, Connect, Subscribe};
+
+        let (app, hub) =
+            build_app_with_live_store(FileConfig::default(), LiveStateStore::new(), (true, None));
+        // Build the app to prove the App factory wires this exact hub — the assertions
+        // below then message that same `Addr<Hub>` directly.
+        let _app = test::init_service(app).await;
+
+        let recorder = RunsFrameRecorder::default().start();
+        let id = ConnId::next();
+        hub.send(Connect {
+            id,
+            addr: recorder.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+
+        let received = recorder.send(DrainRunsFrames).await.unwrap();
+        assert_eq!(
+            received.len(),
+            1,
+            "the App-mounted hub must push exactly one run_stream_status frame on subscribe"
+        );
+        assert_eq!(received[0].payload["event"], "run_stream_status");
+        assert_eq!(received[0].payload["available"], true);
+    }
+
+    #[actix_web::test]
+    async fn app_mounted_hub_reports_unavailable_with_reason_when_engine_unmounted() {
+        use crate::serve::dto::Topic;
+        use crate::serve::ws::server::{ConnId, Connect, Subscribe};
+
+        let (app, hub) = build_app_with_live_store(
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (false, Some("DATABASE_URL not set".to_owned())),
+        );
+        let _app = test::init_service(app).await;
+
+        let recorder = RunsFrameRecorder::default().start();
+        let id = ConnId::next();
+        hub.send(Connect {
+            id,
+            addr: recorder.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+
+        let received = recorder.send(DrainRunsFrames).await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].payload["available"], false);
+        assert_eq!(received[0].payload["reason"], "DATABASE_URL not set");
+    }
+
+    #[actix_web::test]
+    async fn app_mounted_hub_emits_run_transition_from_seeded_store_on_next_poll() {
+        // "With a store seeded before the connection, a subsequent status change produces
+        // a `run_transition` frame" — seeded here means the store already carries a run
+        // whose *first* poll observation is a no-op (no previous status to diff against);
+        // the transition frame requires a second poll cycle after the status changes.
+        // `build_app_with_live_store`'s hub polls every 2s (matching `Hub::new`'s first
+        // arg below), so the wait after seeding the terminal transition covers two ticks.
+        use crate::serve::dto::Topic;
+        use crate::serve::ws::server::{ConnId, Connect, Subscribe};
+        use engine_contract::task_context::TaskContext;
+        use uuid::Uuid;
+
+        let live_store = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        let seed_ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: std::collections::HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: std::collections::HashMap::new(),
+        };
+        live_store.record(run_id, &seed_ctx);
+
+        let (app, hub) =
+            build_app_with_live_store(FileConfig::default(), live_store.clone(), (true, None));
+        let _app = test::init_service(app).await;
+
+        let recorder = RunsFrameRecorder::default().start();
+        let id = ConnId::next();
+        hub.send(Connect {
+            id,
+            addr: recorder.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+
+        // Let the poller's first tick observe the run's first appearance (a no-op — no
+        // previous status), then drain the immediate run_stream_status frame plus any
+        // no-op poll output before seeding the terminal transition.
+        tokio::time::sleep(std::time::Duration::from_millis(2_200)).await;
+        let _ = recorder.send(DrainRunsFrames).await.unwrap();
+
+        // Mark the seeded run lifecycle-terminal so it disappears from `list_active()` —
+        // the poller's next tick must observe the disappearance and emit a terminal
+        // `run_transition` frame.
+        let now = chrono::Utc::now();
+        live_store.mark_terminal(run_id, &seed_ctx, "SDLC_FLOW", now, now);
+
+        tokio::time::sleep(std::time::Duration::from_millis(2_200)).await;
+
+        let received = recorder.send(DrainRunsFrames).await.unwrap();
+        assert!(
+            !received.is_empty(),
+            "the App-mounted hub's poller must emit a run_transition frame after the seeded \
+             run goes lifecycle-terminal"
+        );
+        assert_eq!(received[0].payload["event"], "run_transition");
+        assert_eq!(received[0].payload["run_id"], run_id.to_string());
+        assert_eq!(received[0].payload["terminal"], true);
     }
 
     // ── repo/workflow status routes (BA.11.D) ──────────────────────────────

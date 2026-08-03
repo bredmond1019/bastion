@@ -49,6 +49,14 @@ mod tests {
         if std::env::var("BASTION_INTEGRATION_TEST").is_err() {
             return;
         }
+        // Load `.env` exactly as `Config::load` does. Without this the
+        // documented recipe (`BASTION_INTEGRATION_TEST=1 cargo test --
+        // --ignored`) panics `DATABASE_URL … NotPresent` even with a fully
+        // populated `.env`, because reading `std::env::var` directly skips
+        // the `dotenvy` call that puts the file's contents into the
+        // environment — a failure that reads like a missing database rather
+        // than a missing export.
+        dotenvy::dotenv().ok();
         let db_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
         let runs = fetch_all_runs(&db_url)

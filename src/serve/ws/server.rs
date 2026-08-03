@@ -33,14 +33,17 @@ use std::time::Duration;
 use actix::SpawnHandle;
 use actix::prelude::*;
 use actix_web::web;
+use engine_contract::task_context::TaskContext;
+use engine_serve::live_state::LiveStateStore;
+use uuid::Uuid;
 
 use crate::config::FileConfig;
 use crate::detect::AgentState;
 use crate::serve::dto::{EventPayload, PanePayload, SessionsPayload, Topic, WsFrame, WsFrameKind};
 use crate::serve::handlers::status::collect_flow_states;
 use crate::serve::poll::{
-    FlowWatcher, PaneCursor, sessions_needing_input, sessions_snapshot, sessions_with_last_line,
-    workflow_done_frame,
+    FlowWatcher, PaneCursor, RunWatcher, run_stream_status_frame, run_transition_frame,
+    sessions_needing_input, sessions_snapshot, sessions_with_last_line, workflow_done_frame,
 };
 use crate::serve::status::detect as status_detect;
 use crate::sessions::tmux;
@@ -133,12 +136,37 @@ pub struct Hub {
     /// Stateful non-terminal→terminal tracker driving the `workflow_done` WS
     /// push — shared across poll cycles (BA.0.A).
     flow_watcher: FlowWatcher,
+    /// Subscribers to the `runs` topic (BA.11.N) — a run-level aggregate
+    /// status push, subscription-gated (unlike the always-on flow-watch
+    /// poller above).
+    runs_subs: HashSet<ConnId>,
+    /// Handle for the single shared runs-poll interval, started on first
+    /// `runs` subscriber and stopped on last (mirrors `sessions_handle`).
+    runs_handle: Option<SpawnHandle>,
+    /// Stateful `LiveStateStore` run-status diff tracker — shared across
+    /// poll cycles so a status is only pushed on real transition.
+    run_watcher: RunWatcher,
+    /// Clone of the process's `LiveStateStore` (D17) — the hub reads this
+    /// in-memory on every runs-poll cycle; no `web::block` needed since
+    /// reads never touch disk or the network.
+    live: LiveStateStore,
+    /// Whether the engine is mounted (so `LiveStateStore` is ever written),
+    /// plus the reason when it is not — pushed to every new `runs`
+    /// subscriber as a `run_stream_status` frame (D17 constraint 2).
+    stream_available: (bool, Option<String>),
 }
 
 impl Hub {
-    /// Create a new hub with the given poll interval and workspace registry
-    /// (the latter drives the always-on flow-watch poller, BA.0.A).
-    pub fn new(poll_secs: u64, registry: FileConfig) -> Self {
+    /// Create a new hub with the given poll interval, workspace registry
+    /// (drives the always-on flow-watch poller, BA.0.A), live run-state
+    /// store, and engine-mount availability verdict (both drive the `runs`
+    /// topic, BA.11.N).
+    pub fn new(
+        poll_secs: u64,
+        registry: FileConfig,
+        live: LiveStateStore,
+        stream_available: (bool, Option<String>),
+    ) -> Self {
         Self {
             conns: HashMap::new(),
             sessions_subs: HashSet::new(),
@@ -150,6 +178,11 @@ impl Hub {
             poll_secs,
             registry: Arc::new(registry),
             flow_watcher: FlowWatcher::new(),
+            runs_subs: HashSet::new(),
+            runs_handle: None,
+            run_watcher: RunWatcher::new(),
+            live,
+            stream_available,
         }
     }
 
@@ -246,6 +279,34 @@ pub(crate) fn watch_cycle(registry: &FileConfig, watcher: &mut FlowWatcher) -> V
     frames
 }
 
+// ── Runs poll cycle (BA.11.N) ─────────────────────────────────────────────────
+
+/// One `runs`-topic poll cycle: read `live`'s current live-run set and feed
+/// it through `watcher.observe`, mapping each resulting
+/// [`crate::serve::dto::RunTransitionPayload`] through [`run_transition_frame`].
+///
+/// Thin I/O shell over the pure `RunWatcher::observe` / `run_transition_frame`
+/// core (Task 2) — the only "I/O" here is `LiveStateStore`'s in-memory reads
+/// (`list_active` / `get` / `get_record`), which is why this is called
+/// directly from the actor's interval closure rather than offloaded via
+/// `web::block` the way `watch_cycle`'s file reads are: there is no blocking
+/// disk or network work to move off the actor's thread. Directly
+/// unit-testable against a hand-seeded `LiveStateStore` with no actor
+/// involved, mirroring `watch_cycle` (Rule 6).
+pub(crate) fn run_watch_cycle(live: &LiveStateStore, watcher: &mut RunWatcher) -> Vec<WsFrame> {
+    let live_pairs: Vec<(Uuid, TaskContext)> = live
+        .list_active()
+        .into_iter()
+        .filter_map(|id| live.get(id).map(|ctx| (id, ctx)))
+        .collect();
+
+    watcher
+        .observe(&live_pairs, |id| live.get_record(id).map(|r| r.snapshot))
+        .iter()
+        .map(run_transition_frame)
+        .collect()
+}
+
 // ── Pure helpers (unit-tested) ────────────────────────────────────────────────
 
 /// First subscriber to a pane → start its poller (`prev_count` is the count
@@ -322,6 +383,16 @@ impl Handler<Disconnect> for Hub {
 
         if self.sessions_subs.is_empty()
             && let Some(handle) = self.sessions_handle.take()
+        {
+            ctx.cancel_future(handle);
+        }
+
+        // BA.11.N: a raw disconnect must release a `runs` subscription too —
+        // not just an explicit `unsubscribe` — mirroring the sessions arm
+        // immediately above.
+        self.runs_subs.remove(&msg.id);
+        if self.runs_subs.is_empty()
+            && let Some(handle) = self.runs_handle.take()
         {
             ctx.cancel_future(handle);
         }
@@ -473,6 +544,44 @@ impl Handler<Subscribe> for Hub {
                     self.pane_handles.insert(name.clone(), handle);
                 }
             }
+
+            Topic::Runs => {
+                let prev_count = self.runs_subs.len();
+                self.runs_subs.insert(msg.id);
+
+                // D17 constraint 2: the new subscriber learns availability
+                // at subscribe time, not by inferring it from silence — push
+                // immediately, to this one connection only, regardless of
+                // poller start/stop below.
+                if let Some(addr) = self.conns.get(&msg.id) {
+                    let (available, reason) = &self.stream_available;
+                    let frame = run_stream_status_frame(*available, reason.as_deref());
+                    addr.do_send(ServerFrame(frame));
+                }
+
+                // Start the shared runs-poll on first subscriber. Unlike the
+                // sessions/pane pollers, this reads `LiveStateStore`
+                // in-memory only, so the cycle runs directly in the interval
+                // closure — no `web::block` offload is needed (see
+                // `run_watch_cycle`'s doc comment).
+                if should_start_poll(prev_count) {
+                    let interval = Duration::from_secs(self.poll_secs);
+                    let handle = ctx.run_interval(interval, |act, _ctx| {
+                        if act.runs_subs.is_empty() {
+                            return;
+                        }
+                        let frames = run_watch_cycle(&act.live, &mut act.run_watcher);
+                        if frames.is_empty() {
+                            return;
+                        }
+                        let subs = act.runs_subs.clone();
+                        for frame in frames {
+                            act.fan_out(&subs, frame);
+                        }
+                    });
+                    self.runs_handle = Some(handle);
+                }
+            }
         }
     }
 }
@@ -507,6 +616,15 @@ impl Handler<Unsubscribe> for Hub {
                         ctx.cancel_future(handle);
                     }
                     self.pane_cursors.remove(&name);
+                }
+            }
+
+            Topic::Runs => {
+                self.runs_subs.remove(&msg.id);
+                if should_stop_poll(self.runs_subs.len())
+                    && let Some(handle) = self.runs_handle.take()
+                {
+                    ctx.cancel_future(handle);
                 }
             }
         }
@@ -678,6 +796,148 @@ mod tests {
         assert!(watch_cycle(&registry, &mut watcher).is_empty());
     }
 
+    // ── run_watch_cycle (BA.11.N) ────────────────────────────────────────
+
+    use chrono::Utc;
+    use engine_contract::task_context::{NodeRun, NodeRunStatus};
+
+    fn node_run_fixture(status: NodeRunStatus) -> NodeRun {
+        NodeRun {
+            status,
+            started_at: None,
+            completed_at: None,
+            error: None,
+            input: None,
+            usage: None,
+        }
+    }
+
+    /// Build a `TaskContext` with one node `"NodeA"` at `status` and empty
+    /// event/metadata — the plain node-aggregate path, mirroring
+    /// `crate::serve::poll`'s own test fixture.
+    fn run_ctx(status: NodeRunStatus) -> TaskContext {
+        let mut node_runs = HashMap::new();
+        node_runs.insert("NodeA".to_owned(), node_run_fixture(status));
+        TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        }
+    }
+
+    #[test]
+    fn run_watch_cycle_first_observation_emits_no_frames() {
+        let live = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        live.record(run_id, &run_ctx(NodeRunStatus::Pending));
+        let mut watcher = RunWatcher::new();
+
+        let frames = run_watch_cycle(&live, &mut watcher);
+        assert!(
+            frames.is_empty(),
+            "first observation must never emit a frame"
+        );
+    }
+
+    #[test]
+    fn run_watch_cycle_status_change_emits_one_frame() {
+        let live = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        live.record(run_id, &run_ctx(NodeRunStatus::Pending));
+        let mut watcher = RunWatcher::new();
+        assert!(run_watch_cycle(&live, &mut watcher).is_empty());
+
+        live.record(run_id, &run_ctx(NodeRunStatus::Running));
+        let frames = run_watch_cycle(&live, &mut watcher);
+        assert_eq!(
+            frames.len(),
+            1,
+            "pending→running must emit exactly one frame"
+        );
+        assert_eq!(frames[0].kind, WsFrameKind::Event);
+        assert_eq!(frames[0].payload["event"], "run_transition");
+        assert_eq!(frames[0].payload["run_id"], run_id.to_string());
+        assert_eq!(frames[0].payload["status"], "running");
+        assert_eq!(frames[0].payload["terminal"], false);
+    }
+
+    #[test]
+    fn run_watch_cycle_unchanged_status_emits_no_frame() {
+        let live = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        live.record(run_id, &run_ctx(NodeRunStatus::Running));
+        let mut watcher = RunWatcher::new();
+        assert!(run_watch_cycle(&live, &mut watcher).is_empty());
+
+        // Second cycle: still running, no change.
+        live.record(run_id, &run_ctx(NodeRunStatus::Running));
+        assert!(run_watch_cycle(&live, &mut watcher).is_empty());
+    }
+
+    #[test]
+    fn run_watch_cycle_disappearance_with_record_emits_terminal_frame() {
+        let live = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        live.record(run_id, &run_ctx(NodeRunStatus::Running));
+        let mut watcher = RunWatcher::new();
+        assert!(run_watch_cycle(&live, &mut watcher).is_empty());
+
+        // The run goes lifecycle-terminal: `mark_terminal` moves it out of
+        // the live map and into the completed ring with its final status.
+        let final_ctx = run_ctx(NodeRunStatus::Success);
+        live.mark_terminal(run_id, &final_ctx, "SDLC_FLOW", Utc::now(), Utc::now());
+
+        let frames = run_watch_cycle(&live, &mut watcher);
+        assert_eq!(
+            frames.len(),
+            1,
+            "disappearance from list_active must emit exactly one frame"
+        );
+        assert_eq!(frames[0].payload["event"], "run_transition");
+        assert_eq!(frames[0].payload["run_id"], run_id.to_string());
+        assert_eq!(
+            frames[0].payload["status"], "success",
+            "final status must be read back via get_record, not the last live snapshot"
+        );
+        assert_eq!(frames[0].payload["terminal"], true);
+
+        // The id is removed from the cursor map, so a further cycle emits
+        // nothing further for it.
+        assert!(run_watch_cycle(&live, &mut watcher).is_empty());
+    }
+
+    #[test]
+    fn run_watch_cycle_suspended_run_emits_terminal_false() {
+        // D17 constraint 1: a suspended run stays in `list_active()` (it is
+        // not lifecycle-terminal), so it must flow through the status-change
+        // edge with `terminal: false`, never the disappearance edge.
+        let live = LiveStateStore::new();
+        let run_id = Uuid::new_v4();
+        live.record(run_id, &run_ctx(NodeRunStatus::Running));
+        let mut watcher = RunWatcher::new();
+        assert!(run_watch_cycle(&live, &mut watcher).is_empty());
+
+        let mut suspended = run_ctx(NodeRunStatus::Pending);
+        suspended.metadata = serde_json::json!({ "suspension": { "suspended": true } });
+        live.record(run_id, &suspended);
+
+        let frames = run_watch_cycle(&live, &mut watcher);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].payload["status"], "suspended");
+        assert_eq!(
+            frames[0].payload["terminal"], false,
+            "a suspended run is still live — terminal must be false (D17 constraint 1)"
+        );
+    }
+
+    #[test]
+    fn run_watch_cycle_empty_store_emits_no_frames() {
+        let live = LiveStateStore::new();
+        let mut watcher = RunWatcher::new();
+        assert!(run_watch_cycle(&live, &mut watcher).is_empty());
+    }
+
     // ── Hub::broadcast_all (hub-level test) ─────────────────────────────
 
     /// Records every [`ServerFrame`] it receives — the test double standing
@@ -718,7 +978,12 @@ mod tests {
     async fn broadcast_all_delivers_to_a_connection_with_no_topic_subscription() {
         let recorder = RecorderActor::default().start();
 
-        let mut hub = Hub::new(2, FileConfig::default());
+        let mut hub = Hub::new(
+            2,
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (true, None),
+        );
         let id = ConnId::next();
         // Connect the recorder without subscribing it to `sessions` or any
         // `pane` topic — the workflow_done push must still reach it.
@@ -739,6 +1004,191 @@ mod tests {
             "an unsubscribed connection must still receive the broadcast frame"
         );
         assert_eq!(received[0], frame);
+    }
+
+    // ── `runs` topic subscribe/unsubscribe/disconnect (BA.11.N) ────────────
+
+    #[test]
+    fn hub_new_starts_with_no_runs_poller() {
+        // No subscriber yet — the shared poller must not be running.
+        let hub = Hub::new(
+            2,
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (true, None),
+        );
+        assert!(hub.runs_handle.is_none());
+        assert!(hub.runs_subs.is_empty());
+    }
+
+    #[actix_web::test]
+    async fn runs_subscribe_pushes_run_stream_status_available_true() {
+        let hub = Hub::new(
+            2,
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (true, None),
+        )
+        .start();
+        let recorder = RecorderActor::default().start();
+        let id = ConnId::next();
+
+        hub.send(Connect {
+            id,
+            addr: recorder.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+
+        let received = recorder.send(DrainReceived).await.unwrap();
+        assert_eq!(
+            received.len(),
+            1,
+            "subscribing to `runs` must immediately push exactly one run_stream_status frame"
+        );
+        assert_eq!(received[0].kind, WsFrameKind::Event);
+        assert_eq!(received[0].payload["event"], "run_stream_status");
+        assert_eq!(received[0].payload["available"], true);
+        assert!(
+            received[0].payload.get("reason").is_none(),
+            "reason must be omitted when available"
+        );
+    }
+
+    #[actix_web::test]
+    async fn runs_subscribe_pushes_run_stream_status_unavailable_with_reason() {
+        let hub = Hub::new(
+            2,
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (false, Some("DATABASE_URL not set".to_owned())),
+        )
+        .start();
+        let recorder = RecorderActor::default().start();
+        let id = ConnId::next();
+
+        hub.send(Connect {
+            id,
+            addr: recorder.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+
+        let received = recorder.send(DrainReceived).await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].payload["available"], false);
+        assert_eq!(received[0].payload["reason"], "DATABASE_URL not set");
+    }
+
+    #[actix_web::test]
+    async fn runs_subscribe_status_frame_reaches_only_the_subscriber() {
+        let hub = Hub::new(
+            2,
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (true, None),
+        )
+        .start();
+        let subscriber = RecorderActor::default().start();
+        let bystander = RecorderActor::default().start();
+        let sub_id = ConnId::next();
+        let bystander_id = ConnId::next();
+
+        hub.send(Connect {
+            id: sub_id,
+            addr: subscriber.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Connect {
+            id: bystander_id,
+            addr: bystander.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id: sub_id,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+
+        let sub_received = subscriber.send(DrainReceived).await.unwrap();
+        let bystander_received = bystander.send(DrainReceived).await.unwrap();
+        assert_eq!(sub_received.len(), 1);
+        assert!(
+            bystander_received.is_empty(),
+            "a connection not subscribed to `runs` must not receive the run_stream_status frame"
+        );
+    }
+
+    #[actix_web::test]
+    async fn runs_unsubscribe_and_disconnect_both_release_the_subscription() {
+        let hub = Hub::new(
+            2,
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (true, None),
+        )
+        .start();
+        let recorder_a = RecorderActor::default().start();
+        let recorder_b = RecorderActor::default().start();
+        let id_a = ConnId::next();
+        let id_b = ConnId::next();
+
+        hub.send(Connect {
+            id: id_a,
+            addr: recorder_a.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Connect {
+            id: id_b,
+            addr: recorder_b.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id: id_a,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id: id_b,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+
+        // Explicit unsubscribe releases id_a; a raw disconnect releases id_b.
+        hub.send(Unsubscribe {
+            id: id_a,
+            topic: Topic::Runs,
+        })
+        .await
+        .unwrap();
+        hub.send(Disconnect { id: id_b }).await.unwrap();
+
+        // Both connections had already received their one-time
+        // run_stream_status frame; no further frames were pushed by
+        // unsubscribe/disconnect themselves.
+        let received_a = recorder_a.send(DrainReceived).await.unwrap();
+        let received_b = recorder_b.send(DrainReceived).await.unwrap();
+        assert_eq!(received_a.len(), 1);
+        assert_eq!(received_b.len(), 1);
     }
 
     // ── should_start_poll ──────────────────────────────────────────────────

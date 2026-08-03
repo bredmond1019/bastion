@@ -35,6 +35,10 @@
 //! - [`RunSummaryDto`] — `GET /api/runs` widened live-runs summary projection (BA.11.T),
 //!   alongside [`RunStateDto`]/[`NodeTransitionDto`]/[`RunUsageDto`] (BA.11.M). Conversion
 //!   logic lives in `handlers/runs.rs`, not here.
+//! - [`RunTransitionPayload`] / [`RunStreamStatusPayload`] — server→client
+//!   `event{run_transition}` / `event{run_stream_status}` WS pushes for the
+//!   subscribable `runs` topic (BA.11.N). Diff/derivation logic lives in
+//!   `serve/poll.rs`, not here.
 
 use crate::sessions::model::{Pane, Session};
 use serde::{Deserialize, Serialize};
@@ -214,6 +218,7 @@ pub struct EventPayload {
 /// Valid topic strings:
 /// - `"sessions"` → [`Topic::Sessions`]
 /// - `"pane:<name>"` → [`Topic::Pane`] where `<name>` is non-empty
+/// - `"runs"` → [`Topic::Runs`] (BA.11.N)
 ///
 /// Any other string (including `"pane:"` with an empty name) is invalid and
 /// causes [`parse_topic`] to return `None`.
@@ -223,6 +228,10 @@ pub enum Topic {
     Sessions,
     /// A named pane topic (`"pane:<name>"`).
     Pane(String),
+    /// The run-transition topic (`"runs"`, BA.11.N) — subscribers receive
+    /// `run_transition` events on aggregate run-status change and a
+    /// `run_stream_status` frame immediately on subscribe.
+    Runs,
 }
 
 /// Parse a topic string into a [`Topic`] variant.
@@ -235,11 +244,15 @@ pub enum Topic {
 /// assert_eq!(parse_topic("sessions"), Some(Topic::Sessions));
 /// assert_eq!(parse_topic("pane:work"), Some(Topic::Pane("work".into())));
 /// assert_eq!(parse_topic("pane:"),     None);  // empty name
+/// assert_eq!(parse_topic("runs"),      Some(Topic::Runs));
 /// assert_eq!(parse_topic("unknown"),   None);
 /// ```
 pub fn parse_topic(s: &str) -> Option<Topic> {
     if s == "sessions" {
         return Some(Topic::Sessions);
+    }
+    if s == "runs" {
+        return Some(Topic::Runs);
     }
     if let Some(name) = s.strip_prefix("pane:") {
         if name.is_empty() {
@@ -824,6 +837,72 @@ pub struct WorkflowDonePayload {
     pub spec_slug: String,
     /// The terminal status that triggered the event (`"done"` or `"blocked"`).
     pub status: String,
+}
+
+// ── Run transitions (BA.11.N) ────────────────────────────────────────────────
+
+/// Payload for the server→client `event{run_transition}` WS push.
+///
+/// Sent inside an [`EventPayload`]-shaped frame: the `event` field is fixed
+/// to `"run_transition"` and the extra `run_id`/`status`/`terminal`/`spec_slug`
+/// fields are flattened into the same JSON object by the caller (`runs`-topic
+/// WS wiring, `src/serve/ws/server.rs`).
+///
+/// Wire format: `{ "run_id": "…", "status": "running", "terminal": false }`
+/// (`spec_slug` present only when known).
+///
+/// `terminal` means **lifecycle**-terminal — the run left `LiveStateStore`'s
+/// live map (`list_active()` no longer returns its id) — not "wire-terminal"
+/// in the engine's own `publish_suspended` sense. A suspended run is still in
+/// the live map, so it is reported as `status: "suspended"` paired with
+/// `terminal: false`; only a run's genuine disappearance from the live set
+/// (completed, failed, or otherwise retired into the completed ring) emits
+/// `terminal: true` (D17 constraint 1).
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunTransitionPayload {
+    /// The run's UUID, as a string.
+    pub run_id: String,
+    /// Aggregate run status string, from `db::workflows::derive_run_status`
+    /// via `run_status_str` — the same derivation `GET /api/runs` uses.
+    pub status: String,
+    /// `true` only when the run has left `LiveStateStore`'s live map
+    /// (lifecycle-terminal); `false` for every live-map status, including
+    /// `"suspended"`.
+    pub terminal: bool,
+    /// `sdlc-flow-state.json` spec slug, when known. Absent (not `null`)
+    /// when unknown, matching the repo's established DTO convention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec_slug: Option<String>,
+}
+
+/// Payload for the server→client `event{run_stream_status}` WS push.
+///
+/// Sent inside an [`EventPayload`]-shaped frame: the `event` field is fixed
+/// to `"run_stream_status"` and the extra `available`/`reason` fields are
+/// flattened into the same JSON object by the caller. Pushed immediately to
+/// a connection when it subscribes to the `runs` topic, before any
+/// `run_transition` frame (D17 constraint 2).
+///
+/// Wire format: `{ "available": true }` or
+/// `{ "available": false, "reason": "DATABASE_URL not set" }`.
+///
+/// `available: false` means the engine was not mounted for this `bastion
+/// serve` process, so `LiveStateStore` can never be written and no
+/// `run_transition` frame will ever arrive on this connection — the client
+/// must fall back to polling `GET /api/runs` / `GET /api/runs/{id}`, which
+/// remain the source of truth regardless of `runs`-topic availability (D17
+/// constraints 2 and 3).
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunStreamStatusPayload {
+    /// Whether the `runs` topic can ever emit a `run_transition` frame on
+    /// this connection (i.e. whether the engine is mounted).
+    pub available: bool,
+    /// Human-readable reason when `available` is `false`. Absent (not
+    /// `null`) when `available` is `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 // ── Board (BA.11.K) ──────────────────────────────────────────────────────────
@@ -2729,6 +2808,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_topic_runs() {
+        assert_eq!(parse_topic("runs"), Some(Topic::Runs));
+    }
+
+    #[test]
+    fn parse_topic_runs_near_misses_are_none() {
+        assert_eq!(parse_topic("run"), None);
+        assert_eq!(parse_topic("runs:"), None);
+        assert_eq!(parse_topic("RUNS"), None);
+        assert_eq!(parse_topic("runs "), None);
+    }
+
+    #[test]
     fn parse_topic_pane_name_with_hyphens_and_underscores() {
         // names like "claude-work" or "my_session" are valid
         assert_eq!(
@@ -2860,6 +2952,126 @@ mod tests {
         let raw = r#"{"repo":"bastion","spec_slug":"phase11-blockD"}"#;
         let result: Result<WorkflowDonePayload, _> = serde_json::from_str(raw);
         assert!(result.is_err(), "missing status must fail to parse");
+    }
+
+    // ── RunTransitionPayload ─────────────────────────────────────────────
+
+    #[test]
+    fn run_transition_payload_round_trips_with_spec_slug() {
+        let payload = RunTransitionPayload {
+            run_id: "9a2b1c3d-0000-0000-0000-000000000001".to_owned(),
+            status: "running".to_owned(),
+            terminal: false,
+            spec_slug: Some("phase11-blockN".to_owned()),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let back: RunTransitionPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(payload, back);
+    }
+
+    #[test]
+    fn run_transition_payload_round_trips_without_spec_slug() {
+        let payload = RunTransitionPayload {
+            run_id: "9a2b1c3d-0000-0000-0000-000000000002".to_owned(),
+            status: "done".to_owned(),
+            terminal: true,
+            spec_slug: None,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let back: RunTransitionPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(payload, back);
+    }
+
+    #[test]
+    fn run_transition_payload_omits_absent_spec_slug_key() {
+        let payload = RunTransitionPayload {
+            run_id: "9a2b1c3d-0000-0000-0000-000000000003".to_owned(),
+            status: "suspended".to_owned(),
+            terminal: false,
+            spec_slug: None,
+        };
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert!(
+            v.get("spec_slug").is_none(),
+            "spec_slug must be an absent key, not null, when None"
+        );
+        assert_eq!(v["run_id"], "9a2b1c3d-0000-0000-0000-000000000003");
+        assert_eq!(v["status"], "suspended");
+        assert_eq!(v["terminal"], false);
+    }
+
+    #[test]
+    fn run_transition_payload_includes_present_spec_slug_key() {
+        let payload = RunTransitionPayload {
+            run_id: "9a2b1c3d-0000-0000-0000-000000000004".to_owned(),
+            status: "running".to_owned(),
+            terminal: false,
+            spec_slug: Some("phase11-blockN".to_owned()),
+        };
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert_eq!(v["spec_slug"], "phase11-blockN");
+    }
+
+    #[test]
+    fn run_transition_payload_rejects_missing_required_fields() {
+        let raw = r#"{"run_id":"x","status":"running"}"#;
+        let result: Result<RunTransitionPayload, _> = serde_json::from_str(raw);
+        assert!(result.is_err(), "missing terminal must fail to parse");
+    }
+
+    // ── RunStreamStatusPayload ───────────────────────────────────────────
+
+    #[test]
+    fn run_stream_status_payload_round_trips_available() {
+        let payload = RunStreamStatusPayload {
+            available: true,
+            reason: None,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let back: RunStreamStatusPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(payload, back);
+    }
+
+    #[test]
+    fn run_stream_status_payload_round_trips_unavailable_with_reason() {
+        let payload = RunStreamStatusPayload {
+            available: false,
+            reason: Some("DATABASE_URL not set".to_owned()),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let back: RunStreamStatusPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(payload, back);
+    }
+
+    #[test]
+    fn run_stream_status_payload_omits_absent_reason_key() {
+        let payload = RunStreamStatusPayload {
+            available: true,
+            reason: None,
+        };
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert!(
+            v.get("reason").is_none(),
+            "reason must be an absent key, not null, when None"
+        );
+        assert_eq!(v["available"], true);
+    }
+
+    #[test]
+    fn run_stream_status_payload_includes_present_reason_key() {
+        let payload = RunStreamStatusPayload {
+            available: false,
+            reason: Some("engine not mounted".to_owned()),
+        };
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert_eq!(v["reason"], "engine not mounted");
+    }
+
+    #[test]
+    fn run_stream_status_payload_rejects_missing_available() {
+        let raw = r#"{"reason":"x"}"#;
+        let result: Result<RunStreamStatusPayload, _> = serde_json::from_str(raw);
+        assert!(result.is_err(), "missing available must fail to parse");
     }
 
     // ── CommandMode ───────────────────────────────────────────────────────

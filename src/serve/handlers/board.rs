@@ -926,6 +926,8 @@ mod tests {
             due: due.map(|d| d.to_owned()),
             sdlc_workflow: None,
             model: None,
+            note: None,
+            description: None,
         }
     }
 
