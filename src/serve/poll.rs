@@ -314,6 +314,65 @@ fn derive_status_str(ctx: &TaskContext) -> String {
     run_status_str(status)
 }
 
+/// Derive the wire status of a run **that has already gone lifecycle-terminal**
+/// from its retained snapshot.
+///
+/// [`derive_status_str`] must not be used for this. `derive_run_status`
+/// aggregates a *live* run and reports `Pending` whenever any node is still
+/// pending — correct while a run is executing, but wrong once it is over,
+/// because a finished workflow legitimately leaves every never-taken branch
+/// `Pending` forever. A successful `SDLC_FLOW` run retains 15 `success` nodes
+/// and 4 `pending` ones (the untaken router branches), so aggregating it
+/// yields `"pending"` for a run that in fact succeeded — observed live
+/// 2026-08-03 against run `3adfdd1b`, whose `/ws` terminal frame read
+/// `status: "pending", terminal: true` while the engine's own readback said
+/// `succeeded`.
+///
+/// This mirrors `engine-serve`'s `derive_terminal_status`
+/// (`../engine-rs/crates/engine-serve/src/http.rs:295`) condition for
+/// condition — it is `pub(crate)` there and so unreachable from bastion, and
+/// D17 forbids an `engine-rs` change to expose it. Kept deliberately in the
+/// same checked order, mapped onto bastion's own wire vocabulary
+/// (`"success"`, not engine's `"succeeded"`) so this stream agrees with
+/// `GET /api/runs` (§14.1) rather than with the engine's separate protocol:
+///
+/// 1. `metadata.cancellation.cancelled == true` -> `"cancelled"`
+/// 2. `metadata.budget.halted == true` -> `"budget_halted"`
+/// 3. `metadata.failure.failed == true` **or** any `node_runs[..]` failed -> `"failed"`
+/// 4. otherwise -> `"success"`
+///
+/// `"suspended"` is deliberately unreachable here: a suspended run is still in
+/// `LiveStateStore`'s live map, so it never reaches the disappearance edge
+/// (D17 constraint 1).
+///
+/// Pure — no I/O.
+fn derive_terminal_status_str(ctx: &TaskContext) -> String {
+    let flag = |key: &str, field: &str| -> bool {
+        ctx.metadata
+            .get(key)
+            .and_then(|v| v.get(field))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
+
+    if flag("cancellation", "cancelled") {
+        return run_status_str(RunStatus::Cancelled);
+    }
+    if flag("budget", "halted") {
+        return run_status_str(RunStatus::BudgetHalted);
+    }
+
+    let any_node_failed = ctx
+        .node_runs
+        .values()
+        .any(|run| run.status == NodeRunStatus::Failed);
+    if flag("failure", "failed") || any_node_failed {
+        return run_status_str(RunStatus::Failed);
+    }
+
+    run_status_str(RunStatus::Success)
+}
+
 /// Read `event.spec_slug` when present as a string. `None` when the key is
 /// absent, non-string, or `event` is not an object.
 ///
@@ -415,7 +474,10 @@ impl RunWatcher {
                 .expect("id came from last_status's own key set");
 
             let (status, spec_slug) = match terminal_lookup(run_id) {
-                Some(ctx) => (derive_status_str(&ctx), spec_slug_from_event(&ctx.event)),
+                Some(ctx) => (
+                    derive_terminal_status_str(&ctx),
+                    spec_slug_from_event(&ctx.event),
+                ),
                 None => (last_known, None),
             };
 
@@ -1181,6 +1243,120 @@ background\t0\t1\t1718000100\tzsh\n";
         );
         assert!(events[0].terminal);
         assert_eq!(events[0].spec_slug.as_deref(), Some("phase11-blockN"));
+    }
+
+    /// A retained snapshot shaped like a real completed `SDLC_FLOW` run:
+    /// mostly `success` nodes plus the never-taken router branches, which stay
+    /// `Pending` forever. `metadata` carries the extra keys a live run really
+    /// has, to prove none of them are mistaken for a cancellation/budget/
+    /// failure marker.
+    fn ctx_finished_with_untaken_branches() -> TaskContext {
+        let mut node_runs = HashMap::new();
+        for name in ["SetupWorktreeNode", "ImplementTaskNode", "WrapUpNode"] {
+            node_runs.insert(name.to_owned(), node_run(NodeRunStatus::Success));
+        }
+        for name in [
+            "GenerateTasksNode",
+            "ReviewRouterNode",
+            "IncrementAttemptNode",
+        ] {
+            node_runs.insert(name.to_owned(), node_run(NodeRunStatus::Pending));
+        }
+        TaskContext {
+            event: serde_json::json!({ "spec_slug": "smoke-sdlc-flow" }),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({ "run_id": "3adfdd1b", "run_telemetry": {} }),
+            node_runs,
+        }
+    }
+
+    #[test]
+    fn run_watcher_finished_run_with_untaken_branches_reports_success_not_pending() {
+        // Regression, found by live testing 2026-08-03 against real run
+        // `3adfdd1b` (smoke-sdlc-flow): the engine's own readback said
+        // `succeeded` while the `/ws` terminal frame said `pending`, because
+        // `derive_run_status` aggregates a *live* run and any still-`Pending`
+        // node dominates. A finished workflow legitimately leaves every
+        // never-taken branch `Pending` forever, so the terminal edge must use
+        // `derive_terminal_status_str` instead.
+        let mut watcher = RunWatcher::new();
+        let run_id = Uuid::new_v4();
+
+        watcher.observe(
+            &[(run_id, ctx_with_node_status(NodeRunStatus::Running, None))],
+            |_| None,
+        );
+
+        let finished = ctx_finished_with_untaken_branches();
+        let events = watcher.observe(&[], |_| Some(finished.clone()));
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].terminal);
+        assert_eq!(
+            events[0].status, "success",
+            "a finished run whose untaken branches are still Pending must report success, \
+             not the live-aggregate `pending` (observed live on run 3adfdd1b)"
+        );
+        // The live-aggregate path is what produced the bug — pin the contrast
+        // so a future refactor cannot quietly route the terminal edge back
+        // through it.
+        assert_eq!(
+            derive_status_str(&finished),
+            "pending",
+            "the live aggregate still reports pending for this same snapshot — \
+             that is exactly why the terminal edge must not use it"
+        );
+    }
+
+    #[test]
+    fn derive_terminal_status_str_covers_the_engine_derivation_table() {
+        // Mirrors engine-serve's `derive_terminal_status` table, in order.
+        let mut failed = ctx_finished_with_untaken_branches();
+        failed.node_runs.insert(
+            "ImplementTaskNode".to_owned(),
+            node_run(NodeRunStatus::Failed),
+        );
+        assert_eq!(
+            derive_terminal_status_str(&failed),
+            "failed",
+            "any failed node must beat the success default"
+        );
+
+        let mut failure_marker = ctx_finished_with_untaken_branches();
+        failure_marker.metadata = serde_json::json!({ "failure": { "failed": true } });
+        assert_eq!(
+            derive_terminal_status_str(&failure_marker),
+            "failed",
+            "metadata.failure.failed must be honoured even with no failed node"
+        );
+
+        let mut cancelled = ctx_finished_with_untaken_branches();
+        cancelled.metadata = serde_json::json!({
+            "cancellation": { "cancelled": true },
+            "failure": { "failed": true },
+        });
+        assert_eq!(
+            derive_terminal_status_str(&cancelled),
+            "cancelled",
+            "cancellation is checked first and must win over the failure marker"
+        );
+
+        let mut halted = ctx_finished_with_untaken_branches();
+        halted.metadata = serde_json::json!({
+            "budget": { "halted": true },
+            "failure": { "failed": true },
+        });
+        assert_eq!(
+            derive_terminal_status_str(&halted),
+            "budget_halted",
+            "budget halt is checked before the failure marker"
+        );
+
+        assert_eq!(
+            derive_terminal_status_str(&ctx_finished_with_untaken_branches()),
+            "success",
+            "none of the above must fall through to success"
+        );
     }
 
     #[test]

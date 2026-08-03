@@ -482,6 +482,30 @@ are unaffected by this section either way.
    watcher still emits `terminal: true`, carrying the last-known status rather than silently dropping
    the transition.
 
+**Terminal status is derived differently from live status — deliberately.** Edge 1 uses
+`db::workflows::derive_run_status` (the live aggregate, shared with Section 14.1). Edge 2 must not:
+that aggregate reports `pending` whenever any node is still pending, which is right for a running
+workflow but wrong for a finished one, because **a completed run legitimately leaves every never-taken
+branch `Pending` forever**. A successful `SDLC_FLOW` run retains 15 `success` nodes and 4 `pending`
+ones (untaken router branches), so the live aggregate would call it `"pending"`. The disappearance
+edge therefore derives status from the retained snapshot with a terminal-specific rule, checked in
+this order — mirroring `engine-serve`'s own `derive_terminal_status`
+(`engine-rs/crates/engine-serve/src/http.rs:295`) condition for condition, mapped onto this
+contract's vocabulary:
+
+| # | Condition on the retained snapshot | `status` |
+|---|---|---|
+| 1 | `metadata.cancellation.cancelled == true` | `cancelled` |
+| 2 | `metadata.budget.halted == true` | `budget_halted` |
+| 3 | `metadata.failure.failed == true`, **or** any `node_runs[..].status == failed` | `failed` |
+| 4 | none of the above | `success` |
+
+Still-`pending` nodes are ignored at this edge — the run is over, so they mean "never executed", not
+"not yet executed". `suspended` is unreachable here by construction: a suspended run is still in
+`list_active()` and so never reaches this edge (D17 constraint 1). Note this reports `success` where
+the engine's separate protocol reports `succeeded` — this stream deliberately agrees with
+`GET /api/runs` (Section 14.1), not with the engine's wire vocabulary.
+
 ```json
 { "session": "", "event": "run_transition", "run_id": "b6a1c1e0-0000-4000-8000-000000000000", "status": "running", "terminal": false, "spec_slug": "11.N-run-transition-ws-push" }
 ```
@@ -496,6 +520,19 @@ are unaffected by this section either way.
 | `status` | string | Aggregate run status string, from `db::workflows::derive_run_status` — the same values `RunSummaryDto.status` reports (Section 14.1: `pending`/`running`/`success`/`failed`/`cancelled`/`budget_halted`/`suspended`). |
 | `terminal` | boolean | `true` only when the run has left `LiveStateStore`'s live map (lifecycle-terminal — the disappearance edge above); `false` for every other emitted status, including `"suspended"`. |
 | `spec_slug` | string \| absent | The triggering event's `spec_slug`, when known. Absent (not `null`) when unknown. |
+
+**Sampling limitation — silence is not evidence that nothing ran.** This is a *sampling* stream, not
+an event log: `RunWatcher` sees only what `list_active()` holds at each poll tick. A run that starts
+and reaches a terminal state **within a single poll interval** is never sampled, so it produces **no
+frames at all** — not even a terminal one — because edge 1 needs a prior observation and edge 2 needs
+the run to have been in `last_status` to be noticed leaving it. Verified live 2026-08-03: an
+`OPPORTUNITY_SET_STAGE` run that failed at its first node completed in well under the 2 s cadence and
+yielded zero frames. **The poll fallback has exactly the same blind spot** — `GET /api/runs` returned
+`[]` across the same window, since it reads the identical `list_active()` set — so the stream is
+neither better nor worse than polling here, which is the deliberate trade of D17's poll-diff design.
+Consumers needing a guaranteed record of every run must read the durable Postgres `events` history
+(`engine-store`'s writer), not this stream and not Section 14. Shortening `BASTION_POLL_INTERVAL`
+narrows the window but cannot close it.
 
 **D17 constraint 1 — wire-terminal is not lifecycle-terminal.** The embedded engine's own
 `publish_suspended` push (`engine-rs/crates/engine-serve/src/stream.rs:185-191`) sends
@@ -2788,6 +2825,29 @@ a real Postgres being up or down cannot change any golden.
   `RunTransitionPayload`/`RunStreamStatusPayload`; `scripts/check-typeshare-drift.sh` passes clean.
   Also corrected Section 21's versioning-policy line, which had lagged four version bumps behind the
   frontmatter (stuck at "the current contract is v0.18" since v0.19) — it now reads v0.23.
+  **Post-implementation live-testing addendum (same day, same version — no wire change):** Section
+  8.3 gained a *Sampling limitation* paragraph. Live testing against a running `bastion serve` proved
+  a run that starts and finishes inside one poll interval yields **no frames at all**, not even a
+  terminal one — edge 1 needs a prior observation and edge 2 needs the run to have been seen before
+  it can be noticed leaving. The poll fallback shares the blind spot exactly (`GET /api/runs`
+  returned `[]` across the same window, reading the identical `list_active()` set), so this is the
+  deliberate trade of D17's poll-diff design rather than a regression against Section 14 — but it was
+  undocumented, and a consumer reading Section 8.3 alone could reasonably have read stream silence as
+  "no run happened." Documented rather than fixed: closing the window entirely would require an
+  event-sourced feed, which D17 explicitly rejected.
+  **Live-testing defect fix (same day, same version — the wire *shape* is unchanged, but a status
+  *value* changes).** The same live session caught a real bug and it is fixed here, not deferred: the
+  disappearance edge derived its final status with `derive_run_status`, the **live** aggregate, which
+  reports `pending` whenever any node is pending. A finished workflow legitimately leaves every
+  never-taken branch `Pending` forever, so a *successful* `SDLC_FLOW` run (15 `success` nodes, 4
+  `pending` untaken router branches — real run `3adfdd1b`, `smoke-sdlc-flow`) emitted
+  `status: "pending", terminal: true` while the engine's own readback said `succeeded`. Edge 2 now
+  uses a terminal-specific derivation mirroring `engine-serve`'s `derive_terminal_status`
+  (cancelled → budget_halted → failed → success, ignoring still-pending nodes), documented as a table
+  in Section 8.3. `GET /api/runs` never exposed this because a terminal run has already left
+  `list_active()` and so never appears there — the stream's disappearance edge is the first consumer
+  to derive a status from a *terminal* snapshot, and it surfaced the latent weakness. No route, DTO
+  field, or golden moved; only the value carried in `run_transition.status` at the terminal edge.
 
 - **2026-08-02 — Section 14 corrected (`ticket-stream-ownership-decision`, ask A8,
   `planning/arch-review-asks-bastion-web/notes.md`; no version bump — wire shape unchanged):**
