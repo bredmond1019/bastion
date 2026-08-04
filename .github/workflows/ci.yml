@@ -1,0 +1,19 @@
+name: ci
+
+# Thin caller — invokes base-template's reusable Rust gate workflow, which
+# mirrors this repo's planning/harness.json checks in declared order (fmt,
+# clippy, test, build). See base-template/docs/ci.md for the opt-in model
+# and the local actionlint -> act -> push validation loop.
+#
+# Note: harness.json also gates a repo-local `contract-corpus-drift` check
+# (scripts/check-contract-corpus-drift.sh) that is not part of the shared
+# gate-rust.yml shape. It is intentionally not run in hosted CI by this
+# caller — see base-template/docs/ci.md Deviations.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    uses: bredmond1019/agentic-base-template/.github/workflows/gate-rust.yml@main
