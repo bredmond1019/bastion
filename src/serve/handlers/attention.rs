@@ -315,6 +315,7 @@ mod tests {
                 knowledge_days: 45,
                 memory_days: 30,
             },
+            history: Default::default(),
             repos,
         }
     }

@@ -1998,6 +1998,61 @@ mod workflows_scenarios {
         let req = actix_web::test::TestRequest::get().uri("/api/workflows");
         dump("workflows", "populated", req, &app).await;
     }
+
+    /// `?with_skipped=1` — freezes the `{entries, skipped}` envelope
+    /// (ask A9, `ticket-report-skipped-workspaces`) across all three skip
+    /// reasons plus a healthy repo in one response, so the golden pins both
+    /// the full `reason` vocabulary and the "skipped ordered by repo, healthy
+    /// repos never appear" rule at once.
+    ///
+    /// The `unreadable_root` fixture is a path joined onto a real `TempDir`
+    /// but never created — deterministic and machine-independent (no
+    /// dependency on any real absent path on the host), and its filesystem
+    /// path never appears in the response body (the DTO carries only the
+    /// registry key, `"repo-missing"`, never the underlying path), so the
+    /// golden stays host-independent.
+    #[actix_web::test]
+    async fn workflows_corpus_skipped() {
+        let tmp_unreadable = TempDir::new("workflows-unreadable-root");
+        let missing_root = tmp_unreadable.path().join("does-not-exist");
+
+        let tmp_no_planning = TempDir::new("workflows-no-planning-dir");
+
+        let tmp_malformed = TempDir::new("workflows-malformed");
+        write(
+            &tmp_malformed
+                .path()
+                .join("planning")
+                .join("bad-spec")
+                .join("sdlc")
+                .join("sdlc-flow-state.json"),
+            "{ not json",
+        );
+
+        let tmp_healthy = repo_with_flow("workflows-healthy", FLOW_JSON);
+
+        let app = workflows_service!(FileConfig {
+            workspaces: Some(
+                [
+                    ("repo-missing".to_owned(), missing_root),
+                    (
+                        "repo-no-planning".to_owned(),
+                        tmp_no_planning.path().to_path_buf(),
+                    ),
+                    (
+                        "repo-malformed".to_owned(),
+                        tmp_malformed.path().to_path_buf(),
+                    ),
+                    ("repo-healthy".to_owned(), tmp_healthy.path().to_path_buf(),),
+                ]
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+            ),
+            ..Default::default()
+        });
+        let req = actix_web::test::TestRequest::get().uri("/api/workflows?with_skipped=1");
+        dump("workflows", "skipped", req, &app).await;
+    }
 }
 
 /// `GET /api/repos/{name}/handoff` corpus scenarios
