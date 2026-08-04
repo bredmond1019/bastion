@@ -9,6 +9,10 @@ name: ci
 # (scripts/check-contract-corpus-drift.sh) that is not part of the shared
 # gate-rust.yml shape. It is intentionally not run in hosted CI by this
 # caller — see base-template/docs/ci.md Deviations.
+#
+# bastion path-depends on four sibling repos (bella-engine via ../bella, plus ../mev,
+# ../okf-core, and three engine-rs crates via ../engine-rs) — see Cargo.toml. This caller
+# opts into the reusable workflow's sibling-repo checkout for all four.
 
 on:
   push:
@@ -17,3 +21,9 @@ on:
 jobs:
   gate:
     uses: bredmond1019/agentic-base-template/.github/workflows/gate-rust.yml@main
+    with:
+      sibling-repos: |
+        bredmond1019/bella
+        bredmond1019/mev
+        bredmond1019/okf-core
+        bredmond1019/engine-rs
