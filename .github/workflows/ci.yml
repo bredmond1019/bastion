@@ -10,9 +10,11 @@ name: ci
 # gate-rust.yml shape. It is intentionally not run in hosted CI by this
 # caller — see base-template/docs/ci.md Deviations.
 #
-# bastion path-depends on four sibling repos (bella-engine via ../bella, plus ../mev,
-# ../okf-core, and three engine-rs crates via ../engine-rs) — see Cargo.toml. This caller
-# opts into the reusable workflow's sibling-repo checkout for all four.
+# bastion path-depends on four sibling repos directly (bella-engine via ../bella, plus ../mev,
+# ../okf-core, and three engine-rs crates via ../engine-rs) — see Cargo.toml. engine-rs's own
+# workspace additionally path-depends on ../claude-code-rs (one level above ITS checkout, i.e.
+# a sibling of bastion's own checkout too), so that fifth repo is required transitively. This
+# caller opts into the reusable workflow's sibling-repo checkout for all five.
 
 on:
   push:
@@ -27,3 +29,4 @@ jobs:
         bredmond1019/mev
         bredmond1019/okf-core
         bredmond1019/engine-rs
+        bredmond1019/claude-code-rs
