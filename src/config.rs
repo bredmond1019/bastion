@@ -414,10 +414,7 @@ pub fn walk_up_from(start: &std::path::Path, target: &str) -> Option<PathBuf> {
         if candidate.exists() {
             return Some(candidate);
         }
-        match curr.parent() {
-            Some(parent) => curr = parent,
-            None => return None,
-        }
+        curr = curr.parent()?;
     }
 }
 
