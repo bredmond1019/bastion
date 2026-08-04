@@ -556,7 +556,6 @@ mod tests {
     #[test]
     fn epic_known_reused_from_board() {
         let registry = vec![okf_core::Epic {
-            extra: Default::default(),
             slug: "bastion-surfaces".to_owned(),
             title: "Bastion Surfaces".to_owned(),
             description: None,
@@ -564,6 +563,7 @@ mod tests {
             weight: None,
             plan: None,
             repos: Vec::new(),
+            ..Default::default()
         }];
         assert!(board::epic_known("bastion-surfaces", &registry));
         assert!(!board::epic_known("unknown-slug", &registry));
