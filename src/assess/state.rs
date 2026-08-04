@@ -177,6 +177,7 @@ mod tests {
 
     fn healthy_state() -> StateFile {
         StateFile {
+            extra: Default::default(),
             repo: "bastion".to_string(),
             kind: "project".to_string(),
             updated: "2026-07-27".to_string(),
@@ -187,9 +188,11 @@ mod tests {
                 deferred: vec![],
             },
             tracks: vec![Track {
+                extra: Default::default(),
                 title: "Phase 1".to_string(),
                 blocks: vec![
                     TrackBlock {
+                        extra: Default::default(),
                         id: "A.1".to_string(),
                         title: "one".to_string(),
                         status: None,
@@ -205,6 +208,7 @@ mod tests {
                         description: None,
                     },
                     TrackBlock {
+                        extra: Default::default(),
                         id: "A.2".to_string(),
                         title: "two".to_string(),
                         status: None,

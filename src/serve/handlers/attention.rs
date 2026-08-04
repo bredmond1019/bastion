@@ -357,6 +357,7 @@ mod tests {
 
     fn sample_carryover(slug: &str, kind: &str, created: &str) -> Carryover {
         Carryover {
+            extra: Default::default(),
             slug: slug.to_owned(),
             scope: CarryoverScope {
                 repo: None,
@@ -381,6 +382,7 @@ mod tests {
         origin: Option<BacklogOrigin>,
     ) -> Backlog {
         Backlog {
+            extra: Default::default(),
             slug: slug.to_owned(),
             title: format!("{slug} title"),
             repo: repo.to_owned(),
@@ -403,6 +405,7 @@ mod tests {
         carryover: Vec<Carryover>,
     ) -> StateFile {
         StateFile {
+            extra: Default::default(),
             epics: Vec::new(),
             repo: repo.to_owned(),
             kind: kind.to_owned(),
