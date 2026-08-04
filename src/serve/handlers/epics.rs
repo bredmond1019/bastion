@@ -183,7 +183,6 @@ mod tests {
 
     fn sample_epic(slug: &str) -> Epic {
         Epic {
-            extra: Default::default(),
             slug: slug.to_owned(),
             title: format!("{slug} title"),
             description: None,
@@ -191,12 +190,12 @@ mod tests {
             weight: None,
             plan: None,
             repos: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn sample_state_file(kind: &str, epics: Vec<Epic>) -> StateFile {
         StateFile {
-            extra: Default::default(),
             epics,
             repo: "hq".to_owned(),
             kind: kind.to_owned(),
@@ -209,6 +208,7 @@ mod tests {
             note: None,
             backlog: Vec::new(),
             carryover: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -311,12 +311,10 @@ mod tests {
             repo: "alpha".to_owned(),
             kind: "project".to_owned(),
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "P1".to_owned(),
                 blocks: blocks
                     .iter()
                     .map(|(id, status)| okf_core::TrackBlock {
-                        extra: Default::default(),
                         id: (*id).to_owned(),
                         title: (*id).to_owned(),
                         status: Some((*status).to_owned()),
@@ -330,8 +328,10 @@ mod tests {
                         epics: vec![slug.to_owned()],
                         note: None,
                         description: None,
+                        ..Default::default()
                     })
                     .collect(),
+                ..Default::default()
             }],
             ..sample_state_file("project", Vec::new())
         }
@@ -340,7 +340,6 @@ mod tests {
     #[test]
     fn build_epics_tallies_member_blocks_and_flags_a_fully_deferred_epic() {
         let epic = Epic {
-            extra: Default::default(),
             slug: "tui".to_owned(),
             title: "Bastion TUI".to_owned(),
             description: None,
@@ -348,6 +347,7 @@ mod tests {
             weight: None,
             plan: None,
             repos: Vec::new(),
+            ..Default::default()
         };
         // Remaining work is entirely deferred; one member is already closed.
         let files = vec![(
@@ -379,7 +379,6 @@ mod tests {
     #[test]
     fn build_epics_does_not_flag_an_epic_with_live_work_as_fully_deferred() {
         let epic = Epic {
-            extra: Default::default(),
             slug: "tui".to_owned(),
             title: "Bastion TUI".to_owned(),
             description: None,
@@ -387,6 +386,7 @@ mod tests {
             weight: None,
             plan: None,
             repos: Vec::new(),
+            ..Default::default()
         };
         let files = vec![(
             sample_source("alpha"),
@@ -402,7 +402,6 @@ mod tests {
     #[test]
     fn build_epics_does_not_flag_a_fully_closed_epic_as_deferred() {
         let epic = Epic {
-            extra: Default::default(),
             slug: "tui".to_owned(),
             title: "Done Initiative".to_owned(),
             description: None,
@@ -410,6 +409,7 @@ mod tests {
             weight: None,
             plan: None,
             repos: Vec::new(),
+            ..Default::default()
         };
         let files = vec![(
             sample_source("alpha"),
@@ -427,7 +427,6 @@ mod tests {
     #[test]
     fn build_epics_maps_all_seven_fields() {
         let epic = Epic {
-            extra: Default::default(),
             slug: "bastion-surfaces".to_owned(),
             title: "Bastion Surfaces".to_owned(),
             description: Some("Cross-repo surfaces initiative".to_owned()),
@@ -435,6 +434,7 @@ mod tests {
             weight: Some(80),
             plan: Some("core/planning/master-plan.md".to_owned()),
             repos: vec!["bastion".to_owned(), "bastion-ui".to_owned()],
+            ..Default::default()
         };
 
         let dtos = build_epics(std::slice::from_ref(&epic), &[]);

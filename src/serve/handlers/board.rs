@@ -882,16 +882,15 @@ mod tests {
 
     fn sample_state_file(blocks: Vec<TrackBlock>) -> StateFile {
         StateFile {
-            extra: Default::default(),
             epics: Vec::new(),
             repo: "bastion".to_owned(),
             kind: "project".to_owned(),
             updated: "2026-07-23".to_owned(),
             focus: Default::default(),
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "Phase 11".to_owned(),
                 blocks,
+                ..Default::default()
             }],
             repos: Vec::new(),
             cross_repo: Vec::new(),
@@ -899,6 +898,7 @@ mod tests {
             note: None,
             backlog: Vec::new(),
             carryover: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -917,7 +917,6 @@ mod tests {
         epics: Vec<String>,
     ) -> TrackBlock {
         TrackBlock {
-            extra: Default::default(),
             epics,
             id: id.to_owned(),
             title: format!("{id} title"),
@@ -931,6 +930,7 @@ mod tests {
             model: None,
             note: None,
             description: None,
+            ..Default::default()
         }
     }
 
@@ -1009,14 +1009,14 @@ mod tests {
         let file = StateFile {
             tracks: vec![
                 Track {
-                    extra: Default::default(),
                     title: "Phase 1".to_owned(),
                     blocks: vec![sample_track_block("BA.1.A", Some("open"))],
+                    ..Default::default()
                 },
                 Track {
-                    extra: Default::default(),
                     title: "Phase 2".to_owned(),
                     blocks: vec![sample_track_block("BA.2.A", Some("open"))],
+                    ..Default::default()
                 },
             ],
             ..sample_state_file(Vec::new())
@@ -1043,14 +1043,14 @@ mod tests {
         let file = StateFile {
             tracks: vec![
                 Track {
-                    extra: Default::default(),
                     title: "Phase 1".to_owned(),
                     blocks: vec![sample_track_block("BA.1.A", Some("open"))],
+                    ..Default::default()
                 },
                 Track {
-                    extra: Default::default(),
                     title: "Phase 2".to_owned(),
                     blocks: vec![sample_track_block("BA.1.A", Some("closed"))],
+                    ..Default::default()
                 },
             ],
             ..sample_state_file(Vec::new())
@@ -1358,7 +1358,6 @@ mod tests {
         let rollups = vec![sample_rollup("bastion", "core")];
         let file = StateFile {
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "Phase 11".to_owned(),
                 blocks: vec![
                     sample_track_block_full(
@@ -1380,6 +1379,7 @@ mod tests {
                         vec!["epic-beta".to_owned()],
                     ),
                 ],
+                ..Default::default()
             }],
             ..sample_state_file(Vec::new())
         };
@@ -1487,7 +1487,6 @@ mod tests {
 
         let file = StateFile {
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "Phase 11".to_owned(),
                 blocks: vec![
                     // BA.1.B depends on BA.1.X, which is not closed -> unmet.
@@ -1522,6 +1521,7 @@ mod tests {
                     ),
                     sample_track_block("BA.1.Y", Some("closed")),
                 ],
+                ..Default::default()
             }],
             ..sample_state_file(Vec::new())
         };
@@ -1550,7 +1550,6 @@ mod tests {
         // blocked lane must keep the rollup's own `unmet` list untouched.
         let file = StateFile {
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "Phase 11".to_owned(),
                 blocks: vec![sample_track_block_full(
                     "BA.1.C",
@@ -1561,6 +1560,7 @@ mod tests {
                     None,
                     vec!["epic-gamma".to_owned()],
                 )],
+                ..Default::default()
             }],
             ..sample_state_file(Vec::new())
         };
@@ -1938,7 +1938,6 @@ mod tests {
 
         let bastion_file = StateFile {
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "Phase 11".to_owned(),
                 blocks: vec![sample_track_block_full(
                     "BA.1.A",
@@ -1949,13 +1948,13 @@ mod tests {
                     None,
                     vec!["epic-alpha".to_owned(), "epic-beta".to_owned()],
                 )],
+                ..Default::default()
             }],
             ..sample_state_file(Vec::new())
         };
         let bella_file = StateFile {
             repo: "bella".to_owned(),
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "Phase 1".to_owned(),
                 blocks: vec![sample_track_block_full(
                     "BA.1.A",
@@ -1966,15 +1965,16 @@ mod tests {
                     None,
                     vec!["epic-alpha".to_owned()],
                 )],
+                ..Default::default()
             }],
             ..sample_state_file(Vec::new())
         };
         let mev_file = StateFile {
             repo: "mev".to_owned(),
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "Phase 1".to_owned(),
                 blocks: vec![sample_track_block("BA.1.A", Some("in_progress"))],
+                ..Default::default()
             }],
             ..sample_state_file(Vec::new())
         };
@@ -2022,7 +2022,6 @@ mod tests {
         let file = StateFile {
             repo: "mev".to_owned(),
             tracks: vec![Track {
-                extra: Default::default(),
                 title: "Phase 9".to_owned(),
                 blocks: vec![sample_track_block_full(
                     "MV.9.A",
@@ -2033,6 +2032,7 @@ mod tests {
                     None,
                     vec!["epic-alpha".to_owned()],
                 )],
+                ..Default::default()
             }],
             ..sample_state_file(Vec::new())
         };
@@ -2146,7 +2146,6 @@ mod tests {
 
     fn sample_epic(slug: &str) -> okf_core::Epic {
         okf_core::Epic {
-            extra: Default::default(),
             slug: slug.to_owned(),
             title: format!("{slug} title"),
             description: None,
@@ -2154,6 +2153,7 @@ mod tests {
             weight: None,
             plan: None,
             repos: Vec::new(),
+            ..Default::default()
         }
     }
 
