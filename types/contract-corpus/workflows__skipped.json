@@ -1,0 +1,30 @@
+{
+  "body": {
+    "entries": [
+      {
+        "branch": "phase6-blockA-flow",
+        "current_task": 5,
+        "repo": "repo-healthy",
+        "spec_slug": "phase6-blockA",
+        "started_at": "<TIMESTAMP>",
+        "status": "done",
+        "updated_at": "<TIMESTAMP>"
+      }
+    ],
+    "skipped": [
+      {
+        "reason": "malformed_flow_state",
+        "repo": "repo-malformed"
+      },
+      {
+        "reason": "unreadable_root",
+        "repo": "repo-missing"
+      },
+      {
+        "reason": "no_planning_dir",
+        "repo": "repo-no-planning"
+      }
+    ]
+  },
+  "status_code": 200
+}

@@ -708,6 +708,117 @@ mod repo_workflow_state_dto_tests {
     }
 }
 
+/// One registered workspace that `GET /api/workflows?with_skipped=1`
+/// could not fully report on.
+///
+/// Returned only inside [`WorkflowsAggregateDto::skipped`] — the default,
+/// no-query-param response of `GET /api/workflows` never includes this type.
+/// `reason` is a plain `String` on the wire (one of `"unreadable_root"` |
+/// `"no_planning_dir"` | `"malformed_flow_state"`), matching how
+/// [`RepoWorkflowStateDto::status`] carries a raw status string rather than
+/// an enum. See serve-api §11.6 for the full vocabulary, the
+/// first-match-wins precedence order, and the "empty is not skipped" rule.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkippedWorkspaceDto {
+    /// The registered workspace name whose report is incomplete.
+    pub repo: String,
+    /// One of `"unreadable_root"`, `"no_planning_dir"`, `"malformed_flow_state"`.
+    pub reason: String,
+}
+
+/// The `?with_skipped=1` envelope for `GET /api/workflows`.
+///
+/// Returned ONLY when the request carries `?with_skipped=1` — the bare-array
+/// default response of `GET /api/workflows` is unchanged from v0.23 and does
+/// not use this type. `entries` carries the same [`RepoWorkflowStateDto`]
+/// list the default response returns, in the same order; `skipped` names
+/// every registered workspace whose flow-state report is incomplete, and
+/// why. Both fields always serialize, including when empty (`[]`, never an
+/// absent key), so a consumer never has to distinguish absent-vs-empty.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowsAggregateDto {
+    pub entries: Vec<RepoWorkflowStateDto>,
+    pub skipped: Vec<SkippedWorkspaceDto>,
+}
+
+#[cfg(test)]
+mod skipped_workspace_dto_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip() {
+        let dto = SkippedWorkspaceDto {
+            repo: "bastion".to_string(),
+            reason: "unreadable_root".to_string(),
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let round_tripped: SkippedWorkspaceDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, dto);
+    }
+
+    #[test]
+    fn carries_repo_and_reason_verbatim() {
+        let dto = SkippedWorkspaceDto {
+            repo: "orchestrator".to_string(),
+            reason: "no_planning_dir".to_string(),
+        };
+        let value = serde_json::to_value(&dto).expect("serialize to value");
+        assert_eq!(value["repo"], "orchestrator");
+        assert_eq!(value["reason"], "no_planning_dir");
+    }
+}
+
+#[cfg(test)]
+mod workflows_aggregate_dto_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_with_entries_and_skipped() {
+        let dto = WorkflowsAggregateDto {
+            entries: vec![RepoWorkflowStateDto {
+                repo: "bastion".to_string(),
+                spec_slug: "phase11-blockD".to_string(),
+                branch: "feat/phase11-blockD".to_string(),
+                status: "running".to_string(),
+                current_task: 3,
+                started_at: "2026-08-01T00:00:00Z".to_string(),
+                updated_at: "2026-08-01T01:00:00Z".to_string(),
+                run_id: None,
+            }],
+            skipped: vec![SkippedWorkspaceDto {
+                repo: "orchestrator".to_string(),
+                reason: "malformed_flow_state".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let round_tripped: WorkflowsAggregateDto =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, dto);
+    }
+
+    #[test]
+    fn empty_entries_and_skipped_serialize_as_empty_arrays_not_absent_keys() {
+        let dto = WorkflowsAggregateDto {
+            entries: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let value = serde_json::to_value(&dto).expect("serialize to value");
+        let obj = value.as_object().expect("object");
+        assert!(
+            obj.contains_key("entries"),
+            "entries should be a present key even when empty, got: {value}"
+        );
+        assert!(
+            obj.contains_key("skipped"),
+            "skipped should be a present key even when empty, got: {value}"
+        );
+        assert_eq!(value["entries"], serde_json::json!([]));
+        assert_eq!(value["skipped"], serde_json::json!([]));
+    }
+}
+
 #[cfg(test)]
 mod workflow_state_dto_tests {
     use super::*;

@@ -1328,6 +1328,25 @@ export interface SessionsPayload {
 }
 
 /**
+ * One registered workspace that `GET /api/workflows?with_skipped=1`
+ * could not fully report on.
+ * 
+ * Returned only inside [`WorkflowsAggregateDto::skipped`] — the default,
+ * no-query-param response of `GET /api/workflows` never includes this type.
+ * `reason` is a plain `String` on the wire (one of `"unreadable_root"` |
+ * `"no_planning_dir"` | `"malformed_flow_state"`), matching how
+ * [`RepoWorkflowStateDto::status`] carries a raw status string rather than
+ * an enum. See serve-api §11.6 for the full vocabulary, the
+ * first-match-wins precedence order, and the "empty is not skipped" rule.
+ */
+export interface SkippedWorkspaceDto {
+	/** The registered workspace name whose report is incomplete. */
+	repo: string;
+	/** One of `"unreadable_root"`, `"no_planning_dir"`, `"malformed_flow_state"`. */
+	reason: string;
+}
+
+/**
  * Payload for client→server `subscribe` / `unsubscribe` frames.
  * 
  * Wire format: `{ "topic": "sessions" }` or `{ "topic": "pane:work" }`
@@ -1379,6 +1398,22 @@ export interface WorkflowStateDto {
 	 * distinguish "this run predates the stamp" from "field not understood".
 	 */
 	run_id?: string;
+}
+
+/**
+ * The `?with_skipped=1` envelope for `GET /api/workflows`.
+ * 
+ * Returned ONLY when the request carries `?with_skipped=1` — the bare-array
+ * default response of `GET /api/workflows` is unchanged from v0.23 and does
+ * not use this type. `entries` carries the same [`RepoWorkflowStateDto`]
+ * list the default response returns, in the same order; `skipped` names
+ * every registered workspace whose flow-state report is incomplete, and
+ * why. Both fields always serialize, including when empty (`[]`, never an
+ * absent key), so a consumer never has to distinguish absent-vs-empty.
+ */
+export interface WorkflowsAggregateDto {
+	entries: RepoWorkflowStateDto[];
+	skipped: SkippedWorkspaceDto[];
 }
 
 /**

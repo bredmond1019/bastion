@@ -24,12 +24,14 @@
 use std::path::{Path, PathBuf};
 
 use actix_web::{HttpResponse, web};
+use serde::Deserialize;
 
 use crate::config::{FileConfig, resolve_workspace_root};
 use crate::serve::dto::{
     ErrorPayload, HandoffInfoDto, RepoStatusDto, RepoSummaryDto, RepoWorkflowStateDto,
-    WorkflowStateDto,
+    SkippedWorkspaceDto, WorkflowStateDto, WorkflowsAggregateDto,
 };
+use crate::serve::handlers::runs::bool_flag_from_str;
 use crate::serve::status::flow::{FlowState, parse_flow_state};
 use crate::serve::status::handoff::{HandoffInfo, read_handoff};
 use crate::serve::status::repo::parse_status;
@@ -118,20 +120,61 @@ fn read_repo_handoff(root: &Path) -> Option<HandoffInfo> {
     read_handoff(&content)
 }
 
+/// Why `GET /api/workflows?with_skipped=1` could not fully report on a
+/// registered workspace. Wire vocabulary is fixed at three values (see
+/// [`SkippedWorkspaceDto::reason`] and serve-api §11.6) — first match wins,
+/// at most one reason per repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipReason {
+    /// The registered path is not a readable directory.
+    UnreadableRoot,
+    /// `root` is readable but `{root}/planning` is not a readable directory.
+    NoPlanningDir,
+    /// At least one `planning/*/sdlc/sdlc-flow-state.json` was found and
+    /// failed to parse. Any files that DID parse are still returned — this
+    /// reason means "incomplete report", not "no contribution".
+    MalformedFlowState,
+}
+
+impl SkipReason {
+    /// The wire string carried by [`SkippedWorkspaceDto::reason`].
+    fn as_wire(&self) -> &'static str {
+        match self {
+            SkipReason::UnreadableRoot => "unreadable_root",
+            SkipReason::NoPlanningDir => "no_planning_dir",
+            SkipReason::MalformedFlowState => "malformed_flow_state",
+        }
+    }
+}
+
 /// Walk `{root}/planning/*/sdlc/sdlc-flow-state.json`, parsing each match via
-/// [`parse_flow_state`]. Missing/malformed entries are skipped silently —
-/// the route (and the flow-watch poll loop, `src/serve/ws/server.rs`) get
-/// whatever parses, empty when none do.
+/// [`parse_flow_state`], and classify why the report is incomplete (if it
+/// is). This is the single walk both the default response and the
+/// `?with_skipped=1` envelope are built from — [`collect_flow_states`] wraps
+/// this and discards the classification, so `?with_skipped=1` costs no
+/// second traversal (serve-api §11.6).
 ///
-/// This is the shared enumeration core both `collect_repo_workflows` (the
-/// REST handler) and the WS flow-watch loop build on — see
-/// `planning/plan-serve-workflow-done-ws-push/tasks.md` Task 2.
-pub(crate) fn collect_flow_states(root: &Path) -> Vec<FlowState> {
-    let mut out = Vec::new();
+/// Classification is first-match-wins, at most one reason per repo:
+/// 1. `root` is not a readable directory -> [`SkipReason::UnreadableRoot`],
+///    empty states.
+/// 2. `root` is readable but `{root}/planning` is not a readable directory
+///    -> [`SkipReason::NoPlanningDir`], empty states.
+/// 3. At least one flow-state file was found and failed to parse ->
+///    [`SkipReason::MalformedFlowState`], while still returning every state
+///    that DID parse.
+/// 4. Otherwise `None` — a readable `planning/` with zero flow-state files
+///    is a healthy "no runs" state, not a skip.
+fn scan_flow_states(root: &Path) -> (Vec<FlowState>, Option<SkipReason>) {
+    if !root.is_dir() {
+        return (Vec::new(), Some(SkipReason::UnreadableRoot));
+    }
 
     let Ok(entries) = std::fs::read_dir(root.join("planning")) else {
-        return out;
+        return (Vec::new(), Some(SkipReason::NoPlanningDir));
     };
+
+    let mut out = Vec::new();
+    let mut saw_malformed = false;
 
     for entry in entries.flatten() {
         let spec_dir = entry.path();
@@ -140,15 +183,37 @@ pub(crate) fn collect_flow_states(root: &Path) -> Vec<FlowState> {
         }
 
         let flow_path = spec_dir.join("sdlc").join("sdlc-flow-state.json");
-        if let Ok(content) = std::fs::read_to_string(&flow_path)
-            && let Some(state) = parse_flow_state(&content)
-        {
-            out.push(state);
+        let Ok(content) = std::fs::read_to_string(&flow_path) else {
+            continue;
+        };
+
+        match parse_flow_state(&content) {
+            Some(state) => out.push(state),
+            None => saw_malformed = true,
         }
     }
 
     out.sort_by(|a: &FlowState, b: &FlowState| a.spec_slug.cmp(&b.spec_slug));
-    out
+
+    let reason = if saw_malformed {
+        Some(SkipReason::MalformedFlowState)
+    } else {
+        None
+    };
+    (out, reason)
+}
+
+/// Walk `{root}/planning/*/sdlc/sdlc-flow-state.json`, parsing each match via
+/// [`parse_flow_state`]. Missing/malformed entries are skipped silently —
+/// the route (and the flow-watch poll loop, `src/serve/ws/server.rs`) get
+/// whatever parses, empty when none do.
+///
+/// This is the shared enumeration core both `collect_repo_workflows` (the
+/// REST handler) and the WS flow-watch loop build on — see
+/// `planning/plan-serve-workflow-done-ws-push/tasks.md` Task 2. Thin wrapper
+/// over [`scan_flow_states`], discarding the skip classification.
+pub(crate) fn collect_flow_states(root: &Path) -> Vec<FlowState> {
+    scan_flow_states(root).0
 }
 
 /// `GET /api/repos/{name}/workflows` DTO projection over [`collect_flow_states`].
@@ -162,37 +227,65 @@ fn collect_repo_workflows(root: &Path) -> Vec<WorkflowStateDto> {
 /// `GET /api/workflows` — cross-repo flow-state aggregate over every
 /// registered workspace, following the `build_repo_summaries` (`:97`)
 /// registry-iteration precedent exactly: empty/absent registry -> empty
-/// Vec, else sort workspace names and walk each in order.
+/// result, else sort workspace names and walk each in order.
 ///
-/// Reuses [`collect_flow_states`] verbatim per-repo (no second flow-state
-/// walk) and tags each resulting entry with its owning repo name via
-/// [`RepoWorkflowStateDto`]. A repo whose root fails to resolve, or which
-/// has no `planning/` dir / only malformed flow-state files, contributes
-/// zero entries without aborting the walk — the same degrade-gracefully
-/// behaviour `collect_flow_states` and `build_repo_summaries` already have.
+/// Calls [`scan_flow_states`] once per repo (no second traversal — the same
+/// walk backs both `entries` and `skipped`). A repo whose root fails to
+/// resolve, or which has no `planning/` dir / has malformed flow-state
+/// files, contributes whatever DID parse to `entries` and is additionally
+/// named in `skipped` with a reason. A repo with a readable `planning/` and
+/// zero flow-state files contributes nothing to either list — "no runs" is
+/// healthy, not a skip.
 ///
-/// Output is ordered by `(repo name, then spec_slug)`: `collect_flow_states`
+/// `entries` is ordered by `(repo name, then spec_slug)` — `scan_flow_states`
 /// already sorts by `spec_slug` within a repo, and iterating the
 /// (pre-sorted) repo names in order composes that into the full ordering.
-pub(crate) fn collect_all_workflows(registry: &FileConfig) -> Vec<RepoWorkflowStateDto> {
+/// `skipped` inherits the same sorted registry-name order for free.
+pub(crate) fn collect_all_workflows_reporting(registry: &FileConfig) -> WorkflowsAggregateDto {
     let Some(workspaces) = registry.workspaces.as_ref() else {
-        return Vec::new();
+        return WorkflowsAggregateDto {
+            entries: Vec::new(),
+            skipped: Vec::new(),
+        };
     };
 
     let mut names: Vec<&String> = workspaces.keys().collect();
     names.sort();
 
-    names
-        .into_iter()
-        .flat_map(|name| {
-            let root = resolve_root(name, registry);
-            root.into_iter().flat_map(move |root| {
-                collect_flow_states(&root).into_iter().map(move |state| {
-                    RepoWorkflowStateDto::from((name.clone(), WorkflowStateDto::from(state)))
-                })
-            })
-        })
-        .collect()
+    let mut entries = Vec::new();
+    let mut skipped = Vec::new();
+
+    for name in names {
+        let Some(root) = resolve_root(name, registry) else {
+            skipped.push(SkippedWorkspaceDto {
+                repo: name.clone(),
+                reason: SkipReason::UnreadableRoot.as_wire().to_string(),
+            });
+            continue;
+        };
+
+        let (states, reason) = scan_flow_states(&root);
+        entries.extend(states.into_iter().map(|state| {
+            RepoWorkflowStateDto::from((name.clone(), WorkflowStateDto::from(state)))
+        }));
+        if let Some(reason) = reason {
+            skipped.push(SkippedWorkspaceDto {
+                repo: name.clone(),
+                reason: reason.as_wire().to_string(),
+            });
+        }
+    }
+
+    WorkflowsAggregateDto { entries, skipped }
+}
+
+/// `GET /api/workflows` (default, no query param) — the bare `entries` array
+/// from [`collect_all_workflows_reporting`], preserving this function's
+/// existing signature and doc contract for `src/serve/ws/server.rs` and
+/// `handlers/runs.rs`'s `with_repo` join, both of which must keep compiling
+/// and behaving byte-identically.
+pub(crate) fn collect_all_workflows(registry: &FileConfig) -> Vec<RepoWorkflowStateDto> {
+    collect_all_workflows_reporting(registry).entries
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -274,17 +367,52 @@ pub async fn get_repo_workflows(
     }
 }
 
+/// `GET /api/workflows` query params.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub struct WorkflowsQuery {
+    /// `?with_skipped=1` opts into the `{entries, skipped}` envelope
+    /// ([`WorkflowsAggregateDto`]) naming which registered workspaces this
+    /// aggregate could not fully report on, and why. Defaults to `false`,
+    /// returning the plain `entries` array — byte-identical to the pre-A9
+    /// v0.23 response, since `bastion-web/lib/workflows.ts` reads that shape
+    /// today. Unlike `/api/runs`'s `?with_repo=1`, this flag is NOT a cost
+    /// gate — skip detection is bookkeeping over the walk this handler
+    /// already performs, adding no second traversal; the gate exists solely
+    /// to keep the default response non-breaking. See serve-api §11.6.
+    #[serde(default, deserialize_with = "bool_flag_from_str")]
+    pub with_skipped: bool,
+}
+
 /// `GET /api/workflows` — cross-repo flow-state aggregate over every
-/// registered workspace (A2). Shaped exactly like [`list_repos`]: wraps the
-/// pure [`collect_all_workflows`] in `web::block`, returning 200 with the
-/// resulting (possibly empty) list, or a 500 on thread-pool failure.
+/// registered workspace (A2). Shaped like [`list_repos`]: wraps a pure
+/// collector in `web::block`, returning 200 with the resulting (possibly
+/// empty) body, or a 500 on thread-pool failure.
 ///
-/// Never 404s — an empty/absent registry degrades to `200 []`, matching
-/// `collect_all_workflows`'s own degrade-gracefully contract.
-pub async fn list_all_workflows(registry: web::Data<FileConfig>) -> HttpResponse {
-    match web::block(move || collect_all_workflows(&registry)).await {
-        Ok(list) => HttpResponse::Ok().json(list),
-        Err(err) => blocking_error_response(err),
+/// Without `?with_skipped=1` (default), returns the bare `entries` array via
+/// [`collect_all_workflows`] — byte-identical to v0.23. With
+/// `?with_skipped=1`, returns the `{entries, skipped}` envelope via
+/// [`collect_all_workflows_reporting`], naming every registered workspace
+/// whose flow-state report is incomplete and why (ask A9). Both paths walk
+/// the registry exactly once; the flag only changes what is returned, not
+/// what is scanned.
+///
+/// Never 404s — an empty/absent registry degrades to an empty body in
+/// either shape, matching the underlying collectors' own degrade-gracefully
+/// contract.
+pub async fn list_all_workflows(
+    query: web::Query<WorkflowsQuery>,
+    registry: web::Data<FileConfig>,
+) -> HttpResponse {
+    if query.with_skipped {
+        match web::block(move || collect_all_workflows_reporting(&registry)).await {
+            Ok(aggregate) => HttpResponse::Ok().json(aggregate),
+            Err(err) => blocking_error_response(err),
+        }
+    } else {
+        match web::block(move || collect_all_workflows(&registry)).await {
+            Ok(list) => HttpResponse::Ok().json(list),
+            Err(err) => blocking_error_response(err),
+        }
     }
 }
 
@@ -646,6 +774,301 @@ mod tests {
         let entries = collect_all_workflows(&registry);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].repo, "good-repo");
+    }
+
+    // ── scan_flow_states / collect_all_workflows_reporting (A9) ───────────
+
+    #[test]
+    fn scan_flow_states_unreadable_root_reports_unreadable_root() {
+        let root = PathBuf::from("/nonexistent/path/should/not/exist");
+        let (states, reason) = scan_flow_states(&root);
+        assert_eq!(states, Vec::new());
+        assert_eq!(reason, Some(SkipReason::UnreadableRoot));
+    }
+
+    #[test]
+    fn scan_flow_states_missing_planning_dir_reports_no_planning_dir() {
+        let tmp = TempDir::new();
+        let (states, reason) = scan_flow_states(tmp.path());
+        assert_eq!(states, Vec::new());
+        assert_eq!(reason, Some(SkipReason::NoPlanningDir));
+    }
+
+    #[test]
+    fn scan_flow_states_empty_but_healthy_planning_dir_reports_no_reason() {
+        let tmp = TempDir::new();
+        std::fs::create_dir_all(tmp.path().join("planning")).unwrap();
+        let (states, reason) = scan_flow_states(tmp.path());
+        assert_eq!(states, Vec::new());
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn scan_flow_states_malformed_only_reports_malformed_flow_state() {
+        let tmp = TempDir::new();
+        write(
+            &tmp.path()
+                .join("planning/bad-spec/sdlc/sdlc-flow-state.json"),
+            "{ not json",
+        );
+
+        let (states, reason) = scan_flow_states(tmp.path());
+        assert_eq!(states, Vec::new());
+        assert_eq!(reason, Some(SkipReason::MalformedFlowState));
+    }
+
+    #[test]
+    fn scan_flow_states_mixed_valid_and_malformed_keeps_valid_and_reports_reason() {
+        let tmp = TempDir::new();
+        write(
+            &tmp.path()
+                .join("planning/bad-spec/sdlc/sdlc-flow-state.json"),
+            "{ not json",
+        );
+        write(
+            &tmp.path()
+                .join("planning/good-spec/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+
+        let (states, reason) = scan_flow_states(tmp.path());
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].spec_slug, "phase6-blockA");
+        assert_eq!(reason, Some(SkipReason::MalformedFlowState));
+    }
+
+    #[test]
+    fn skip_reason_as_wire_matches_the_three_value_vocabulary() {
+        assert_eq!(SkipReason::UnreadableRoot.as_wire(), "unreadable_root");
+        assert_eq!(SkipReason::NoPlanningDir.as_wire(), "no_planning_dir");
+        assert_eq!(
+            SkipReason::MalformedFlowState.as_wire(),
+            "malformed_flow_state"
+        );
+    }
+
+    #[test]
+    fn collect_all_workflows_reporting_empty_registry_returns_empty_aggregate() {
+        let registry = FileConfig::default();
+        let aggregate = collect_all_workflows_reporting(&registry);
+        assert_eq!(aggregate.entries, Vec::new());
+        assert_eq!(aggregate.skipped, Vec::new());
+    }
+
+    #[test]
+    fn collect_all_workflows_reporting_healthy_empty_repo_is_not_skipped() {
+        let tmp = TempDir::new();
+        std::fs::create_dir_all(tmp.path().join("planning")).unwrap();
+        let registry = registry_with("healthy-empty", tmp.path());
+
+        let aggregate = collect_all_workflows_reporting(&registry);
+        assert_eq!(aggregate.entries, Vec::new());
+        assert_eq!(
+            aggregate.skipped,
+            Vec::new(),
+            "a readable planning/ dir with zero flow states must not be reported as skipped"
+        );
+    }
+
+    #[test]
+    fn collect_all_workflows_reporting_unreadable_root_is_reported() {
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "ghost-repo".to_string(),
+            PathBuf::from("/nonexistent/path/should/not/exist"),
+        );
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let aggregate = collect_all_workflows_reporting(&registry);
+        assert_eq!(aggregate.entries, Vec::new());
+        assert_eq!(aggregate.skipped.len(), 1);
+        assert_eq!(aggregate.skipped[0].repo, "ghost-repo");
+        assert_eq!(aggregate.skipped[0].reason, "unreadable_root");
+    }
+
+    #[test]
+    fn collect_all_workflows_reporting_no_planning_dir_is_reported() {
+        let tmp = TempDir::new();
+        let registry = registry_with("no-planning-repo", tmp.path());
+
+        let aggregate = collect_all_workflows_reporting(&registry);
+        assert_eq!(aggregate.entries, Vec::new());
+        assert_eq!(aggregate.skipped.len(), 1);
+        assert_eq!(aggregate.skipped[0].repo, "no-planning-repo");
+        assert_eq!(aggregate.skipped[0].reason, "no_planning_dir");
+    }
+
+    #[test]
+    fn collect_all_workflows_reporting_malformed_repo_still_contributes_parsed_entries() {
+        let tmp = TempDir::new();
+        write(
+            &tmp.path()
+                .join("planning/bad-spec/sdlc/sdlc-flow-state.json"),
+            "{ not json",
+        );
+        write(
+            &tmp.path()
+                .join("planning/good-spec/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+        let registry = registry_with("mixed-repo", tmp.path());
+
+        let aggregate = collect_all_workflows_reporting(&registry);
+        assert_eq!(aggregate.entries.len(), 1);
+        assert_eq!(aggregate.entries[0].repo, "mixed-repo");
+        assert_eq!(aggregate.entries[0].spec_slug, "phase6-blockA");
+        assert_eq!(aggregate.skipped.len(), 1);
+        assert_eq!(aggregate.skipped[0].repo, "mixed-repo");
+        assert_eq!(aggregate.skipped[0].reason, "malformed_flow_state");
+    }
+
+    #[test]
+    fn collect_all_workflows_reporting_malformed_repo_does_not_suppress_sibling_repo() {
+        let tmp_bad = TempDir::new();
+        let tmp_good = TempDir::new();
+        write(
+            &tmp_bad
+                .path()
+                .join("planning/bad-spec/sdlc/sdlc-flow-state.json"),
+            "{ not json",
+        );
+        write(
+            &tmp_good
+                .path()
+                .join("planning/good-spec/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+
+        let mut workspaces = HashMap::new();
+        workspaces.insert("bad-repo".to_string(), tmp_bad.path().to_path_buf());
+        workspaces.insert("good-repo".to_string(), tmp_good.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let aggregate = collect_all_workflows_reporting(&registry);
+        assert_eq!(aggregate.entries.len(), 1);
+        assert_eq!(aggregate.entries[0].repo, "good-repo");
+        assert_eq!(aggregate.skipped.len(), 1);
+        assert_eq!(aggregate.skipped[0].repo, "bad-repo");
+        assert_eq!(aggregate.skipped[0].reason, "malformed_flow_state");
+    }
+
+    #[test]
+    fn collect_all_workflows_reporting_skipped_is_ordered_by_repo_across_multi_repo_registry() {
+        let tmp_ghost = PathBuf::from("/nonexistent/path/should/not/exist");
+        let tmp_no_planning = TempDir::new();
+        let tmp_healthy = TempDir::new();
+        write(
+            &tmp_healthy
+                .path()
+                .join("planning/good-spec/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+
+        let mut workspaces = HashMap::new();
+        workspaces.insert("zeta-ghost".to_string(), tmp_ghost);
+        workspaces.insert(
+            "beta-no-planning".to_string(),
+            tmp_no_planning.path().to_path_buf(),
+        );
+        workspaces.insert(
+            "alpha-healthy".to_string(),
+            tmp_healthy.path().to_path_buf(),
+        );
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let aggregate = collect_all_workflows_reporting(&registry);
+        let skipped_repos: Vec<&str> = aggregate.skipped.iter().map(|s| s.repo.as_str()).collect();
+        assert_eq!(skipped_repos, vec!["beta-no-planning", "zeta-ghost"]);
+        assert_eq!(aggregate.entries.len(), 1);
+        assert_eq!(aggregate.entries[0].repo, "alpha-healthy");
+    }
+
+    #[test]
+    fn collect_all_workflows_wrapper_matches_reporting_entries() {
+        let tmp = TempDir::new();
+        write(
+            &tmp.path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+        let registry = registry_with("wrapper-repo", tmp.path());
+
+        assert_eq!(
+            collect_all_workflows(&registry),
+            collect_all_workflows_reporting(&registry).entries
+        );
+    }
+
+    // ── list_all_workflows handler: ?with_skipped=1 gate ───────────────────
+
+    #[actix_web::test]
+    async fn list_all_workflows_without_with_skipped_returns_bare_array() {
+        let tmp = TempDir::new();
+        write(
+            &tmp.path()
+                .join("planning/phase6-blockA/sdlc/sdlc-flow-state.json"),
+            FLOW_JSON,
+        );
+        let registry = registry_with("repo-a", tmp.path());
+
+        let resp = list_all_workflows(
+            web::Query(WorkflowsQuery {
+                with_skipped: false,
+            }),
+            web::Data::new(registry),
+        )
+        .await;
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            value.is_array(),
+            "default response must be a bare array, got: {value}"
+        );
+        let entries = value.as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["repo"], "repo-a");
+    }
+
+    #[actix_web::test]
+    async fn list_all_workflows_with_with_skipped_returns_two_key_object() {
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "ghost-repo".to_string(),
+            PathBuf::from("/nonexistent/path/should/not/exist"),
+        );
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let resp = list_all_workflows(
+            web::Query(WorkflowsQuery { with_skipped: true }),
+            web::Data::new(registry),
+        )
+        .await;
+
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let obj = value
+            .as_object()
+            .expect("with_skipped=1 must return an object");
+        assert_eq!(obj.len(), 2);
+        assert!(obj.contains_key("entries"));
+        assert!(obj.contains_key("skipped"));
+        let skipped = obj["skipped"].as_array().expect("skipped must be an array");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0]["repo"], "ghost-repo");
+        assert_eq!(skipped[0]["reason"], "unreadable_root");
     }
 
     // ── resolve_root ──────────────────────────────────────────────────────

@@ -556,6 +556,7 @@ mod tests {
     #[test]
     fn epic_known_reused_from_board() {
         let registry = vec![okf_core::Epic {
+            extra: Default::default(),
             slug: "bastion-surfaces".to_owned(),
             title: "Bastion Surfaces".to_owned(),
             description: None,

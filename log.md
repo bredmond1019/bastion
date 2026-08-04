@@ -11,6 +11,40 @@ timestamp: 2026-08-02T23:42:46Z
 
 ---
 
+## [run: 2026-08-04]
+
+### `ticket-report-skipped-workspaces` (BA.ticket.report-skipped-workspaces, ask A9) — 6 tasks, all PASS
+
+Implemented across tasks 1–6: `GET /api/workflows` now reports which registered workspaces its
+cross-repo aggregate silently skipped and why, behind an opt-in `?with_skipped=1` envelope
+(`{entries, skipped}`), while the default response stays a byte-identical bare array to v0.23. Task 1
+added typeshared `SkippedWorkspaceDto`/`WorkflowsAggregateDto` to `src/serve/dto.rs`; task 2 added
+`collect_all_workflows_reporting` in `handlers/status.rs`, classifying each registered workspace into
+one of three reasons (`unreadable_root`, `no_planning_dir`, `malformed_flow_state`, first-match-wins)
+while keeping `collect_all_workflows`/`collect_flow_states` as thin signature-preserving wrappers so
+`ws/server.rs` and `handlers/runs.rs`'s `with_repo` join kept compiling unchanged, and reused
+`runs.rs`'s `bool_flag_from_str` for the query-flag parse; task 3 regenerated `types/serve.ts`
+(typeshare drift clean); task 4 added a `workflows_corpus_skipped` contract-corpus golden covering
+all three skip reasons plus a healthy repo, and fixed an unrelated pre-existing compile break in
+`handlers/attention.rs` (a missing `history` field on a test-only `mev::brain::BrainConfig` literal,
+caused by upstream `mev` drift) that was blocking `cargo build`/`test` outright; task 5 documented the
+route in `docs/serve-api.md` (contract bumped v0.23 → v0.24, dated Amendment Log entry explaining the
+opt-in-vs-envelope-flip decision); task 6 ran the full authoritative gate (fmt, clippy `-D warnings`,
+`cargo test` full suite, release build, contract-corpus + typeshare drift — all green) and a live
+`bastion serve` manual smoke test against the real HQ registry (24 workspaces), confirming the default
+route is unchanged and `?with_skipped=1` returns the expected envelope with an empty `skipped` array
+(healthy fleet, no unreachable workspaces at test time). Review verdict PASS, no findings. Block
+`BA.ticket.report-skipped-workspaces` flipped closed in `state.json`. Next: `BA.11.O` — Brain-rag CLI
+bridge (`GET /api/brain/recall`, `/walk`, `/pulse`).
+
+```
+6cb04cf feat: implement ticket-report-skipped-workspaces-task5
+d946ec1 feat: implement ticket-report-skipped-workspaces-task4
+acad1e7 feat: implement ticket-report-skipped-workspaces-task3
+342fd5e feat: implement ticket-report-skipped-workspaces-task2
+313d4cf feat: implement ticket-report-skipped-workspaces-task1
+```
+
 ## [run: 2026-08-03]
 
 ### `11.N-run-transition-ws-push` (BA.11.N) — 6 tasks, all PASS

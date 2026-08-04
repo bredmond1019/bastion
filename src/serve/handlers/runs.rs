@@ -231,7 +231,7 @@ pub fn project_run_summary(run_id: Uuid, ctx: &TaskContext, repo: Option<String>
 /// field, which would reject the exact param this route documents and A7
 /// pins (`?with_repo=1`, AC 5a — deliberately not `?with_repo=true`, to
 /// stay consistent with other boolean query flags in this API).
-fn bool_flag_from_str<'de, D>(deserializer: D) -> Result<bool, D::Error>
+pub(crate) fn bool_flag_from_str<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
