@@ -11,6 +11,44 @@ timestamp: 2026-08-02T23:42:46Z
 
 ---
 
+## [run: 2026-08-10]
+
+### `ticket-carryover-triage-dto` (BA.ticket.carryover-triage-dto) — BAILED after tasks 1–2 (task 1 PASS, task 2 failed)
+
+Task 1 restored the build: added a pure `render_clears_when` function that renders
+`okf_core::ClearsWhen` (all four `ClearsWhenPredicate` variants + prose, with/without note) to a
+display string, and rewired `carryover_dto` to use it instead of cloning the now-typed field
+directly. Task 2 landed the larger DTO change: `AttentionCarryoverDto` now carries
+`lane`/`priority`/`effective_priority`/`unmet_blocks`/`finding_id`/`clears_when_satisfied`
+(`age_days` is now `Option<i64>`), and `build_attention` projects `mev::rank_carryover`'s output
+verbatim (via `evaluate_carryover` with `allow_exec: false`) instead of bastion's old stale-only
+`carryover_stale_age` filter — reusing `mev::TriageLane` directly on the DTO per the spec's explicit
+instruction (contract §6 rule 1), which required adding `Deserialize` to `TriageLane`'s derive list
+in `core/mev/src/brain/carryover.rs` (mechanical, committed separately, hash `9507423`).
+`build_attention` gained a `root: &Path` parameter threaded through all 19 call sites, and two tests
+pinning the old stale-only/snoozed-absent behavior were rewritten to reflect the intended semantic
+change (both entries now land in STANDING instead of being filtered out).
+
+The run **BAILED** on task 2's test gate: `scripts/check-contract-corpus-drift.sh` fails because
+`types/contract-corpus/attention__populated.json` is stale — the diff is exactly the new DTO fields
+(`lane`/`clears_when_satisfied`) plus `clears_when`'s null-to-absent-key change. That regeneration
+(`BASTION_DUMP_CORPUS=1`) is explicitly scoped to task 3 per the spec, not task 2 — a task boundary
+mismatch: task 2's test gate runs a check whose fix belongs to task 3's declared scope, so task 2
+cannot pass in isolation and retrying it alone will not close it. Next: resume with
+`/sdlc-flow ticket-carryover-triage-dto 3` to regenerate the golden and complete the remaining
+tasks (docs, contract pin, full validation).
+
+```
+7bde302 feat: implement ticket-carryover-triage-dto-task2
+93d9918 feat: implement ticket-carryover-triage-dto-task1
+6ce690e Update docs
+f428c22 chore(harness): stamp harness manifest for base-template a5e22fee
+79d975a chore(harness): sync from base-template a5e22fee
+35bb8ad refactor(harness): rename /lane to /begin-orchestration
+c711807 fix(harness): /lane requires --roadmap; focused-epic inference dropped
+bc5e93d fix(harness): /lane roadmap resolution is non-circular, with a lane-header cross-check
+```
+
 ## [run: 2026-08-04]
 
 ### `ticket-report-skipped-workspaces` (BA.ticket.report-skipped-workspaces, ask A9) — 6 tasks, all PASS
