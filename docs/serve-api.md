@@ -27,7 +27,7 @@ doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff, dependent_count, ready, unmet_count, block-graph-enrichment, corpus-wide, one-derivation, a5, workflows-aggregate, RepoWorkflowStateDto, cross-repo, n-plus-one, a2, contract-corpus, goldens, stub-fidelity, redaction, drift-check, a4, run_transition, run_stream_status, RunTransitionPayload, RunStreamStatusPayload, RunWatcher, d17, runs-topic, live-run-stream]
+keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, block-graph]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 

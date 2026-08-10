@@ -6,7 +6,7 @@ doc_id: data-contract
 layer: [console, engine]
 project: bastion
 status: active
-keywords: [data contract, orchestrator, PostgreSQL, node_runs, field mappings, v1.6.0, cancellation, abort, budget gate, event read api, ingest, recall, walk, pulse]
+keywords: [data contract, orchestrator, node_runs, field mappings, v1.6.0, cancellation, budget gate]
 related: [monitor, costs, inspect, run]
 ---
 

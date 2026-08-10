@@ -6,7 +6,7 @@ doc_id: costs
 layer: [console]
 project: bastion
 status: active
-keywords: [LLM costs, token usage, spend summary, pricing, tiktoken, exact token count, watch, budget, alerts]
+keywords: [LLM costs, token usage, spend summary, pricing, tiktoken, budget, alerts]
 related: [monitor, inspect, data-contract, run, abort]
 ---
 

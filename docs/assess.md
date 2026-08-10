@@ -6,7 +6,7 @@ doc_id: assess
 layer: [console, brain]
 project: bastion
 status: active
-keywords: [assess, diagnostic, okf-core, report engine, read-only, json envelope, graph readiness, state readiness]
+keywords: [assess, diagnostic, okf-core, report engine, json envelope, graph readiness, state readiness]
 related: [brain, okf, brainval, validate]
 ---
 
