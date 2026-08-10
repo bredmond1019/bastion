@@ -33,11 +33,11 @@
       "stale_carryover": [
         {
           "age_days": 0,
-          "clears_when": null,
+          "clears_when_satisfied": false,
           "created": "<TIMESTAMP>",
           "kind": "known_issue",
+          "lane": "aging",
           "repo": "bastion",
-          "reviewed": null,
           "slug": "stale-known-issue",
           "text": "some known issue that has gone stale",
           "threshold_days": 10
