@@ -1348,6 +1348,13 @@ pub struct AttentionCarryoverDto {
     pub threshold_days: i64,
     /// The triage lane `mev::rank_carryover` assigned (`blocking|hot|aging|standing`).
     /// Never re-derived here — see contract §6 rule 1.
+    ///
+    /// `TriageLane` is defined in the `mev` crate, outside typeshare's
+    /// `src/serve` scan root, so it cannot resolve as a cross-crate type
+    /// reference. `serialized_as = "string"` emits the wire shape (one of the
+    /// four kebab-case lane names) directly instead of an unresolved
+    /// `TriageLane` reference in the generated file.
+    #[typeshare(serialized_as = "string")]
     pub lane: TriageLane,
     /// Authored `priority`, verbatim from `mev::CarryoverRanking`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
