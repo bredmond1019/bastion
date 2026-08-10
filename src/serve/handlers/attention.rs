@@ -40,7 +40,7 @@ use chrono::NaiveDate;
 use crate::config::{FileConfig, resolve_workspace_root};
 use crate::serve::dto::{
     AttentionBacklogDto, AttentionCarryoverDto, AttentionDto, AttentionLanesDto,
-    AttentionThresholdsDto, BoardScope, ErrorPayload,
+    AttentionThresholdsDto, BoardScope, ErrorPayload, render_clears_when,
 };
 use crate::serve::handlers::board::resolve_scope;
 
@@ -98,7 +98,7 @@ fn carryover_dto(
         slug: item.slug.clone(),
         kind: item.kind.clone(),
         text: item.text.clone(),
-        clears_when: item.clears_when.clone(),
+        clears_when: item.clears_when.as_ref().map(render_clears_when),
         created: Some(item.created.clone()),
         reviewed: item.reviewed.clone(),
         age_days,

@@ -1274,6 +1274,41 @@ pub struct EpicDto {
 ///   "created": "2026-07-01", "reviewed": null,
 ///   "age_days": 23, "threshold_days": 3 }
 /// ```
+/// Render a typed `okf_core::ClearsWhen` to the display string that crosses the
+/// serve boundary on [`AttentionCarryoverDto::clears_when`].
+///
+/// Pure, no I/O — the typed enum never crosses the wire (BA.ticket.carryover-triage-dto
+/// task 1). Handles every `ClearsWhen` / `ClearsWhenPredicate` variant, and appends the
+/// predicate's `note` gloss in a consistent `" (note)"` suffix when present.
+pub fn render_clears_when(cw: &okf_core::ClearsWhen) -> String {
+    use okf_core::{ClearsWhen, ClearsWhenPredicate};
+
+    fn with_note(base: String, note: &Option<String>) -> String {
+        match note {
+            Some(n) => format!("{base} ({n})"),
+            None => base,
+        }
+    }
+
+    match cw {
+        ClearsWhen::Prose(s) => s.clone(),
+        ClearsWhen::Predicate(ClearsWhenPredicate::BlockClosed { repo, id, note }) => {
+            with_note(format!("block {repo}/{id} is closed"), note)
+        }
+        ClearsWhen::Predicate(ClearsWhenPredicate::FileExists { path, note }) => {
+            with_note(format!("{path} exists"), note)
+        }
+        ClearsWhen::Predicate(ClearsWhenPredicate::FileContains {
+            path,
+            pattern,
+            note,
+        }) => with_note(format!("{path} contains \"{pattern}\""), note),
+        ClearsWhen::Predicate(ClearsWhenPredicate::CommandExitsZero { command, note }) => {
+            with_note(format!("`{command}` exits zero"), note)
+        }
+    }
+}
+
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttentionCarryoverDto {
@@ -3552,6 +3587,105 @@ mod tests {
         assert_eq!(dto.scope, BoardScope::Hq);
         assert!(dto.tier.is_none());
         assert!(dto.repos.is_empty());
+    }
+
+    // ── render_clears_when (BA.ticket.carryover-triage-dto task 1) ──────────
+
+    #[test]
+    fn render_clears_when_prose() {
+        let cw = okf_core::ClearsWhen::Prose("the docs are updated".to_owned());
+        assert_eq!(render_clears_when(&cw), "the docs are updated");
+    }
+
+    #[test]
+    fn render_clears_when_block_closed_without_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::BlockClosed {
+            repo: "bastion".to_owned(),
+            id: "BA.11.P".to_owned(),
+            note: None,
+        });
+        assert_eq!(render_clears_when(&cw), "block bastion/BA.11.P is closed");
+    }
+
+    #[test]
+    fn render_clears_when_block_closed_with_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::BlockClosed {
+            repo: "bastion".to_owned(),
+            id: "BA.11.P".to_owned(),
+            note: Some("the DTO ships".to_owned()),
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            "block bastion/BA.11.P is closed (the DTO ships)"
+        );
+    }
+
+    #[test]
+    fn render_clears_when_file_exists_without_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::FileExists {
+            path: ".env.example".to_owned(),
+            note: None,
+        });
+        assert_eq!(render_clears_when(&cw), ".env.example exists");
+    }
+
+    #[test]
+    fn render_clears_when_file_exists_with_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::FileExists {
+            path: ".env.example".to_owned(),
+            note: Some("documents the engine mount".to_owned()),
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            ".env.example exists (documents the engine mount)"
+        );
+    }
+
+    #[test]
+    fn render_clears_when_file_contains_without_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::FileContains {
+            path: ".env.example".to_owned(),
+            pattern: "BASTION_ENGINE_API_KEY".to_owned(),
+            note: None,
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            ".env.example contains \"BASTION_ENGINE_API_KEY\""
+        );
+    }
+
+    #[test]
+    fn render_clears_when_file_contains_with_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::FileContains {
+            path: ".env.example".to_owned(),
+            pattern: "BASTION_ENGINE_API_KEY".to_owned(),
+            note: Some("the key is documented".to_owned()),
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            ".env.example contains \"BASTION_ENGINE_API_KEY\" (the key is documented)"
+        );
+    }
+
+    #[test]
+    fn render_clears_when_command_exits_zero_without_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::CommandExitsZero {
+            command: "cargo test carryover".to_owned(),
+            note: None,
+        });
+        assert_eq!(render_clears_when(&cw), "`cargo test carryover` exits zero");
+    }
+
+    #[test]
+    fn render_clears_when_command_exits_zero_with_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::CommandExitsZero {
+            command: "cargo test carryover".to_owned(),
+            note: Some("covers all four predicate variants".to_owned()),
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            "`cargo test carryover` exits zero (covers all four predicate variants)"
+        );
     }
 
     // ── AttentionDto (BA.11.P) ──────────────────────────────────────────────
