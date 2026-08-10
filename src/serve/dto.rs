@@ -41,6 +41,7 @@
 //!   `serve/poll.rs`, not here.
 
 use crate::sessions::model::{Pane, Session};
+use mev::TriageLane;
 use serde::{Deserialize, Serialize};
 use typeshare::typeshare;
 
@@ -1309,6 +1310,12 @@ pub fn render_clears_when(cw: &okf_core::ClearsWhen) -> String {
     }
 }
 
+/// Projects `mev::CarryoverRanking` verbatim (repo/slug/kind/lane/priority/
+/// effective_priority/unmet_blocks/finding_id/clears_when_satisfied) alongside the
+/// original entry's display fields (text/clears_when/created/reviewed/threshold_days).
+/// Every `Option` serializes as an absent key when `None` — never `null` — matching
+/// this repo's established absent-is-never-neutral convention (BA.ticket
+/// .carryover-triage-dto task 2).
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttentionCarryoverDto {
@@ -1321,20 +1328,45 @@ pub struct AttentionCarryoverDto {
     /// The carryover text itself, untruncated.
     pub text: String,
     /// What clears this item, when recorded.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clears_when: Option<String>,
     /// Creation date (`YYYY-MM-DD`), when recorded.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
     /// Last-reviewed date (`YYYY-MM-DD`), when recorded.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed: Option<String>,
-    /// Days past the anchor date (`max(created, reviewed)`), as of `as_of`.
+    /// Days past the anchor date (`max(created, reviewed)`), as of `as_of`. `None`
+    /// when the entry is currently snoozed or has no parseable anchor date — such
+    /// entries still reach the board (contract §2; they no longer have to be
+    /// stale-with-an-age to be included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[typeshare(serialized_as = "number")]
-    pub age_days: i64,
+    pub age_days: Option<i64>,
     /// The per-`kind` threshold this item tripped.
     #[typeshare(serialized_as = "number")]
     pub threshold_days: i64,
+    /// The triage lane `mev::rank_carryover` assigned (`blocking|hot|aging|standing`).
+    /// Never re-derived here — see contract §6 rule 1.
+    pub lane: TriageLane,
+    /// Authored `priority`, verbatim from `mev::CarryoverRanking`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u8>,
+    /// Effective priority (reverse-topo min-propagation over `blocks[]` edges),
+    /// verbatim from `mev::CarryoverRanking`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_priority: Option<u8>,
+    /// Unmet `blocks[]` edges. Non-empty iff this entry is in the BLOCKING lane.
+    /// There is deliberately no `blocking: bool` field (contract §6 rule 2) —
+    /// consumers derive it from `!unmet_blocks.is_empty()`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unmet_blocks: Vec<String>,
+    /// Free-form cross-repo finding identity, verbatim from `mev::CarryoverRanking`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finding_id: Option<String>,
+    /// Whether every reference extracted from `clears_when` is currently satisfied
+    /// (`mev::CarryoverLane::Cleared`), verbatim from `mev::CarryoverRanking`.
+    pub clears_when_satisfied: bool,
 }
 
 /// One `backlog[]` node that has crossed the backlog staleness threshold — used for both the
@@ -3699,8 +3731,14 @@ mod tests {
             clears_when: Some("the engine mount is documented in .env.example".to_owned()),
             created: Some("2026-07-01".to_owned()),
             reviewed: None,
-            age_days: 23,
+            age_days: Some(23),
             threshold_days: 3,
+            lane: TriageLane::Aging,
+            priority: None,
+            effective_priority: None,
+            unmet_blocks: Vec::new(),
+            finding_id: None,
+            clears_when_satisfied: false,
         }
     }
 
@@ -3788,6 +3826,90 @@ mod tests {
         let json = serde_json::to_string(&capture).expect("serialize");
         let back: AttentionBacklogDto = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(capture, back);
+    }
+
+    #[test]
+    fn attention_carryover_dto_round_trips_with_ranking_fields_populated() {
+        let dto = AttentionCarryoverDto {
+            lane: TriageLane::Blocking,
+            priority: Some(0),
+            effective_priority: Some(0),
+            unmet_blocks: vec!["bastion:BA.1.A".to_owned()],
+            finding_id: Some("finding-x".to_owned()),
+            clears_when_satisfied: true,
+            ..sample_attention_carryover()
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: AttentionCarryoverDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn attention_carryover_dto_absent_optionals_are_absent_keys_not_null() {
+        // Testing Strategy item 6 — `priority`, `effective_priority`, `finding_id`,
+        // and `age_days` (plus the pre-existing `clears_when`/`reviewed`/
+        // `unmet_blocks`) must serialize as absent keys when `None`/empty, never
+        // as `null`/`[]`, matching this repo's established absent-is-never-neutral
+        // convention.
+        let dto = AttentionCarryoverDto {
+            clears_when: None,
+            reviewed: None,
+            age_days: None,
+            priority: None,
+            effective_priority: None,
+            unmet_blocks: Vec::new(),
+            finding_id: None,
+            ..sample_attention_carryover()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize");
+        let obj = v.as_object().expect("object");
+        for key in [
+            "clears_when",
+            "reviewed",
+            "age_days",
+            "priority",
+            "effective_priority",
+            "unmet_blocks",
+            "finding_id",
+        ] {
+            assert!(
+                !obj.contains_key(key),
+                "expected '{key}' to be an absent key, not present (possibly as null)"
+            );
+        }
+        // Sanity check the negative assertions above aren't vacuous — a field left
+        // populated by the base fixture is still present.
+        assert!(obj.contains_key("created"));
+    }
+
+    #[test]
+    fn attention_carryover_dto_never_serializes_a_blocking_field() {
+        // Contract §6 rule 2 — `blocking` is always derived from `unmet_blocks`,
+        // never authored as its own field, whether or not the entry is BLOCKING.
+        let blocking = AttentionCarryoverDto {
+            lane: TriageLane::Blocking,
+            unmet_blocks: vec!["bastion:BA.1.A".to_owned()],
+            ..sample_attention_carryover()
+        };
+        let v = serde_json::to_value(&blocking).expect("serialize");
+        assert!(!v.as_object().expect("object").contains_key("blocking"));
+    }
+
+    #[test]
+    fn attention_carryover_dto_lane_serializes_kebab_case() {
+        for (lane, expected) in [
+            (TriageLane::Blocking, "blocking"),
+            (TriageLane::Hot, "hot"),
+            (TriageLane::Aging, "aging"),
+            (TriageLane::Standing, "standing"),
+        ] {
+            let dto = AttentionCarryoverDto {
+                lane,
+                ..sample_attention_carryover()
+            };
+            let v = serde_json::to_value(&dto).expect("serialize");
+            assert_eq!(v["lane"], expected);
+        }
     }
 
     // ── RunStateDto / NodeTransitionDto (BA.11.M) ──────────────────────────
