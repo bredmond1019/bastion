@@ -13,6 +13,42 @@ timestamp: 2026-08-02T23:42:46Z
 
 ## [run: 2026-08-10]
 
+### `ticket-carryover-triage-dto` (BA.ticket.carryover-triage-dto) — DONE, 5 tasks, PASS
+
+Resumed the flow to completion (tasks 1–5, all PASS) and closed the block. Task 1 (already landed)
+added the pure `render_clears_when` function restoring the build. Task 2 rewired `build_attention`
+onto `mev::rank_carryover`'s full projection — `AttentionCarryoverDto` now carries
+`lane`/`priority`/`effective_priority`/`unmet_blocks`/`finding_id`/`clears_when_satisfied`
+(`age_days` widened to `Option<i64>`), the old stale-only filter is gone, and
+`types/contract-corpus/attention__populated.json` was regenerated to match (golden regeneration
+merged into task 2 after the prior run's structural bail — `contract_corpus.rs` enforces goldens
+from inside the test suite itself, so a DTO-shape task and its golden regen cannot be split across
+tasks). Task 3 fixed the resulting TypeScript drift by shimming `TriageLane` through
+`#[typeshare(serialized_as = "string")]` (it lives outside typeshare's scan root) and confirmed
+both typeshare and contract-corpus drift checks pass with zero diff. Task 4 pinned
+`core/mev/docs/carryover-contract.md` @1.0.0 as bastion's first-ever consumer doc for that contract
+and bumped `docs/serve-api.md` v0.24 → v0.25 with an Amendment Log entry naming the stale-only-
+filter removal and the ~6→~138 response-size growth. Task 5 ran the full validation suite (fmt,
+clippy, `cargo test` [2042 tests], release build, contract-corpus-drift, typeshare-drift) and a
+live `bastion serve` smoke test of `GET /api/attention`, confirming 143 ranked carryover entries
+across the AGING/STANDING lanes (BLOCKING/HOT correctly empty — no live corpus entry authors
+`priority`/`blocks[]`/`finding_id` yet). Final review verdict: PASS. Block
+`BA.ticket.carryover-triage-dto` flipped closed in `state.json`. Next: pick up
+`BA.ticket.live-run-workflow-type` — populate `RunSummaryDto.workflow_type` from
+`engine_serve::http::live_run_workflow_type`.
+
+```
+4e2b7f9 feat: implement ticket-carryover-triage-dto-task4
+9baaf5c feat: implement ticket-carryover-triage-dto-task3
+ed45793 feat: implement ticket-carryover-triage-dto-task2
+e54a1db docs: add shared Response Style rule for agent output
+09af070 chore: wrap up ticket-carryover-triage-dto
+7bde302 feat: implement ticket-carryover-triage-dto-task2
+93d9918 feat: implement ticket-carryover-triage-dto-task1
+```
+
+---
+
 ### `ticket-carryover-triage-dto` (BA.ticket.carryover-triage-dto) — BAILED after tasks 1–2 (task 1 PASS, task 2 failed)
 
 Task 1 restored the build: added a pure `render_clears_when` function that renders
