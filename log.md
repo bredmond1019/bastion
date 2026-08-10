@@ -11,6 +11,80 @@ timestamp: 2026-08-02T23:42:46Z
 
 ---
 
+## [run: 2026-08-10]
+
+### `ticket-carryover-triage-dto` (BA.ticket.carryover-triage-dto) — DONE, 5 tasks, PASS
+
+Resumed the flow to completion (tasks 1–5, all PASS) and closed the block. Task 1 (already landed)
+added the pure `render_clears_when` function restoring the build. Task 2 rewired `build_attention`
+onto `mev::rank_carryover`'s full projection — `AttentionCarryoverDto` now carries
+`lane`/`priority`/`effective_priority`/`unmet_blocks`/`finding_id`/`clears_when_satisfied`
+(`age_days` widened to `Option<i64>`), the old stale-only filter is gone, and
+`types/contract-corpus/attention__populated.json` was regenerated to match (golden regeneration
+merged into task 2 after the prior run's structural bail — `contract_corpus.rs` enforces goldens
+from inside the test suite itself, so a DTO-shape task and its golden regen cannot be split across
+tasks). Task 3 fixed the resulting TypeScript drift by shimming `TriageLane` through
+`#[typeshare(serialized_as = "string")]` (it lives outside typeshare's scan root) and confirmed
+both typeshare and contract-corpus drift checks pass with zero diff. Task 4 pinned
+`core/mev/docs/carryover-contract.md` @1.0.0 as bastion's first-ever consumer doc for that contract
+and bumped `docs/serve-api.md` v0.24 → v0.25 with an Amendment Log entry naming the stale-only-
+filter removal and the ~6→~138 response-size growth. Task 5 ran the full validation suite (fmt,
+clippy, `cargo test` [2042 tests], release build, contract-corpus-drift, typeshare-drift) and a
+live `bastion serve` smoke test of `GET /api/attention`, confirming 143 ranked carryover entries
+across the AGING/STANDING lanes (BLOCKING/HOT correctly empty — no live corpus entry authors
+`priority`/`blocks[]`/`finding_id` yet). Final review verdict: PASS. Block
+`BA.ticket.carryover-triage-dto` flipped closed in `state.json`. Next: pick up
+`BA.ticket.live-run-workflow-type` — populate `RunSummaryDto.workflow_type` from
+`engine_serve::http::live_run_workflow_type`.
+
+```
+4e2b7f9 feat: implement ticket-carryover-triage-dto-task4
+9baaf5c feat: implement ticket-carryover-triage-dto-task3
+ed45793 feat: implement ticket-carryover-triage-dto-task2
+e54a1db docs: add shared Response Style rule for agent output
+09af070 chore: wrap up ticket-carryover-triage-dto
+7bde302 feat: implement ticket-carryover-triage-dto-task2
+93d9918 feat: implement ticket-carryover-triage-dto-task1
+```
+
+---
+
+### `ticket-carryover-triage-dto` (BA.ticket.carryover-triage-dto) — BAILED after tasks 1–2 (task 1 PASS, task 2 failed)
+
+Task 1 restored the build: added a pure `render_clears_when` function that renders
+`okf_core::ClearsWhen` (all four `ClearsWhenPredicate` variants + prose, with/without note) to a
+display string, and rewired `carryover_dto` to use it instead of cloning the now-typed field
+directly. Task 2 landed the larger DTO change: `AttentionCarryoverDto` now carries
+`lane`/`priority`/`effective_priority`/`unmet_blocks`/`finding_id`/`clears_when_satisfied`
+(`age_days` is now `Option<i64>`), and `build_attention` projects `mev::rank_carryover`'s output
+verbatim (via `evaluate_carryover` with `allow_exec: false`) instead of bastion's old stale-only
+`carryover_stale_age` filter — reusing `mev::TriageLane` directly on the DTO per the spec's explicit
+instruction (contract §6 rule 1), which required adding `Deserialize` to `TriageLane`'s derive list
+in `core/mev/src/brain/carryover.rs` (mechanical, committed separately, hash `9507423`).
+`build_attention` gained a `root: &Path` parameter threaded through all 19 call sites, and two tests
+pinning the old stale-only/snoozed-absent behavior were rewritten to reflect the intended semantic
+change (both entries now land in STANDING instead of being filtered out).
+
+The run **BAILED** on task 2's test gate: `scripts/check-contract-corpus-drift.sh` fails because
+`types/contract-corpus/attention__populated.json` is stale — the diff is exactly the new DTO fields
+(`lane`/`clears_when_satisfied`) plus `clears_when`'s null-to-absent-key change. That regeneration
+(`BASTION_DUMP_CORPUS=1`) is explicitly scoped to task 3 per the spec, not task 2 — a task boundary
+mismatch: task 2's test gate runs a check whose fix belongs to task 3's declared scope, so task 2
+cannot pass in isolation and retrying it alone will not close it. Next: resume with
+`/sdlc-flow ticket-carryover-triage-dto 3` to regenerate the golden and complete the remaining
+tasks (docs, contract pin, full validation).
+
+```
+7bde302 feat: implement ticket-carryover-triage-dto-task2
+93d9918 feat: implement ticket-carryover-triage-dto-task1
+6ce690e Update docs
+f428c22 chore(harness): stamp harness manifest for base-template a5e22fee
+79d975a chore(harness): sync from base-template a5e22fee
+35bb8ad refactor(harness): rename /lane to /begin-orchestration
+c711807 fix(harness): /lane requires --roadmap; focused-epic inference dropped
+bc5e93d fix(harness): /lane roadmap resolution is non-circular, with a lane-header cross-check
+```
+
 ## [run: 2026-08-04]
 
 ### `ticket-report-skipped-workspaces` (BA.ticket.report-skipped-workspaces, ask A9) — 6 tasks, all PASS

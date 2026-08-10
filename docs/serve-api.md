@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.24"
+title: "serve-api contract v0.25"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -22,18 +22,26 @@ workspaces`, A9) — an opt-in `?with_skipped=1` query param returns `{entries, 
 the bare array, naming which registered workspaces Section 11.6's walk could not fully report and
 why (`unreadable_root` / `no_planning_dir` / `malformed_flow_state`), reusing the same single walk
 `collect_flow_states` already performs with no second traversal, while the unparameterized default
-response stays byte-identical to v0.23."
+response stays byte-identical to v0.23; and the v0.25 carryover triage ranking projection
+(`BA.ticket.carryover-triage-dto`) — `GET /api/attention`'s `stale_carryover` lane now projects
+mev's `rank_carryover` over the **full** carryover entry set instead of a
+`carryover_stale_age`-filtered subset, so response size grows from roughly 6 entries fleet-wide to
+roughly 138; `AttentionCarryoverDto` gains `lane`, `priority`, `effective_priority`,
+`unmet_blocks`, `finding_id`, `clears_when_satisfied` (all verbatim from mev's
+`CarryoverRanking`, contract-pinned in the new `docs/carryover-contract.md`, D20 pattern), and
+`age_days` widens from `i64` to `Option<i64>` (the one non-additive change — a snoozed or
+unparseable-anchor entry now reaches the board with no age)."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve, api, websocket, sessions, status, actions, quick-action, board, cross-brain, rollup, bastion-ui, contract, engine-serve, abort, X-API-Key, typeshare, typescript, codegen, live-state, runs, task-context, d42, attention, carryover, backlog, staleness, orphaned-captures, docs, markdown, allowlist, path-traversal, file-tree, read-endpoint, epics, ranking, wave, priority, due, blocked_by, block-graph, nodes, edges, cycles, topo-order, lanes, mechanical-projection, one-derivation, last_touched, recency, costs, budget, spend, run-summary, RunSummaryDto, spec_slug, workflow_type, run_id, handoff, dependent_count, ready, unmet_count, block-graph-enrichment, corpus-wide, one-derivation, a5, workflows-aggregate, RepoWorkflowStateDto, cross-repo, n-plus-one, a2, contract-corpus, goldens, stub-fidelity, redaction, drift-check, a4, run_transition, run_stream_status, RunTransitionPayload, RunStreamStatusPayload, RunWatcher, d17, runs-topic, live-run-stream]
+keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, block-graph]
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.24 Contract
+# serve-api — v0.25 Contract
 
-**Version:** v0.24  
+**Version:** v0.25  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–25 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -1836,11 +1844,23 @@ applies is a rendering concern and stays in `mev`.
 | `slug` | string | Stable item slug. |
 | `kind` | string | Carryover kind (`"env"`, `"deferred"`, `"known_issue"`, `"constraint"`, or other). |
 | `text` | string | The carryover text itself, untruncated. |
-| `clears_when` | string \| null | What clears this item, when recorded. |
+| `clears_when` | string \| null | What clears this item, when recorded — a rendered display string (`dto::render_clears_when`); the typed `okf_core::ClearsWhen` enum never crosses this boundary. Absent key when `None`. |
 | `created` | string \| null | Creation date (`YYYY-MM-DD`), when recorded. |
 | `reviewed` | string \| null | Last-reviewed date (`YYYY-MM-DD`), when recorded. |
-| `age_days` | number | Days since `max(created, reviewed)`, as computed by `carryover_stale_age`. |
+| `age_days` | number \| absent (v0.25) | Days since `max(created, reviewed)`, as computed by `carryover_stale_age`. **Widened from a non-optional `number` to optional in v0.25** — absent when the entry is currently snoozed or has no parseable anchor date; such entries still reach the board (they are no longer excluded pre-ranking). |
 | `threshold_days` | number | The per-`kind` threshold this item tripped (`AttentionThresholds::carryover_threshold`). |
+| `lane` (v0.25) | string | The triage lane `mev::rank_carryover` assigned — one of `"blocking"` \| `"hot"` \| `"aging"` \| `"standing"` — reused verbatim from mev's `TriageLane`, never re-derived here. See `docs/carryover-contract.md`. |
+| `priority` (v0.25) | number \| absent | Authored priority (`0`=hottest .. `3`=coldest), verbatim from `mev::CarryoverRanking`. Absent key when unauthored. |
+| `effective_priority` (v0.25) | number \| absent | Priority after min-propagation across `blocks[]` edges, verbatim from `mev::CarryoverRanking`. Absent key when the entry has no own priority and no hotter transitive target. |
+| `unmet_blocks` (v0.25) | array of string \| absent | Every unmet `blocks[]` target key. Non-empty iff this entry is in the BLOCKING lane. Absent key (not `[]`) when empty. There is deliberately no `blocking: bool` field — derive it from `!unmet_blocks.is_empty()`. |
+| `finding_id` (v0.25) | string \| absent | Cross-repo finding identity, verbatim from `mev::CarryoverRanking`. Absent key when unauthored. |
+| `clears_when_satisfied` (v0.25) | boolean | Whether the source verdict's evaluated `clears_when` references are currently satisfied, verbatim from `mev::CarryoverRanking`. Always present. |
+
+**v0.25 behavioral change:** membership in this array no longer gates on `carryover_stale_age`
+alone — the full carryover entry set is ranked by `mev::rank_carryover` (contract §2), and
+`stale`/`age_days`/`threshold_days` are consulted only as inputs to lane assignment, not as a
+pre-filter. A response that previously carried ~6 entries fleet-wide now carries ~138. Ordering is
+mev's — this repo never re-sorts the returned vector.
 
 #### `AttentionBacklogDto`
 
@@ -2275,7 +2295,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.24**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.25**.
 
 ---
 
@@ -2881,6 +2901,28 @@ a real Postgres being up or down cannot change any golden.
 ---
 
 ## Amendment Log
+
+- **2026-08-10 — v0.24 → v0.25 (`BA.ticket.carryover-triage-dto`):** `GET /api/attention`'s
+  `stale_carryover` lane (Section 15) stops gating membership on `carryover_stale_age` alone.
+  `build_attention` now calls `mev::brain::carryover::rank_carryover` (with
+  `evaluate_carryover(..., allow_exec: false)` feeding it the full carryover entry set — never a
+  stale-filtered subset) and projects its ranking verbatim, preserving mev's sort order. **This is
+  a semantic change a client must account for**: the array previously carried roughly 6 entries
+  fleet-wide (only items already past their per-`kind` staleness threshold); it now carries
+  roughly 138 (every evaluated entry, ranked into BLOCKING/HOT/AGING/STANDING). A client that
+  sized a view (pagination, a fixed-height list, a polling budget) around the old ~6-entry
+  behaviour will be surprised by the new volume. `AttentionCarryoverDto` gains `lane`, `priority`,
+  `effective_priority`, `unmet_blocks`, `finding_id`, `clears_when_satisfied` (all typeshared,
+  verbatim from `mev::CarryoverRanking` — see the field table in Section 15.3 and the new
+  `docs/carryover-contract.md`, mev's contract pinned at v1.0.0 per the D20 pattern). **The one
+  non-additive change:** `age_days` widens from a non-optional `number` to `number | absent` —
+  absent for a currently-snoozed entry or one whose anchor date does not parse, both of which now
+  reach the board instead of being excluded pre-ranking. There is deliberately no `blocking: bool`
+  field; derive it client-side from `!unmet_blocks.is_empty()`. `types/serve.ts` regenerated
+  (`scripts/gen-types.sh`); `scripts/check-typeshare-drift.sh` and
+  `scripts/check-contract-corpus-drift.sh` pass; `types/contract-corpus/attention__populated.json`
+  regenerated and inspected line-by-line (new fields present, `clears_when`/`reviewed` drop to
+  absent keys where `None`, entry count grows as expected — no other drift).
 
 - **2026-08-04 — v0.23 → v0.24 (`BA.ticket.report-skipped-workspaces`, ask A9):** `GET
   /api/workflows` gains an opt-in `?with_skipped=1` query param (Section 11.6) that returns

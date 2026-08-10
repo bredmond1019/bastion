@@ -41,6 +41,7 @@
 //!   `serve/poll.rs`, not here.
 
 use crate::sessions::model::{Pane, Session};
+use mev::TriageLane;
 use serde::{Deserialize, Serialize};
 use typeshare::typeshare;
 
@@ -1274,6 +1275,47 @@ pub struct EpicDto {
 ///   "created": "2026-07-01", "reviewed": null,
 ///   "age_days": 23, "threshold_days": 3 }
 /// ```
+/// Render a typed `okf_core::ClearsWhen` to the display string that crosses the
+/// serve boundary on [`AttentionCarryoverDto::clears_when`].
+///
+/// Pure, no I/O — the typed enum never crosses the wire (BA.ticket.carryover-triage-dto
+/// task 1). Handles every `ClearsWhen` / `ClearsWhenPredicate` variant, and appends the
+/// predicate's `note` gloss in a consistent `" (note)"` suffix when present.
+pub fn render_clears_when(cw: &okf_core::ClearsWhen) -> String {
+    use okf_core::{ClearsWhen, ClearsWhenPredicate};
+
+    fn with_note(base: String, note: &Option<String>) -> String {
+        match note {
+            Some(n) => format!("{base} ({n})"),
+            None => base,
+        }
+    }
+
+    match cw {
+        ClearsWhen::Prose(s) => s.clone(),
+        ClearsWhen::Predicate(ClearsWhenPredicate::BlockClosed { repo, id, note }) => {
+            with_note(format!("block {repo}/{id} is closed"), note)
+        }
+        ClearsWhen::Predicate(ClearsWhenPredicate::FileExists { path, note }) => {
+            with_note(format!("{path} exists"), note)
+        }
+        ClearsWhen::Predicate(ClearsWhenPredicate::FileContains {
+            path,
+            pattern,
+            note,
+        }) => with_note(format!("{path} contains \"{pattern}\""), note),
+        ClearsWhen::Predicate(ClearsWhenPredicate::CommandExitsZero { command, note }) => {
+            with_note(format!("`{command}` exits zero"), note)
+        }
+    }
+}
+
+/// Projects `mev::CarryoverRanking` verbatim (repo/slug/kind/lane/priority/
+/// effective_priority/unmet_blocks/finding_id/clears_when_satisfied) alongside the
+/// original entry's display fields (text/clears_when/created/reviewed/threshold_days).
+/// Every `Option` serializes as an absent key when `None` — never `null` — matching
+/// this repo's established absent-is-never-neutral convention (BA.ticket
+/// .carryover-triage-dto task 2).
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttentionCarryoverDto {
@@ -1286,20 +1328,52 @@ pub struct AttentionCarryoverDto {
     /// The carryover text itself, untruncated.
     pub text: String,
     /// What clears this item, when recorded.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clears_when: Option<String>,
     /// Creation date (`YYYY-MM-DD`), when recorded.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
     /// Last-reviewed date (`YYYY-MM-DD`), when recorded.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed: Option<String>,
-    /// Days past the anchor date (`max(created, reviewed)`), as of `as_of`.
+    /// Days past the anchor date (`max(created, reviewed)`), as of `as_of`. `None`
+    /// when the entry is currently snoozed or has no parseable anchor date — such
+    /// entries still reach the board (contract §2; they no longer have to be
+    /// stale-with-an-age to be included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[typeshare(serialized_as = "number")]
-    pub age_days: i64,
+    pub age_days: Option<i64>,
     /// The per-`kind` threshold this item tripped.
     #[typeshare(serialized_as = "number")]
     pub threshold_days: i64,
+    /// The triage lane `mev::rank_carryover` assigned (`blocking|hot|aging|standing`).
+    /// Never re-derived here — see contract §6 rule 1.
+    ///
+    /// `TriageLane` is defined in the `mev` crate, outside typeshare's
+    /// `src/serve` scan root, so it cannot resolve as a cross-crate type
+    /// reference. `serialized_as = "string"` emits the wire shape (one of the
+    /// four kebab-case lane names) directly instead of an unresolved
+    /// `TriageLane` reference in the generated file.
+    #[typeshare(serialized_as = "string")]
+    pub lane: TriageLane,
+    /// Authored `priority`, verbatim from `mev::CarryoverRanking`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u8>,
+    /// Effective priority (reverse-topo min-propagation over `blocks[]` edges),
+    /// verbatim from `mev::CarryoverRanking`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_priority: Option<u8>,
+    /// Unmet `blocks[]` edges. Non-empty iff this entry is in the BLOCKING lane.
+    /// There is deliberately no `blocking: bool` field (contract §6 rule 2) —
+    /// consumers derive it from `!unmet_blocks.is_empty()`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unmet_blocks: Vec<String>,
+    /// Free-form cross-repo finding identity, verbatim from `mev::CarryoverRanking`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finding_id: Option<String>,
+    /// Whether every reference extracted from `clears_when` is currently satisfied
+    /// (`mev::CarryoverLane::Cleared`), verbatim from `mev::CarryoverRanking`.
+    pub clears_when_satisfied: bool,
 }
 
 /// One `backlog[]` node that has crossed the backlog staleness threshold — used for both the
@@ -3554,6 +3628,105 @@ mod tests {
         assert!(dto.repos.is_empty());
     }
 
+    // ── render_clears_when (BA.ticket.carryover-triage-dto task 1) ──────────
+
+    #[test]
+    fn render_clears_when_prose() {
+        let cw = okf_core::ClearsWhen::Prose("the docs are updated".to_owned());
+        assert_eq!(render_clears_when(&cw), "the docs are updated");
+    }
+
+    #[test]
+    fn render_clears_when_block_closed_without_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::BlockClosed {
+            repo: "bastion".to_owned(),
+            id: "BA.11.P".to_owned(),
+            note: None,
+        });
+        assert_eq!(render_clears_when(&cw), "block bastion/BA.11.P is closed");
+    }
+
+    #[test]
+    fn render_clears_when_block_closed_with_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::BlockClosed {
+            repo: "bastion".to_owned(),
+            id: "BA.11.P".to_owned(),
+            note: Some("the DTO ships".to_owned()),
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            "block bastion/BA.11.P is closed (the DTO ships)"
+        );
+    }
+
+    #[test]
+    fn render_clears_when_file_exists_without_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::FileExists {
+            path: ".env.example".to_owned(),
+            note: None,
+        });
+        assert_eq!(render_clears_when(&cw), ".env.example exists");
+    }
+
+    #[test]
+    fn render_clears_when_file_exists_with_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::FileExists {
+            path: ".env.example".to_owned(),
+            note: Some("documents the engine mount".to_owned()),
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            ".env.example exists (documents the engine mount)"
+        );
+    }
+
+    #[test]
+    fn render_clears_when_file_contains_without_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::FileContains {
+            path: ".env.example".to_owned(),
+            pattern: "BASTION_ENGINE_API_KEY".to_owned(),
+            note: None,
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            ".env.example contains \"BASTION_ENGINE_API_KEY\""
+        );
+    }
+
+    #[test]
+    fn render_clears_when_file_contains_with_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::FileContains {
+            path: ".env.example".to_owned(),
+            pattern: "BASTION_ENGINE_API_KEY".to_owned(),
+            note: Some("the key is documented".to_owned()),
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            ".env.example contains \"BASTION_ENGINE_API_KEY\" (the key is documented)"
+        );
+    }
+
+    #[test]
+    fn render_clears_when_command_exits_zero_without_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::CommandExitsZero {
+            command: "cargo test carryover".to_owned(),
+            note: None,
+        });
+        assert_eq!(render_clears_when(&cw), "`cargo test carryover` exits zero");
+    }
+
+    #[test]
+    fn render_clears_when_command_exits_zero_with_note() {
+        let cw = okf_core::ClearsWhen::Predicate(okf_core::ClearsWhenPredicate::CommandExitsZero {
+            command: "cargo test carryover".to_owned(),
+            note: Some("covers all four predicate variants".to_owned()),
+        });
+        assert_eq!(
+            render_clears_when(&cw),
+            "`cargo test carryover` exits zero (covers all four predicate variants)"
+        );
+    }
+
     // ── AttentionDto (BA.11.P) ──────────────────────────────────────────────
 
     fn sample_attention_carryover() -> AttentionCarryoverDto {
@@ -3565,8 +3738,14 @@ mod tests {
             clears_when: Some("the engine mount is documented in .env.example".to_owned()),
             created: Some("2026-07-01".to_owned()),
             reviewed: None,
-            age_days: 23,
+            age_days: Some(23),
             threshold_days: 3,
+            lane: TriageLane::Aging,
+            priority: None,
+            effective_priority: None,
+            unmet_blocks: Vec::new(),
+            finding_id: None,
+            clears_when_satisfied: false,
         }
     }
 
@@ -3654,6 +3833,90 @@ mod tests {
         let json = serde_json::to_string(&capture).expect("serialize");
         let back: AttentionBacklogDto = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(capture, back);
+    }
+
+    #[test]
+    fn attention_carryover_dto_round_trips_with_ranking_fields_populated() {
+        let dto = AttentionCarryoverDto {
+            lane: TriageLane::Blocking,
+            priority: Some(0),
+            effective_priority: Some(0),
+            unmet_blocks: vec!["bastion:BA.1.A".to_owned()],
+            finding_id: Some("finding-x".to_owned()),
+            clears_when_satisfied: true,
+            ..sample_attention_carryover()
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: AttentionCarryoverDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn attention_carryover_dto_absent_optionals_are_absent_keys_not_null() {
+        // Testing Strategy item 6 — `priority`, `effective_priority`, `finding_id`,
+        // and `age_days` (plus the pre-existing `clears_when`/`reviewed`/
+        // `unmet_blocks`) must serialize as absent keys when `None`/empty, never
+        // as `null`/`[]`, matching this repo's established absent-is-never-neutral
+        // convention.
+        let dto = AttentionCarryoverDto {
+            clears_when: None,
+            reviewed: None,
+            age_days: None,
+            priority: None,
+            effective_priority: None,
+            unmet_blocks: Vec::new(),
+            finding_id: None,
+            ..sample_attention_carryover()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize");
+        let obj = v.as_object().expect("object");
+        for key in [
+            "clears_when",
+            "reviewed",
+            "age_days",
+            "priority",
+            "effective_priority",
+            "unmet_blocks",
+            "finding_id",
+        ] {
+            assert!(
+                !obj.contains_key(key),
+                "expected '{key}' to be an absent key, not present (possibly as null)"
+            );
+        }
+        // Sanity check the negative assertions above aren't vacuous — a field left
+        // populated by the base fixture is still present.
+        assert!(obj.contains_key("created"));
+    }
+
+    #[test]
+    fn attention_carryover_dto_never_serializes_a_blocking_field() {
+        // Contract §6 rule 2 — `blocking` is always derived from `unmet_blocks`,
+        // never authored as its own field, whether or not the entry is BLOCKING.
+        let blocking = AttentionCarryoverDto {
+            lane: TriageLane::Blocking,
+            unmet_blocks: vec!["bastion:BA.1.A".to_owned()],
+            ..sample_attention_carryover()
+        };
+        let v = serde_json::to_value(&blocking).expect("serialize");
+        assert!(!v.as_object().expect("object").contains_key("blocking"));
+    }
+
+    #[test]
+    fn attention_carryover_dto_lane_serializes_kebab_case() {
+        for (lane, expected) in [
+            (TriageLane::Blocking, "blocking"),
+            (TriageLane::Hot, "hot"),
+            (TriageLane::Aging, "aging"),
+            (TriageLane::Standing, "standing"),
+        ] {
+            let dto = AttentionCarryoverDto {
+                lane,
+                ..sample_attention_carryover()
+            };
+            let v = serde_json::to_value(&dto).expect("serialize");
+            assert_eq!(v["lane"], expected);
+        }
     }
 
     // ── RunStateDto / NodeTransitionDto (BA.11.M) ──────────────────────────

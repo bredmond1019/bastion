@@ -42,16 +42,12 @@ export interface AttentionBacklogDto {
 }
 
 /**
- * One `carryover[]` entry that has crossed its per-`kind` staleness threshold.
- * 
- * Wire format:
- * ```json
- * { "repo": "bastion", "slug": "engine-mount-env", "kind": "env",
- * "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
- * "clears_when": "the engine mount is documented in .env.example",
- * "created": "2026-07-01", "reviewed": null,
- * "age_days": 23, "threshold_days": 3 }
- * ```
+ * Projects `mev::CarryoverRanking` verbatim (repo/slug/kind/lane/priority/
+ * effective_priority/unmet_blocks/finding_id/clears_when_satisfied) alongside the
+ * original entry's display fields (text/clears_when/created/reviewed/threshold_days).
+ * Every `Option` serializes as an absent key when `None` — never `null` — matching
+ * this repo's established absent-is-never-neutral convention (BA.ticket
+ * .carryover-triage-dto task 2).
  */
 export interface AttentionCarryoverDto {
 	/** Owning repo slug. */
@@ -68,10 +64,46 @@ export interface AttentionCarryoverDto {
 	created?: string;
 	/** Last-reviewed date (`YYYY-MM-DD`), when recorded. */
 	reviewed?: string;
-	/** Days past the anchor date (`max(created, reviewed)`), as of `as_of`. */
-	age_days: number;
+	/**
+	 * Days past the anchor date (`max(created, reviewed)`), as of `as_of`. `None`
+	 * when the entry is currently snoozed or has no parseable anchor date — such
+	 * entries still reach the board (contract §2; they no longer have to be
+	 * stale-with-an-age to be included).
+	 */
+	age_days?: number;
 	/** The per-`kind` threshold this item tripped. */
 	threshold_days: number;
+	/**
+	 * The triage lane `mev::rank_carryover` assigned (`blocking|hot|aging|standing`).
+	 * Never re-derived here — see contract §6 rule 1.
+	 * 
+	 * `TriageLane` is defined in the `mev` crate, outside typeshare's
+	 * `src/serve` scan root, so it cannot resolve as a cross-crate type
+	 * reference. `serialized_as = "string"` emits the wire shape (one of the
+	 * four kebab-case lane names) directly instead of an unresolved
+	 * `TriageLane` reference in the generated file.
+	 */
+	lane: string;
+	/** Authored `priority`, verbatim from `mev::CarryoverRanking`. */
+	priority?: number;
+	/**
+	 * Effective priority (reverse-topo min-propagation over `blocks[]` edges),
+	 * verbatim from `mev::CarryoverRanking`.
+	 */
+	effective_priority?: number;
+	/**
+	 * Unmet `blocks[]` edges. Non-empty iff this entry is in the BLOCKING lane.
+	 * There is deliberately no `blocking: bool` field (contract §6 rule 2) —
+	 * consumers derive it from `!unmet_blocks.is_empty()`.
+	 */
+	unmet_blocks?: string[];
+	/** Free-form cross-repo finding identity, verbatim from `mev::CarryoverRanking`. */
+	finding_id?: string;
+	/**
+	 * Whether every reference extracted from `clears_when` is currently satisfied
+	 * (`mev::CarryoverLane::Cleared`), verbatim from `mev::CarryoverRanking`.
+	 */
+	clears_when_satisfied: boolean;
 }
 
 /**
