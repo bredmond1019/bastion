@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-02T23:42:46Z
+timestamp: 2026-08-10T21:15:00Z
 ---
 
 # Log — bastion
@@ -12,6 +12,26 @@ timestamp: 2026-08-02T23:42:46Z
 ---
 
 ## [run: 2026-08-10]
+
+### `/api/attention?scope=hq` ~2.2s → ~0.1s — skipped a wasted O(n²) dedup pass
+
+Diagnosed a user-reported ~1s "Rendering" stall on every Command Center tab/space switch in
+bastion-web down to `GET /api/attention?scope=hq` taking ~2.2s server-side (project-scoped calls
+were ~0.02-0.1s, exposing the entry-count sensitivity). Traced to `mev`'s `evaluate_carryover()`
+unconditionally running `suggest_duplicates()` — an O(n²) pairwise scan over the ~145
+finding_id-less carryover entries at HQ scope (~10,440 pairs, re-tokenized per pair, no
+memoization), added the day before by the `ticket-carryover-dedup-clusters` chain. `AttentionDto`
+(`src/serve/dto.rs:1461`) never had a `clusters`/`suggestions` field, so `build_attention()`
+(`src/serve/handlers/attention.rs`) was computing and immediately discarding the result on every
+request — confirmed via grep (zero uses of `.suggestions`/`.clusters` anywhere in this crate) and
+direct timing (`mev carryover --json`: 2.24s, 99% CPU).
+
+Fix landed upstream in `mev`: new `evaluate_carryover_with_dedup(..., include_dedup: bool)`, with
+`evaluate_carryover()` kept as a behavior-preserving wrapper for its other 37 call sites (tests +
+the `mev carryover` CLI, the pass's real consumer). `build_attention()` now imports and calls
+`evaluate_carryover_with_dedup(..., false)`. Both crates rebuild clean; mev's 98 carryover tests
+pass, including a new one asserting the flag actually empties `clusters`/`suggestions`. See
+`core/mev/log.md` `[run: 2026-08-10]` for the mev-side detail.
 
 ### `ticket-carryover-triage-dto` (BA.ticket.carryover-triage-dto) — DONE, 5 tasks, PASS
 
