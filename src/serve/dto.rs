@@ -281,6 +281,11 @@ pub struct SessionDto {
     pub state: String,
     /// Last non-blank line from the session's pane, or empty string when unavailable.
     pub last_line: String,
+    /// Detected agent state as a string: `"idle"`, `"working"`, `"blocked"`, or
+    /// `"unknown"`. Populated from `Session::agent_state` (`detect/`). Distinct from
+    /// `state` above (tmux pane liveness) and from session attachment (the lease,
+    /// `engine-rs:EN.9.B`) — `classify_state` ignores attachment and continues to.
+    pub agent_state: String,
 }
 
 impl From<&Session> for SessionDto {
@@ -289,6 +294,7 @@ impl From<&Session> for SessionDto {
             name: s.name.clone(),
             state: s.state.as_str().to_owned(),
             last_line: s.last_line.clone(),
+            agent_state: s.agent_state.as_str().to_owned(),
         }
     }
 }
@@ -2837,6 +2843,7 @@ mod tests {
                 name: "main".to_owned(),
                 state: "running".to_owned(),
                 last_line: "$ cargo test".to_owned(),
+                agent_state: "working".to_owned(),
             }],
         };
         let json = serde_json::to_string(&p).expect("serialize");

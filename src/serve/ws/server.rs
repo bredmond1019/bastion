@@ -1323,6 +1323,7 @@ mod tests {
                 name: "ba18a-shared-fixture-session".to_owned(),
                 state: "idle".to_owned(),
                 last_line: String::new(),
+                agent_state: "unknown".to_owned(),
             }],
             vec![(
                 "ba18a-shared-fixture-session".to_owned(),
