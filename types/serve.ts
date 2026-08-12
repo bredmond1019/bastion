@@ -1347,6 +1347,13 @@ export interface SessionDto {
 	state: string;
 	/** Last non-blank line from the session's pane, or empty string when unavailable. */
 	last_line: string;
+	/**
+	 * Detected agent state as a string: `"idle"`, `"working"`, `"blocked"`, or
+	 * `"unknown"`. Populated from `Session::agent_state` (`detect/`). Distinct from
+	 * `state` above (tmux pane liveness) and from session attachment (the lease,
+	 * `engine-rs:EN.9.B`) — `classify_state` ignores attachment and continues to.
+	 */
+	agent_state: string;
 }
 
 /**

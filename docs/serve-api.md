@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.25"
+title: "serve-api contract v0.26"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -30,7 +30,12 @@ roughly 138; `AttentionCarryoverDto` gains `lane`, `priority`, `effective_priori
 `unmet_blocks`, `finding_id`, `clears_when_satisfied` (all verbatim from mev's
 `CarryoverRanking`, contract-pinned in the new `docs/carryover-contract.md`, D20 pattern), and
 `age_days` widens from `i64` to `Option<i64>` (the one non-additive change — a snoozed or
-unparseable-anchor entry now reaches the board with no age)."
+unparseable-anchor entry now reaches the board with no age), and the v0.26 `agent_state` field on
+`SessionDto` (`BA.ticket.session-dto-agent-state`) — `From<&Session>` now carries the detected
+`AgentState` (`\"idle\"` / `\"working\"` / `\"blocked\"` / `\"unknown\"`, from `detect/`) through to
+both `GET /api/sessions` and the `\"sessions\"` WS push payload, closing the gap that left every
+consumer of the sessions REST surface unable to tell whether a session is working, idle, or
+blocked; `classify_state` and attachment handling are unchanged."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -39,9 +44,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.25 Contract
+# serve-api — v0.26 Contract
 
-**Version:** v0.25  
+**Version:** v0.26  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–25 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -322,8 +327,8 @@ Pushed to all `sessions` subscribers each poll cycle when the session list chang
 ```json
 {
   "sessions": [
-    { "name": "main", "state": "running", "last_line": "$ cargo test" },
-    { "name": "scratch", "state": "idle", "last_line": "" }
+    { "name": "main", "state": "running", "last_line": "$ cargo test", "agent_state": "working" },
+    { "name": "scratch", "state": "idle", "last_line": "", "agent_state": "idle" }
   ]
 }
 ```
@@ -346,6 +351,12 @@ no captured output (or a capture failure) still yields `""`. `GET
 /api/sessions` (Section 10.3) is **not** brought to the same parity in v0.5 —
 it still returns empty `last_line` for every session, unchanged from prior
 versions.
+
+As of v0.26, `agent_state` (`"idle"` / `"working"` / `"blocked"` / `"unknown"`) is populated from
+`Session::agent_state` (`detect/`) on both this push payload and `GET /api/sessions` alike — unlike
+`last_line`, this field was added with full parity across the WS and REST surfaces from the start.
+It is distinct from `state` above (tmux pane liveness) and from session attachment (the lease,
+`engine-rs:EN.9.B`) — `classify_state` ignores attachment for state purposes and continues to.
 
 ### 7.6 `"pane"` payload (server → client)
 
@@ -628,7 +639,8 @@ Returned by `GET /api/sessions` (one element per session in the array).
 {
   "name": "main",
   "state": "running",
-  "last_line": "$ cargo test"
+  "last_line": "$ cargo test",
+  "agent_state": "working"
 }
 ```
 
@@ -637,6 +649,7 @@ Returned by `GET /api/sessions` (one element per session in the array).
 | `name` | string | tmux session name |
 | `state` | string | `"running"` when the foreground process is not a shell; `"idle"` otherwise |
 | `last_line` | string | Last non-blank line from the session's pane, or `""` when unavailable |
+| `agent_state` (v0.26) | string | Detected agent state — `"idle"` \| `"working"` \| `"blocked"` \| `"unknown"`, from `Session::agent_state` (`detect/`). Distinct from `state` (tmux pane liveness) and from attachment (the lease, `engine-rs:EN.9.B`) — `classify_state` ignores attachment and continues to. |
 
 #### `PaneDto`
 
@@ -724,8 +737,8 @@ Authorization: Bearer <token>
 
 ```json
 [
-  { "name": "main", "state": "running", "last_line": "$ cargo test" },
-  { "name": "scratch", "state": "idle", "last_line": "" }
+  { "name": "main", "state": "running", "last_line": "$ cargo test", "agent_state": "working" },
+  { "name": "scratch", "state": "idle", "last_line": "", "agent_state": "idle" }
 ]
 ```
 
@@ -2319,7 +2332,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.25**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.26**.
 
 ---
 
@@ -2925,6 +2938,19 @@ a real Postgres being up or down cannot change any golden.
 ---
 
 ## Amendment Log
+
+- **2026-08-12 — v0.25 → v0.26 (`BA.ticket.session-dto-agent-state`):** `SessionDto`'s
+  `From<&Session>` (`src/serve/dto.rs`) previously discarded `agent_state`, so every consumer of
+  the sessions REST/WS surface could list sessions but not tell whether any was working, idle, or
+  blocked. `SessionDto` gains a typeshared `agent_state: String` field (`"idle"` / `"working"` /
+  `"blocked"` / `"unknown"`), populated verbatim from `Session::agent_state` (`detect/`), on both
+  `GET /api/sessions` (Section 10.1) and the `"sessions"` WS push payload (Section 7.5) — full
+  parity across both surfaces from the start, unlike `last_line`'s v0.5 REST/WS split. No change
+  to `classify_state` or to how attachment is treated — attachment still feeds the session lease
+  (`engine-rs:EN.9.B`), not the state classifier. Unblocks `bastion-ui:BU.ticket.session-agent-
+  state` and `bastion-web:BW.ticket.approval-ledger-view`, both previously held on this landing.
+  `types/serve.ts` regenerated (`scripts/gen-types.sh`); `scripts/check-typeshare-drift.sh` and
+  `scripts/check-contract-corpus-drift.sh` pass.
 
 - **2026-08-10 — v0.24 → v0.25 (`BA.ticket.carryover-triage-dto`):** `GET /api/attention`'s
   `stale_carryover` lane (Section 15) stops gating membership on `carryover_stale_age` alone.
