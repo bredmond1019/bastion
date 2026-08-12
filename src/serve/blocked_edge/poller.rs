@@ -27,11 +27,13 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use actix::Addr;
 use chrono::Utc;
 
 use crate::detect::AgentState;
 use crate::serve::poll::{sessions_needing_input, sessions_snapshot};
 use crate::serve::status::detect as status_detect;
+use crate::serve::ws::server::{BlockedEdgeCrossed, Hub};
 use crate::sessions::tmux;
 
 use super::sink::{BlockedEdgeRecord, BlockedEdgeSink};
@@ -112,6 +114,14 @@ pub struct BlockedEdgePoller {
     prev: HashMap<String, AgentState>,
     seeded: bool,
     capture: CaptureFn,
+    /// The WS hub, if any (task 4) — the poller is the sole owner of the
+    /// needs-input rising-edge decision; the hub is only a *consumer* of its
+    /// output, fanning [`BlockedEdgeCrossed`] out to whichever `sessions`
+    /// subscribers are connected right now. `None` in every unit test in
+    /// this module (no actix system running there) and whenever the caller
+    /// chooses not to wire WS delivery — the durable sink write happens
+    /// either way.
+    hub: Option<Addr<Hub>>,
 }
 
 impl BlockedEdgePoller {
@@ -134,7 +144,17 @@ impl BlockedEdgePoller {
             prev: HashMap::new(),
             seeded: false,
             capture,
+            hub: None,
         }
+    }
+
+    /// Wire this poller to fan `BlockedEdgeCrossed` out to the WS hub in
+    /// addition to writing the durable sink record (task 4). Optional: a
+    /// poller with no hub still writes every record — WS delivery is a
+    /// consumer of the edge, never a precondition for recording it.
+    pub fn with_hub(mut self, hub: Addr<Hub>) -> Self {
+        self.hub = Some(hub);
+        self
     }
 
     /// Run one poll tick synchronously: capture, apply [`tick_decision`],
@@ -152,16 +172,21 @@ impl BlockedEdgePoller {
         };
 
         let (crossing, next_prev) = tick_decision(self.seeded, &self.prev, &current);
-        for name in crossing {
-            let from = self.prev.get(&name).copied();
+        for name in &crossing {
+            let from = self.prev.get(name).copied();
             let record = BlockedEdgeRecord::new(
-                name,
+                name.clone(),
                 self.host.clone(),
                 from,
                 AgentState::Blocked,
                 Utc::now(),
             );
             let _ = self.sink.append(&record);
+        }
+        if let Some(hub) = &self.hub
+            && !crossing.is_empty()
+        {
+            hub.do_send(BlockedEdgeCrossed { sessions: crossing });
         }
         self.prev = next_prev;
         self.seeded = true;

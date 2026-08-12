@@ -347,7 +347,13 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     ) {
         Some(sink_path) => {
             let sink = blocked_edge::BlockedEdgeSink::new(sink_path);
-            let poller = blocked_edge::BlockedEdgePoller::new(sink, addr.clone());
+            // `.with_hub(hub.clone())` (task 4) makes the hub a *consumer* of
+            // this poller's edge decision — the poller remains the sole
+            // owner and keeps writing the durable sink record regardless of
+            // whether anyone is subscribed; the hub just also gets told so
+            // it can fan `event{needs_input}` out to current subscribers.
+            let poller =
+                blocked_edge::BlockedEdgePoller::new(sink, addr.clone()).with_hub(hub.clone());
             actix_web::rt::spawn(poller.run(poll_secs));
         }
         None => {
