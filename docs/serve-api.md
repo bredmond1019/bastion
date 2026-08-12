@@ -333,10 +333,16 @@ Pushed to all `sessions` subscribers each poll cycle when the session list chang
 | `sessions` | array | Array of `SessionDto` objects (see Section 9.1) |
 
 `last_line` is populated (as of v0.5) with each session's pane's last
-non-blank captured line, reusing the same per-session pane-capture pass the
-sessions-list poller performs for needs-input detection (Section 8.1) — panes
-are captured once per tick and used for both. An idle session with no
-captured output (or a capture failure) still yields `""`. `GET
+non-blank captured line. As of `BA.18.A`, this pane capture is provided by
+the always-on blocked-edge poller's shared sweep (`SharedSessionsSweep`,
+`src/serve/poll.rs`) when that poller is wired in production — the
+sessions-list poller reads the shared sweep instead of running its own
+independent `list_sessions_raw` + per-session `capture_pane_raw` sweep on
+the same cadence, so a subscribed client no longer doubles the tmux
+subprocess count per interval. The sessions-list poller falls back to
+running its own sweep only when no shared poller is wired (e.g. neither
+`XDG_STATE_HOME` nor `HOME` is set — see Section 8.1). An idle session with
+no captured output (or a capture failure) still yields `""`. `GET
 /api/sessions` (Section 10.3) is **not** brought to the same parity in v0.5 —
 it still returns empty `last_line` for every session, unchanged from prior
 versions.
@@ -392,39 +398,57 @@ Pushed when a significant event is detected.
 
 ## 8. Event semantics
 
-### 8.1 `event{needs_input}` (v0.2; detection moved to the sessions-list poller in v0.5)
+### 8.1 `event{needs_input}` (v0.2; detection moved to the sessions-list poller in v0.5; relocated to an always-on independent poller in `BA.18.A`)
 
-Needs-input detection runs in the **sessions-list poller**, on every tick, over
-**every live session** — not only sessions whose pane a client has subscribed
-to. Each tick the hub captures every session's pane output, calls
-`detect::detect(pane_output, claude.toml)` from Block C₀ to determine the agent
-state, and diffs the result against the previous tick's per-session state
-(`sessions_last_state`, keyed by session name) using the pure
-`sessions_needing_input(prev, current)` helper (`src/serve/poll.rs`). The
-`needs_input` event is emitted for a session when:
+Needs-input detection runs in an always-on **blocked-edge poller**
+(`BlockedEdgePoller`, `src/serve/blocked_edge/poller.rs`, `BA.18.A`), spawned
+once at server boot (`src/serve/mod.rs::run_server`) independent of any
+WebSocket subscription — **not** in the sessions-list poller, which no
+longer owns any needs-input state. On its first tick the poller only
+*seeds* its previous-state map (no emission), so a server restart with N
+already-blocked sessions never replays N rising edges onto the
+notification transport; only transitions observed on a tick *after* the
+seed tick emit. Each tick the poller captures every live session's pane
+output, calls `status::detect` to determine the agent state, and diffs the
+result against the previous tick's per-session state using the pure
+`sessions_needing_input(prev, current)` helper (`src/serve/poll.rs`,
+unchanged since v0.5). The `needs_input` condition for a session is:
 
 ```
 state == Blocked && visible_blocker == true
 ```
 
-and the session's *previous* recorded state was not already `Blocked` (rising
-edge — see below). The event is delivered to the connection's `sessions`
-subscribers, carrying that session's name — **a client needs no `pane:<name>`
-subscription to receive it**. This is what lets `bastion-ui`, which subscribes
-only to `sessions` on connect, surface a needs-input alert for a background
-session it has not opened a pane view for.
+and the session's *previous* recorded state was not already `Blocked`
+(rising edge — see below). Every crossing is appended to a durable,
+append-only JSONL sink (`BlockedEdgeSink`; session, host, from/to state,
+timestamp) regardless of whether any WebSocket client is connected. When
+the poller is wired to the `Hub` (production wiring), each crossing is
+also delivered to it as a `BlockedEdgeCrossed` actix message; the hub's
+`Handler<BlockedEdgeCrossed>` fans the event out to whichever `sessions`
+subscribers are connected *right now* (a no-op when there are none),
+carrying that session's name — **a client needs no `pane:<name>`
+subscription to receive it**. This is what lets `bastion-ui`, which
+subscribes only to `sessions` on connect, surface a needs-input alert for a
+background session it has not opened a pane view for. The hub owns no
+previous-state map of its own and never computes the rising edge itself —
+it is purely a fan-out consumer of the poller's decision, so an
+unsubscribe/resubscribe cycle can never replay a crossing the hub never
+stored.
 
-The hub uses a **rising-edge debounce**: the event is emitted once per
-Blocked→Unblocked→Blocked transition cycle (i.e. once per "new prompt"), not on
-every poll tick while the session remains blocked.  Consecutive blocked polls
-without an intervening non-blocked state produce at most one event.
+The blocked-edge poller uses a **rising-edge debounce**: the event is
+emitted once per Blocked→Unblocked→Blocked transition cycle (i.e. once per
+"new prompt"), not on every poll tick while the session remains blocked.
+Consecutive blocked polls without an intervening non-blocked state produce
+at most one event.
 
 The event drives the BastionUI alert flow: the mobile operator is notified once
 and can respond via a `send` or `send_key` frame to unblock the agent.
 
-Needs-input is emitted from exactly one place (the sessions-list poller); the
-per-pane poll interval (Section 7.6) only pushes pane-content diffs and no
-longer performs its own needs-input detection.
+Needs-input is emitted from exactly one place (the always-on blocked-edge
+poller); the sessions-list poller (Section 7.5) and the per-pane poll
+interval (Section 7.6) never compute the rising edge themselves — the
+former only reads the poller's shared pane-capture sweep for `last_line`,
+and the latter only pushes pane-content diffs.
 
 ### 8.2 `event{workflow_done}` (v0.3)
 
