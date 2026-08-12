@@ -20,9 +20,12 @@
 //! Its capture composition (`list-sessions` once, then one `capture-pane` per
 //! session) deliberately mirrors `ws/server.rs`'s sessions-topic poller
 //! exactly, rather than inventing a second shape — see [`capture_states`].
-//! Folding the two into one physical sweep (so a subscribed client and this
-//! poller never double the tmux subprocess count) is Task 4's job
-//! ("make the WS hub a consumer, not the owner").
+//! In production this poller is also the *sole* owner of that sweep:
+//! [`BlockedEdgePoller::with_shared_sessions`] wires its capture to publish
+//! the raw sweep into a [`crate::serve::poll::SharedSessionsSweep`] that
+//! `ws/server.rs`'s `sessions` topic poll reads instead of running its own
+//! independent sweep, so a subscribed client never doubles the tmux
+//! subprocess count per interval (BA.18.A review fix).
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -31,7 +34,7 @@ use actix::Addr;
 use chrono::Utc;
 
 use crate::detect::AgentState;
-use crate::serve::poll::{sessions_needing_input, sessions_snapshot};
+use crate::serve::poll::{SharedSessionsSweep, sessions_needing_input, sessions_snapshot};
 use crate::serve::status::detect as status_detect;
 use crate::serve::ws::server::{BlockedEdgeCrossed, Hub};
 use crate::sessions::tmux;
@@ -61,6 +64,34 @@ fn capture_states() -> anyhow::Result<Vec<(String, AgentState)>> {
                 .map(|capture| (s.name, status_detect::detect_state(&capture)))
         })
         .collect();
+    Ok(states)
+}
+
+/// Same composition as [`capture_states`], but additionally publishes the
+/// raw sweep (sessions list + per-session pane captures, matching the shape
+/// `ws/server.rs`'s `sessions` topic push needs for its `last_line`
+/// fill-in) into `shared`.
+///
+/// This is the fold: the WS hub's `sessions` topic poll reads `shared`
+/// instead of performing its own independent `list_sessions_raw` +
+/// per-session `capture_pane_raw` sweep, so a subscribed client no longer
+/// doubles the tmux subprocess count per interval.
+fn capture_states_and_share(
+    shared: &SharedSessionsSweep,
+) -> anyhow::Result<Vec<(String, AgentState)>> {
+    let raw = tmux::list_sessions_raw()?;
+    let sessions = sessions_snapshot(&raw);
+    let mut panes = Vec::with_capacity(sessions.len());
+    let mut states = Vec::with_capacity(sessions.len());
+    for s in &sessions {
+        if let Ok(capture) = tmux::capture_pane_raw(&s.name) {
+            states.push((s.name.clone(), status_detect::detect_state(&capture)));
+            panes.push((s.name.clone(), capture));
+        }
+    }
+    if let Ok(mut guard) = shared.lock() {
+        *guard = Some((sessions, panes));
+    }
     Ok(states)
 }
 
@@ -154,6 +185,18 @@ impl BlockedEdgePoller {
     /// consumer of the edge, never a precondition for recording it.
     pub fn with_hub(mut self, hub: Addr<Hub>) -> Self {
         self.hub = Some(hub);
+        self
+    }
+
+    /// Wire this poller's tmux sweep to also publish into `shared`, so the
+    /// WS hub's `sessions` topic poll can read the sweep instead of running
+    /// its own independent one on the same cadence (BA.18.A review fix —
+    /// see [`capture_states_and_share`]). Replaces the capture function
+    /// installed by [`Self::new`]; only meaningful when this poller was
+    /// built with the real tmux capture (production wiring in
+    /// `src/serve/mod.rs::run_server`), not with an injected test capture.
+    pub fn with_shared_sessions(mut self, shared: SharedSessionsSweep) -> Self {
+        self.capture = Box::new(move || capture_states_and_share(&shared));
         self
     }
 

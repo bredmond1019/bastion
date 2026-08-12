@@ -46,8 +46,8 @@ use crate::config::FileConfig;
 use crate::serve::dto::{EventPayload, PanePayload, SessionsPayload, Topic, WsFrame, WsFrameKind};
 use crate::serve::handlers::status::collect_flow_states;
 use crate::serve::poll::{
-    FlowWatcher, PaneCursor, RunWatcher, run_stream_status_frame, run_transition_frame,
-    sessions_snapshot, sessions_with_last_line, workflow_done_frame,
+    FlowWatcher, PaneCursor, RunWatcher, SharedSessionsSweep, run_stream_status_frame,
+    run_transition_frame, sessions_snapshot, sessions_with_last_line, workflow_done_frame,
 };
 use crate::sessions::tmux;
 
@@ -169,6 +169,14 @@ pub struct Hub {
     /// plus the reason when it is not — pushed to every new `runs`
     /// subscriber as a `run_stream_status` frame (D17 constraint 2).
     stream_available: (bool, Option<String>),
+    /// The always-on `BlockedEdgePoller`'s shared sweep (BA.18.A review
+    /// fix), when wired via [`Self::with_shared_sessions`]. When `Some`,
+    /// the `sessions` topic poll reads from it instead of running its own
+    /// independent tmux sweep, so a subscriber never doubles the tmux
+    /// subprocess count per interval. `None` in every test in this module
+    /// and whenever the poller could not start — the hub falls back to its
+    /// own sweep so `sessions` delivery still works.
+    shared_sessions: Option<SharedSessionsSweep>,
 }
 
 impl Hub {
@@ -197,7 +205,19 @@ impl Hub {
             run_watcher: RunWatcher::new(),
             live,
             stream_available,
+            shared_sessions: None,
         }
+    }
+
+    /// Wire the hub to read the always-on `BlockedEdgePoller`'s shared sweep
+    /// on the `sessions` topic poll instead of running its own independent
+    /// tmux sweep (BA.18.A review fix — folds the two 1+S sweeps that ran
+    /// on the same cadence into one). Production wiring only
+    /// (`src/serve/mod.rs::run_server`); every test in this module leaves
+    /// this unset and exercises the fallback sweep.
+    pub fn with_shared_sessions(mut self, shared: SharedSessionsSweep) -> Self {
+        self.shared_sessions = Some(shared);
+        self
     }
 
     /// Deliver `frame` to every connection in `ids`, skipping disconnected ones.
@@ -460,7 +480,8 @@ impl Handler<Subscribe> for Hub {
                 // Start the shared sessions poll on first subscriber.
                 if self.sessions_handle.is_none() {
                     let interval = Duration::from_secs(self.poll_secs);
-                    let handle = ctx.run_interval(interval, |act, ctx| {
+                    let shared_sessions = self.shared_sessions.clone();
+                    let handle = ctx.run_interval(interval, move |act, ctx| {
                         if act.sessions_subs.is_empty() {
                             return;
                         }
@@ -470,11 +491,34 @@ impl Handler<Subscribe> for Hub {
                             .filter_map(|id| act.conns.get(id).cloned())
                             .collect::<Vec<_>>();
 
-                        // One blocking closure: list sessions, then capture each
-                        // session's pane once so the per-session state feeds the
-                        // `last_line` fill-in (Gap 3, task 3). The needs-input
-                        // rising edge is no longer computed here — it arrives via
-                        // `BlockedEdgeCrossed` from the always-on poller (task 4).
+                        // BA.18.A review fix: when the always-on
+                        // `BlockedEdgePoller` is wired in (production), read its
+                        // shared sweep instead of running a second, independent
+                        // `list_sessions_raw` + per-session `capture_pane_raw`
+                        // sweep on the same cadence — that used to double the
+                        // tmux subprocess count per interval whenever a
+                        // `sessions` subscriber was present.
+                        if let Some(shared) = &shared_sessions {
+                            let snapshot = shared.lock().ok().and_then(|guard| guard.clone());
+                            if let Some((sessions, panes)) = snapshot {
+                                let sessions = sessions_with_last_line(sessions, &panes);
+                                let frame = sessions_frame(sessions);
+                                for addr in &conns {
+                                    addr.do_send(ServerFrame(frame.clone()));
+                                }
+                            }
+                            // No sweep yet (poller hasn't ticked): skip this
+                            // cycle rather than falling back to a second sweep.
+                            // Needs-input rising-edge crossings are not computed
+                            // here either way — they arrive via
+                            // `Handler<BlockedEdgeCrossed>` from the poller.
+                            return;
+                        }
+
+                        // Fallback: no shared poller wired (e.g. it failed to
+                        // start because neither `XDG_STATE_HOME` nor `HOME` is
+                        // set) — run the hub's own sweep so `sessions` delivery
+                        // still works.
                         let fut = web::block(|| -> anyhow::Result<SessionsTickResult> {
                             let raw = tmux::list_sessions_raw()?;
                             let sessions = sessions_snapshot(&raw);
@@ -492,18 +536,11 @@ impl Handler<Subscribe> for Hub {
                         .then(move |result, _act, _ctx| {
                             // web::block returns Result<Result<T, E>, BlockingError>
                             if let Ok(Ok((sessions, panes))) = result {
-                                // Fill last_line from the per-session pane
-                                // captures already taken above (Gap 3).
                                 let sessions = sessions_with_last_line(sessions, &panes);
                                 let frame = sessions_frame(sessions);
                                 for addr in &conns {
                                     addr.do_send(ServerFrame(frame.clone()));
                                 }
-                                // Needs-input rising-edge crossings are no longer
-                                // computed here (task 4) — they arrive via
-                                // `Handler<BlockedEdgeCrossed>`, driven by the
-                                // always-on `BlockedEdgePoller` (task 3), and are
-                                // fanned out to `sessions_subs` from there.
                             }
                             // Ignore tmux errors: best-effort delivery.
                             actix::fut::ready(())
@@ -1267,6 +1304,77 @@ mod tests {
         assert_eq!(
             sessions,
             HashSet::from(["sess-a".to_owned(), "sess-b".to_owned()])
+        );
+    }
+
+    /// BA.18.A review fix: when the hub is wired with
+    /// [`Hub::with_shared_sessions`], the `sessions` topic poll must read
+    /// the pre-populated shared sweep rather than performing its own
+    /// independent tmux sweep — this is the "fold the two 1+S sweeps into
+    /// one" fix. Proven here by pre-populating the shared snapshot with a
+    /// session name no real tmux server on this test host will ever have,
+    /// then asserting the delivered `sessions` frame's content came from
+    /// that snapshot (a real independent sweep would either error or
+    /// return a completely different session set).
+    #[actix_web::test]
+    async fn sessions_subscribe_with_shared_sessions_reads_shared_sweep() {
+        let shared: crate::serve::poll::SharedSessionsSweep = Arc::new(Mutex::new(Some((
+            vec![crate::serve::dto::SessionDto {
+                name: "ba18a-shared-fixture-session".to_owned(),
+                state: "idle".to_owned(),
+                last_line: String::new(),
+            }],
+            vec![(
+                "ba18a-shared-fixture-session".to_owned(),
+                "hello from shared sweep\n".to_owned(),
+            )],
+        ))));
+
+        let hub = Hub::new(
+            1,
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (true, None),
+        )
+        .with_shared_sessions(shared)
+        .start();
+        let recorder = RecorderActor::default().start();
+        let id = ConnId::next();
+
+        hub.send(Connect {
+            id,
+            addr: recorder.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id,
+            topic: Topic::Sessions,
+        })
+        .await
+        .unwrap();
+
+        // Wait for the 1s sessions-poll interval to tick at least once.
+        actix_web::rt::time::sleep(Duration::from_millis(1200)).await;
+
+        let received = recorder.send(DrainReceived).await.unwrap();
+        let sessions_frames: Vec<&WsFrame> = received
+            .iter()
+            .filter(|f| f.kind == WsFrameKind::Sessions)
+            .collect();
+        assert_eq!(
+            sessions_frames.len(),
+            1,
+            "exactly one sessions frame, built from the shared sweep, not a second independent sweep"
+        );
+        let payload = &sessions_frames[0].payload;
+        assert_eq!(
+            payload["sessions"][0]["name"], "ba18a-shared-fixture-session",
+            "frame content must come from the pre-populated shared sweep"
+        );
+        assert_eq!(
+            payload["sessions"][0]["last_line"], "hello from shared sweep",
+            "last_line must be filled from the shared sweep's panes, not a fresh tmux capture"
         );
     }
 

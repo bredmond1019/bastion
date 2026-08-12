@@ -15,6 +15,7 @@
 //!   the `run_transition` WS push (BA.11.N).
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use engine_contract::task_context::{NodeRunStatus, TaskContext};
 use uuid::Uuid;
@@ -126,6 +127,22 @@ fn extract_lines(capture: &str) -> Vec<String> {
 pub fn sessions_snapshot(raw: &str) -> Vec<SessionDto> {
     parse_sessions(raw).iter().map(SessionDto::from).collect()
 }
+
+/// One sweep's sessions list plus raw per-session pane captures — the shared
+/// shape both the always-on
+/// [`BlockedEdgePoller`](crate::serve::blocked_edge::BlockedEdgePoller)'s
+/// tmux sweep and the WS hub's `sessions` topic push consume, so the two
+/// never need to run independent sweeps on the same poll cadence.
+pub type SessionsSweep = (Vec<SessionDto>, Vec<(String, String)>);
+
+/// Mutex-guarded holder for the most recent [`SessionsSweep`].
+///
+/// Written by the always-on `BlockedEdgePoller` (the sole owner of the tmux
+/// sweep) and read by the WS hub's `sessions` topic poll, so a `sessions`
+/// subscriber never triggers a second, independent `list-sessions` +
+/// per-session `capture-pane` sweep on the same cadence (BA.18.A review
+/// fix — folding the two sweeps into one physical call).
+pub type SharedSessionsSweep = Arc<Mutex<Option<SessionsSweep>>>;
 
 /// Fill each [`SessionDto`]'s `last_line` from a per-session pane capture
 /// (Gap 3), without touching [`sessions_snapshot`]'s empty-`last_line`

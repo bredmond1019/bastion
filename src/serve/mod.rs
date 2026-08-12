@@ -242,6 +242,12 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // store simply stays empty (`GET /api/runs` → `[]`, `GET /api/runs/{id}`
     // → 404) — the same graceful-degradation posture as the engine routes.
     //
+    // BA.18.A review fix: shared holder for the always-on BlockedEdgePoller's
+    // tmux sweep, read by the hub's `sessions` topic poll instead of it
+    // running an independent sweep — see `serve::poll::SharedSessionsSweep`.
+    let shared_sessions: crate::serve::poll::SharedSessionsSweep =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+
     // Also hoisted above `Hub::new` (BA.11.N task 3) so the hub can hold its
     // own clone for the `runs`-topic poller.
     let live_store = LiveStateStore::new();
@@ -330,6 +336,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         live_store.clone(),
         stream_available,
     )
+    .with_shared_sessions(shared_sessions.clone())
     .start();
 
     // ── Blocked rising-edge poller (BA.18.A task 3) ─────────────────────────
@@ -352,8 +359,9 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // owner and keeps writing the durable sink record regardless of
             // whether anyone is subscribed; the hub just also gets told so
             // it can fan `event{needs_input}` out to current subscribers.
-            let poller =
-                blocked_edge::BlockedEdgePoller::new(sink, addr.clone()).with_hub(hub.clone());
+            let poller = blocked_edge::BlockedEdgePoller::new(sink, addr.clone())
+                .with_hub(hub.clone())
+                .with_shared_sessions(shared_sessions.clone());
             actix_web::rt::spawn(poller.run(poll_secs));
         }
         None => {
