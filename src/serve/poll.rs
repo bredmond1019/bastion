@@ -195,6 +195,48 @@ pub fn sessions_needing_input(
         .collect()
 }
 
+/// Owned, off-actor home for the needs-input rising-edge's previous-state map.
+///
+/// `src/serve/ws/server.rs` previously kept this map as a `sessions_last_state`
+/// field on the WS actor, which ties its lifetime to a WebSocket subscription:
+/// with no subscriber the actor's `run_interval` handle is never installed, so
+/// the map is never populated and the rising edge is never observed (BA.18.A).
+///
+/// [`NeedsInputTracker`] holds the exact same map and the exact same
+/// [`sessions_needing_input`] decision — [`should_emit_needs_input`]'s
+/// predicate is untouched — but as a small standalone value that can be
+/// constructed once at server start and driven by an always-on poller
+/// (Task 3), independent of whether any WebSocket client is subscribed. The
+/// WS actor (Task 4) becomes a consumer of this tracker's output rather than
+/// the owner of its state.
+#[derive(Debug, Default)]
+pub struct NeedsInputTracker {
+    /// Session name → state observed on the previous poll tick.
+    prev: HashMap<String, AgentState>,
+}
+
+impl NeedsInputTracker {
+    /// Construct an empty tracker (no sessions observed yet).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Observe the current tick's `(session_name, state)` pairs, returning the
+    /// names that just crossed into `Blocked` — via [`sessions_needing_input`],
+    /// unchanged in meaning — and updating the internal map to `current` for
+    /// the next tick.
+    ///
+    /// A session absent from `current` (e.g. it no longer exists) is dropped
+    /// from the internal map rather than carried forward, matching
+    /// `sessions_last_state = current.into_iter().collect()`'s previous
+    /// actor-field behaviour.
+    pub fn observe(&mut self, current: &[(String, AgentState)]) -> Vec<String> {
+        let crossing = sessions_needing_input(&self.prev, current);
+        self.prev = current.iter().cloned().collect();
+        crossing
+    }
+}
+
 // ── Flow watcher (BA.11.D) ──────────────────────────────────────────────────────
 
 /// Stateful tracker for `sdlc-flow-state.json` transitions across observation
@@ -953,6 +995,90 @@ background\t0\t1\t1718000100\tzsh\n";
         ];
         let names = sessions_needing_input(&prev, &current);
         assert_eq!(names, vec!["alpha".to_owned(), "delta".to_owned()]);
+    }
+
+    // ── NeedsInputTracker ────────────────────────────────────────────────────
+
+    #[test]
+    fn needs_input_tracker_first_observe_none_to_blocked_emits() {
+        let mut tracker = NeedsInputTracker::new();
+        let current = vec![("main".to_owned(), AgentState::Blocked)];
+        let crossing = tracker.observe(&current);
+        assert_eq!(crossing, vec!["main".to_owned()]);
+    }
+
+    #[test]
+    fn needs_input_tracker_stays_blocked_does_not_reemit() {
+        let mut tracker = NeedsInputTracker::new();
+        let current = vec![("main".to_owned(), AgentState::Blocked)];
+        let first = tracker.observe(&current);
+        assert_eq!(first, vec!["main".to_owned()]);
+
+        let second = tracker.observe(&current);
+        assert!(
+            second.is_empty(),
+            "already-blocked session must not re-emit on the next tick"
+        );
+    }
+
+    #[test]
+    fn needs_input_tracker_reblock_after_resolve_emits_twice() {
+        let mut tracker = NeedsInputTracker::new();
+        let blocked = vec![("main".to_owned(), AgentState::Blocked)];
+        let resolved = vec![("main".to_owned(), AgentState::Working)];
+
+        let first = tracker.observe(&blocked);
+        assert_eq!(first, vec!["main".to_owned()]);
+
+        let cleared = tracker.observe(&resolved);
+        assert!(cleared.is_empty());
+
+        let second = tracker.observe(&blocked);
+        assert_eq!(
+            second,
+            vec!["main".to_owned()],
+            "blocking again after resolving must emit a second time"
+        );
+    }
+
+    #[test]
+    fn needs_input_tracker_can_be_seeded_before_any_emission() {
+        // Simulates seed-before-emit (Task 3): a tracker constructed and
+        // observed once at boot with already-blocked sessions must not report
+        // them as new crossings on that seed pass's own return value being
+        // discarded, and must not re-report them on the next real tick either.
+        let mut tracker = NeedsInputTracker::new();
+        let already_blocked = vec![("main".to_owned(), AgentState::Blocked)];
+
+        // Seed pass: caller discards the return value.
+        let _ = tracker.observe(&already_blocked);
+
+        // Next tick, still blocked: must not emit (matches boot-time seed
+        // semantics where the seed pass's crossings are never surfaced).
+        let next = tracker.observe(&already_blocked);
+        assert!(
+            next.is_empty(),
+            "a session already blocked at seed time must not re-emit while still blocked"
+        );
+    }
+
+    #[test]
+    fn needs_input_tracker_multi_session_emits_only_crossing_names() {
+        let mut tracker = NeedsInputTracker::new();
+        tracker.observe(&[
+            ("alpha".to_owned(), AgentState::Working),
+            ("beta".to_owned(), AgentState::Blocked),
+            ("gamma".to_owned(), AgentState::Idle),
+        ]);
+
+        let crossing = tracker.observe(&[
+            ("alpha".to_owned(), AgentState::Blocked), // crosses
+            ("beta".to_owned(), AgentState::Blocked),  // already blocked
+            ("gamma".to_owned(), AgentState::Idle),    // stays idle
+            ("delta".to_owned(), AgentState::Blocked), // first observation, crosses
+        ]);
+
+        assert_eq!(crossing, vec!["alpha".to_owned(), "delta".to_owned()]);
     }
 
     // ── FlowWatcher ───────────────────────────────────────────────────────
