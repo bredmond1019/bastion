@@ -24,4 +24,9 @@ pub mod poller;
 pub mod sink;
 
 pub use poller::BlockedEdgePoller;
+// `BlockedEdgeRecord`/`SinkError` have no in-crate caller yet — they are the
+// cross-process contract's public shape for the not-yet-built `engine-rs:EN.8.B`
+// consumer (and Task 5's tests). Keep them exported rather than pruning them
+// just because nothing here calls them.
+#[allow(unused_imports)]
 pub use sink::{BlockedEdgeRecord, BlockedEdgeSink, SinkError, default_sink_path};
