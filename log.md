@@ -11,6 +11,44 @@ timestamp: 2026-08-10T21:15:00Z
 
 ---
 
+## [run: 2026-08-12]
+
+### `18.A-blocked-edge-poller` (BA.18.A) — done, 6 tasks, all PASS
+
+Resumed past the prior bail (upstream `mev` `okf_core::BlockedBy` non-exhaustive-match compile break,
+now fixed independently) and completed the full spec. Task 1 added `NeedsInputTracker`
+(`src/serve/poll.rs`), an owned wrapper letting the `sessions_needing_input` rising-edge decision run
+off-actor, leaving `should_emit_needs_input`/`sessions_needing_input` and their tests untouched. Task
+2 added a durable, append-only JSONL sink (`BlockedEdgeSink`/`BlockedEdgeRecord`,
+`src/serve/blocked_edge/`) with an XDG-resolved path (`XDG_STATE_HOME`/`$HOME` fallback), readable by
+an independently-constructed sink pointed at the same path — restart-durable and cross-process. Task
+3 wired an always-on `BlockedEdgePoller` at server boot (`run_server`), decoupled from any WebSocket
+subscription, with seed-before-emit on its first tick to suppress the restart storm and reusing the
+existing tmux capture sweep (no net subprocess increase); the core of this task was found already
+present from a prior bailed attempt and was verified rather than re-implemented. Task 4 removed the
+WS hub's `sessions_last_state` field and its inline diff, replacing it with a `BlockedEdgeCrossed`
+actix message from the poller so `event{needs_input}` frames still reach connected `sessions`
+subscribers. Task 5 added end-to-end coverage (`src/serve/blocked_edge/tests.rs` — zero-subscriber,
+restart-storm seed, re-block) against a real `Hub` actor with an injected capture closure. Task 6 ran
+the full authoritative suite — fmt, clippy, `cargo test` (2079 passed / 0 failed), release build,
+contract-corpus-drift — all green. Final review verdict: PASS, no findings. `docs/serve-api.md`
+updated. Block `BA.18.A` flipped closed in `state.json`.
+
+Next: BA.ticket.live-run-workflow-type — populate `RunSummaryDto.workflow_type` from
+`engine_serve::http::live_run_workflow_type`.
+
+```
+181fae7 docs: update docs for 18.A-blocked-edge-poller
+8bef994 fix: review pass 1 for 18.A-blocked-edge-poller
+68ff900 feat: implement 18.A-blocked-edge-poller-task5
+27a28b1 feat: implement 18.A-blocked-edge-poller-task4
+c194ec5 fix(serve): restore unused_imports allow on blocked_edge re-exports
+ad16362 chore: wrap up 18.A-blocked-edge-poller
+ee3af8f feat: implement 18.A-blocked-edge-poller-task3
+5b0e6ae feat: implement 18.A-blocked-edge-poller-task2
+446344a feat: implement 18.A-blocked-edge-poller-task1
+```
+
 ## [run: 2026-08-11]
 
 ### `18.A-blocked-edge-poller` — BAILED after tasks 1-2 (of 6), Task 3 blocked on upstream `mev` compile break
