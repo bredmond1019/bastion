@@ -231,14 +231,23 @@ fn block_status_map(files: &[(StateSource, StateFile)]) -> HashMap<String, Optio
 /// Filter `deps` down to the unmet subset, reimplementing the private closure
 /// `mev::brain::state::derive_focus` uses internally (not exported — see
 /// `../mev/src/brain/state.rs:1795-1810`). An edge is unmet when it is
-/// [`BlockedBy::External`], or a [`BlockedBy::Block`] whose target's mapped
+/// **targetless** — [`BlockedBy::External`], [`BlockedBy::Operator`], or
+/// [`BlockedBy::Approval`] — or a [`BlockedBy::Block`] whose target's mapped
 /// authored status is not `Some("closed")` — including a target absent from
 /// `status_map` entirely (an unresolvable/missing dependency is unmet, not
 /// vacuously satisfied).
+///
+/// The three targetless variants have no dependency to resolve and are unmet for
+/// as long as they are present: an operator session clears when its exit artifact
+/// exists and an approval clears when a human answers, neither of which is visible
+/// in `status_map`. This mirrors `mev::brain::state`'s own startability filter
+/// (`../mev/src/brain/state.rs:2234-2241`), which groups all three the same way.
 fn unmet_deps(deps: &[BlockedBy], status_map: &HashMap<String, Option<String>>) -> Vec<BlockedBy> {
     deps.iter()
         .filter(|d| match d {
-            BlockedBy::External { .. } => true,
+            BlockedBy::External { .. }
+            | BlockedBy::Operator { .. }
+            | BlockedBy::Approval { .. } => true,
             BlockedBy::Block { repo, id, .. } => {
                 let key = format!("{repo}:{id}");
                 status_map.get(&key).and_then(|s| s.as_deref()) != Some(CLOSED_STATUS)
@@ -1201,6 +1210,88 @@ mod tests {
         };
         let deps = vec![closed_dep, open_dep.clone()];
         assert_eq!(unmet_deps(&deps, &status_map), vec![open_dep]);
+    }
+
+    #[test]
+    fn unmet_deps_operator_always_unmet() {
+        let status_map = HashMap::new();
+        let deps = vec![BlockedBy::Operator {
+            slug: "session-mac-mini".to_owned(),
+            exit: "planning/handoff.md".to_owned(),
+            start: "/begin-session mac-mini".to_owned(),
+            what: None,
+        }];
+        assert_eq!(unmet_deps(&deps, &status_map), deps);
+    }
+
+    #[test]
+    fn unmet_deps_approval_always_unmet() {
+        let status_map = HashMap::new();
+        let deps = vec![BlockedBy::Approval {
+            slug: "approve-devto-sweep".to_owned(),
+            what: "approve four one-line diffs".to_owned(),
+            digest: "sha256:abc123".to_owned(),
+        }];
+        assert_eq!(unmet_deps(&deps, &status_map), deps);
+    }
+
+    /// The targetless variants are unmet on their own terms — a `status_map`
+    /// entry that happens to share their slug must not satisfy them, because
+    /// they carry no `repo:id` target to look up in the first place.
+    #[test]
+    fn unmet_deps_targetless_ignores_status_map() {
+        let mut status_map = HashMap::new();
+        status_map.insert(
+            "bastion:session-mac-mini".to_owned(),
+            Some("closed".to_owned()),
+        );
+        status_map.insert(
+            "bastion:approve-devto-sweep".to_owned(),
+            Some("closed".to_owned()),
+        );
+        let deps = vec![
+            BlockedBy::Operator {
+                slug: "session-mac-mini".to_owned(),
+                exit: "planning/handoff.md".to_owned(),
+                start: "/begin-session mac-mini".to_owned(),
+                what: None,
+            },
+            BlockedBy::Approval {
+                slug: "approve-devto-sweep".to_owned(),
+                what: "approve four one-line diffs".to_owned(),
+                digest: "sha256:abc123".to_owned(),
+            },
+        ];
+        assert_eq!(unmet_deps(&deps, &status_map), deps);
+    }
+
+    /// A closed block dep alongside the two targetless variants filters down to
+    /// exactly the targetless pair — the mixed case the board actually renders.
+    #[test]
+    fn unmet_deps_mixed_keeps_targetless_drops_closed_block() {
+        let mut status_map = HashMap::new();
+        status_map.insert("bastion:BA.1.A".to_owned(), Some("closed".to_owned()));
+        let closed_dep = BlockedBy::Block {
+            repo: "bastion".to_owned(),
+            id: "BA.1.A".to_owned(),
+            what: None,
+        };
+        let operator_dep = BlockedBy::Operator {
+            slug: "session-telegram-bot".to_owned(),
+            exit: "token in the Mini's plist".to_owned(),
+            start: "/begin-session telegram-bot".to_owned(),
+            what: None,
+        };
+        let approval_dep = BlockedBy::Approval {
+            slug: "approve-payload".to_owned(),
+            what: "approve the operator payload contract".to_owned(),
+            digest: "sha256:def456".to_owned(),
+        };
+        let deps = vec![closed_dep, operator_dep.clone(), approval_dep.clone()];
+        assert_eq!(
+            unmet_deps(&deps, &status_map),
+            vec![operator_dep, approval_dep]
+        );
     }
 
     // ── block_status_map ──────────────────────────────────────────────────

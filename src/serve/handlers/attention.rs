@@ -400,6 +400,7 @@ mod tests {
                 backlog_days: 7,
                 knowledge_days: 45,
                 memory_days: 30,
+                operator_days: 7,
             },
             history: Default::default(),
             repos,
