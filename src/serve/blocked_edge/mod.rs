@@ -22,6 +22,8 @@
 
 pub mod poller;
 pub mod sink;
+#[cfg(test)]
+mod tests;
 
 pub use poller::BlockedEdgePoller;
 // `BlockedEdgeRecord`/`SinkError` have no in-crate caller yet — they are the
