@@ -332,6 +332,32 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     )
     .start();
 
+    // ── Blocked rising-edge poller (BA.18.A task 3) ─────────────────────────
+    //
+    // Always-on: spawned once at boot, independent of the hub above and of
+    // any WebSocket subscription, so a session blocking with zero clients
+    // ever connected still produces a durable sink record (Acceptance
+    // Criteria). `addr` (this process's own bind address) doubles as its
+    // host/instance identity in the sink — stable for the life of this
+    // `bastion serve` instance and enough to distinguish it from any other
+    // instance writing to the same path, with no new dependency.
+    match blocked_edge::default_sink_path(
+        std::env::var("XDG_STATE_HOME").ok(),
+        std::env::var("HOME").ok(),
+    ) {
+        Some(sink_path) => {
+            let sink = blocked_edge::BlockedEdgeSink::new(sink_path);
+            let poller = blocked_edge::BlockedEdgePoller::new(sink, addr.clone());
+            actix_web::rt::spawn(poller.run(poll_secs));
+        }
+        None => {
+            tracing::warn!(
+                target: "bastion::serve",
+                "blocked-edge poller not started — neither XDG_STATE_HOME nor HOME is set"
+            );
+        }
+    }
+
     let registry = web::Data::new(registry);
 
     let live_data = web::Data::new(live_store);

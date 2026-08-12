@@ -13,13 +13,15 @@
 //!   process (`:8080`) is the only writer; the engine process (`:8090`) reads
 //!   the same path with no WebSocket and no direct RPC between the two.
 //!
-//! This module only defines the record shape and the sink itself. Wiring an
-//! always-on poller that calls it (seed-before-emit, restart-storm
-//! suppression) is Task 3; making the WS hub a consumer of the same
-//! computation is Task 4.
+//! Task 2 defines the record shape and the sink itself. [`poller`] (Task 3)
+//! wires an always-on poller that calls it — spawned once at server boot
+//! (`src/serve/mod.rs::run_server`), independent of any WebSocket
+//! subscription, with a seed-before-emit first tick so a restart with
+//! already-blocked sessions produces zero records for them. Making the WS
+//! hub a consumer of the same computation is Task 4.
 
+pub mod poller;
 pub mod sink;
 
-// Wired into an always-on poller in Task 3; unused until then.
-#[allow(unused_imports)]
+pub use poller::BlockedEdgePoller;
 pub use sink::{BlockedEdgeRecord, BlockedEdgeSink, SinkError, default_sink_path};
