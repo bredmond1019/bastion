@@ -32,6 +32,7 @@
 //!   [`auth::BearerAuthMiddleware`], requiring `Authorization: Bearer <token>`.
 
 pub mod auth;
+pub mod blocked_edge;
 #[cfg(test)]
 pub mod contract_corpus;
 pub mod docs;
