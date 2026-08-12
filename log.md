@@ -11,6 +11,41 @@ timestamp: 2026-08-10T21:15:00Z
 
 ---
 
+## [run: 2026-08-11]
+
+### `18.A-blocked-edge-poller` — BAILED after tasks 1-2 (of 6), Task 3 blocked on upstream `mev` compile break
+
+Task 1 added `NeedsInputTracker` (`src/serve/poll.rs`), a small owned wrapper around the
+previous-state map so `sessions_needing_input`'s rising-edge decision can be driven off-actor
+instead of living as a `sessions_last_state` field on the WS actor; the pure
+`should_emit_needs_input`/`sessions_needing_input` functions were left untouched. Task 2 added a
+durable, append-only JSONL sink (`BlockedEdgeSink`/`BlockedEdgeRecord` in `src/serve/blocked_edge/`)
+that persists Blocked rising-edge events and is readable back by an independently-constructed sink
+pointed at the same path, so it survives process restarts and is readable cross-process — storage
+path resolves via `default_sink_path` (`XDG_STATE_HOME`/`$HOME` fallback), mirroring `config.rs`'s
+XDG resolution. Task 3 wired an always-on `BlockedEdgePoller` (`src/serve/blocked_edge/poller.rs`),
+spawned at server boot in `run_server` independent of any WebSocket subscription, with a
+seed-before-emit first tick to suppress the restart storm. Both tasks 1-2 passed their fast gates.
+
+The run **BAILED at Task 3's clippy/test gate**: `cargo check`/`clippy`/`test` in this workspace
+fail with baseline E0004 non-exhaustive-match compile errors in the sibling `mev` crate
+(`core/mev/src/brain/{block_graph,carryover,emit,state}.rs`, 12 sites) against
+`okf_core::BlockedBy`'s new `Operator`/`Approval` variants. Reproduced independently by running
+`cargo check` directly in `core/mev` at its own current HEAD (3b4cf26), untouched by this task's
+branch — confirming the break is pre-existing upstream drift, not something Task 3 introduced (its
+branch only edited `src/serve/blocked_edge/*` and `src/serve/mod.rs`). Missing/undefined upstream
+symbol coverage, out of this block's scope. Tasks 4-6 (poller/actor unification, docs, final
+validation) did not run.
+
+Next: fix the `mev` `okf_core::BlockedBy` non-exhaustive-match sites upstream (or land a
+`#[non_exhaustive]`-safe wildcard arm), then resume `/sdlc-flow 18.A-blocked-edge-poller 3`.
+
+```
+424480b feat: implement 18.A-blocked-edge-poller-task3
+6805ac6 feat: implement 18.A-blocked-edge-poller-task2
+23078da feat: implement 18.A-blocked-edge-poller-task1
+```
+
 ## [run: 2026-08-10]
 
 ### `/api/attention?scope=hq` ~2.2s → ~0.1s — skipped a wasted O(n²) dedup pass
