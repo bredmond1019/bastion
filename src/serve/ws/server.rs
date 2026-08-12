@@ -1379,6 +1379,62 @@ mod tests {
         );
     }
 
+    /// Endpoint-level: the `sessions` topic's JSON frame body carries the
+    /// `agent_state` field for a non-`Unknown` state. Proven via the same
+    /// `SharedSessionsSweep` seam as the test above, so no real tmux is
+    /// spawned — the DTO's `agent_state` is set directly on the fixture.
+    #[actix_web::test]
+    async fn sessions_frame_body_carries_non_unknown_agent_state() {
+        let shared: crate::serve::poll::SharedSessionsSweep = Arc::new(Mutex::new(Some((
+            vec![crate::serve::dto::SessionDto {
+                name: "agent-state-fixture-session".to_owned(),
+                state: "running".to_owned(),
+                last_line: String::new(),
+                agent_state: "working".to_owned(),
+            }],
+            vec![],
+        ))));
+
+        let hub = Hub::new(
+            1,
+            FileConfig::default(),
+            LiveStateStore::new(),
+            (true, None),
+        )
+        .with_shared_sessions(shared)
+        .start();
+        let recorder = RecorderActor::default().start();
+        let id = ConnId::next();
+
+        hub.send(Connect {
+            id,
+            addr: recorder.clone().recipient(),
+        })
+        .await
+        .unwrap();
+        hub.send(Subscribe {
+            id,
+            topic: Topic::Sessions,
+        })
+        .await
+        .unwrap();
+
+        // Wait for the 1s sessions-poll interval to tick at least once.
+        actix_web::rt::time::sleep(Duration::from_millis(1200)).await;
+
+        let received = recorder.send(DrainReceived).await.unwrap();
+        let sessions_frames: Vec<&WsFrame> = received
+            .iter()
+            .filter(|f| f.kind == WsFrameKind::Sessions)
+            .collect();
+        assert_eq!(sessions_frames.len(), 1, "exactly one sessions frame");
+        let payload = &sessions_frames[0].payload;
+        assert_eq!(
+            payload["sessions"][0]["agent_state"], "working",
+            "sessions frame body must carry the non-Unknown agent_state"
+        );
+    }
+
     #[actix_web::test]
     async fn blocked_edge_crossed_does_not_reach_a_non_sessions_subscriber() {
         let hub = Hub::new(

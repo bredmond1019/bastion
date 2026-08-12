@@ -2443,6 +2443,31 @@ mod tests {
     }
 
     #[test]
+    fn session_dto_agent_state_round_trips_every_variant() {
+        use crate::detect::AgentState;
+        use crate::sessions::model::SessionState;
+
+        for (variant, expected) in [
+            (AgentState::Idle, "idle"),
+            (AgentState::Working, "working"),
+            (AgentState::Blocked, "blocked"),
+            (AgentState::Unknown, "unknown"),
+        ] {
+            let mut s = make_session("agent-state-fixture", SessionState::Idle, "");
+            s.agent_state = variant;
+            let dto = SessionDto::from(&s);
+            assert_eq!(
+                dto.agent_state, expected,
+                "AgentState::{variant:?} must convert to SessionDto.agent_state == {expected:?}"
+            );
+
+            // Round-trip through JSON too, so the wire format is pinned per variant.
+            let v = serde_json::to_value(&dto).expect("serialize SessionDto");
+            assert_eq!(v["agent_state"], expected);
+        }
+    }
+
+    #[test]
     fn session_dto_rejects_missing_name() {
         let raw = r#"{"state":"idle","last_line":""}"#;
         let result: Result<SessionDto, _> = serde_json::from_str(raw);
