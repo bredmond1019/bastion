@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-02T23:42:46Z
+timestamp: 2026-08-10T21:15:00Z
 ---
 
 # Log — bastion
@@ -11,7 +11,100 @@ timestamp: 2026-08-02T23:42:46Z
 
 ---
 
+## [run: 2026-08-12]
+
+### `18.A-blocked-edge-poller` (BA.18.A) — done, 6 tasks, all PASS
+
+Resumed past the prior bail (upstream `mev` `okf_core::BlockedBy` non-exhaustive-match compile break,
+now fixed independently) and completed the full spec. Task 1 added `NeedsInputTracker`
+(`src/serve/poll.rs`), an owned wrapper letting the `sessions_needing_input` rising-edge decision run
+off-actor, leaving `should_emit_needs_input`/`sessions_needing_input` and their tests untouched. Task
+2 added a durable, append-only JSONL sink (`BlockedEdgeSink`/`BlockedEdgeRecord`,
+`src/serve/blocked_edge/`) with an XDG-resolved path (`XDG_STATE_HOME`/`$HOME` fallback), readable by
+an independently-constructed sink pointed at the same path — restart-durable and cross-process. Task
+3 wired an always-on `BlockedEdgePoller` at server boot (`run_server`), decoupled from any WebSocket
+subscription, with seed-before-emit on its first tick to suppress the restart storm and reusing the
+existing tmux capture sweep (no net subprocess increase); the core of this task was found already
+present from a prior bailed attempt and was verified rather than re-implemented. Task 4 removed the
+WS hub's `sessions_last_state` field and its inline diff, replacing it with a `BlockedEdgeCrossed`
+actix message from the poller so `event{needs_input}` frames still reach connected `sessions`
+subscribers. Task 5 added end-to-end coverage (`src/serve/blocked_edge/tests.rs` — zero-subscriber,
+restart-storm seed, re-block) against a real `Hub` actor with an injected capture closure. Task 6 ran
+the full authoritative suite — fmt, clippy, `cargo test` (2079 passed / 0 failed), release build,
+contract-corpus-drift — all green. Final review verdict: PASS, no findings. `docs/serve-api.md`
+updated. Block `BA.18.A` flipped closed in `state.json`.
+
+Next: BA.ticket.live-run-workflow-type — populate `RunSummaryDto.workflow_type` from
+`engine_serve::http::live_run_workflow_type`.
+
+```
+181fae7 docs: update docs for 18.A-blocked-edge-poller
+8bef994 fix: review pass 1 for 18.A-blocked-edge-poller
+68ff900 feat: implement 18.A-blocked-edge-poller-task5
+27a28b1 feat: implement 18.A-blocked-edge-poller-task4
+c194ec5 fix(serve): restore unused_imports allow on blocked_edge re-exports
+ad16362 chore: wrap up 18.A-blocked-edge-poller
+ee3af8f feat: implement 18.A-blocked-edge-poller-task3
+5b0e6ae feat: implement 18.A-blocked-edge-poller-task2
+446344a feat: implement 18.A-blocked-edge-poller-task1
+```
+
+## [run: 2026-08-11]
+
+### `18.A-blocked-edge-poller` — BAILED after tasks 1-2 (of 6), Task 3 blocked on upstream `mev` compile break
+
+Task 1 added `NeedsInputTracker` (`src/serve/poll.rs`), a small owned wrapper around the
+previous-state map so `sessions_needing_input`'s rising-edge decision can be driven off-actor
+instead of living as a `sessions_last_state` field on the WS actor; the pure
+`should_emit_needs_input`/`sessions_needing_input` functions were left untouched. Task 2 added a
+durable, append-only JSONL sink (`BlockedEdgeSink`/`BlockedEdgeRecord` in `src/serve/blocked_edge/`)
+that persists Blocked rising-edge events and is readable back by an independently-constructed sink
+pointed at the same path, so it survives process restarts and is readable cross-process — storage
+path resolves via `default_sink_path` (`XDG_STATE_HOME`/`$HOME` fallback), mirroring `config.rs`'s
+XDG resolution. Task 3 wired an always-on `BlockedEdgePoller` (`src/serve/blocked_edge/poller.rs`),
+spawned at server boot in `run_server` independent of any WebSocket subscription, with a
+seed-before-emit first tick to suppress the restart storm. Both tasks 1-2 passed their fast gates.
+
+The run **BAILED at Task 3's clippy/test gate**: `cargo check`/`clippy`/`test` in this workspace
+fail with baseline E0004 non-exhaustive-match compile errors in the sibling `mev` crate
+(`core/mev/src/brain/{block_graph,carryover,emit,state}.rs`, 12 sites) against
+`okf_core::BlockedBy`'s new `Operator`/`Approval` variants. Reproduced independently by running
+`cargo check` directly in `core/mev` at its own current HEAD (3b4cf26), untouched by this task's
+branch — confirming the break is pre-existing upstream drift, not something Task 3 introduced (its
+branch only edited `src/serve/blocked_edge/*` and `src/serve/mod.rs`). Missing/undefined upstream
+symbol coverage, out of this block's scope. Tasks 4-6 (poller/actor unification, docs, final
+validation) did not run.
+
+Next: fix the `mev` `okf_core::BlockedBy` non-exhaustive-match sites upstream (or land a
+`#[non_exhaustive]`-safe wildcard arm), then resume `/sdlc-flow 18.A-blocked-edge-poller 3`.
+
+```
+424480b feat: implement 18.A-blocked-edge-poller-task3
+6805ac6 feat: implement 18.A-blocked-edge-poller-task2
+23078da feat: implement 18.A-blocked-edge-poller-task1
+```
+
 ## [run: 2026-08-10]
+
+### `/api/attention?scope=hq` ~2.2s → ~0.1s — skipped a wasted O(n²) dedup pass
+
+Diagnosed a user-reported ~1s "Rendering" stall on every Command Center tab/space switch in
+bastion-web down to `GET /api/attention?scope=hq` taking ~2.2s server-side (project-scoped calls
+were ~0.02-0.1s, exposing the entry-count sensitivity). Traced to `mev`'s `evaluate_carryover()`
+unconditionally running `suggest_duplicates()` — an O(n²) pairwise scan over the ~145
+finding_id-less carryover entries at HQ scope (~10,440 pairs, re-tokenized per pair, no
+memoization), added the day before by the `ticket-carryover-dedup-clusters` chain. `AttentionDto`
+(`src/serve/dto.rs:1461`) never had a `clusters`/`suggestions` field, so `build_attention()`
+(`src/serve/handlers/attention.rs`) was computing and immediately discarding the result on every
+request — confirmed via grep (zero uses of `.suggestions`/`.clusters` anywhere in this crate) and
+direct timing (`mev carryover --json`: 2.24s, 99% CPU).
+
+Fix landed upstream in `mev`: new `evaluate_carryover_with_dedup(..., include_dedup: bool)`, with
+`evaluate_carryover()` kept as a behavior-preserving wrapper for its other 37 call sites (tests +
+the `mev carryover` CLI, the pass's real consumer). `build_attention()` now imports and calls
+`evaluate_carryover_with_dedup(..., false)`. Both crates rebuild clean; mev's 98 carryover tests
+pass, including a new one asserting the flag actually empties `clusters`/`suggestions`. See
+`core/mev/log.md` `[run: 2026-08-10]` for the mev-side detail.
 
 ### `ticket-carryover-triage-dto` (BA.ticket.carryover-triage-dto) — DONE, 5 tasks, PASS
 

@@ -46,7 +46,7 @@ use crate::serve::dto::{
 use crate::serve::handlers::board::resolve_scope;
 
 use mev::CarryoverRanking;
-use mev::brain::carryover::{evaluate_carryover, rank_carryover};
+use mev::brain::carryover::{evaluate_carryover_with_dedup, rank_carryover};
 use mev::brain::config::{AttentionThresholds, BrainConfig, find_brain_root, load_brain_config};
 use mev::brain::state::{
     StateSource, TierScope, backlog_stale_age, block_status_map, build_state_graph,
@@ -215,7 +215,7 @@ pub fn build_attention(
     }
 
     let today_str = today.format("%Y-%m-%d").to_string();
-    let report = evaluate_carryover(
+    let report = evaluate_carryover_with_dedup(
         &in_scope_files,
         &status_map,
         root,
@@ -229,6 +229,12 @@ pub fn build_attention(
         // `clears_when`, and `allow_exec: true` would let anyone who can write a
         // `planning/state.json` execute an arbitrary shell command on the serve
         // host. Never flip this to `true` or plumb it to a config flag.
+        false,
+        // `include_dedup: false` — `AttentionDto` has no `clusters`/`suggestions`
+        // field, so this route never reads what that pass computes. It's an
+        // O(n²) scan over finding_id-less entries (~2.2s at HQ's ~150-entry
+        // corpus) purely wasted on this hot path. See
+        // `evaluate_carryover_with_dedup`'s doc comment in mev.
         false,
     );
 
@@ -394,6 +400,7 @@ mod tests {
                 backlog_days: 7,
                 knowledge_days: 45,
                 memory_days: 30,
+                operator_days: 7,
             },
             history: Default::default(),
             repos,
