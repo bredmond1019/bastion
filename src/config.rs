@@ -16,6 +16,14 @@ pub enum ConfigError {
     MissingServeToken,
     #[error("{0} is malformed: '{1}' is not a valid {2}")]
     MalformedBudgetValue(&'static str, String, &'static str),
+    /// Exactly one of `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID`
+    /// is set — a half-configured Telegram transport is a typed config error,
+    /// never a silent no-op. Names the *missing* var, never the one that was
+    /// present (which may be the token).
+    #[error(
+        "{0} must also be set — Telegram transport needs both BOT_TOKEN and CHAT_ID or neither"
+    )]
+    IncompleteTelegramConfig(&'static str),
 }
 
 // ── ServeConfig ───────────────────────────────────────────────────────────────
@@ -399,6 +407,90 @@ impl Config {
             FileConfig::default(),
         )
     }
+}
+
+// ── TelegramConfig (BA.18.B task 4) ─────────────────────────────────────────
+
+/// A Telegram bot token. Wraps the raw `String` so the value can never be
+/// printed by accident: `Debug` is hand-written to always render
+/// `BotToken(<redacted>)`, never the token itself (`CLAUDE.md` non-negotiable
+/// constraint 3 — the token must never appear in a log line or error
+/// message).
+#[derive(Clone, PartialEq, Eq)]
+pub struct BotToken(String);
+
+impl BotToken {
+    #[must_use]
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    /// The raw token value, for use only at the point a request is actually
+    /// built (e.g. interpolated into the Telegram API URL path). Callers
+    /// must never log or `Debug`-print the returned `&str`.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for BotToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BotToken(<redacted>)")
+    }
+}
+
+/// Resolved Telegram transport config: present only when both
+/// `BASTION_TELEGRAM_BOT_TOKEN` and `BASTION_TELEGRAM_CHAT_ID` are set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelegramConfig {
+    pub bot_token: BotToken,
+    pub chat_id: String,
+}
+
+/// Resolve the optional Telegram transport config from the two env values.
+///
+/// - Both absent → `Ok(None)` — the transport is simply not configured, and
+///   `run_server` starts exactly as it does today.
+/// - Both present → `Ok(Some(TelegramConfig { .. }))`.
+/// - Exactly one present → `Err(ConfigError::IncompleteTelegramConfig(missing))`,
+///   naming the missing var — a half-configured transport must fail loudly,
+///   never silently behave as "unconfigured".
+/// - A present-but-empty-string value counts as absent, matching
+///   `build_serve_config`'s treatment of an empty `BASTION_SERVE_TOKEN`.
+///
+/// Pure function — no I/O, no env access. Call from `load_telegram_config`
+/// or tests directly.
+pub fn telegram_config(
+    bot_token_env: Option<String>,
+    chat_id_env: Option<String>,
+) -> Result<Option<TelegramConfig>, ConfigError> {
+    let bot_token = bot_token_env.filter(|s| !s.is_empty());
+    let chat_id = chat_id_env.filter(|s| !s.is_empty());
+
+    match (bot_token, chat_id) {
+        (None, None) => Ok(None),
+        (Some(token), Some(chat_id)) => Ok(Some(TelegramConfig {
+            bot_token: BotToken::new(token),
+            chat_id,
+        })),
+        (Some(_), None) => Err(ConfigError::IncompleteTelegramConfig(
+            "BASTION_TELEGRAM_CHAT_ID",
+        )),
+        (None, Some(_)) => Err(ConfigError::IncompleteTelegramConfig(
+            "BASTION_TELEGRAM_BOT_TOKEN",
+        )),
+    }
+}
+
+/// Load [`TelegramConfig`] from `BASTION_TELEGRAM_BOT_TOKEN` /
+/// `BASTION_TELEGRAM_CHAT_ID` + `.env` file. DB-free.
+pub fn load_telegram_config() -> Result<Option<TelegramConfig>, ConfigError> {
+    dotenvy::dotenv().ok();
+    telegram_config(
+        std::env::var("BASTION_TELEGRAM_BOT_TOKEN").ok(),
+        std::env::var("BASTION_TELEGRAM_CHAT_ID").ok(),
+    )
 }
 
 /// Walk from `start` upward toward the filesystem root, returning the first
@@ -996,6 +1088,76 @@ brain = "/Users/alice/brain"
         // --token "" (empty string from CLI) must also be rejected.
         let err = build_serve_config(None, Some(String::new()), None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingServeToken);
+    }
+
+    // ─── telegram_config (BA.18.B task 4) ────────────────────────────────────
+
+    #[test]
+    fn telegram_config_both_absent_is_none() {
+        let cfg = telegram_config(None, None).expect("absent is not an error");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn telegram_config_both_present_resolves() {
+        let cfg = telegram_config(Some("bot-token-value".into()), Some("chat-42".into()))
+            .expect("both present should resolve")
+            .expect("expected Some");
+        assert_eq!(cfg.bot_token.expose(), "bot-token-value");
+        assert_eq!(cfg.chat_id, "chat-42");
+    }
+
+    #[test]
+    fn telegram_config_token_only_is_typed_error_naming_chat_id() {
+        let err = telegram_config(Some("bot-token-value".into()), None).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_TELEGRAM_CHAT_ID")
+        );
+    }
+
+    #[test]
+    fn telegram_config_chat_id_only_is_typed_error_naming_bot_token() {
+        let err = telegram_config(None, Some("chat-42".into())).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_TELEGRAM_BOT_TOKEN")
+        );
+    }
+
+    #[test]
+    fn telegram_config_empty_strings_treated_as_absent() {
+        let cfg = telegram_config(Some(String::new()), Some(String::new()))
+            .expect("both empty is treated as both absent");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn telegram_config_empty_token_with_present_chat_id_is_typed_error() {
+        // Empty-string token is treated as absent, so this is the "token
+        // missing, chat id present" case, not the reverse.
+        let err = telegram_config(Some(String::new()), Some("chat-42".into())).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_TELEGRAM_BOT_TOKEN")
+        );
+    }
+
+    #[test]
+    fn bot_token_debug_never_contains_the_token_value() {
+        let token = BotToken::new("super-secret-token-value-12345");
+        let rendered = format!("{token:?}");
+        assert!(
+            !rendered.contains("super-secret-token-value-12345"),
+            "BotToken Debug must never contain the raw token; got: {rendered}"
+        );
+        assert_eq!(rendered, "BotToken(<redacted>)");
+    }
+
+    #[test]
+    fn bot_token_expose_returns_raw_value_for_request_construction() {
+        let token = BotToken::new("raw-value");
+        assert_eq!(token.expose(), "raw-value");
     }
 
     // ─── planning_root ────────────────────────────────────────────────────────
