@@ -44,15 +44,18 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.26 Contract
+# serve-api — v0.27 Contract
 
-**Version:** v0.26  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–25 — plus, when mounted,
+**Version:** v0.27  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
 bastion-web (`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web
 (`BW.2.A`) for Section 16; `bastion abort` (`src/run/abort.rs`, this repo) for Section 18's abort
-route; bastion-web (`BW.9.B`) for Section 23; bastion-web (`BW.3.C`) for Section 6/8.3's `runs` topic.
+route; bastion-web (`BW.9.B`) for Section 23; bastion-web (`BW.3.C`) for Section 6/8.3's `runs` topic;
+Section 26 (the operator-notification transport) has no REST/WS route of its own — it is an
+outbound-only background loop documented here for the env-var contract and the no-webhook posture,
+not a shape any client calls.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -2355,7 +2358,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.26**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.27**.
 
 ---
 
@@ -2960,7 +2963,123 @@ a real Postgres being up or down cannot change any golden.
 
 ---
 
+## 26. Operator-notification transport (v0.27, `BA.18.B`)
+
+An **outbound-only** background capability, not a REST/WS route — `bastion serve` delivers an
+already-validated operator gate payload to a human over Telegram and long-polls for the tap that
+answers it. There is no client of this section in the sense the rest of this document uses that
+word: no `bastion-ui`/`bastion-web` request ever touches it, and it registers nothing under
+`/api`. It is documented here because it lives in `src/serve/` and boots (or doesn't) as part of
+`run_server`, the same way Section 18's engine mount does.
+
+### 26.1 The payload contract this consumes
+
+`bastion` does **not** define the operator payload shape — it is owned, validated, and versioned
+by `engine-rs:EN.8.A`. See
+[`../engine-rs/docs/operator-payload-contract.md`](../../engine-rs/docs/operator-payload-contract.md)
+for `OperatorPayload { gate_id, rendered_summary, options, digest }` and the single
+`ValidatedOperatorPayload::validate` constructor. This transport (`src/serve/notify/`) accepts
+only a `ValidatedOperatorPayload` and fails closed — via `NotifyError::PayloadRejected` — on
+anything that would not survive the narrowest target channel's limits (today, WhatsApp's confirmed
+ceiling: ≤3 options, ≤20-char labels, ≤1024-char summary), so a Telegram-only POC never ships a
+payload the eventual WhatsApp leg (`EN.8.B`+, out of scope here) could not also render.
+
+### 26.2 Transport seam
+
+`OperatorTransport` (`src/serve/notify/mod.rs`) is one `async_trait` with two halves:
+
+- `send(&self, payload: &ValidatedOperatorPayload) -> Result<DeliveredMessage, NotifyError>`
+- `poll_responses(&self, since: Option<UpdateCursor>) -> Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError>`
+
+`TelegramTransport` (`src/serve/notify/telegram.rs`) is the first and, as of this writing, only
+implementation. The trait itself carries no channel-specific shape (no Telegram field, no
+WhatsApp field) so a future WhatsApp implementation is a second `impl`, not a rewrite of this
+seam. `NotifyError` splits along one axis — `is_retryable()` — separating transient transport
+failure (`Transport`, `RateLimited { retry_after_secs }`) from permanent rejection
+(`PayloadRejected`, `Unauthorized`, `Malformed`); no variant's `Display`/`Debug` may interpolate a
+token, asserted by unit test.
+
+### 26.3 No webhook — long-polling only, on purpose
+
+Inbound is `getUpdates` long-polling exclusively. `bastion serve` registers **no** webhook route
+for Telegram (or any future transport) and the poll loop opens **no** listening socket — it only
+makes outbound HTTPS calls to `api.telegram.org`. This is a deliberate, non-negotiable posture,
+not a placeholder pending a nicer webhook implementation later: a Telegram webhook needs a public
+route into the Mini, and that reopens exactly what
+`brain:HQ.ticket.tailscale-bind-and-token-rotation` closed. A route-table test
+(`src/serve/mod.rs`, `BA.18.B` task 5) walks the app factory's registered routes and fails if any
+path resembles a Telegram webhook, so a future refactor cannot quietly reintroduce one.
+
+### 26.4 Configuration
+
+| Env var | Required | Default | Description |
+|---|---|---|---|
+| `BASTION_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token. Absent (with `BASTION_TELEGRAM_CHAT_ID` also absent) leaves the transport unconfigured — `bastion serve` boots exactly as it does today, logged as `tracing::info!`, not a warning. |
+| `BASTION_TELEGRAM_CHAT_ID` | No | — | The operator's Telegram chat id the bot delivers to. Same absent-is-fine contract as the token, paired with it. |
+
+Exactly one of the two set (token without chat id, or the reverse) is a typed
+`ConfigError::IncompleteTelegramConfig(&'static str)` naming the missing variable — a
+half-configured transport is a startup error, never a silent partial boot. Both resolve through
+`src/config.rs`'s existing pure-`from_env`-over-an-`Option<String>`-tuple convention
+(`build_telegram_config` / `load_telegram_config`), the same shape as every other env-backed
+config in this repo. The token is held in a `BotToken` newtype whose `Debug` renders
+`BotToken(<redacted>)` — never the raw value — so a `{:?}` in a future log line cannot leak it by
+accident.
+
+**The token never lands in a tracked file.** `.env.example` carries empty placeholders for both
+vars with a comment pointing at the Mini's `com.brandon.engine-serve.plist` as the only place the
+real values live (see [config.md](config.md)). Neither var is read, echoed, or interpolated by any
+task, test, fixture, or doc in this repo — the live-transport smoke test is an operator-run step,
+not an agent-run one (`planning/BA.18.B/tasks.md`'s Notes).
+
+### 26.5 Response resolution and stale-digest rejection
+
+Each Telegram `callback_query` encodes `gate_id` + a bounded digest prefix + `option_key` into
+`callback_data` (`encode_callback_data`/`decode_callback_data`, ≤64 bytes, Telegram's own
+ceiling). On receipt, `resolve_response` compares it against the `ValidatedOperatorPayload` the
+gate is still waiting on:
+
+- **Gate id and digest prefix both match** → `Accepted { gate_id, option_key }`.
+- **Gate id matches, digest prefix does not** → `StaleDigest` — **rejected**, never applied. This
+  is what makes a payload that was mutated (re-rendered with different options or summary) after
+  the operator was shown the original re-queue instead of silently executing against content the
+  operator never saw.
+- **Gate id has no pending payload** → `UnknownGate`.
+
+The cursor threaded through `poll_responses` is `max(update_id) + 1` per Telegram's own `offset`
+semantics; an empty poll result leaves the cursor **unchanged** (never reset to `None`), so a
+restart resumes the backlog rather than replaying or dropping it. The background loop
+(`NotifyPollLoop`, `src/serve/mod.rs::run_server`) applies exponential backoff (floor 1s, ceiling
+60s, reset on a successful tick) to a retryable `NotifyError` so a persistent outage never spins
+hot; the cursor itself is left untouched on failure either way.
+
+### 26.6 Out of scope here
+
+The queue this loop's resolved verdicts feed into, its depth limit, and the blocked-edge sink's
+write path belong to `engine-rs:EN.8.B` — this spec's production wiring passes a `PendingLookup`
+closure that always returns `None` until that queue exists, so every observed response resolves to
+`UnknownGate` rather than being silently applied against nothing. WhatsApp itself and any
+`bastion-ui` push surface are also out of scope; Section 26.1's portability guard exists precisely
+so adding WhatsApp later does not require touching this section's payload handling.
+
+---
+
 ## Amendment Log
+
+- **2026-08-13 — v0.26 → v0.27 (`BA.18.B`):** New Section 26, "Operator-notification transport" —
+  an outbound-only background capability (`src/serve/notify/`), not a REST/WS route. Delivers an
+  `engine-rs:EN.8.A` `ValidatedOperatorPayload` to a human over Telegram, rendered inline with its
+  declared 2-3 tap options, and resolves the response back to `gate_id` via `getUpdates`
+  long-polling — no webhook route, no listening socket (deliberate, per
+  `brain:HQ.ticket.tailscale-bind-and-token-rotation`). A response whose digest no longer matches
+  the payload it answers is rejected as stale, never applied. Configured by two new optional env
+  vars, `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` (Section 26.4; also
+  [config.md](config.md)) — both absent leaves `bastion serve` byte-identical to before this
+  block; exactly one present is a typed startup error. Neither var, nor the bot token itself,
+  appears anywhere in this document, `.env.example`, a test fixture, or a log line. This section
+  adds no route, no DTO, and no typeshared type — `types/serve.ts` is unaffected and
+  `scripts/check-typeshare-drift.sh` / `scripts/check-contract-corpus-drift.sh` were not expected
+  to (and did not) flag any change.
 
 - **2026-08-12 — v0.25 → v0.26 (`BA.ticket.session-dto-agent-state`):** `SessionDto`'s
   `From<&Session>` (`src/serve/dto.rs`) previously discarded `agent_state`, so every consumer of

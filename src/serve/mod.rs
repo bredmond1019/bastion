@@ -38,6 +38,7 @@ pub mod contract_corpus;
 pub mod docs;
 pub mod dto;
 pub mod handlers;
+pub mod notify;
 pub mod poll;
 pub mod status;
 pub mod ws;
@@ -368,6 +369,59 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             tracing::warn!(
                 target: "bastion::serve",
                 "blocked-edge poller not started — neither XDG_STATE_HOME nor HOME is set"
+            );
+        }
+    }
+
+    // ── Operator-notification transport (BA.18.B task 5) ────────────────────
+    //
+    // Constructed only when both `BASTION_TELEGRAM_BOT_TOKEN` and
+    // `BASTION_TELEGRAM_CHAT_ID` resolve. Unconfigured is the default and is
+    // an `info!` line at boot, never a warning and never a failure — a fresh
+    // `bastion serve` with neither var set boots byte-identically to before
+    // this task. No route is registered for this anywhere (inbound is
+    // `getUpdates` long-polling only, spawned as a background task — see
+    // `NotifyPollLoop::run` — never a listening socket).
+    //
+    // The pending-gate lookup is a stub returning `None` for every gate:
+    // the live registry of gates awaiting an operator response is
+    // `engine-rs:EN.8.B`'s side, out of scope here (non-negotiable
+    // constraint 4). Every observed response therefore resolves to
+    // `UnknownGate` until that queue exists to look up against — this loop
+    // proves delivery + long-poll + stale-digest resolution end-to-end
+    // without depending on EN.8.B landing first.
+    match crate::config::load_telegram_config() {
+        Ok(Some(telegram_config)) => {
+            tracing::info!(
+                target: "bastion::serve",
+                "operator notification transport configured (Telegram)"
+            );
+            let transport: std::sync::Arc<dyn notify::OperatorTransport> =
+                std::sync::Arc::new(notify::telegram::TelegramTransport::new(telegram_config));
+            let poll_loop = notify::NotifyPollLoop::new(
+                transport,
+                Box::new(|_gate_id: &str| None),
+                Box::new(|verdict| {
+                    tracing::info!(
+                        target: "bastion::serve",
+                        ?verdict,
+                        "operator response observed (not yet applied — engine-rs:EN.8.B pending)"
+                    );
+                }),
+            );
+            actix_web::rt::spawn(poll_loop.run());
+        }
+        Ok(None) => {
+            tracing::info!(
+                target: "bastion::serve",
+                "operator notification transport not configured (BASTION_TELEGRAM_BOT_TOKEN / BASTION_TELEGRAM_CHAT_ID unset)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "bastion::serve",
+                error = %e,
+                "operator notification transport not configured — invalid config"
             );
         }
     }
@@ -880,6 +934,56 @@ mod tests {
             "GET /health must return 2xx; got {}",
             resp.status()
         );
+    }
+
+    /// Structural regression guard for `BA.18.B` non-negotiable constraint
+    /// 2: inbound Telegram delivery is `getUpdates` long-polling only —
+    /// there must never be a webhook route anywhere in this app, since a
+    /// webhook needs a public listener into the Mini
+    /// (`brain:HQ.ticket.tailscale-bind-and-token-rotation` closes exactly
+    /// that). This app currently registers no webhook route at all, so
+    /// every plausible webhook path below must 404 — a future refactor
+    /// that registers one (under any of these guesses, protected or not)
+    /// fails this test rather than shipping silently.
+    #[actix_web::test]
+    async fn no_telegram_webhook_route_is_ever_registered() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+
+        for path in [
+            "/telegram/webhook",
+            "/webhook",
+            "/api/telegram/webhook",
+            "/api/webhook",
+            "/notify/telegram/webhook",
+            "/bot/webhook",
+            "/hooks/telegram",
+        ] {
+            for req in [
+                test::TestRequest::post()
+                    .uri(path)
+                    .insert_header(("Authorization", format!("Bearer {TEST_TOKEN}")))
+                    .to_request(),
+                test::TestRequest::get()
+                    .uri(path)
+                    .insert_header(("Authorization", format!("Bearer {TEST_TOKEN}")))
+                    .to_request(),
+            ] {
+                // Authenticated on every candidate path (including the /api-scoped
+                // ones) so a 401 from `BearerAuthMiddleware` can never be mistaken
+                // for "no such route" — an unauthenticated probe can't distinguish
+                // "route doesn't exist" from "route exists but requires auth",
+                // which would make this test pass even if a webhook route were
+                // added under the protected scope.
+                let resp = test::call_service(&app, req).await;
+                assert_eq!(
+                    resp.status(),
+                    actix_web::http::StatusCode::NOT_FOUND,
+                    "path {path} responded {} — no webhook route may ever be registered \
+                     (BA.18.B constraint 2: inbound is getUpdates long-polling only)",
+                    resp.status()
+                );
+            }
+        }
     }
 
     #[actix_web::test]

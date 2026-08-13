@@ -13,6 +13,47 @@ timestamp: 2026-08-10T21:15:00Z
 
 ## [run: 2026-08-12]
 
+### `BA.18.B` (Telegram operator-notification transport) — done, 7 tasks, all PASS
+
+Delivered the outbound leg of the operator-surface lane: EN.8.A `ValidatedOperatorPayload` is now
+rendered inline over Telegram with its 2–3 tap options and accepted back via long-polling
+`getUpdates`, behind an object-safe `OperatorTransport` trait seam so WhatsApp can implement the
+same seam later without a rewrite. Task 1 promoted `engine-core` to a normal build dependency and
+added `OperatorTransport` (`send`/`poll_responses`) plus `DeliveredMessage`/`OperatorResponse`/
+`UpdateCursor`/`NotifyError` (`src/serve/notify/`). Task 2 added pure Telegram request construction
+— `sendMessage` body, callback-data encode/decode (`gate_id|digest_prefix|option_key`), and
+WhatsApp-portability checks — with no I/O. Task 3 added pure `getUpdates` parsing (cursor advances
+via `max(update_id)+1`, skip-and-continue on malformed items) and `resolve_response`
+(`Accepted`/`StaleDigest`/`UnknownGate` via truncated digest-prefix comparison), with 18 new unit
+tests. Task 4 added `BASTION_TELEGRAM_BOT_TOKEN`/`_CHAT_ID` config resolution (redacted-`Debug`
+`BotToken`, both-or-neither typed error) and a thin `reqwest`-backed `TelegramTransport`, with
+`reqwest::Error`'s own `Display` never rendered into `NotifyError` so a token-bearing URL can't leak
+into an error message. Task 5 wired a backoff-guarded `NotifyPollLoop` into `run_server`, spawned
+only when both env vars resolve; unconfigured boot stays byte-identical and a route-table test
+confirms no webhook route is ever registered (long-polling only, per spec constraint) — production
+wiring uses a stub pending-gate lookup since the real EN.8.B queue is out of scope. Task 6
+documented the transport in `docs/serve-api.md` §26 (contract v0.26 → v0.27) and `docs/config.md`.
+Task 7 ran the full gate — fmt, clippy, `cargo test` (2166 passed), release build,
+contract-corpus-drift, and a scoped secret scan for the Telegram-token shape — all green; the token
+never lands in a tracked file, log line, or error message. Review verdict: PASS, no findings. The
+spec's own Notes leave one operator-only step explicitly unrun: a live-credential Telegram smoke
+test (send/accept/stale-digest-reject) that must be run and recorded from a shell, never a file, per
+the hard lesson from `BA.ticket.engine-surface-auth`'s 2026-08-12 credential-leak incident.
+
+Next: run the live-credential Telegram operator smoke test (`planning/BA.18.B/tasks.md` task 7
+Notes checklist), then `BA.ticket.live-run-workflow-type` / `BA.ticket.reconcile-failed-status-surface`.
+
+```
+ca19bb3 docs: update docs for BA.18.B
+cd7a4fb feat: implement BA.18.B-task7
+d81c540 feat: implement BA.18.B-task6
+a849836 feat: implement BA.18.B-task5
+8b539c3 feat: implement BA.18.B-task4
+98cca79 feat: implement BA.18.B-task3
+9297ca5 feat: implement BA.18.B-task2
+baba9dc feat: implement BA.18.B-task1
+```
+
 ### `18.A-blocked-edge-poller` (BA.18.A) — done, 6 tasks, all PASS
 
 Resumed past the prior bail (upstream `mev` `okf_core::BlockedBy` non-exhaustive-match compile break,
