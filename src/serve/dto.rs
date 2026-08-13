@@ -39,6 +39,9 @@
 //!   `event{run_transition}` / `event{run_stream_status}` WS pushes for the
 //!   subscribable `runs` topic (BA.11.N). Diff/derivation logic lives in
 //!   `serve/poll.rs`, not here.
+//! - [`NotifyTestResponseDto`] — `POST /api/notify/test` response body
+//!   (`gate_id` + `digest` of the sent payload), `ticket-notify-send-trigger`
+//!   task 2. Handler logic lives in `handlers/notify.rs`, not here.
 
 use crate::sessions::model::{Pane, Session};
 use mev::TriageLane;
@@ -2171,6 +2174,28 @@ pub struct CostSummaryDto {
     pub unpriced_models: Vec<String>,
     /// Budget configuration + current gate state for this window.
     pub budget: BudgetStateDto,
+}
+
+// ── Notify test-send (ticket-notify-send-trigger task 2) ────────────────────
+
+/// `POST /api/notify/test` response body — the `gate_id` and `digest` of the
+/// fixed 2-option `ValidatedOperatorPayload` that was just sent over the
+/// configured [`crate::serve::notify::OperatorTransport`], so the operator
+/// smoke test has something to correlate the delivered message against.
+///
+/// Wire format:
+/// ```json
+/// { "gate_id": "b3b8c9b0-...", "digest": "a1b2c3..." }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotifyTestResponseDto {
+    /// The gate id generated for this test send — the key the registry and
+    /// any subsequent operator response resolve against.
+    pub gate_id: String,
+    /// The digest of the rendered payload actually sent, for stale-digest
+    /// comparison.
+    pub digest: String,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

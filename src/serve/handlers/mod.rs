@@ -11,6 +11,7 @@ pub mod board;
 pub mod costs;
 pub mod docs;
 pub mod epics;
+pub mod notify;
 pub mod pipeline;
 pub mod runs;
 pub mod sessions;

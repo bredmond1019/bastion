@@ -430,11 +430,21 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
 
     let live_data = web::Data::new(live_store);
 
+    // ── Pending-payload registry (ticket-notify-send-trigger task 2) ────────
+    //
+    // Backs `POST /api/notify/test`'s registration of payloads it sent, so a
+    // later inbound response can resolve against them. Not yet wired into
+    // `NotifyPollLoop`'s `PendingLookup` (still the `|_| None` stub above) —
+    // that wiring, and sharing this same instance with the poll loop, is
+    // `ticket-notify-send-trigger` task 3's job.
+    let pending_payloads = web::Data::new(notify::PendingPayloads::new());
+
     HttpServer::new(move || {
         let hub_data = web::Data::new(hub.clone());
         let registry_data = registry.clone();
         let engine_data = engine_data.clone();
         let live_data = live_data.clone();
+        let pending_payloads = pending_payloads.clone();
 
         // Protected scope — bearer auth enforced on all children.
         //
@@ -546,6 +556,13 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                 web::resource("/pipeline/{slug}")
                     .route(web::get().to(handlers::pipeline::get_pipeline_opportunity)),
             )
+            // ── Operator-notification test-send route (ticket-notify-send-trigger) ──
+            // /notify/test — POST only. Resolves the Telegram transport from env at
+            // call time (503 if unconfigured); see `handlers::notify` module docs.
+            .service(
+                web::resource("/notify/test").route(web::post().to(handlers::notify::test_send)),
+            )
+            .app_data(pending_payloads.clone())
             .app_data(live_data);
 
         // Protected WebSocket scope — bearer auth enforced on upgrade.
@@ -860,6 +877,11 @@ mod tests {
                 web::resource("/pipeline/{slug}")
                     .route(web::get().to(handlers::pipeline::get_pipeline_opportunity)),
             )
+            // ── Operator-notification test-send route (ticket-notify-send-trigger) ──
+            .service(
+                web::resource("/notify/test").route(web::post().to(handlers::notify::test_send)),
+            )
+            .app_data(web::Data::new(notify::PendingPayloads::new()))
             .app_data(live_data);
         let ws_scope = web::scope("/ws")
             .wrap(BearerAuthMiddleware::new(TEST_TOKEN))
@@ -2169,6 +2191,90 @@ mod tests {
 
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert_eq!(body["code"], "C006");
+    }
+
+    // ── /api/notify/test — route registration (ticket-notify-send-trigger) ──
+
+    #[actix_web::test]
+    async fn notify_test_send_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/notify/test")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[actix_web::test]
+    async fn notify_test_send_is_absent_at_the_app_root() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/notify/test")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            404,
+            "POST /notify/test must not exist at the app root — only /api/notify/test"
+        );
+    }
+
+    #[actix_web::test]
+    async fn notify_test_send_unconfigured_transport_returns_503_c005() {
+        let env_lock = lock_env();
+        // `load_telegram_config` calls `dotenvy::dotenv()`, which would
+        // repopulate the vars from a checked-out `.env` the moment they are
+        // removed from the process env — see `get_costs_missing_database_url_
+        // returns_503_c005`'s comment for the same trap with `DATABASE_URL`.
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "notify_test_send_c005");
+        let _bot_token = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN");
+        let _chat_id = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/notify/test")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        let status = resp.status();
+        let body: serde_json::Value = test::read_body_json(resp).await;
+
+        assert_eq!(
+            status, 503,
+            "POST /api/notify/test with no Telegram config must return 503; got {status}"
+        );
+        assert_eq!(body["code"], "C005");
+        let message = body["message"].as_str().expect("message is a string");
+        assert!(message.contains("BASTION_TELEGRAM_BOT_TOKEN"));
+        assert!(message.contains("BASTION_TELEGRAM_CHAT_ID"));
+    }
+
+    #[actix_web::test]
+    async fn notify_test_send_incomplete_config_names_only_the_missing_var() {
+        let env_lock = lock_env();
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "notify_test_send_incomplete");
+        let _bot_token =
+            EnvVarGuard::set(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN", "fake-token-value");
+        let _chat_id = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::post()
+            .uri("/api/notify/test")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(resp.status(), 503);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C005");
+        let message = body["message"].as_str().expect("message is a string");
+        assert!(message.contains("BASTION_TELEGRAM_CHAT_ID"));
+        // The var that *was* set must never appear in the error body — its
+        // value never should either way, but confirm the message names only
+        // the missing side.
+        assert!(!message.contains("fake-token-value"));
     }
 
     // ── /api/board — route registration (BA.11.K) ───────────────────────────
