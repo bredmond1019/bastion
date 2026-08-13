@@ -1,0 +1,541 @@
+//! Pure Telegram request construction from a `ValidatedOperatorPayload`
+//! (`BA.18.B` task 2).
+//!
+//! This module only *builds* the JSON/query shapes Telegram's Bot API
+//! expects — it performs no HTTP execution (the established
+//! `sessions/tmux.rs` construction-vs-execution split: `*_args`/`*_body`/
+//! `*_query` functions are pure and unit-tested directly; a thin I/O shell
+//! calling them is added in a later task).
+//!
+//! Every function here consumes `engine_core::operator::ValidatedOperatorPayload`
+//! — the `EN.8.A` contract — and never invents its own option/label/summary
+//! shape. [`check_whatsapp_portability`] is a second, transport-side gate:
+//! it re-checks the confirmed WhatsApp reply-buttons limits regardless of
+//! what (possibly looser) `OperatorPayloadLimits` the payload was validated
+//! against upstream, so a payload that would not survive the WhatsApp leg
+//! is rejected here rather than shipping as a Telegram-only POC.
+
+use engine_core::operator::{OperatorPayloadLimits, ValidatedOperatorPayload};
+
+use crate::serve::notify::{NotifyError, UpdateCursor};
+
+/// Number of leading hex characters of the payload's SHA-256 digest carried
+/// in a Telegram `callback_data` string. A named const (never a magic
+/// number) so the 64-byte `callback_data` ceiling stays provably respected
+/// as gate ids/option keys grow, and so [`resolve_response`]-style callers
+/// always compare *prefix to prefix*, never a truncated prefix against a
+/// full digest (which would silently under-reject).
+pub const CALLBACK_DIGEST_PREFIX_LEN: usize = 12;
+
+/// Telegram's confirmed ceiling on `callback_data`, in bytes.
+pub const CALLBACK_DATA_MAX_BYTES: usize = 64;
+
+/// The delimiter joining `gate_id` / `digest_prefix` / `option_key` inside
+/// an encoded `callback_data` string. Gate ids and option keys are
+/// machine-chosen identifiers (never operator-supplied free text), so they
+/// are not expected to contain this character; [`decode_callback_data`]
+/// splits on exactly two of them and would misparse an id that did.
+const CALLBACK_DATA_DELIMITER: char = '|';
+
+/// The decoded contents of a Telegram `callback_data` string: which gate
+/// the tap answers, the truncated digest prefix the payload was rendered
+/// at, and which option the operator tapped.
+///
+/// `digest_prefix` is deliberately not the full digest — see
+/// [`CALLBACK_DIGEST_PREFIX_LEN`]. Resolving a response against an
+/// expected payload must compare `digest_prefix` to the *same* truncation
+/// of the expected payload's digest, never to the expected payload's full
+/// digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallbackData {
+    /// The gate this response answers.
+    pub gate_id: String,
+    /// The first [`CALLBACK_DIGEST_PREFIX_LEN`] characters of the payload's
+    /// digest at render time.
+    pub digest_prefix: String,
+    /// The stable machine key of the tapped option.
+    pub option_key: String,
+}
+
+impl CallbackData {
+    /// Build a `CallbackData`, truncating `digest` to the fixed prefix
+    /// length so the constructed value is always the round-trippable form
+    /// — there is no way to hold a `CallbackData` carrying an untruncated
+    /// digest.
+    #[must_use]
+    pub fn new(gate_id: impl Into<String>, digest: &str, option_key: impl Into<String>) -> Self {
+        Self {
+            gate_id: gate_id.into(),
+            digest_prefix: digest.chars().take(CALLBACK_DIGEST_PREFIX_LEN).collect(),
+            option_key: option_key.into(),
+        }
+    }
+}
+
+/// Encode `data` into a Telegram `callback_data` string. Pure and
+/// round-trippable via [`decode_callback_data`].
+#[must_use]
+pub fn encode_callback_data(data: &CallbackData) -> String {
+    format!(
+        "{gate}{d}{digest}{d}{option}",
+        gate = data.gate_id,
+        digest = data.digest_prefix,
+        option = data.option_key,
+        d = CALLBACK_DATA_DELIMITER,
+    )
+}
+
+/// Decode a Telegram `callback_data` string back into its parts. `None` if
+/// `raw` does not have exactly three delimiter-separated fields.
+#[must_use]
+pub fn decode_callback_data(raw: &str) -> Option<CallbackData> {
+    let mut parts = raw.splitn(3, CALLBACK_DATA_DELIMITER);
+    let gate_id = parts.next()?.to_string();
+    let digest_prefix = parts.next()?.to_string();
+    let option_key = parts.next()?.to_string();
+    if parts.next().is_some() {
+        // splitn(3, ..) can never yield a 4th item, but guard explicitly
+        // rather than relying on that invariant silently.
+        return None;
+    }
+    Some(CallbackData {
+        gate_id,
+        digest_prefix,
+        option_key,
+    })
+}
+
+/// Render a `sendMessage` request body: `rendered_summary` inline in
+/// `text`, and one inline-keyboard button per declared option, in a single
+/// row (Telegram, unlike WhatsApp, has no 3-button ceiling of its own, but
+/// this transport only ever carries payloads already bounded to ≤3 options
+/// by `EN.8.A` validation plus [`check_whatsapp_portability`]).
+#[must_use]
+pub fn sendmessage_body(payload: &ValidatedOperatorPayload, chat_id: &str) -> serde_json::Value {
+    let p = payload.payload();
+    let buttons: Vec<serde_json::Value> = p
+        .options
+        .iter()
+        .map(|opt| {
+            let callback_data =
+                encode_callback_data(&CallbackData::new(&p.gate_id, &p.digest, &opt.key));
+            serde_json::json!({
+                "text": opt.label,
+                "callback_data": callback_data,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "chat_id": chat_id,
+        "text": p.rendered_summary,
+        "reply_markup": {
+            "inline_keyboard": [buttons],
+        },
+    })
+}
+
+/// Reject `payload` before send if it would not survive WhatsApp's
+/// confirmed limits (>3 options, >20-char label, >1024-char summary),
+/// checked against `limits` regardless of what (possibly looser) limits the
+/// payload was validated against upstream. Every rejection is
+/// [`NotifyError::PayloadRejected`] — permanent, non-retryable — with a
+/// distinct reason per violated limit.
+pub fn check_whatsapp_portability(
+    payload: &ValidatedOperatorPayload,
+    limits: &OperatorPayloadLimits,
+) -> Result<(), NotifyError> {
+    let p = payload.payload();
+
+    let option_count = p.options.len();
+    if option_count > limits.max_options {
+        return Err(NotifyError::PayloadRejected {
+            reason: format!(
+                "payload offers {option_count} options, exceeds WhatsApp's confirmed maximum of {}",
+                limits.max_options
+            ),
+        });
+    }
+
+    for opt in &p.options {
+        let label_chars = opt.label.chars().count();
+        if label_chars > limits.max_label_chars {
+            return Err(NotifyError::PayloadRejected {
+                reason: format!(
+                    "option '{}' label is {label_chars} characters, exceeds WhatsApp's confirmed maximum of {}",
+                    opt.key, limits.max_label_chars
+                ),
+            });
+        }
+    }
+
+    let summary_chars = p.rendered_summary.chars().count();
+    if summary_chars > limits.max_summary_chars {
+        return Err(NotifyError::PayloadRejected {
+            reason: format!(
+                "rendered summary is {summary_chars} characters, exceeds WhatsApp's confirmed maximum of {}",
+                limits.max_summary_chars
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+/// Build the `getUpdates` long-poll query. Never emits a webhook-related
+/// parameter — this transport is long-polling only (`BA.18.B` non-negotiable
+/// constraint 2).
+#[must_use]
+pub fn getupdates_query(cursor: Option<UpdateCursor>, timeout_secs: u64) -> Vec<(String, String)> {
+    let mut query = Vec::new();
+    if let Some(UpdateCursor(offset)) = cursor {
+        query.push(("offset".to_string(), offset));
+    }
+    query.push(("timeout".to_string(), timeout_secs.to_string()));
+    query.push((
+        "allowed_updates".to_string(),
+        r#"["callback_query"]"#.to_string(),
+    ));
+    query
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_core::operator::{OperatorPayload, OperatorResponseOption, validate};
+
+    fn approve_reject() -> Vec<OperatorResponseOption> {
+        vec![
+            OperatorResponseOption::new("approve", "Approve"),
+            OperatorResponseOption::new("reject", "Reject"),
+        ]
+    }
+
+    fn validated(
+        gate_id: &str,
+        summary: &str,
+        options: Vec<OperatorResponseOption>,
+    ) -> ValidatedOperatorPayload {
+        let payload = OperatorPayload::new(gate_id, summary, options);
+        validate(payload, &OperatorPayloadLimits::default()).expect("payload should validate")
+    }
+
+    // -- callback_data round-trip -------------------------------------
+
+    #[test]
+    fn callback_data_round_trips() {
+        let data = CallbackData::new("gate-1", "0123456789abcdef", "approve");
+        let encoded = encode_callback_data(&data);
+        assert_eq!(decode_callback_data(&encoded), Some(data));
+    }
+
+    #[test]
+    fn callback_data_round_trips_for_every_option_in_a_payload() {
+        let payload = validated("gate-42", "diff summary", approve_reject());
+        let p = payload.payload();
+        for opt in &p.options {
+            let data = CallbackData::new(&p.gate_id, &p.digest, &opt.key);
+            let encoded = encode_callback_data(&data);
+            assert_eq!(decode_callback_data(&encoded), Some(data));
+        }
+    }
+
+    #[test]
+    fn callback_data_truncates_digest_to_named_prefix_length() {
+        let full_digest = "a".repeat(64); // sha256 hex is 64 chars
+        let data = CallbackData::new("gate-1", &full_digest, "approve");
+        assert_eq!(data.digest_prefix.len(), CALLBACK_DIGEST_PREFIX_LEN);
+        assert_ne!(data.digest_prefix, full_digest);
+    }
+
+    #[test]
+    fn callback_data_prefix_never_compares_equal_to_a_different_full_digest_by_accident() {
+        // The whole point of comparing prefix-to-prefix: two payloads whose
+        // digests share the same first N characters must not be able to
+        // collide through the *full* digest. Encoding never stores the full
+        // digest, so a decode can only ever be compared to another prefix.
+        let short = CallbackData::new("gate-1", "abcdefabcdef", "approve");
+        let long = CallbackData::new("gate-1", "abcdefabcdefXXXXX", "approve");
+        assert_eq!(short.digest_prefix, long.digest_prefix);
+    }
+
+    #[test]
+    fn encoded_callback_data_never_exceeds_telegram_ceiling_for_typical_ids() {
+        let long_gate_id = "a".repeat(20);
+        let long_option_key = "b".repeat(20);
+        let full_digest = "c".repeat(64);
+        let data = CallbackData::new(&long_gate_id, &full_digest, &long_option_key);
+        let encoded = encode_callback_data(&data);
+        assert!(
+            encoded.len() <= CALLBACK_DATA_MAX_BYTES,
+            "encoded callback_data was {} bytes, exceeds the {}-byte ceiling: {encoded:?}",
+            encoded.len(),
+            CALLBACK_DATA_MAX_BYTES,
+        );
+    }
+
+    #[test]
+    fn decode_rejects_malformed_input() {
+        assert_eq!(decode_callback_data("only-one-field"), None);
+        assert_eq!(decode_callback_data(""), None);
+    }
+
+    // -- sendmessage_body -----------------------------------------------
+
+    #[test]
+    fn sendmessage_body_contains_full_summary_inline() {
+        let payload = validated("gate-1", "the full diff text, verbatim", approve_reject());
+        let body = sendmessage_body(&payload, "12345");
+        assert_eq!(body["text"], "the full diff text, verbatim");
+        assert_eq!(body["chat_id"], "12345");
+    }
+
+    #[test]
+    fn sendmessage_body_has_exactly_one_button_per_option() {
+        let payload = validated("gate-1", "summary", approve_reject());
+        let body = sendmessage_body(&payload, "12345");
+        let rows = body["reply_markup"]["inline_keyboard"]
+            .as_array()
+            .expect("inline_keyboard is an array");
+        assert_eq!(rows.len(), 1, "expected a single row");
+        let buttons = rows[0].as_array().expect("row is an array");
+        assert_eq!(buttons.len(), 2);
+        assert_eq!(buttons[0]["text"], "Approve");
+        assert_eq!(buttons[1]["text"], "Reject");
+    }
+
+    #[test]
+    fn sendmessage_body_button_callback_data_round_trips_to_correct_option() {
+        let payload = validated("gate-7", "summary", approve_reject());
+        let body = sendmessage_body(&payload, "12345");
+        let buttons = body["reply_markup"]["inline_keyboard"][0]
+            .as_array()
+            .unwrap();
+        let raw = buttons[0]["callback_data"].as_str().unwrap();
+        let decoded = decode_callback_data(raw).expect("callback_data decodes");
+        assert_eq!(decoded.gate_id, "gate-7");
+        assert_eq!(decoded.option_key, "approve");
+    }
+
+    #[test]
+    fn sendmessage_body_supports_three_options() {
+        let options = vec![
+            OperatorResponseOption::new("a", "A"),
+            OperatorResponseOption::new("b", "B"),
+            OperatorResponseOption::new("c", "C"),
+        ];
+        let payload = validated("gate-1", "summary", options);
+        let body = sendmessage_body(&payload, "12345");
+        let buttons = body["reply_markup"]["inline_keyboard"][0]
+            .as_array()
+            .unwrap();
+        assert_eq!(buttons.len(), 3);
+    }
+
+    // -- check_whatsapp_portability ---------------------------------------
+
+    #[test]
+    fn portability_accepts_exactly_two_and_three_options() {
+        let limits = OperatorPayloadLimits::default();
+        let two = validated("gate-1", "summary", approve_reject());
+        assert!(check_whatsapp_portability(&two, &limits).is_ok());
+
+        let three_options = vec![
+            OperatorResponseOption::new("a", "A"),
+            OperatorResponseOption::new("b", "B"),
+            OperatorResponseOption::new("c", "C"),
+        ];
+        let three = validated("gate-1", "summary", three_options);
+        assert!(check_whatsapp_portability(&three, &limits).is_ok());
+    }
+
+    #[test]
+    fn portability_rejects_more_than_three_options() {
+        // Validate under a looser limit set so the payload can even be
+        // constructed with 4 options, then check portability separately.
+        let loose = OperatorPayloadLimits {
+            max_options: 10,
+            min_options: 1,
+            max_label_chars: 60,
+            max_summary_chars: 4096,
+        };
+        let options = vec![
+            OperatorResponseOption::new("a", "A"),
+            OperatorResponseOption::new("b", "B"),
+            OperatorResponseOption::new("c", "C"),
+            OperatorResponseOption::new("d", "D"),
+        ];
+        let payload = OperatorPayload::new("gate-1", "summary", options);
+        let validated_payload = validate(payload, &loose).expect("validates under loose limits");
+
+        let result =
+            check_whatsapp_portability(&validated_payload, &OperatorPayloadLimits::default());
+        assert!(matches!(result, Err(NotifyError::PayloadRejected { .. })));
+        assert!(!result.unwrap_err().is_retryable());
+    }
+
+    #[test]
+    fn portability_accepts_label_at_exactly_20_chars_rejects_21() {
+        let loose = OperatorPayloadLimits {
+            max_options: 3,
+            min_options: 2,
+            max_label_chars: 60,
+            max_summary_chars: 4096,
+        };
+
+        let label_20 = "x".repeat(20);
+        let ok_options = vec![
+            OperatorResponseOption::new("a", label_20.clone()),
+            OperatorResponseOption::new("b", "B"),
+        ];
+        let ok_payload = validate(
+            OperatorPayload::new("gate-1", "summary", ok_options),
+            &loose,
+        )
+        .expect("validates under loose limits");
+        assert!(check_whatsapp_portability(&ok_payload, &OperatorPayloadLimits::default()).is_ok());
+
+        let label_21 = "x".repeat(21);
+        let bad_options = vec![
+            OperatorResponseOption::new("a", label_21),
+            OperatorResponseOption::new("b", "B"),
+        ];
+        let bad_payload = validate(
+            OperatorPayload::new("gate-1", "summary", bad_options),
+            &loose,
+        )
+        .expect("validates under loose limits");
+        let result = check_whatsapp_portability(&bad_payload, &OperatorPayloadLimits::default());
+        assert!(matches!(result, Err(NotifyError::PayloadRejected { .. })));
+    }
+
+    #[test]
+    fn portability_accepts_summary_at_exactly_1024_chars_rejects_1025() {
+        let loose = OperatorPayloadLimits {
+            max_options: 3,
+            min_options: 2,
+            max_label_chars: 20,
+            max_summary_chars: 4096,
+        };
+
+        let summary_1024 = "x".repeat(1024);
+        let ok_payload = validate(
+            OperatorPayload::new("gate-1", summary_1024, approve_reject()),
+            &loose,
+        )
+        .expect("validates under loose limits");
+        assert!(check_whatsapp_portability(&ok_payload, &OperatorPayloadLimits::default()).is_ok());
+
+        let summary_1025 = "x".repeat(1025);
+        let bad_payload = validate(
+            OperatorPayload::new("gate-1", summary_1025, approve_reject()),
+            &loose,
+        )
+        .expect("validates under loose limits");
+        let result = check_whatsapp_portability(&bad_payload, &OperatorPayloadLimits::default());
+        assert!(matches!(result, Err(NotifyError::PayloadRejected { .. })));
+    }
+
+    #[test]
+    fn portability_rejections_are_distinct_reasons_per_limit() {
+        let limits = OperatorPayloadLimits::default();
+        let loose = OperatorPayloadLimits {
+            max_options: 10,
+            min_options: 1,
+            max_label_chars: 200,
+            max_summary_chars: 4096,
+        };
+
+        let too_many = validate(
+            OperatorPayload::new(
+                "gate-1",
+                "summary",
+                vec![
+                    OperatorResponseOption::new("a", "A"),
+                    OperatorResponseOption::new("b", "B"),
+                    OperatorResponseOption::new("c", "C"),
+                    OperatorResponseOption::new("d", "D"),
+                ],
+            ),
+            &loose,
+        )
+        .unwrap();
+        let too_long_label = validate(
+            OperatorPayload::new(
+                "gate-1",
+                "summary",
+                vec![
+                    OperatorResponseOption::new("a", "x".repeat(21)),
+                    OperatorResponseOption::new("b", "B"),
+                ],
+            ),
+            &loose,
+        )
+        .unwrap();
+        let too_long_summary = validate(
+            OperatorPayload::new("gate-1", "x".repeat(1025), approve_reject()),
+            &loose,
+        )
+        .unwrap();
+
+        let r1 = check_whatsapp_portability(&too_many, &limits).unwrap_err();
+        let r2 = check_whatsapp_portability(&too_long_label, &limits).unwrap_err();
+        let r3 = check_whatsapp_portability(&too_long_summary, &limits).unwrap_err();
+
+        let (
+            NotifyError::PayloadRejected { reason: reason1 },
+            NotifyError::PayloadRejected { reason: reason2 },
+            NotifyError::PayloadRejected { reason: reason3 },
+        ) = (&r1, &r2, &r3)
+        else {
+            panic!("expected all three to be PayloadRejected");
+        };
+        assert_ne!(reason1, reason2);
+        assert_ne!(reason2, reason3);
+        assert_ne!(reason1, reason3);
+    }
+
+    // -- getupdates_query -------------------------------------------------
+
+    #[test]
+    fn getupdates_query_without_cursor() {
+        let query = getupdates_query(None, 30);
+        assert_eq!(
+            query,
+            vec![
+                ("timeout".to_string(), "30".to_string()),
+                (
+                    "allowed_updates".to_string(),
+                    r#"["callback_query"]"#.to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn getupdates_query_with_cursor_includes_offset() {
+        let query = getupdates_query(Some(UpdateCursor("42".to_string())), 30);
+        assert_eq!(
+            query,
+            vec![
+                ("offset".to_string(), "42".to_string()),
+                ("timeout".to_string(), "30".to_string()),
+                (
+                    "allowed_updates".to_string(),
+                    r#"["callback_query"]"#.to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn getupdates_query_never_emits_webhook_params() {
+        let query = getupdates_query(Some(UpdateCursor("1".to_string())), 30);
+        for (key, _) in &query {
+            assert!(
+                !key.to_lowercase().contains("webhook"),
+                "getupdates_query must never emit a webhook-related parameter"
+            );
+        }
+    }
+}

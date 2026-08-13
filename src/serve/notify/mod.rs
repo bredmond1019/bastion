@@ -23,6 +23,8 @@ use async_trait::async_trait;
 use engine_core::operator::ValidatedOperatorPayload;
 use thiserror::Error;
 
+pub mod telegram;
+
 #[cfg(test)]
 mod tests;
 
