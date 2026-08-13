@@ -18,6 +18,8 @@
 //! by this module's tests to never contain a token-shaped substring.
 
 use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use engine_core::operator::ValidatedOperatorPayload;
@@ -169,5 +171,148 @@ impl fmt::Debug for UpdateCursor {
         // something sensitive into the cursor does not get free `Debug`
         // access without a deliberate decision here.
         f.debug_tuple("UpdateCursor").field(&self.0).finish()
+    }
+}
+
+// ── Long-poll loop (BA.18.B task 5) ─────────────────────────────────────────
+
+/// Look up the payload a gate is currently waiting on a response for, so a
+/// raw [`OperatorResponse`] can be resolved against it (gate + digest match,
+/// stale-digest, or unknown-gate — see [`telegram::resolve_response`]).
+///
+/// The real backing store (a live registry of gates pending an operator
+/// response) is `engine-rs:EN.8.B`'s side, deliberately out of scope for
+/// this spec (`planning/BA.18.B/tasks.md`'s non-negotiable constraint 4).
+/// This seam lets [`NotifyPollLoop`] resolve verdicts today, and lets tests
+/// inject a fixed in-memory map, without depending on that queue existing
+/// yet. Production wiring (`src/serve/mod.rs::run_server`) passes a closure
+/// that always returns `None` until EN.8.B lands, so every observed
+/// response resolves to `UnknownGate` rather than being silently applied.
+pub type PendingLookup = Box<dyn Fn(&str) -> Option<ValidatedOperatorPayload> + Send + Sync>;
+
+/// What the loop does with a resolved verdict. A callback rather than a
+/// fixed action so this task never needs to know how to *act* on a
+/// verdict (queue-write, gate resolution) — that consumption is
+/// `engine-rs:EN.8.B`'s side; this loop's job stops at resolving and
+/// reporting.
+pub type VerdictSink = Box<dyn Fn(telegram::ResponseVerdict) + Send + Sync>;
+
+/// Drives [`OperatorTransport::poll_responses`] on a cadence set by the
+/// transport's own long-poll timeout, resolving each observed response
+/// against [`PendingLookup`] and reporting the verdict to [`VerdictSink`].
+///
+/// Backoff: a **retryable** [`NotifyError`] (transport failure, rate limit)
+/// doubles the backoff (capped at [`Self::MAX_BACKOFF_SECS`]) before the
+/// next attempt, so a persistent outage never spins the loop hot; a
+/// successful tick resets the backoff to the floor. A **permanent**
+/// `NotifyError` (bad credentials, malformed response) also backs off —
+/// the loop has no way to distinguish "will never succeed" from "the
+/// operator hasn't fixed the token yet", so it keeps trying at the same
+/// backed-off cadence rather than giving up (there is nothing to give up
+/// *to* — this is a background task, not a request with a caller to fail).
+pub struct NotifyPollLoop {
+    transport: Arc<dyn OperatorTransport>,
+    cursor: Option<UpdateCursor>,
+    pending: PendingLookup,
+    on_verdict: VerdictSink,
+    backoff: Duration,
+}
+
+impl NotifyPollLoop {
+    /// Floor of the backoff range — the delay after any single failed tick.
+    const MIN_BACKOFF_SECS: u64 = 1;
+    /// Ceiling of the backoff range — a persistent outage never waits
+    /// longer than this between attempts.
+    const MAX_BACKOFF_SECS: u64 = 60;
+
+    #[must_use]
+    pub fn new(
+        transport: Arc<dyn OperatorTransport>,
+        pending: PendingLookup,
+        on_verdict: VerdictSink,
+    ) -> Self {
+        Self {
+            transport,
+            cursor: None,
+            pending,
+            on_verdict,
+            backoff: Duration::from_secs(Self::MIN_BACKOFF_SECS),
+        }
+    }
+
+    /// The cursor this loop will pass to the next `poll_responses` call.
+    /// Exposed for tests asserting cursor arithmetic survives a failed tick
+    /// and resumes at the correct position on recovery.
+    #[must_use]
+    pub fn cursor(&self) -> Option<&UpdateCursor> {
+        self.cursor.as_ref()
+    }
+
+    /// The backoff duration the next failed tick would apply. Exposed for
+    /// tests asserting the doubling/reset/cap behaviour.
+    #[must_use]
+    pub fn backoff(&self) -> Duration {
+        self.backoff
+    }
+
+    /// Run one poll-resolve-dispatch cycle. On success, returns the number
+    /// of responses observed (0 is a normal empty long-poll), advances the
+    /// cursor (an unchanged cursor from the transport, per its own
+    /// no-reset-on-empty contract, leaves this loop's cursor unchanged
+    /// too), and resets the backoff. On failure, applies backoff and
+    /// returns the error — the cursor is left untouched either way, so a
+    /// retry resumes from exactly where it left off rather than replaying
+    /// or skipping the backlog.
+    pub async fn tick(&mut self) -> Result<usize, NotifyError> {
+        let outcome = self.transport.poll_responses(self.cursor.clone()).await;
+        match outcome {
+            Ok((responses, new_cursor)) => {
+                self.backoff = Duration::from_secs(Self::MIN_BACKOFF_SECS);
+                if let Some(cursor) = new_cursor {
+                    self.cursor = Some(cursor);
+                }
+                let observed = responses.len();
+                for resp in responses {
+                    let verdict = match (self.pending)(&resp.gate_id) {
+                        Some(expected) => telegram::resolve_response(&resp, &expected),
+                        None => telegram::ResponseVerdict::UnknownGate,
+                    };
+                    (self.on_verdict)(verdict);
+                }
+                Ok(observed)
+            }
+            Err(err) => {
+                if err.is_retryable() {
+                    self.backoff =
+                        (self.backoff * 2).min(Duration::from_secs(Self::MAX_BACKOFF_SECS));
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Drive [`Self::tick`] forever. Never returns under normal operation;
+    /// intended to be spawned once at server boot
+    /// (`src/serve/mod.rs::run_server`) via `actix_web::rt::spawn`, only
+    /// when Telegram config resolved (constraint: unconfigured is simply
+    /// not spawned, not a warning and not a failure).
+    ///
+    /// Each transport call already carries its own long-poll timeout
+    /// (Telegram: `TelegramTransport::GETUPDATES_TIMEOUT_SECS`), so a
+    /// successful tick's own blocking wait *is* this loop's pacing — only a
+    /// failed tick additionally sleeps, for [`Self::backoff`].
+    pub async fn run(mut self) {
+        loop {
+            if let Err(err) = self.tick().await {
+                tracing::warn!(
+                    target: "bastion::serve",
+                    error = %err,
+                    retryable = err.is_retryable(),
+                    backoff_secs = self.backoff.as_secs(),
+                    "operator response poll failed"
+                );
+                tokio::time::sleep(self.backoff).await;
+            }
+        }
     }
 }
