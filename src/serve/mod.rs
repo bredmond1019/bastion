@@ -38,6 +38,7 @@ pub mod contract_corpus;
 pub mod docs;
 pub mod dto;
 pub mod handlers;
+pub mod notify;
 pub mod poll;
 pub mod status;
 pub mod ws;

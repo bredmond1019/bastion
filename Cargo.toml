@@ -44,6 +44,15 @@ engine-serve = { path = "../engine-rs/crates/engine-serve" }
 # projection (`TaskContext`/`NodeRunStatus`) and its `{id}` UUID parsing.
 engine-contract = { path = "../engine-rs/crates/engine-contract" }
 uuid = { version = "1", features = ["v4", "serde"] }
+# Same unpinned cross-repo path-dependency posture as engine-serve/engine-contract
+# above — needed at normal build time (not just tests) for BA.18.B's operator
+# transport seam, which consumes engine_core::operator::ValidatedOperatorPayload.
+# (Moved from [dev-dependencies] where it lived for the BA.7.C abort-contract
+# integration test.)
+engine-core = { path = "../engine-rs/crates/engine-core" }
+# Needed at normal build time (not just tests) for the object-safe
+# `OperatorTransport` trait in src/serve/notify/mod.rs (BA.18.B task 1).
+async-trait = "0.1"
 
 [lib]
 name = "bastion"
@@ -56,7 +65,3 @@ tempfile = "3"
 # ../engine-rs/crates/engine-serve/tests/abort_integration.rs) to exercise
 # bastion's `api::client::abort_run` against the actual engine. Same unpinned
 # cross-repo path-dependency posture as engine-serve above.
-# (engine-contract + uuid moved to [dependencies] for BA.11.M — the run-read
-# projection needs them at normal build time, not just in tests.)
-engine-core = { path = "../engine-rs/crates/engine-core" }
-async-trait = "0.1"
