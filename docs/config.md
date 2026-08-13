@@ -46,6 +46,8 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `BASTION_MAX_TOTAL_TOKENS` | No | — (no cap) | Budget cap (BA.7.C): total token ceiling. Absent-tolerant — no cap configured is a valid, unchanged config. A present-but-unparseable value is a fatal `ConfigError::MalformedBudgetValue`, never a silent default. |
 | `BASTION_MAX_COST_USD` | No | — (no cap) | Budget cap (BA.7.C): total USD-cost ceiling. Same absent-tolerant / malformed-is-fatal contract as `BASTION_MAX_TOTAL_TOKENS`. |
 | `BASTION_ENGINE_API_KEY` | No (required to use `bastion abort` / engine routes) | — | `X-API-Key` secret for the engine's abort endpoint. **Distinct from `BASTION_SERVE_TOKEN`** — two different secrets, two different schemes, two different route groups: this key is sent by `api::client` and checked by the embedded engine's `AppState.api_key`; `BASTION_SERVE_TOKEN` gates bastion serve's own session/status routes. Never reuse one for the other. |
+| `BASTION_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token for the operator-notification transport (`BA.18.B`, [serve-api.md](serve-api.md#26-operator-notification-transport-v027-ba18b)). **Mini-plist-only** — the real value lives in `com.brandon.engine-serve.plist` on the Mac Mini and is never written to any tracked file, `.env`, test, or fixture in this repo. Both this and `BASTION_TELEGRAM_CHAT_ID` absent leaves the transport unconfigured (`bastion serve` boots unchanged); exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
+| `BASTION_TELEGRAM_CHAT_ID` | No | — | Operator's Telegram chat id the bot delivers to. Same Mini-plist-only, absent-tolerant, paired-with-the-token contract as `BASTION_TELEGRAM_BOT_TOKEN` above. |
 
 ## Config file
 
@@ -135,6 +137,30 @@ A `BASTION_MAX_TOTAL_TOKENS` or `BASTION_MAX_COST_USD` value that is present but
 as its numeric type (e.g. `BASTION_MAX_TOTAL_TOKENS=not-a-number`) is a fatal
 `ConfigError::MalformedBudgetValue` — it is never silently treated as "no cap configured".
 
+## Operator-notification transport (`BA.18.B`)
+
+Two fully optional env vars configure the Telegram operator-notification transport
+(`src/serve/notify/`); see [serve-api.md §26](serve-api.md#26-operator-notification-transport-v027-ba18b)
+for the full contract.
+
+| Env var | Type | Description |
+|---|---|---|
+| `BASTION_TELEGRAM_BOT_TOKEN` | `Option<String>` | Telegram bot token. |
+| `BASTION_TELEGRAM_CHAT_ID` | `Option<String>` | The operator's Telegram chat id. |
+
+**Both are Mini-plist-only** — the real values live in the Mac Mini's
+`com.brandon.engine-serve.plist` and never in `.env`, `.env.example` (beyond an empty
+placeholder), a config-file example, a test fixture, or a log line anywhere in this repo. Read
+directly from the environment via `src/config.rs`'s `load_telegram_config`, not through
+`FileConfig`/`config.toml` — there is deliberately no `[telegram]` TOML section, so the token
+cannot end up in a config file a developer might accidentally track or share.
+
+Absent-tolerant as a pair: with neither set, `bastion serve` boots exactly as it did before this
+block, logged at `info`. Exactly one set (token without chat id, or the reverse) is a fatal
+`ConfigError::IncompleteTelegramConfig(&'static str)` naming the missing variable — never a silent
+half-configuration. The token is held in a `BotToken` newtype whose `Debug` impl always renders
+`BotToken(<redacted>)`.
+
 ## Precedence rules
 
 An environment variable **always wins** over the config file for the same key.
@@ -155,6 +181,7 @@ Built-in defaults apply only when both the environment and file omit a value.
 | `NoWorkspaceRegistry` | `--workspace` used but no `[workspaces]` table exists in the config file. |
 | `MissingServeToken` | `bastion serve` started without a bearer token (neither `--token` nor `BASTION_SERVE_TOKEN` set, or either resolved to an empty string). |
 | `MalformedBudgetValue(&'static str, String, &'static str)` | A budget env var (`BASTION_MAX_TOTAL_TOKENS` or `BASTION_MAX_COST_USD`) was set but failed to parse as its expected numeric type. Carries the variable name, the offending value, and the expected type. Never silently defaults to "no cap". |
+| `IncompleteTelegramConfig(&'static str)` | Exactly one of `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` was set (`BA.18.B`). Carries the name of the missing variable. Never silently treated as "transport not configured" — that state is reserved for both absent. |
 
 ### `FileConfig`
 
