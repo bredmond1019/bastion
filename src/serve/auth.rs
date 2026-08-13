@@ -125,6 +125,105 @@ where
     }
 }
 
+// ── X-API-Key middleware (engine surface) ───────────────────────────────────────
+
+/// Return `true` when `header_value` is a valid `X-API-Key` header matching
+/// `expected_key`.
+///
+/// Mirrors [`token_matches`]'s structure for the engine surface, which uses
+/// an `X-API-Key` header rather than `Authorization: Bearer`. Rejects an
+/// empty `expected_key` rather than treating it as "no auth required" — an
+/// empty configured key that accepted everything is exactly the failure mode
+/// `decide_engine_mount`'s own doc comment warns about.
+///
+/// Rejects:
+/// - Missing header (`None`).
+/// - Empty header value.
+/// - Empty expected key (server misconfiguration guard).
+/// - Wrong key value.
+pub fn api_key_matches(header_value: Option<&str>, expected_key: &str) -> bool {
+    let Some(provided) = header_value else {
+        return false;
+    };
+    if expected_key.is_empty() || provided.is_empty() {
+        return false;
+    }
+    provided == expected_key
+}
+
+/// Actix-web middleware factory that enforces `X-API-Key` authentication on
+/// the embedded engine route surface.
+///
+/// Wrap a scope or resource with `ApiKeyAuthMiddleware::new(key)` to require
+/// a matching `X-API-Key` header on every request to that scope.
+#[derive(Clone)]
+pub struct ApiKeyAuthMiddleware {
+    key: Rc<String>,
+}
+
+impl ApiKeyAuthMiddleware {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self {
+            key: Rc::new(key.into()),
+        }
+    }
+}
+
+impl<S, B> Transform<S, ServiceRequest> for ApiKeyAuthMiddleware
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: actix_web::body::MessageBody + 'static,
+{
+    type Response = ServiceResponse<BoxBody>;
+    type Error = Error;
+    type InitError = ();
+    type Transform = ApiKeyAuthService<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ok(ApiKeyAuthService {
+            service: Rc::new(service),
+            key: self.key.clone(),
+        })
+    }
+}
+
+pub struct ApiKeyAuthService<S> {
+    service: Rc<S>,
+    key: Rc<String>,
+}
+
+impl<S, B> Service<ServiceRequest> for ApiKeyAuthService<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: actix_web::body::MessageBody + 'static,
+{
+    type Response = ServiceResponse<BoxBody>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let key = self.key.clone();
+        let svc = self.service.clone();
+
+        Box::pin(async move {
+            let header_value = req.headers().get("X-API-Key").and_then(|v| v.to_str().ok());
+
+            let matches = api_key_matches(header_value, &key);
+            if matches {
+                svc.call(req).await.map(|r| r.map_into_boxed_body())
+            } else {
+                let (http_req, _payload) = req.into_parts();
+                let resp = HttpResponse::Unauthorized()
+                    .json(serde_json::json!({"error": "unauthorized", "code": "unauthorized"}));
+                Ok(ServiceResponse::new(http_req, resp).map_into_boxed_body())
+            }
+        })
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -308,6 +407,188 @@ mod tests {
             resp.status(),
             401,
             "wrong token must receive 401; got {}",
+            resp.status()
+        );
+    }
+
+    // ── api_key_matches — present header, correct key ──────────────────────
+
+    #[test]
+    fn correct_api_key_matches() {
+        assert!(
+            api_key_matches(Some("secret123"), "secret123"),
+            "exact correct key must match"
+        );
+    }
+
+    // ── api_key_matches — absent header ─────────────────────────────────────
+
+    #[test]
+    fn missing_api_key_header_does_not_match() {
+        assert!(
+            !api_key_matches(None, "secret123"),
+            "absent header must not match"
+        );
+    }
+
+    // ── api_key_matches — empty header ──────────────────────────────────────
+
+    #[test]
+    fn empty_api_key_header_does_not_match() {
+        assert!(
+            !api_key_matches(Some(""), "secret123"),
+            "empty header value must not match"
+        );
+    }
+
+    // ── api_key_matches — wrong key value ───────────────────────────────────
+
+    #[test]
+    fn wrong_api_key_does_not_match() {
+        assert!(
+            !api_key_matches(Some("wrong-key"), "secret123"),
+            "wrong key value must not match"
+        );
+    }
+
+    // ── api_key_matches — empty configured key guard ────────────────────────
+
+    #[test]
+    fn empty_expected_api_key_never_matches() {
+        // This is the case decide_engine_mount's doc comment warns about: an
+        // empty configured key must never be treated as "no auth required".
+        assert!(
+            !api_key_matches(Some("anything"), ""),
+            "empty expected key (server misconfiguration) must not match"
+        );
+    }
+
+    #[test]
+    fn empty_expected_api_key_and_empty_header_does_not_match() {
+        assert!(
+            !api_key_matches(Some(""), ""),
+            "empty expected key with empty header must not match"
+        );
+    }
+
+    // ── ApiKeyAuthMiddleware — request-level tests ──────────────────────────
+
+    #[actix_web::test]
+    async fn api_key_middleware_allows_valid_key() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let key = "engine-key-abc";
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/engine")
+                    .wrap(ApiKeyAuthMiddleware::new(key))
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        let req = test::TestRequest::get()
+            .uri("/engine/ping")
+            .insert_header(("X-API-Key", key))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            200,
+            "valid api key must receive 200; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn api_key_middleware_rejects_missing_key_with_401() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/engine")
+                    .wrap(ApiKeyAuthMiddleware::new("engine-key-abc"))
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        let req = test::TestRequest::get().uri("/engine/ping").to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            401,
+            "missing X-API-Key must receive 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn api_key_middleware_rejects_wrong_key_with_401() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/engine")
+                    .wrap(ApiKeyAuthMiddleware::new("correct-key"))
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        let req = test::TestRequest::get()
+            .uri("/engine/ping")
+            .insert_header(("X-API-Key", "wrong-key"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            401,
+            "wrong api key must receive 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn api_key_middleware_rejects_empty_configured_key_with_401() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        // Even if a caller sends the (empty) key back, an empty configured
+        // key must still reject — this is the misconfiguration guard.
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/engine")
+                    .wrap(ApiKeyAuthMiddleware::new(""))
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        let req = test::TestRequest::get()
+            .uri("/engine/ping")
+            .insert_header(("X-API-Key", ""))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            401,
+            "empty configured key must never accept; got {}",
             resp.status()
         );
     }
