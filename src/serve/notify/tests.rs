@@ -554,3 +554,138 @@ async fn pending_payloads_concurrent_insert_and_get_from_two_tasks() {
         assert!(registry.get(&format!("gate-{i}")).is_some());
     }
 }
+
+// ── End-to-end: PendingPayloads wired as NotifyPollLoop's PendingLookup
+//    (ticket-notify-send-trigger task 3) ────────────────────────────────────
+//
+// These drive the real loop — `PendingPayloads::lookup()` as `PendingLookup`,
+// the `ScriptedTransport` fake from BA.18.B — the same shape
+// `run_server` wires in production, minus the network. They exercise
+// `Accepted` and `StaleDigest` end-to-end (not just the pure resolver), the
+// never-sent `UnknownGate` path, and the replay-after-accept rule.
+
+/// A verdict sink that also removes an `Accepted` response's entry from the
+/// registry, mirroring `run_server`'s wiring exactly (task 3): the loop
+/// itself never mutates the registry, so the removal-on-accept behaviour is
+/// this closure's job, both in production and here.
+fn removing_sink(
+    registry: Arc<PendingPayloads>,
+) -> (
+    VerdictSink,
+    Arc<std::sync::Mutex<Vec<telegram::ResponseVerdict>>>,
+) {
+    let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_collected = collected.clone();
+    let sink: VerdictSink = Box::new(move |verdict| {
+        if let telegram::ResponseVerdict::Accepted { gate_id, .. } = &verdict {
+            registry.remove(gate_id);
+        }
+        sink_collected
+            .lock()
+            .expect("collected-verdicts mutex is never poisoned in these tests")
+            .push(verdict);
+    });
+    (sink, collected)
+}
+
+#[tokio::test]
+async fn e2e_sent_then_tapped_resolves_accepted() {
+    let registry = Arc::new(PendingPayloads::new());
+    let payload = scripted_payload("gate-1", "diff summary");
+    registry.insert(payload.clone());
+
+    let resp = response_for(&payload, "approve");
+    let transport = ScriptedTransport::new(vec![Ok((vec![resp], None))]);
+    let (sink, collected) = removing_sink(Arc::clone(&registry));
+
+    let mut poll_loop = NotifyPollLoop::new(Arc::new(transport), registry.lookup(), sink);
+    poll_loop.tick().await.expect("tick succeeds");
+
+    assert_eq!(
+        collected.lock().unwrap().as_slice(),
+        [telegram::ResponseVerdict::Accepted {
+            gate_id: "gate-1".to_string(),
+            option_key: "approve".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn e2e_sent_then_mutated_then_tapped_resolves_stale_digest() {
+    let registry = Arc::new(PendingPayloads::new());
+    let shown = scripted_payload("gate-1", "original summary");
+    let resp = response_for(&shown, "approve");
+
+    // Re-render after the operator was shown `shown` — same gate, a
+    // different digest, replacing the registered entry.
+    let mutated = scripted_payload("gate-1", "mutated summary");
+    registry.insert(mutated);
+
+    let transport = ScriptedTransport::new(vec![Ok((vec![resp], None))]);
+    let (sink, collected) = removing_sink(Arc::clone(&registry));
+
+    let mut poll_loop = NotifyPollLoop::new(Arc::new(transport), registry.lookup(), sink);
+    poll_loop.tick().await.expect("tick succeeds");
+
+    assert_eq!(
+        collected.lock().unwrap().as_slice(),
+        [telegram::ResponseVerdict::StaleDigest]
+    );
+    // A stale-digest verdict must not be applied — the entry stays pending
+    // (unlike `Accepted`, which removes it) so a corrected re-tap could
+    // still resolve it.
+    assert!(registry.get("gate-1").is_some());
+}
+
+#[tokio::test]
+async fn e2e_never_sent_gate_resolves_unknown_gate() {
+    let registry = Arc::new(PendingPayloads::new());
+    // Nothing registered for "gate-1" — the registry never saw this gate.
+    let payload = scripted_payload("gate-1", "diff summary");
+    let resp = response_for(&payload, "approve");
+
+    let transport = ScriptedTransport::new(vec![Ok((vec![resp], None))]);
+    let (sink, collected) = removing_sink(Arc::clone(&registry));
+
+    let mut poll_loop = NotifyPollLoop::new(Arc::new(transport), registry.lookup(), sink);
+    poll_loop.tick().await.expect("tick succeeds");
+
+    assert_eq!(
+        collected.lock().unwrap().as_slice(),
+        [telegram::ResponseVerdict::UnknownGate]
+    );
+}
+
+#[tokio::test]
+async fn e2e_replayed_tap_of_an_already_accepted_button_resolves_unknown_gate() {
+    let registry = Arc::new(PendingPayloads::new());
+    let payload = scripted_payload("gate-1", "diff summary");
+    registry.insert(payload.clone());
+
+    let resp = response_for(&payload, "approve");
+    // Same response observed twice — e.g. a replayed webhook/poll delivery
+    // of the same tap.
+    let transport =
+        ScriptedTransport::new(vec![Ok((vec![resp.clone()], None)), Ok((vec![resp], None))]);
+    let (sink, collected) = removing_sink(Arc::clone(&registry));
+
+    let mut poll_loop = NotifyPollLoop::new(Arc::new(transport), registry.lookup(), sink);
+    poll_loop.tick().await.expect("first tick succeeds");
+    poll_loop.tick().await.expect("second tick succeeds");
+
+    let verdicts = collected.lock().unwrap();
+    assert_eq!(
+        verdicts.as_slice(),
+        [
+            telegram::ResponseVerdict::Accepted {
+                gate_id: "gate-1".to_string(),
+                option_key: "approve".to_string(),
+            },
+            telegram::ResponseVerdict::UnknownGate,
+        ]
+    );
+    assert!(
+        registry.get("gate-1").is_none(),
+        "accepted entry must have been removed from the registry"
+    );
+}

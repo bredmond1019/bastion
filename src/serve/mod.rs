@@ -373,6 +373,13 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         }
     }
 
+    // ── Pending-payload registry (ticket-notify-send-trigger tasks 1-3) ─────
+    //
+    // Constructed once and shared (`Arc`) between the poll loop's
+    // `PendingLookup` below and the `/api/notify/test` route's app data, so
+    // a response can be resolved against a payload this same process sent.
+    let pending_payloads = std::sync::Arc::new(notify::PendingPayloads::new());
+
     // ── Operator-notification transport (BA.18.B task 5) ────────────────────
     //
     // Constructed only when both `BASTION_TELEGRAM_BOT_TOKEN` and
@@ -383,13 +390,15 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // `getUpdates` long-polling only, spawned as a background task — see
     // `NotifyPollLoop::run` — never a listening socket).
     //
-    // The pending-gate lookup is a stub returning `None` for every gate:
-    // the live registry of gates awaiting an operator response is
-    // `engine-rs:EN.8.B`'s side, out of scope here (non-negotiable
-    // constraint 4). Every observed response therefore resolves to
-    // `UnknownGate` until that queue exists to look up against — this loop
-    // proves delivery + long-poll + stale-digest resolution end-to-end
-    // without depending on EN.8.B landing first.
+    // The pending-gate lookup resolves against `pending_payloads` above —
+    // payloads this process has sent via `POST /api/notify/test`
+    // (`ticket-notify-send-trigger` tasks 1-3). `engine-rs:EN.8.B`'s queue
+    // remains the eventual source for payloads it sent that this process
+    // did not (out of scope here, non-negotiable constraint 4); when it
+    // lands it replaces this registry as the `PendingLookup` source without
+    // any change to `NotifyPollLoop` itself. On `Accepted` the entry is
+    // removed from the registry so a replayed tap of the same button
+    // resolves to `UnknownGate`, not a second `Accepted`.
     match crate::config::load_telegram_config() {
         Ok(Some(telegram_config)) => {
             tracing::info!(
@@ -398,15 +407,39 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             );
             let transport: std::sync::Arc<dyn notify::OperatorTransport> =
                 std::sync::Arc::new(notify::telegram::TelegramTransport::new(telegram_config));
+            let verdict_registry = std::sync::Arc::clone(&pending_payloads);
             let poll_loop = notify::NotifyPollLoop::new(
                 transport,
-                Box::new(|_gate_id: &str| None),
-                Box::new(|verdict| {
-                    tracing::info!(
-                        target: "bastion::serve",
-                        ?verdict,
-                        "operator response observed (not yet applied — engine-rs:EN.8.B pending)"
-                    );
+                pending_payloads.lookup(),
+                Box::new(move |verdict| {
+                    // Log the verdict arm and gate_id only — never the
+                    // payload body, since a rendered summary may quote
+                    // arbitrary operator-supplied content.
+                    match &verdict {
+                        notify::telegram::ResponseVerdict::Accepted { gate_id, .. } => {
+                            verdict_registry.remove(gate_id);
+                            tracing::info!(
+                                target: "bastion::serve",
+                                verdict = "accepted",
+                                gate_id = %gate_id,
+                                "operator response resolved"
+                            );
+                        }
+                        notify::telegram::ResponseVerdict::StaleDigest => {
+                            tracing::info!(
+                                target: "bastion::serve",
+                                verdict = "stale_digest",
+                                "operator response resolved"
+                            );
+                        }
+                        notify::telegram::ResponseVerdict::UnknownGate => {
+                            tracing::info!(
+                                target: "bastion::serve",
+                                verdict = "unknown_gate",
+                                "operator response resolved"
+                            );
+                        }
+                    }
                 }),
             );
             actix_web::rt::spawn(poll_loop.run());
@@ -430,14 +463,9 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
 
     let live_data = web::Data::new(live_store);
 
-    // ── Pending-payload registry (ticket-notify-send-trigger task 2) ────────
-    //
-    // Backs `POST /api/notify/test`'s registration of payloads it sent, so a
-    // later inbound response can resolve against them. Not yet wired into
-    // `NotifyPollLoop`'s `PendingLookup` (still the `|_| None` stub above) —
-    // that wiring, and sharing this same instance with the poll loop, is
-    // `ticket-notify-send-trigger` task 3's job.
-    let pending_payloads = web::Data::new(notify::PendingPayloads::new());
+    // Convert to `web::Data` now that the poll loop (if spawned above) holds
+    // its own `Arc` clone — this is the same registry instance either way.
+    let pending_payloads = web::Data::from(pending_payloads);
 
     HttpServer::new(move || {
         let hub_data = web::Data::new(hub.clone());
