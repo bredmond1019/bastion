@@ -6,13 +6,13 @@ doc_id: data-contract
 layer: [console, engine]
 project: bastion
 status: active
-keywords: [data contract, orchestrator, node_runs, field mappings, v1.6.0, cancellation, budget gate]
+keywords: [data contract, orchestrator, node_runs, field mappings, v1.7.0, cancellation, budget gate]
 related: [monitor, costs, inspect, run]
 ---
 
 # Data Contract (Consumer View)
 
-**Pinned Contract Version: 1.6.0**
+**Pinned Contract Version: 1.7.0**
 
 The **canonical, authoritative** contract is owned by the orchestrator:
 `python-orchestration-system/docs/data-contract.md`. This file is bastion's *consumer* view — it
@@ -117,6 +117,22 @@ that survives the enclosing transaction's rollback: `{ "failure": { "failed": tr
 `metadata.failure` explicitly (e.g. to surface the top-level error message) is future work, not
 this re-pin.
 
+The canonical contract's **v1.7.0** adds a fourth run-level annotation, `metadata.completion` —
+`{ "completion": { "completed": true } }`, stamped by `Workflow.run` when the node walk ends
+normally. **This one is not cosmetic for bastion, and it is not yet consumed.**
+`db::workflows::derive_run_status` (`src/db/workflows.rs`) aggregates `node_runs` with the rule
+`has_running → Running`, else `has_pending → Pending`, else `has_failed → Failed`, else `Success`.
+The orchestrator seeds *every* node in the DAG `pending` before the walk starts (canonical §2), so
+a branch the router never takes is still `pending` when the run finishes — which means **bastion
+currently reports every completed run of a branching workflow as `RunStatus::Pending`, forever.**
+Confirmed live on `DOCUMENT_QA`, whose `AbstainNode` never runs on an answered query.
+
+This is the same defect the canonical repo fixed on its own read side by adding this marker; the
+Rust half is unfixed. The fix is to check `metadata.completion.completed` before the `has_pending`
+arm (and after the cancellation/budget/suspension arms, matching the canonical's precedence).
+Deliberately **not** done in this re-pin — it is a behaviour change to a function five surfaces
+read, so it wants its own ticket and its own tests, not a doc-sync commit.
+
 `RunStatus` gained the two run-level-only variants `Cancelled` and `BudgetHalted` alongside the
 existing per-node-derived `Pending`/`Running`/`Success`/`Failed`. `derive_run_status` (`src/db/
 workflows.rs`) checks `metadata.budget` before `metadata.cancellation` — a run can only be
@@ -186,3 +202,4 @@ Every branch is unit-tested element-by-element in `src/run/abort.rs` (`render_ou
 | 1.4.0 | 2026-07-27 | Re-pin from 1.3.0 to 1.4.0 (`OR.Q2`). Registers the canonical's v1.4.0 additions: `GET /recall`, `GET /walk`, `GET /pulse` (canonical § 7 HTTP surface) — the read half of the D51 HTTP adapter whose write half (`POST /ingest/*`) landed in v1.3.0, thin authenticated adapters over the orchestrator's `app/brain/` read core (`retrieval.recall` / `graph.walk` / `pulse.pulse`). No mapping or Rust-type change here: bastion's monitor/inspect/costs surfaces read `events`/`task_context` only (§ Read paths above) and have no corpus-query or health-snapshot use case today, so none of the three routes is called or consumed by any bastion Rust type; wiring bastion to any of them (e.g. a `bastion recall`/`bastion pulse` subcommand) is future work, not this re-pin. |
 | 1.5.0 | 2026-08-01 | Re-pin from 1.4.0 to 1.5.0 (`OR.ticket.corpus-reconcile`, orchestrator-side). Registers the canonical's v1.5.0 addition: `POST /ingest/proposal` and `POST /ingest/artifact` gain an optional `authored_at: datetime \| null` field, threaded to the written `brain_documents` rows. Purely additive and backward-compatible — omitting the field (or sending `null`) preserves the pre-existing `datetime.now()` fallback exactly. No mapping or Rust-type change here: bastion is a **read-only Postgres observer** (§ above) with no artifacts to ingest, so it calls neither route and consumes neither. |
 | 1.6.0 | 2026-08-01 | Re-pin from 1.5.0 to 1.6.0 (`OR.K2`, orchestrator-side). Registers the canonical's v1.6.0 change to `GET /recall`'s response: **`score` polarity is flipped — higher is now always better** on every path (`1.0` for an exact-id match, `1.0 - cosine distance` for semantic, unchanged fused similarity for hybrid), where the exact-id/semantic paths previously returned a raw cosine *distance* (`0.0` for an exact-id match, lower-is-better). `via`'s vocabulary widens from `exact-id \| semantic \| hybrid` to also include `structural \| keyword \| memory` (the hybrid path's per-candidate provenance, previously collapsed to a bare `"hybrid"`). Field names, types, and the `q`/`limit`/`hybrid` query params are unchanged, so the canonical flags it Minor — but **any consumer that sorts or thresholds on `score` must re-verify its comparison direction**, because an old-polarity comparison ranks results backwards with no error. No mapping or Rust-type change here: bastion calls none of the corpus-read routes today (§ 1.4.0 row above), so nothing in `db::`/`api::client` compares a `score`. Whenever a `bastion recall` surface is wired, it must be built against 1.6.0 semantics — higher-is-better, and `via` may be any of the six values. |
+| 1.7.0 | 2026-08-13 | Re-pin from 1.6.0 to 1.7.0. Registers the canonical's v1.7.0 addition: the run-level `metadata.completion` annotation (§ Run-level `metadata` annotations above), stamped by `Workflow.run` on its normal exit path and used by the canonical's `derive_status` to report `succeeded` despite a leftover `pending` node. **Unlike the previous four re-pins, this one records a real bastion-side defect rather than an inert addition.** `db::workflows::derive_run_status` aggregates `node_runs` with `has_pending → Pending`, and the orchestrator seeds every node in the DAG `pending` before the walk starts — so the branch a router never takes keeps a finished run looking unfinished, and **bastion reports every completed run of a branching workflow as `RunStatus::Pending` forever** (confirmed live on `DOCUMENT_QA`, whose `AbstainNode` never runs on an answered query). Consuming the marker is the fix, and is deliberately left to its own ticket: `derive_run_status` backs five surfaces and a behaviour change there needs its own tests, not a doc-sync commit. No mapping or Rust-type change in this re-pin. |
