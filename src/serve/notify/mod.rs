@@ -316,3 +316,105 @@ impl NotifyPollLoop {
         }
     }
 }
+
+// ── Pending-payload registry (ticket-notify-send-trigger task 1) ───────────
+
+/// Bounded in-memory holding area for [`ValidatedOperatorPayload`]s this
+/// process has sent, keyed by `gate_id`, so an inbound
+/// [`OperatorResponse`][crate::serve::notify::OperatorResponse] can be
+/// resolved against the payload the operator was actually shown.
+///
+/// This is deliberately not `engine-rs:EN.8.B`'s queue — it is a
+/// process-local stand-in that only knows about payloads sent by *this*
+/// process, via [`Self::lookup`]'s [`PendingLookup`]. When `EN.8.B` lands,
+/// its queue becomes the `PendingLookup` source instead; the seam type
+/// itself does not change, so `NotifyPollLoop` needs no edit either way.
+///
+/// Bounded so a registry fed by a test/smoke route cannot grow without
+/// limit: insertion past [`Self::CAPACITY`] evicts the single oldest
+/// still-pending entry first (FIFO by insertion order, not by any notion
+/// of "processed"), tracked via an insertion-order `VecDeque` of gate ids
+/// alongside the map.
+pub struct PendingPayloads {
+    inner: std::sync::Mutex<PendingPayloadsInner>,
+}
+
+struct PendingPayloadsInner {
+    by_gate: std::collections::HashMap<String, ValidatedOperatorPayload>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl PendingPayloads {
+    /// Maximum number of pending payloads held at once. Chosen generously
+    /// above any plausible in-flight smoke-test or real operator-gate
+    /// volume — this bounds runaway growth, not normal operation.
+    pub const CAPACITY: usize = 256;
+
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(PendingPayloadsInner {
+                by_gate: std::collections::HashMap::new(),
+                order: std::collections::VecDeque::new(),
+            }),
+        }
+    }
+
+    /// Register `payload` under its own `gate_id`. If the registry is
+    /// already at [`Self::CAPACITY`], the single oldest entry (by
+    /// insertion order) is evicted first, so this call never grows the
+    /// registry past the cap. Re-inserting an existing `gate_id` replaces
+    /// its payload without changing its position in eviction order.
+    pub fn insert(&self, payload: ValidatedOperatorPayload) {
+        let gate_id = payload.payload().gate_id.clone();
+        let mut inner = self.inner.lock().expect("PendingPayloads mutex poisoned");
+        let is_new = !inner.by_gate.contains_key(&gate_id);
+        if is_new
+            && inner.by_gate.len() >= Self::CAPACITY
+            && let Some(oldest) = inner.order.pop_front()
+        {
+            inner.by_gate.remove(&oldest);
+        }
+        if is_new {
+            inner.order.push_back(gate_id.clone());
+        }
+        inner.by_gate.insert(gate_id, payload);
+    }
+
+    /// Look up the payload currently pending for `gate_id`, if any.
+    #[must_use]
+    pub fn get(&self, gate_id: &str) -> Option<ValidatedOperatorPayload> {
+        let inner = self.inner.lock().expect("PendingPayloads mutex poisoned");
+        inner.by_gate.get(gate_id).cloned()
+    }
+
+    /// Remove and return the pending payload for `gate_id`, if any — used
+    /// on `Accepted` so a replayed tap of the same button cannot resolve
+    /// twice (task 3).
+    pub fn remove(&self, gate_id: &str) -> Option<ValidatedOperatorPayload> {
+        let mut inner = self.inner.lock().expect("PendingPayloads mutex poisoned");
+        let removed = inner.by_gate.remove(gate_id);
+        if removed.is_some() {
+            inner.order.retain(|g| g != gate_id);
+        }
+        removed
+    }
+
+    /// Produce a [`PendingLookup`] closure backed by this registry, so
+    /// [`NotifyPollLoop`] can resolve responses against payloads this
+    /// process sent without knowing anything about the registry's
+    /// existence. Callers wanting removal-on-accept (task 3) do that at
+    /// the verdict-handling layer via [`Self::remove`], not here — this
+    /// closure only reads.
+    #[must_use]
+    pub fn lookup(self: &Arc<Self>) -> PendingLookup {
+        let registry = Arc::clone(self);
+        Box::new(move |gate_id: &str| registry.get(gate_id))
+    }
+}
+
+impl Default for PendingPayloads {
+    fn default() -> Self {
+        Self::new()
+    }
+}

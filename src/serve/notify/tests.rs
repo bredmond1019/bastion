@@ -419,3 +419,138 @@ async fn tick_dispatches_unknown_gate_verdict_when_pending_lookup_has_nothing() 
         [telegram::ResponseVerdict::UnknownGate]
     );
 }
+
+// ── PendingPayloads (ticket-notify-send-trigger task 1) ─────────────────────
+
+#[test]
+fn pending_payloads_round_trips_by_gate_id() {
+    let registry = PendingPayloads::new();
+    let payload = scripted_payload("gate-1", "diff summary");
+    registry.insert(payload.clone());
+
+    let found = registry.get("gate-1").expect("payload was inserted");
+    assert_eq!(found, payload);
+}
+
+#[test]
+fn pending_payloads_get_returns_none_for_unknown_gate() {
+    let registry = PendingPayloads::new();
+    assert_eq!(registry.get("never-sent"), None);
+}
+
+#[test]
+fn pending_payloads_remove_returns_and_evicts_the_entry() {
+    let registry = PendingPayloads::new();
+    let payload = scripted_payload("gate-1", "diff summary");
+    registry.insert(payload.clone());
+
+    let removed = registry.remove("gate-1").expect("payload was inserted");
+    assert_eq!(removed, payload);
+    assert_eq!(registry.get("gate-1"), None);
+}
+
+#[test]
+fn pending_payloads_remove_on_unknown_gate_is_a_no_op() {
+    let registry = PendingPayloads::new();
+    assert_eq!(registry.remove("never-sent"), None);
+}
+
+#[test]
+fn pending_payloads_lookup_returns_the_existing_pending_lookup_type() {
+    let registry = Arc::new(PendingPayloads::new());
+    let payload = scripted_payload("gate-1", "diff summary");
+    registry.insert(payload.clone());
+
+    let lookup: PendingLookup = registry.lookup();
+    assert_eq!(lookup("gate-1"), Some(payload));
+    assert_eq!(lookup("never-sent"), None);
+}
+
+#[test]
+fn pending_payloads_at_capacity_accepts_without_eviction() {
+    let registry = PendingPayloads::new();
+    for i in 0..PendingPayloads::CAPACITY {
+        registry.insert(scripted_payload(&format!("gate-{i}"), "diff summary"));
+    }
+    // Every one of the CAPACITY entries is still present — nothing evicted
+    // yet at exactly the cap.
+    for i in 0..PendingPayloads::CAPACITY {
+        assert!(
+            registry.get(&format!("gate-{i}")).is_some(),
+            "gate-{i} should still be pending at exactly capacity"
+        );
+    }
+}
+
+#[test]
+fn pending_payloads_one_over_capacity_evicts_oldest_first() {
+    let registry = PendingPayloads::new();
+    for i in 0..PendingPayloads::CAPACITY {
+        registry.insert(scripted_payload(&format!("gate-{i}"), "diff summary"));
+    }
+    // One more insert past the cap must evict gate-0 (the oldest by
+    // insertion order), never a newer entry.
+    registry.insert(scripted_payload("gate-overflow", "diff summary"));
+
+    assert_eq!(
+        registry.get("gate-0"),
+        None,
+        "oldest entry must be evicted once the registry is one over capacity"
+    );
+    assert!(registry.get("gate-overflow").is_some());
+    assert!(
+        registry.get("gate-1").is_some(),
+        "the second-oldest entry must survive a single one-over-capacity eviction"
+    );
+}
+
+#[test]
+fn pending_payloads_reinsert_of_existing_gate_does_not_trigger_eviction() {
+    let registry = PendingPayloads::new();
+    for i in 0..PendingPayloads::CAPACITY {
+        registry.insert(scripted_payload(&format!("gate-{i}"), "diff summary"));
+    }
+    // Re-inserting an already-present gate_id must not evict anything —
+    // the registry is still exactly at capacity, not over it.
+    registry.insert(scripted_payload("gate-0", "updated summary"));
+
+    for i in 0..PendingPayloads::CAPACITY {
+        assert!(
+            registry.get(&format!("gate-{i}")).is_some(),
+            "gate-{i} must still be pending after a same-key reinsert"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pending_payloads_concurrent_insert_and_get_from_two_tasks() {
+    let registry = Arc::new(PendingPayloads::new());
+
+    let writer = {
+        let registry = Arc::clone(&registry);
+        tokio::spawn(async move {
+            for i in 0..64 {
+                registry.insert(scripted_payload(&format!("gate-{i}"), "diff summary"));
+            }
+        })
+    };
+    let reader = {
+        let registry = Arc::clone(&registry);
+        tokio::spawn(async move {
+            // Reads racing the writer must never panic or deadlock, and
+            // any hit must be the exact payload for that gate_id.
+            for i in 0..64 {
+                if let Some(found) = registry.get(&format!("gate-{i}")) {
+                    assert_eq!(found.payload().gate_id, format!("gate-{i}"));
+                }
+            }
+        })
+    };
+
+    writer.await.expect("writer task completes");
+    reader.await.expect("reader task completes");
+
+    for i in 0..64 {
+        assert!(registry.get(&format!("gate-{i}")).is_some());
+    }
+}
