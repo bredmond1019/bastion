@@ -17,7 +17,7 @@
 
 use engine_core::operator::{OperatorPayloadLimits, ValidatedOperatorPayload};
 
-use crate::serve::notify::{NotifyError, UpdateCursor};
+use crate::serve::notify::{NotifyError, OperatorResponse, UpdateCursor};
 
 /// Number of leading hex characters of the payload's SHA-256 digest carried
 /// in a Telegram `callback_data` string. A named const (never a magic
@@ -197,6 +197,124 @@ pub fn getupdates_query(cursor: Option<UpdateCursor>, timeout_secs: u64) -> Vec<
         r#"["callback_query"]"#.to_string(),
     ));
     query
+}
+
+/// Parse a raw `getUpdates` response body into the operator responses it
+/// carries and the cursor to resume from on the next poll (`BA.18.B` task 3).
+///
+/// - The envelope must be `{"ok": true, "result": [...]}`; anything else is
+///   [`NotifyError::Malformed`] for the whole batch.
+/// - Within `result`, an individual update that is missing `update_id`, has
+///   no `callback_query`, or whose `callback_query.data` does not decode via
+///   [`decode_callback_data`] is **skipped**, not fatal — the rest of the
+///   batch is still returned.
+/// - The returned cursor is `max(update_id) + 1` across every update that
+///   *did* carry a parseable `update_id`, whether or not it produced an
+///   `OperatorResponse` — an update with no callback tap still consumed an
+///   offset slot and must be acknowledged, or `getUpdates` redelivers it
+///   forever.
+/// - An empty (or entirely update-id-less) batch returns `None` for the
+///   cursor. Callers must treat `None` as "unchanged" and keep polling from
+///   whatever cursor they already had — never reset to the start of the
+///   backlog.
+pub fn parse_updates(
+    raw: &serde_json::Value,
+) -> Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError> {
+    let ok = raw.get("ok").and_then(serde_json::Value::as_bool);
+    let result = raw.get("result").and_then(serde_json::Value::as_array);
+
+    let (Some(true), Some(result)) = (ok, result) else {
+        return Err(NotifyError::Malformed {
+            reason: "getUpdates response is not a {ok: true, result: [...]} envelope".to_string(),
+        });
+    };
+
+    let mut responses = Vec::new();
+    let mut max_update_id: Option<i64> = None;
+
+    for update in result {
+        let Some(update_id) = update.get("update_id").and_then(serde_json::Value::as_i64) else {
+            // No usable update_id at all: cannot contribute to the cursor
+            // and cannot be resolved to a response either. Skip.
+            continue;
+        };
+        max_update_id = Some(max_update_id.map_or(update_id, |current| current.max(update_id)));
+
+        let Some(data) = update
+            .get("callback_query")
+            .and_then(|cq| cq.get("data"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+
+        let Some(decoded) = decode_callback_data(data) else {
+            continue;
+        };
+
+        responses.push(OperatorResponse {
+            gate_id: decoded.gate_id,
+            digest: decoded.digest_prefix,
+            option_key: decoded.option_key,
+            received_at: chrono::Utc::now(),
+        });
+    }
+
+    let cursor = max_update_id.map(|id| UpdateCursor((id + 1).to_string()));
+    Ok((responses, cursor))
+}
+
+/// The outcome of resolving an [`OperatorResponse`] against the payload the
+/// caller expects it to answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseVerdict {
+    /// Both the gate id and the digest prefix match: this response applies.
+    Accepted {
+        /// The gate this response answers.
+        gate_id: String,
+        /// The stable machine key of the option the operator tapped.
+        option_key: String,
+    },
+    /// The gate matches but the digest does not — the payload was mutated
+    /// (re-rendered) after this response was shown, so it must re-queue
+    /// rather than execute. Never conflated with `Accepted`.
+    StaleDigest,
+    /// The response answers a different gate than `expected` — not this
+    /// payload's response at all.
+    UnknownGate,
+}
+
+/// Resolve `resp` against the payload it is expected to answer.
+///
+/// `resp.digest` is already the truncated prefix a transport observed (see
+/// [`CALLBACK_DIGEST_PREFIX_LEN`]), so `expected`'s full digest is truncated
+/// to the same prefix length before comparing — never compared against the
+/// full digest, which would spuriously reject every real response.
+#[must_use]
+pub fn resolve_response(
+    resp: &OperatorResponse,
+    expected: &ValidatedOperatorPayload,
+) -> ResponseVerdict {
+    let expected_payload = expected.payload();
+
+    if resp.gate_id != expected_payload.gate_id {
+        return ResponseVerdict::UnknownGate;
+    }
+
+    let expected_prefix: String = expected_payload
+        .digest
+        .chars()
+        .take(CALLBACK_DIGEST_PREFIX_LEN)
+        .collect();
+
+    if resp.digest != expected_prefix {
+        return ResponseVerdict::StaleDigest;
+    }
+
+    ResponseVerdict::Accepted {
+        gate_id: resp.gate_id.clone(),
+        option_key: resp.option_key.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -537,5 +655,207 @@ mod tests {
                 "getupdates_query must never emit a webhook-related parameter"
             );
         }
+    }
+
+    // -- parse_updates ------------------------------------------------------
+    //
+    // Every fixture below is hand-built JSON with no real token and no real
+    // chat id anywhere — `chat_id`/`from.id` values, where present, are
+    // fabricated small integers, never a live credential.
+
+    #[test]
+    fn parse_updates_empty_result_leaves_cursor_unchanged() {
+        let raw = serde_json::json!({"ok": true, "result": []});
+        let (responses, cursor) = parse_updates(&raw).expect("valid envelope");
+        assert!(responses.is_empty());
+        assert_eq!(
+            cursor, None,
+            "an empty batch must return None (unchanged), never a reset cursor"
+        );
+    }
+
+    #[test]
+    fn parse_updates_single_callback_query() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "result": [{
+                "update_id": 100,
+                "callback_query": {
+                    "id": "cbq-1",
+                    "from": {"id": 555},
+                    "data": encode_callback_data(&CallbackData::new("gate-1", "abcdef012345", "approve")),
+                }
+            }]
+        });
+        let (responses, cursor) = parse_updates(&raw).expect("valid envelope");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].gate_id, "gate-1");
+        assert_eq!(responses[0].digest, "abcdef012345");
+        assert_eq!(responses[0].option_key, "approve");
+        assert_eq!(cursor, Some(UpdateCursor("101".to_string())));
+    }
+
+    #[test]
+    fn parse_updates_multiple_updates_cursor_is_max_plus_one() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "result": [
+                {
+                    "update_id": 100,
+                    "callback_query": {
+                        "data": encode_callback_data(&CallbackData::new("gate-1", "abcdef012345", "approve")),
+                    }
+                },
+                {
+                    "update_id": 105,
+                    "callback_query": {
+                        "data": encode_callback_data(&CallbackData::new("gate-2", "fedcba543210", "reject")),
+                    }
+                },
+                {
+                    "update_id": 103,
+                    "callback_query": {
+                        "data": encode_callback_data(&CallbackData::new("gate-3", "111111111111", "approve")),
+                    }
+                },
+            ]
+        });
+        let (responses, cursor) = parse_updates(&raw).expect("valid envelope");
+        assert_eq!(responses.len(), 3);
+        assert_eq!(
+            cursor,
+            Some(UpdateCursor("106".to_string())),
+            "cursor must be max(update_id) + 1, not the last-seen update_id + 1"
+        );
+    }
+
+    #[test]
+    fn parse_updates_malformed_update_does_not_discard_valid_ones() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "result": [
+                {
+                    "update_id": 200,
+                    "callback_query": {
+                        "data": encode_callback_data(&CallbackData::new("gate-1", "abcdef012345", "approve")),
+                    }
+                },
+                {
+                    "update_id": 201,
+                    "callback_query": {
+                        "data": "not-a-valid-callback-data-string",
+                    }
+                },
+                {
+                    "update_id": 202,
+                    "message": {"text": "not a callback query at all"}
+                },
+                {
+                    "update_id": 203,
+                    "callback_query": {
+                        "data": encode_callback_data(&CallbackData::new("gate-4", "222222222222", "reject")),
+                    }
+                },
+            ]
+        });
+        let (responses, cursor) = parse_updates(&raw).expect("valid envelope");
+        assert_eq!(
+            responses.len(),
+            2,
+            "the two malformed updates (201, 202) must be skipped, not fail the batch"
+        );
+        assert_eq!(responses[0].gate_id, "gate-1");
+        assert_eq!(responses[1].gate_id, "gate-4");
+        assert_eq!(
+            cursor,
+            Some(UpdateCursor("204".to_string())),
+            "malformed updates still consumed an update_id and must count toward the cursor"
+        );
+    }
+
+    #[test]
+    fn parse_updates_non_ok_envelope_is_malformed() {
+        let raw = serde_json::json!({"ok": false, "description": "Unauthorized"});
+        let result = parse_updates(&raw);
+        assert!(matches!(result, Err(NotifyError::Malformed { .. })));
+    }
+
+    #[test]
+    fn parse_updates_missing_result_is_malformed() {
+        let raw = serde_json::json!({"ok": true});
+        let result = parse_updates(&raw);
+        assert!(matches!(result, Err(NotifyError::Malformed { .. })));
+    }
+
+    #[test]
+    fn parse_updates_malformed_error_never_contains_a_token_shaped_value() {
+        let raw = serde_json::json!({"not": "an envelope at all"});
+        let err = parse_updates(&raw).unwrap_err();
+        let rendered = format!("{err}");
+        assert!(!rendered.to_lowercase().contains("token"));
+    }
+
+    // -- resolve_response -----------------------------------------------
+
+    fn expected_payload() -> ValidatedOperatorPayload {
+        validated("gate-1", "the rendered diff", approve_reject())
+    }
+
+    fn response_for(gate_id: &str, digest: &str, option_key: &str) -> OperatorResponse {
+        OperatorResponse {
+            gate_id: gate_id.to_string(),
+            digest: digest.to_string(),
+            option_key: option_key.to_string(),
+            received_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn resolve_response_accepted_when_gate_and_digest_prefix_match() {
+        let payload = expected_payload();
+        let p = payload.payload();
+        let prefix: String = p.digest.chars().take(CALLBACK_DIGEST_PREFIX_LEN).collect();
+        let resp = response_for(&p.gate_id, &prefix, "approve");
+
+        let verdict = resolve_response(&resp, &payload);
+        assert_eq!(
+            verdict,
+            ResponseVerdict::Accepted {
+                gate_id: p.gate_id.clone(),
+                option_key: "approve".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_response_stale_digest_when_gate_matches_but_digest_does_not() {
+        let payload = expected_payload();
+        let p = payload.payload();
+        let resp = response_for(&p.gate_id, "0000000000000", "approve");
+
+        let verdict = resolve_response(&resp, &payload);
+        assert_eq!(
+            verdict,
+            ResponseVerdict::StaleDigest,
+            "a stale digest must be rejected, never accepted"
+        );
+        assert_ne!(
+            verdict,
+            ResponseVerdict::Accepted {
+                gate_id: p.gate_id.clone(),
+                option_key: "approve".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_response_unknown_gate_when_gate_does_not_match() {
+        let payload = expected_payload();
+        let p = payload.payload();
+        let prefix: String = p.digest.chars().take(CALLBACK_DIGEST_PREFIX_LEN).collect();
+        let resp = response_for("some-other-gate", &prefix, "approve");
+
+        let verdict = resolve_response(&resp, &payload);
+        assert_eq!(verdict, ResponseVerdict::UnknownGate);
     }
 }
