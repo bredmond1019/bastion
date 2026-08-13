@@ -47,7 +47,7 @@ use actix::{Actor, Addr};
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
 use actix_web_actors::ws as actix_ws;
 use anyhow::Result;
-use auth::BearerAuthMiddleware;
+use auth::{ApiKeyAuthMiddleware, BearerAuthMiddleware};
 use dto::ErrorPayload;
 use engine_serve::abort::RunRegistry;
 use engine_serve::dispatch::Dispatcher;
@@ -530,15 +530,29 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
 
         // Mount the embedded engine's route table when config allows it
         // (BA.7.C task 2). These routes are NOT wrapped in bastion's own
-        // `Bearer` middleware — they carry their own `X-API-Key` gate
-        // (`engine_serve::http::check_api_key`), and double-gating them would
-        // break the pinned contract's 401 semantics (a caller supplying only
-        // `X-API-Key` would otherwise be rejected by bastion's Bearer layer
-        // before ever reaching the engine handler).
+        // `Bearer` middleware — they carry their own `X-API-Key` gate. Task 1
+        // (`BA.ticket.engine-surface-auth`) found that gate was only wired
+        // inline on 9 of the 11 registered routes (`engine_serve::http::
+        // check_api_key`, called as the first line of each handler);
+        // `list_workflows` and `workflow_graph` took no `HttpRequest` at all
+        // and skipped it entirely, answering 200 to a bogus/absent key. Task
+        // 3 closes that by wrapping the *whole* mount in one
+        // `ApiKeyAuthMiddleware` — mirroring `BearerAuthMiddleware`'s shape
+        // (`auth.rs`) — so every route in the table is gated the same way
+        // regardless of whether its handler also calls `check_api_key`
+        // itself (redundant on the 9, now load-bearing on the 2).
+        //
+        // `GET /health` registered by `engine_serve::http::configure` stays
+        // shadowed by bastion's own public `/health` above
+        // (first-registration-wins, see the collision note there) — wrapping
+        // the engine mount here does not touch that liveness contract.
         if let Some(engine_data) = engine_data {
-            app = app
-                .app_data(engine_data)
-                .configure(engine_serve::http::configure);
+            let engine_api_key = engine_data.api_key.clone();
+            app = app.app_data(engine_data).service(
+                web::scope("")
+                    .wrap(ApiKeyAuthMiddleware::new(engine_api_key))
+                    .configure(engine_serve::http::configure),
+            );
         }
 
         app
@@ -4035,5 +4049,236 @@ heading = "bastion"
         assert_eq!(body["code"], "C002");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Engine mount X-API-Key gate (task 3, BA.ticket.engine-surface-auth) ────
+    //
+    // Mirrors production's mount exactly: bastion's own `/health` registered
+    // first (so it stays reachable regardless of the engine gate — the
+    // `/health` collision, see the comment above `run`'s `App::new()`), then
+    // the whole `engine_serve::http::configure` table wrapped in one
+    // `ApiKeyAuthMiddleware` scope. Covers every route task 1 enumerated,
+    // including the two (`GET /workflows`, `GET /workflows/{type}/graph`)
+    // that were the actual gap — the other nine already carried an inline
+    // `check_api_key` call, so this is a regression guard for those plus the
+    // fix for these two.
+
+    const ENGINE_TEST_KEY: &str = "engine-test-key-abc";
+
+    /// Build a standalone test service mounting bastion's own `/health` plus
+    /// the engine route table, gated by [`ApiKeyAuthMiddleware`] exactly as
+    /// `run()` wires it. DB-free: `spawn_durable_writer(None)` self-skips
+    /// Postgres writes, matching how the engine already degrades gracefully
+    /// without `DATABASE_URL`.
+    async fn engine_test_service(
+        api_key: &str,
+    ) -> impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    > {
+        let state = EngineAppState {
+            dispatcher: Arc::new(build_engine_dispatcher()),
+            live: LiveStateStore::new(),
+            durable: spawn_durable_writer(None),
+            runs: RunRegistry::new(),
+            api_key: api_key.to_string(),
+        };
+        let engine_data = web::Data::new(state);
+
+        let app = App::new()
+            .service(web::resource("/health").route(web::get().to(health)))
+            .app_data(engine_data)
+            .service(
+                web::scope("")
+                    .wrap(ApiKeyAuthMiddleware::new(api_key))
+                    .configure(engine_serve::http::configure),
+            );
+
+        test::init_service(app).await
+    }
+
+    /// One (method, path) pair per route registered by
+    /// `engine_serve::http::configure`, mirroring task 1's enumeration
+    /// exactly. `POST /events/{run_id}/pause` and `.../resume` and `GET
+    /// /events/{event_id}` etc. use a fresh random uuid — the handler must
+    /// still reach its own not-found branch (proving the request got past
+    /// auth) for the "correct key" case, and must never get that far for the
+    /// "no/bogus key" cases.
+    fn engine_route_cases() -> Vec<(&'static str, String)> {
+        let run_id = uuid::Uuid::new_v4();
+        vec![
+            ("GET", "/workflows".to_string()),
+            ("GET", "/workflows/SDLC_FLOW/graph".to_string()),
+            ("POST", "/events/".to_string()),
+            ("GET", "/events/suspended".to_string()),
+            ("GET", format!("/events/{run_id}")),
+            ("POST", format!("/events/{run_id}/abort")),
+            ("POST", format!("/events/{run_id}/pause")),
+            ("POST", format!("/events/{run_id}/resume")),
+            ("GET", format!("/events/{run_id}/stream")),
+            ("POST", "/webhooks/email/inbound".to_string()),
+            ("POST", "/webhooks/email/events".to_string()),
+        ]
+    }
+
+    /// `POST /events/` needs a JSON body to clear the `web::Json<TriggerBody>`
+    /// extractor and actually reach the handler's own auth check — every
+    /// other route in the table takes no body. Mirrors task 1's amendment
+    /// log note about the malformed-probe artifact.
+    fn body_for(path: &str) -> Option<serde_json::Value> {
+        if path == "/events/" {
+            Some(serde_json::json!({ "workflow_type": "UNKNOWN_TYPE", "data": {} }))
+        } else {
+            None
+        }
+    }
+
+    fn request_for(method: &str, path: &str) -> test::TestRequest {
+        let req = match method {
+            "GET" => test::TestRequest::get(),
+            "POST" => test::TestRequest::post(),
+            other => panic!("unsupported method in engine_route_cases: {other}"),
+        };
+        let req = req.uri(path);
+        match body_for(path) {
+            Some(body) => req.set_json(body),
+            None => req,
+        }
+    }
+
+    #[actix_web::test]
+    async fn engine_routes_reject_missing_api_key() {
+        let service = engine_test_service(ENGINE_TEST_KEY).await;
+        for (method, path) in engine_route_cases() {
+            let resp = test::call_service(&service, request_for(method, &path).to_request()).await;
+            assert_eq!(
+                resp.status(),
+                401,
+                "{method} {path} without X-API-Key must return 401; got {}",
+                resp.status()
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn engine_routes_reject_bogus_api_key() {
+        let service = engine_test_service(ENGINE_TEST_KEY).await;
+        for (method, path) in engine_route_cases() {
+            let req = request_for(method, &path)
+                .insert_header(("X-API-Key", "totally-bogus-value"))
+                .to_request();
+            let resp = test::call_service(&service, req).await;
+            assert_eq!(
+                resp.status(),
+                401,
+                "{method} {path} with a bogus X-API-Key must return 401; got {}",
+                resp.status()
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn engine_routes_reject_empty_api_key() {
+        let service = engine_test_service(ENGINE_TEST_KEY).await;
+        for (method, path) in engine_route_cases() {
+            let req = request_for(method, &path)
+                .insert_header(("X-API-Key", ""))
+                .to_request();
+            let resp = test::call_service(&service, req).await;
+            assert_eq!(
+                resp.status(),
+                401,
+                "{method} {path} with an empty X-API-Key must return 401; got {}",
+                resp.status()
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn engine_routes_accept_correct_api_key() {
+        let service = engine_test_service(ENGINE_TEST_KEY).await;
+        for (method, path) in engine_route_cases() {
+            let req = request_for(method, &path)
+                .insert_header(("X-API-Key", ENGINE_TEST_KEY))
+                .to_request();
+            let resp = test::call_service(&service, req).await;
+            assert_ne!(
+                resp.status(),
+                401,
+                "{method} {path} with the correct X-API-Key must not return 401; got {}",
+                resp.status()
+            );
+        }
+    }
+
+    /// `POST /events/` is the mutating route the acceptance criteria calls
+    /// out explicitly — asserted on its own (not just folded into the table
+    /// loops above) with all three key states.
+    #[actix_web::test]
+    async fn post_events_is_gated_explicitly() {
+        let service = engine_test_service(ENGINE_TEST_KEY).await;
+        let body = serde_json::json!({ "workflow_type": "UNKNOWN_TYPE", "data": {} });
+
+        let no_header = test::TestRequest::post()
+            .uri("/events/")
+            .set_json(&body)
+            .to_request();
+        assert_eq!(test::call_service(&service, no_header).await.status(), 401);
+
+        let bogus = test::TestRequest::post()
+            .uri("/events/")
+            .insert_header(("X-API-Key", "totally-bogus-value"))
+            .set_json(&body)
+            .to_request();
+        assert_eq!(test::call_service(&service, bogus).await.status(), 401);
+
+        let correct = test::TestRequest::post()
+            .uri("/events/")
+            .insert_header(("X-API-Key", ENGINE_TEST_KEY))
+            .set_json(&body)
+            .to_request();
+        // Reached past auth: dispatch rejects the unknown workflow_type with
+        // 422, never 401.
+        assert_eq!(test::call_service(&service, correct).await.status(), 422);
+    }
+
+    /// `GET /health` (bastion's own, registered before the engine mount)
+    /// stays unauthenticated even when the engine is mounted and gated —
+    /// the collision ordering documented at `run`'s `App::new()` call must
+    /// hold.
+    #[actix_web::test]
+    async fn health_stays_unauthenticated_with_engine_mounted() {
+        let service = engine_test_service(ENGINE_TEST_KEY).await;
+
+        let no_header = test::TestRequest::get().uri("/health").to_request();
+        let resp = test::call_service(&service, no_header).await;
+        assert_eq!(resp.status(), 200);
+
+        let bogus = test::TestRequest::get()
+            .uri("/health")
+            .insert_header(("X-API-Key", "totally-bogus-value"))
+            .to_request();
+        let resp = test::call_service(&service, bogus).await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    /// Existing `/api/*` bearer routes are unaffected by the engine-mount
+    /// change — same `build_app` harness used throughout this module, which
+    /// never mounts the engine, still enforces bearer auth exactly as
+    /// before.
+    #[actix_web::test]
+    async fn api_bearer_routes_unchanged_by_engine_gate() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+
+        let no_token = test::TestRequest::get().uri("/api/board").to_request();
+        assert_eq!(test::call_service(&app, no_token).await.status(), 401);
+
+        let with_token = test::TestRequest::get()
+            .uri("/api/board")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, with_token).await;
+        assert_ne!(resp.status(), 401);
     }
 }
