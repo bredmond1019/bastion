@@ -2,12 +2,37 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-10T21:15:00Z
+timestamp: 2026-08-13T07:20:00-03:00
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-08-13]
+
+### Operator-surface chain closed, and a leaked API key rotated
+
+- **What:** Ran `BA.ticket.engine-surface-auth` (`/sdlc-task`, 5/5, **closed**) and `BA.18.B`
+  (`/sdlc-flow`, 7/7, review PASS, merged `7c0a1f0`, **held open**) as one chain. The auth ticket
+  closed a real hole — the embedded engine surface answered `200` to unauthenticated requests — and
+  is verified live on the Mini (401 / 401 / 401 / 200). `BA.18.B` ships the Telegram transport
+  behind an `OperatorTransport` seam consuming `engine-rs:EN.8.A`'s payload contract, long-polling
+  only, with a route-table test that fails if a webhook is ever registered. It stays `open`: no live
+  message has ever been sent, so its inline-render and response-mapping criteria are unverified.
+  Filed that as an `operator-telegram-live-smoke` edge rather than prose.
+  Separately: rotated `BASTION_ENGINE_API_KEY` on the Mini after the auth ticket's final task
+  committed it in plaintext, and discovered the same value was also serving as bastion's Bearer
+  `--token` in `ProgramArguments` — two schemes, one secret. Both now distinct; old value 401s.
+- **Why:** The auth hole sat on a surface about to gain arbitrary command execution, so it was worth
+  landing ahead of `BA.11.F`. The rotation was forced: recording a smoke test is exactly when
+  credentials leak into git, which is now written down in `planning/knowledge.md` → *Secrets on the
+  Mini* and encoded structurally in `BA.18.B`'s spec — a step needing a live credential is an
+  operator gate, not an agent task. That change held on first use.
+- **Refs:** `planning/BA.18.B/tasks.md`, `planning/ticket-engine-surface-auth/tasks.md`,
+  `planning/orchestration-run/operator-surface/notes.md` (run 2), `planning/handoff.md`
 
 ---
 
