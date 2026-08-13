@@ -2229,14 +2229,32 @@ boot) also leaves the engine routes unmounted, logged the same way.
 | Route | Method | Auth | Description |
 |---|---|---|---|
 | `/health` | `GET` | None | Shadowed by bastion's own `/health` (Section 3) — always answers, engine-mounted or not. |
-| `/workflows` | `GET` | None | Registered workflow types (sorted). |
-| `/workflows/{workflow_type}/graph` | `GET` | None | The DAG schema for a registered type; `404` for an unknown one. |
+| `/workflows` | `GET` | `X-API-Key` | Registered workflow types (sorted). |
+| `/workflows/{workflow_type}/graph` | `GET` | `X-API-Key` | The DAG schema for a registered type; `404` for an unknown one. |
 | `/events/` | `POST` | `X-API-Key` | Trigger dispatch — resolves `workflow_type`, runs the workflow, mints a `run_id` and a `CancellationToken`. |
 | `/events/{run_id}/abort` | `POST` | `X-API-Key` | The abort endpoint this block's `bastion abort <run>` calls — see [abort.md](abort.md) and [data-contract.md](data-contract.md)'s Abort section for the full 401/404/202 contract. |
+| every other route in `engine_serve::http::configure` (`/events/suspended`, `/events/{event_id}`, `/events/{event_id}/resume`, `/events/{event_id}/stream`, `/webhooks/email/inbound`, `/webhooks/email/events`) | — | `X-API-Key` | Same gate, applied uniformly across the whole mount (Section 18.2.1). |
 
-`X-API-Key` is checked by `engine_serve::http::check_api_key` against `BASTION_ENGINE_API_KEY` —
-an exact string match, entirely separate from bastion's own `BASTION_SERVE_TOKEN` Bearer check
-(Section 2). Neither scheme is layered on the other's routes.
+`X-API-Key` is required on **every route the engine mount registers except `/health`**. A request
+with no `X-API-Key` header, an empty header, or a wrong value gets **401**; the configured
+`BASTION_ENGINE_API_KEY` value gets through. This is entirely separate from bastion's own
+`BASTION_SERVE_TOKEN` Bearer check (Section 2) — neither scheme is layered on the other's routes.
+
+#### 18.2.1 `BA.ticket.engine-surface-auth` — reject-unauthenticated (2026-08-12)
+
+Landed early, ahead of the rest of `BA.11.F` (below): `GET /workflows` and `GET
+/workflows/{workflow_type}/graph` took no `HttpRequest` parameter and skipped `engine-serve`'s own
+inline `check_api_key` call entirely, answering `200` to a bogus, rotated-away, or absent
+`X-API-Key`. The other 9 routes already checked `check_api_key` inline and were unaffected. The
+fix wraps the **whole** engine mount (`src/serve/mod.rs`) in one `ApiKeyAuthMiddleware` —
+mirroring `BearerAuthMiddleware`'s shape (`src/serve/auth.rs`) — so every route in the table is
+gated the same way regardless of whether its handler also calls `check_api_key` itself (redundant
+on the 9, now load-bearing on the 2). The pure comparison helper, `api_key_matches`, rejects an
+empty configured key (and an empty provided header) rather than falling through to `"" == ""`;
+`decide_engine_mount` already refuses to mount the engine at all on an empty key, so this is
+defense-in-depth, not a live gap. `GET /health` stays unauthenticated — it is shadowed by
+bastion's own `/health` handler before the engine mount is registered (Section 18.1's
+first-registration-wins note), so the middleware wrapping the engine scope never sees it.
 
 ### 18.3 Testing
 
@@ -2245,7 +2263,12 @@ Covered by the in-process integration test `tests/abort_contract.rs`, which buil
 worked reference is `../engine-rs/crates/engine-serve/tests/abort_integration.rs`. The mount
 decision itself (`decide_engine_mount`) is unit-tested element-by-element in `src/serve/mod.rs`
 against all four presence/absence combinations of `DATABASE_URL` / `BASTION_ENGINE_API_KEY`,
-including the empty-string-counts-as-absent case.
+including the empty-string-counts-as-absent case. `ApiKeyAuthMiddleware`'s pure comparison helper,
+`api_key_matches`, is unit-tested exhaustively in `src/serve/auth.rs` (absent header, empty
+header, empty configured key, wrong value, correct value); the per-route reject/accept behavior
+(no header / bogus key / correct key against every route in the table, `GET /health` unaffected,
+`/api/*` bearer routes unaffected) is covered by integration tests in `src/serve/mod.rs`
+(`BA.ticket.engine-surface-auth` task 3).
 
 ---
 
