@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.26"
+title: "serve-api contract v0.28"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -35,7 +35,15 @@ unparseable-anchor entry now reaches the board with no age), and the v0.26 `agen
 `AgentState` (`\"idle\"` / `\"working\"` / `\"blocked\"` / `\"unknown\"`, from `detect/`) through to
 both `GET /api/sessions` and the `\"sessions\"` WS push payload, closing the gap that left every
 consumer of the sessions REST surface unable to tell whether a session is working, idle, or
-blocked; `classify_state` and attachment handling are unchanged."
+blocked; `classify_state` and attachment handling are unchanged; the v0.27 operator-notification
+transport (Section 26, `BA.18.B`) — an outbound-only background capability with no REST/WS route
+of its own; and the v0.28 `POST /api/notify/test` trigger (Section 26.7,
+`ticket-notify-send-trigger`) — an authenticated route inside the existing `/api` scope that sends
+one real validated payload over the configured transport and registers it in a new bounded,
+in-memory `PendingPayloads` registry so the `NotifyPollLoop`'s `PendingLookup` can resolve
+`Accepted`/`StaleDigest`/`UnknownGate` for payloads this process sent, replacing the
+`|_gate_id: &str| None` stub Section 26.6 previously described; adds one new typeshared DTO,
+`NotifyTestResponseDto`."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -44,18 +52,19 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.27 Contract
+# serve-api — v0.28 Contract
 
-**Version:** v0.27  
+**Version:** v0.28  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
 bastion-web (`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web
 (`BW.2.A`) for Section 16; `bastion abort` (`src/run/abort.rs`, this repo) for Section 18's abort
 route; bastion-web (`BW.9.B`) for Section 23; bastion-web (`BW.3.C`) for Section 6/8.3's `runs` topic;
-Section 26 (the operator-notification transport) has no REST/WS route of its own — it is an
-outbound-only background loop documented here for the env-var contract and the no-webhook posture,
-not a shape any client calls.
+Section 26 (the operator-notification transport) is an outbound-only background loop documented
+here for the env-var contract and the no-webhook posture — no `bastion-ui`/`bastion-web` client
+calls it; Section 26.7's `POST /api/notify/test` is likewise not a client-facing route, only an
+operator-triggered smoke-test aid.
 
 This document is the pinned contract between `bastion serve` and the Flutter
 `bastion-ui` client.  `bastion-ui` MUST NOT rely on any behaviour not
@@ -3062,9 +3071,106 @@ closure that always returns `None` until that queue exists, so every observed re
 `bastion-ui` push surface are also out of scope; Section 26.1's portability guard exists precisely
 so adding WhatsApp later does not require touching this section's payload handling.
 
+### 26.7 `POST /api/notify/test` — test-send trigger (v0.28, `ticket-notify-send-trigger`)
+
+Section 26.6's `|_gate_id: &str| None` `PendingLookup` stub made three of `BA.18.B`'s acceptance
+criteria — inline render with declared options, response resolving back to gate + digest, stale
+digest rejected — unverifiable, since nothing in the binary ever called
+[`OperatorTransport::send`]. This route exists **solely** to make the
+`operator-telegram-live-smoke` operator session runnable in one sitting; it is not a general
+notification API and sends no operator-authored content.
+
+**Route:** `POST /api/notify/test`, mounted inside the existing `web::scope("/api")`
+(`src/serve/mod.rs`) — it inherits `BearerAuthMiddleware` like every other route in that scope,
+and, per constraint 1 of `ticket-notify-send-trigger`, is **never** mounted at the app root (the
+route-table test at `src/serve/mod.rs` asserts this, extended alongside the existing Telegram
+webhook-absence check from Section 26.3).
+
+**Auth:** bearer token, same as every other `/api` route. No token, no chat id, and no other
+credential is ever read from the request body — the route takes no input at all; the transport
+resolves its own credentials from env (Section 26.4), exactly as the background poll loop does.
+
+**Behavior:** on each call, the handler (`src/serve/handlers/notify.rs`) builds a fixed
+`OperatorPayload` — summary `"bastion notify test-send — operator smoke check"`, exactly 2
+`OperatorResponseOption`s (`approve` / `reject`) — validates it through the real
+`engine_core::operator::validate` against `OperatorPayloadLimits::default()` (constraint 3: never
+a hand-rolled struct, so the smoke test actually exercises the contract it's meant to prove), and
+generates a fresh `gate_id` (uuid v4) per call so repeated smoke-test runs never collide in the
+registry. It registers the validated payload in the process-local `PendingPayloads` registry
+(Section 26.7.1) **before** sending, so a response that arrives before `send` even returns can
+still resolve, then sends it via the configured `OperatorTransport` and returns what it sent.
+
+**Response (200 OK):** `NotifyTestResponseDto`
+
+```json
+{ "gate_id": "b3b8c9b0-...", "digest": "a1b2c3..." }
+```
+
+`gate_id` and `digest` are exactly what the payload carries — the same pair a subsequent Telegram
+tap's `callback_data` encodes, so the operator can correlate the delivered message against this
+response by eye.
+
+**Error responses:**
+
+| Condition | Status | Body |
+|---|---|---|
+| No bearer token | 401 | existing `BearerAuthMiddleware` rejection — unchanged, not specific to this route |
+| Transport unconfigured (both `BASTION_TELEGRAM_BOT_TOKEN`/`BASTION_TELEGRAM_CHAT_ID` unset, or only one set) | 503 | `ErrorPayload { code: "C005", message: "operator notification transport not configured — set <var(s)>" }` — names the missing var(s) **by name only**, never a value |
+| `OperatorTransport::send` failure | 502 | `ErrorPayload` with `code` distinguishing retryable (`C009` transport I/O, `C013` rate-limited) from permanent (`C006` payload rejected, `C012` unauthorized, `C008` malformed) failure — see `notify_error_code` in `src/serve/handlers/notify.rs` |
+
+An unconfigured server still boots unchanged: the route is registered unconditionally and resolves
+the transport from env **at call time**, degrading to 503 per-request rather than being
+conditionally mounted at startup.
+
+#### 26.7.1 `PendingPayloads` — the in-memory, process-local registry
+
+`PendingPayloads` (`src/serve/notify/mod.rs`) is a `Mutex`-guarded map from `gate_id` to the
+`ValidatedOperatorPayload` this process sent, with bounded capacity (a named const) and
+oldest-first eviction on overflow — a registry fed by a test route must not grow without limit.
+One instance is constructed in `run_server` and shared (`Arc`) between this route's app data and
+the `NotifyPollLoop`'s `PendingLookup`, replacing the `|_gate_id: &str| None` stub from Section
+26.6. On `Accepted`, the resolved entry is removed, so a replayed tap of the same button resolves
+to `UnknownGate` on its second arrival rather than applying twice.
+
+**This registry is in-memory and process-local — it does not survive a restart, and it is not
+shared across `bastion serve` instances.** It holds only payloads *this* process sent via this
+route (or, once wired, any other future sender that shares the same `PendingPayloads`); it is
+deliberately not a reimplementation of a durable queue. `engine-rs:EN.8.B`'s eventual queue
+replaces `PendingPayloads` as the `PendingLookup` source for payloads the *engine* sent — the
+`PendingLookup` seam type itself does not change when that lands, and the two sources are not
+expected to ever need to merge, since a restart already drops this registry's contents.
+
+Resolution against it follows the same rules as Section 26.5:
+
+- Sent, then tapped with a matching digest → `Accepted`.
+- Sent, then the payload changed, then tapped → `StaleDigest` — rejected, never applied.
+- Never sent (or already resolved once) → `UnknownGate`.
+
 ---
 
 ## Amendment Log
+
+- **2026-08-13 — v0.27 → v0.28 (`ticket-notify-send-trigger`):** New Section 26.7, `POST
+  /api/notify/test` — an authenticated route mounted inside the existing `web::scope("/api")`
+  (never at the app root; the route-table test is extended to assert this) that sends one real
+  `ValidatedOperatorPayload` (fixed 2-option test content, validated through the same
+  `engine_core::operator::validate` contract Section 26.1 describes) over the configured
+  `OperatorTransport` and returns `NotifyTestResponseDto { gate_id, digest }`. This makes three of
+  `BA.18.B`'s previously-unverifiable acceptance criteria — inline render, response resolving back
+  to gate + digest, stale-digest rejection — exercisable without waiting on
+  `engine-rs:EN.8.B`'s queue. Backing it: a new bounded, oldest-first-evicting, process-local
+  `PendingPayloads` registry (`src/serve/notify/mod.rs`) wired into `run_server` as the
+  `PendingLookup` source, replacing the `|_gate_id: &str| None` stub Section 26.6 described; an
+  `Accepted` resolution removes the entry so a replayed tap of the same button resolves to
+  `UnknownGate` on its second arrival. Error responses: 401 (no bearer token, existing
+  middleware), 503 + `C005` naming the missing env var(s) by name only when the transport is
+  unconfigured, 502 with a retryable/permanent-distinguishing `code` on a transport send failure.
+  No token or chat id is read, echoed, or logged by this route — it takes no request body at all.
+  `PendingPayloads` is explicitly in-memory and process-local; it does not survive a restart and
+  is not shared across instances, and `engine-rs:EN.8.B`'s eventual queue replaces it as the
+  `PendingLookup` source without the seam type changing. One new typeshared DTO,
+  `NotifyTestResponseDto`; `types/serve.ts` regenerated (`scripts/gen-types.sh`);
+  `scripts/check-typeshare-drift.sh` and `scripts/check-contract-corpus-drift.sh` pass.
 
 - **2026-08-13 — v0.26 → v0.27 (`BA.18.B`):** New Section 26, "Operator-notification transport" —
   an outbound-only background capability (`src/serve/notify/`), not a REST/WS route. Delivers an
