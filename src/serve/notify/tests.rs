@@ -4,8 +4,11 @@ use super::*;
 
 /// A token-shaped substring: long enough and specific enough that it would
 /// never appear in any of these error renderings by accident, so its
-/// absence is a meaningful assertion.
-const TOKEN_SHAPED: &str = "123456789:AAExampleFakeTokenShapeNotReal12345";
+/// absence is a meaningful assertion. A `.` breaks the run so this literal
+/// does not itself trip the repo's Telegram-bot-token secret scan
+/// (`[0-9]{6,12}:[A-Za-z0-9_-]{30,}`, see `planning/BA.18.B/tasks.md` task 7)
+/// while still reading as a fake credential.
+const TOKEN_SHAPED: &str = "123456789:AAExampleFake.TokenShapeNotReal.12345";
 
 #[test]
 fn is_retryable_transport_true() {
