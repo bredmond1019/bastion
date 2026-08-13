@@ -422,6 +422,7 @@ mod tests {
                 wave: Some(2),
                 priority: Some(1),
                 effective_priority: Some(1),
+                reconcile_failed: None,
                 due: None,
                 epics: vec!["bastion-surfaces".to_owned()],
                 layer: 0,

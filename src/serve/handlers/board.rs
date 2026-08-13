@@ -643,7 +643,7 @@ pub(crate) fn assemble_board(
     let sync_diags = check_sync(root, &config);
     let stale = is_stale_for_scope(&sync_diags, &in_scope_repos);
 
-    let last_touched = derive_last_touched(root, &config, &loaded);
+    let last_touched = flatten_last_touched(derive_last_touched(root, &config, &loaded));
 
     let block_graph = if include_graph {
         build_block_graph_enrichment(root, &config, &graph, &loaded)
@@ -660,6 +660,27 @@ pub(crate) fn assemble_board(
         last_touched,
         block_graph,
     })
+}
+
+/// Reduce mev's `"{repo}:{id}" -> LastTouched` map to the plain
+/// `"{repo}:{id}" -> updated_at` map the board consumes.
+///
+/// mev's `derive_last_touched` returns `LastTouched { updated_at, status }` as of its
+/// `ticket-reconcile-failed-consumer` work. The board only ever renders the timestamp
+/// (`BoardBlockDto.last_touched` is an `Option<String>`), so the `status` half is
+/// dropped **here, at the boundary**, rather than threaded through every
+/// `board_block_from` signature. That keeps the wire contract byte-identical.
+///
+/// Dropping `status` is deliberate and is not a decision about whether the board
+/// should eventually show it: `status` is what mev derives `BlockGraphNode.reconcile_failed`
+/// from, and surfacing it here would be a behaviour change owned by its own block, not
+/// by a build fix.
+pub(crate) fn flatten_last_touched(
+    map: HashMap<String, mev::brain::last_touched::LastTouched>,
+) -> HashMap<String, String> {
+    map.into_iter()
+        .map(|(key, touched)| (key, touched.updated_at))
+        .collect()
 }
 
 /// Build the corpus-wide `"{repo}:{id}" -> BlockEnrichment` map by calling
@@ -1702,6 +1723,49 @@ mod tests {
             sample_source(repo),
             sample_state_file(vec![sample_track_block("BA.1.A", Some("closed"))]),
         )]
+    }
+
+    /// Pins the mev boundary conversion: the board keeps `updated_at` and drops
+    /// `status`. Guards the E0308 that mev's `ticket-reconcile-failed-consumer`
+    /// caused here — if mev reshapes `LastTouched` again, this fails with a clear
+    /// reason instead of only the call site failing to compile.
+    #[test]
+    fn flatten_last_touched_keeps_updated_at_and_drops_status() {
+        use mev::brain::last_touched::LastTouched;
+
+        let mut input = HashMap::new();
+        input.insert(
+            "bastion:BA.1.A".to_owned(),
+            LastTouched {
+                updated_at: "2026-07-28T12:00:00Z".to_owned(),
+                status: Some("reconcile_failed".to_owned()),
+            },
+        );
+        input.insert(
+            "bastion:BA.1.B".to_owned(),
+            LastTouched {
+                updated_at: "2026-07-29T09:30:00Z".to_owned(),
+                status: None,
+            },
+        );
+
+        let flattened = flatten_last_touched(input);
+
+        assert_eq!(flattened.len(), 2);
+        assert_eq!(
+            flattened.get("bastion:BA.1.A").map(String::as_str),
+            Some("2026-07-28T12:00:00Z"),
+            "a non-None status must not change which value survives"
+        );
+        assert_eq!(
+            flattened.get("bastion:BA.1.B").map(String::as_str),
+            Some("2026-07-29T09:30:00Z")
+        );
+    }
+
+    #[test]
+    fn flatten_last_touched_on_an_empty_map_yields_an_empty_map() {
+        assert!(flatten_last_touched(HashMap::new()).is_empty());
     }
 
     #[test]
