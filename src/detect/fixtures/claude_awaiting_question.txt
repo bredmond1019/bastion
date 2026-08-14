@@ -1,0 +1,7 @@
+  Which approach should I take for the retry policy?
+
+  ❯ 1. Exponential backoff with jitter
+    2. Fixed delay between retries
+    3. No retries — fail fast
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
