@@ -493,6 +493,67 @@ pub fn load_telegram_config() -> Result<Option<TelegramConfig>, ConfigError> {
     )
 }
 
+// ── CodeSessionsBotConfig (BA.20.C task 2) ──────────────────────────────────
+
+/// Resolved CodeSessionsBot config: present only when both
+/// `BASTION_CODESESSIONS_BOT_TOKEN` and `BASTION_CODESESSIONS_CHAT_ID` are
+/// set.
+///
+/// **Deliberately distinct from [`TelegramConfig`]** — that pair configures
+/// BastionBot's approve/reject gate transport; this pair configures
+/// CodeSessionsBot, the session-QA bridge's bot (shared with the HQ chore's
+/// `claude_session_notify.sh`). Two bots, two token pairs, never conflated.
+/// CodeSessionsBot does not exist yet as of BA.20.C, so unset is the expected
+/// state today — absence means the bridge is disabled, not an error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeSessionsBotConfig {
+    pub bot_token: BotToken,
+    pub chat_id: String,
+}
+
+/// Resolve the optional CodeSessionsBot config from the two env values.
+///
+/// Mirrors [`telegram_config`]'s both-or-neither rule exactly (same
+/// semantics, same typed error, different env var names): both absent is
+/// `Ok(None)` (bridge disabled, not an error); both present resolves; exactly
+/// one present is `Err(ConfigError::IncompleteTelegramConfig(missing))`
+/// naming the missing var; a present-but-empty-string value counts as
+/// absent.
+///
+/// Pure function — no I/O, no env access. Call from
+/// `load_code_sessions_bot_config` or tests directly.
+pub fn code_sessions_bot_config(
+    bot_token_env: Option<String>,
+    chat_id_env: Option<String>,
+) -> Result<Option<CodeSessionsBotConfig>, ConfigError> {
+    let bot_token = bot_token_env.filter(|s| !s.is_empty());
+    let chat_id = chat_id_env.filter(|s| !s.is_empty());
+
+    match (bot_token, chat_id) {
+        (None, None) => Ok(None),
+        (Some(token), Some(chat_id)) => Ok(Some(CodeSessionsBotConfig {
+            bot_token: BotToken::new(token),
+            chat_id,
+        })),
+        (Some(_), None) => Err(ConfigError::IncompleteTelegramConfig(
+            "BASTION_CODESESSIONS_CHAT_ID",
+        )),
+        (None, Some(_)) => Err(ConfigError::IncompleteTelegramConfig(
+            "BASTION_CODESESSIONS_BOT_TOKEN",
+        )),
+    }
+}
+
+/// Load [`CodeSessionsBotConfig`] from `BASTION_CODESESSIONS_BOT_TOKEN` /
+/// `BASTION_CODESESSIONS_CHAT_ID` + `.env` file. DB-free.
+pub fn load_code_sessions_bot_config() -> Result<Option<CodeSessionsBotConfig>, ConfigError> {
+    dotenvy::dotenv().ok();
+    code_sessions_bot_config(
+        std::env::var("BASTION_CODESESSIONS_BOT_TOKEN").ok(),
+        std::env::var("BASTION_CODESESSIONS_CHAT_ID").ok(),
+    )
+}
+
 /// Walk from `start` upward toward the filesystem root, returning the first
 /// existing `dir.join(target)` encountered, or `None` if never found.
 ///
@@ -1158,6 +1219,76 @@ brain = "/Users/alice/brain"
     fn bot_token_expose_returns_raw_value_for_request_construction() {
         let token = BotToken::new("raw-value");
         assert_eq!(token.expose(), "raw-value");
+    }
+
+    // ─── code_sessions_bot_config (BA.20.C task 2) ─────────────────────────────
+
+    #[test]
+    fn code_sessions_bot_config_both_absent_is_none() {
+        let cfg = code_sessions_bot_config(None, None).expect("absent is not an error");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn code_sessions_bot_config_both_present_resolves() {
+        let cfg =
+            code_sessions_bot_config(Some("cs-bot-token-value".into()), Some("cs-chat-7".into()))
+                .expect("both present should resolve")
+                .expect("expected Some");
+        assert_eq!(cfg.bot_token.expose(), "cs-bot-token-value");
+        assert_eq!(cfg.chat_id, "cs-chat-7");
+    }
+
+    #[test]
+    fn code_sessions_bot_config_token_only_is_typed_error_naming_chat_id() {
+        let err = code_sessions_bot_config(Some("cs-bot-token-value".into()), None).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_CODESESSIONS_CHAT_ID")
+        );
+    }
+
+    #[test]
+    fn code_sessions_bot_config_chat_id_only_is_typed_error_naming_bot_token() {
+        let err = code_sessions_bot_config(None, Some("cs-chat-7".into())).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_CODESESSIONS_BOT_TOKEN")
+        );
+    }
+
+    #[test]
+    fn code_sessions_bot_config_empty_strings_treated_as_absent() {
+        let cfg = code_sessions_bot_config(Some(String::new()), Some(String::new()))
+            .expect("both empty is treated as both absent");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn code_sessions_bot_config_empty_token_with_present_chat_id_is_typed_error() {
+        // Empty-string token is treated as absent, so this is the "token
+        // missing, chat id present" case, not the reverse.
+        let err =
+            code_sessions_bot_config(Some(String::new()), Some("cs-chat-7".into())).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_CODESESSIONS_BOT_TOKEN")
+        );
+    }
+
+    #[test]
+    fn code_sessions_bot_config_debug_never_contains_the_token_value() {
+        let cfg = code_sessions_bot_config(
+            Some("super-secret-cs-token-98765".into()),
+            Some("cs-chat-7".into()),
+        )
+        .expect("both present should resolve")
+        .expect("expected Some");
+        let rendered = format!("{cfg:?}");
+        assert!(
+            !rendered.contains("super-secret-cs-token-98765"),
+            "CodeSessionsBotConfig Debug must never contain the raw token; got: {rendered}"
+        );
     }
 
     // ─── planning_root ────────────────────────────────────────────────────────
