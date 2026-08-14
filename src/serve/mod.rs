@@ -425,16 +425,35 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         }
     };
 
+    // Resolve the blocked-edge poller's sink path *before* constructing the
+    // hub: whether the poller can start at all determines whether the hub
+    // should be wired onto `shared_sessions`. Wiring it unconditionally (the
+    // pre-fix behavior) left the hub holding `Some(shared_sessions)` even
+    // when the poller below never started (no `XDG_STATE_HOME`/`HOME`) — the
+    // Mutex it points at then never gets populated, so the `sessions` WS
+    // topic's "no sweep yet: skip this cycle" branch fires on every tick,
+    // forever, and the topic never pushes a frame. The fallback sweep that
+    // exists for exactly this case (`server.rs`'s `Topic::Sessions` handler)
+    // only runs when `shared_sessions` is `None` on the hub, which requires
+    // not calling `.with_shared_sessions` at all rather than calling it with
+    // an empty holder.
+    let sink_path = blocked_edge::default_sink_path(
+        std::env::var("XDG_STATE_HOME").ok(),
+        std::env::var("HOME").ok(),
+    );
+
     // Start the hub actor once (process-singleton within this actix System).
     // All per-connection WsConn actors hold an Addr<Hub> clone.
-    let hub = Hub::new(
+    let mut hub_builder = Hub::new(
         poll_secs,
         registry.clone(),
         live_store.clone(),
         stream_available,
-    )
-    .with_shared_sessions(shared_sessions.clone())
-    .start();
+    );
+    if sink_path.is_some() {
+        hub_builder = hub_builder.with_shared_sessions(shared_sessions.clone());
+    }
+    let hub = hub_builder.start();
 
     // ── Blocked rising-edge poller (BA.18.A task 3) ─────────────────────────
     //
@@ -490,10 +509,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         }
     };
 
-    match blocked_edge::default_sink_path(
-        std::env::var("XDG_STATE_HOME").ok(),
-        std::env::var("HOME").ok(),
-    ) {
+    match sink_path {
         Some(sink_path) => {
             let sink = blocked_edge::BlockedEdgeSink::new(sink_path);
             // `.with_hub(hub.clone())` (task 4) makes the hub a *consumer* of
