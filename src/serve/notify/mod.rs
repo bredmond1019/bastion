@@ -234,21 +234,23 @@ impl fmt::Debug for UpdateCursor {
 /// raw [`OperatorResponse`] can be resolved against it (gate + digest match,
 /// stale-digest, or unknown-gate — see [`telegram::resolve_response`]).
 ///
-/// The real backing store (a live registry of gates pending an operator
-/// response) is `engine-rs:EN.8.B`'s side, deliberately out of scope for
-/// this spec (`planning/BA.18.B/tasks.md`'s non-negotiable constraint 4).
-/// This seam lets [`NotifyPollLoop`] resolve verdicts today, and lets tests
-/// inject a fixed in-memory map, without depending on that queue existing
-/// yet. Production wiring (`src/serve/mod.rs::run_server`) passes a closure
-/// that always returns `None` until EN.8.B lands, so every observed
-/// response resolves to `UnknownGate` rather than being silently applied.
+/// Production wiring (`src/serve/mod.rs::run_server`) currently backs this
+/// with [`PendingPayloads`], a process-local registry populated only by
+/// `POST /api/notify/test` (`ticket-notify-send-trigger`) — so a gate an
+/// engine run actually queued is never in it and resolves to `UnknownGate`.
+/// The real backing store for those (`engine_core::workflows::approve_and_run::ApproveAndRunSeams::lookup_pending`,
+/// `engine-rs:EN.8.D`) is what `ticket-approve-and-run-seams` points this
+/// seam at; the type itself does not change either way, and this seam still
+/// lets tests inject a fixed in-memory map without depending on either
+/// source.
 pub type PendingLookup = Box<dyn Fn(&str) -> Option<ValidatedOperatorPayload> + Send + Sync>;
 
 /// What the loop does with a resolved verdict. A callback rather than a
-/// fixed action so this task never needs to know how to *act* on a
-/// verdict (queue-write, gate resolution) — that consumption is
-/// `engine-rs:EN.8.B`'s side; this loop's job stops at resolving and
-/// reporting.
+/// fixed action so this loop never needs to know how to *act* on a
+/// verdict (ledger write, execution) — that consumption is
+/// `ApproveAndRunSeams::resolve_verdict`'s side (`engine-rs:EN.8.D`,
+/// wired in by `ticket-approve-and-run-seams`); this loop's job stops at
+/// resolving and reporting.
 pub type VerdictSink = Box<dyn Fn(telegram::ResponseVerdict) + Send + Sync>;
 
 /// Drives [`OperatorTransport::poll_responses`] on a cadence set by the

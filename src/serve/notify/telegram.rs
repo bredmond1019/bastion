@@ -352,6 +352,15 @@ pub fn parse_updates(
 
 /// The outcome of resolving an [`OperatorResponse`] against the payload the
 /// caller expects it to answer.
+///
+/// `Accepted` and `StaleDigest` both carry the digest prefix the operator's
+/// tap actually presented and when it was observed — `engine_core`'s
+/// `ApproveAndRunVerdict` needs both (`presented_digest` / `decided_at`)
+/// alongside `gate_id` and `option_key` to drive
+/// `ApproveAndRunSeams::resolve_verdict`, and neither value has anywhere
+/// else to live: both already exist on the inbound `OperatorResponse`
+/// (`digest`, `received_at`) and would otherwise be dropped here rather
+/// than threaded through a second channel alongside this enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseVerdict {
     /// Both the gate id and the digest prefix match: this response applies.
@@ -360,11 +369,30 @@ pub enum ResponseVerdict {
         gate_id: String,
         /// The stable machine key of the option the operator tapped.
         option_key: String,
+        /// The digest prefix the operator's tap presented (`resp.digest`).
+        digest: String,
+        /// When this response was observed (`resp.received_at`).
+        decided_at: chrono::DateTime<chrono::Utc>,
     },
     /// The gate matches but the digest does not — the payload was mutated
     /// (re-rendered) after this response was shown, so it must re-queue
-    /// rather than execute. Never conflated with `Accepted`.
-    StaleDigest,
+    /// rather than execute. Never conflated with `Accepted`. Carries its
+    /// `gate_id` (previously dropped) so a sink can re-queue the right
+    /// item, plus the same digest/option/time fields `Accepted` carries so
+    /// a full `ApproveAndRunVerdict` can be built regardless of which arm
+    /// resolution landed on — `decide()` on the engine side, not this
+    /// match, is what enforces the mismatch stays a re-queue rather than an
+    /// execution.
+    StaleDigest {
+        /// The gate this response answers.
+        gate_id: String,
+        /// The stable machine key of the option the operator tapped.
+        option_key: String,
+        /// The digest prefix the operator's tap presented (`resp.digest`).
+        digest: String,
+        /// When this response was observed (`resp.received_at`).
+        decided_at: chrono::DateTime<chrono::Utc>,
+    },
     /// The response answers a different gate than `expected` — not this
     /// payload's response at all.
     UnknownGate,
@@ -394,12 +422,19 @@ pub fn resolve_response(
         .collect();
 
     if resp.digest != expected_prefix {
-        return ResponseVerdict::StaleDigest;
+        return ResponseVerdict::StaleDigest {
+            gate_id: resp.gate_id.clone(),
+            option_key: resp.option_key.clone(),
+            digest: resp.digest.clone(),
+            decided_at: resp.received_at,
+        };
     }
 
     ResponseVerdict::Accepted {
         gate_id: resp.gate_id.clone(),
         option_key: resp.option_key.clone(),
+        digest: resp.digest.clone(),
+        decided_at: resp.received_at,
     }
 }
 
@@ -434,7 +469,9 @@ pub fn answercallbackquery_body(ack: &AckHandle, verdict: &ResponseVerdict) -> s
         ResponseVerdict::Accepted { option_key, .. } => {
             format!("Recorded: {option_key}")
         }
-        ResponseVerdict::StaleDigest => "This question changed - no longer valid".to_string(),
+        ResponseVerdict::StaleDigest { .. } => {
+            "This question changed - no longer valid".to_string()
+        }
         ResponseVerdict::UnknownGate => "Already answered or no longer pending".to_string(),
     };
 
@@ -661,7 +698,7 @@ impl OperatorTransport for TelegramTransport {
         if let Some(message) = &response.message {
             let chosen = match verdict {
                 ResponseVerdict::Accepted { option_key, .. } => option_key.clone(),
-                ResponseVerdict::StaleDigest => "expired (question changed)".to_string(),
+                ResponseVerdict::StaleDigest { .. } => "expired (question changed)".to_string(),
                 ResponseVerdict::UnknownGate => "already answered or no longer pending".to_string(),
             };
             let summary = format!("Gate {}", response.gate_id);
@@ -715,7 +752,7 @@ impl OperatorTransport for TelegramTransport {
 fn verdict_label(verdict: &ResponseVerdict) -> &'static str {
     match verdict {
         ResponseVerdict::Accepted { .. } => "accepted",
-        ResponseVerdict::StaleDigest => "stale_digest",
+        ResponseVerdict::StaleDigest { .. } => "stale_digest",
         ResponseVerdict::UnknownGate => "unknown_gate",
     }
 }
@@ -1369,6 +1406,8 @@ mod tests {
             ResponseVerdict::Accepted {
                 gate_id: p.gate_id.clone(),
                 option_key: "approve".to_string(),
+                digest: resp.digest.clone(),
+                decided_at: resp.received_at,
             }
         );
     }
@@ -1382,7 +1421,12 @@ mod tests {
         let verdict = resolve_response(&resp, &payload);
         assert_eq!(
             verdict,
-            ResponseVerdict::StaleDigest,
+            ResponseVerdict::StaleDigest {
+                gate_id: p.gate_id.clone(),
+                option_key: "approve".to_string(),
+                digest: resp.digest.clone(),
+                decided_at: resp.received_at,
+            },
             "a stale digest must be rejected, never accepted"
         );
         assert_ne!(
@@ -1390,6 +1434,8 @@ mod tests {
             ResponseVerdict::Accepted {
                 gate_id: p.gate_id.clone(),
                 option_key: "approve".to_string(),
+                digest: resp.digest.clone(),
+                decided_at: resp.received_at,
             }
         );
     }
@@ -1407,12 +1453,20 @@ mod tests {
 
     // -- answercallbackquery_body / editmessagetext_body (task 2) -----------
 
+    /// A fixed timestamp for verdict literals in tests that don't care what
+    /// `decided_at` actually is, only that the field exists and round-trips.
+    fn test_decided_at() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
+    }
+
     #[test]
     fn answercallbackquery_body_accepted_names_the_chosen_option() {
         let ack = AckHandle("cbq-1".to_string());
         let verdict = ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
+            digest: "abc123".to_string(),
+            decided_at: test_decided_at(),
         };
         let body = answercallbackquery_body(&ack, &verdict);
         assert_eq!(body["callback_query_id"], "cbq-1");
@@ -1422,7 +1476,13 @@ mod tests {
     #[test]
     fn answercallbackquery_body_stale_digest_distinguishes_from_accepted() {
         let ack = AckHandle("cbq-2".to_string());
-        let body = answercallbackquery_body(&ack, &ResponseVerdict::StaleDigest);
+        let verdict = ResponseVerdict::StaleDigest {
+            gate_id: "gate-1".to_string(),
+            option_key: "approve".to_string(),
+            digest: "abc123".to_string(),
+            decided_at: test_decided_at(),
+        };
+        let body = answercallbackquery_body(&ack, &verdict);
         let text = body["text"].as_str().unwrap();
         assert!(!text.is_empty());
         assert!(text.to_lowercase().contains("changed") || text.to_lowercase().contains("valid"));
@@ -1447,9 +1507,19 @@ mod tests {
             &ResponseVerdict::Accepted {
                 gate_id: "gate-1".to_string(),
                 option_key: "approve".to_string(),
+                digest: "abc123".to_string(),
+                decided_at: test_decided_at(),
             },
         );
-        let stale = answercallbackquery_body(&ack, &ResponseVerdict::StaleDigest);
+        let stale = answercallbackquery_body(
+            &ack,
+            &ResponseVerdict::StaleDigest {
+                gate_id: "gate-1".to_string(),
+                option_key: "approve".to_string(),
+                digest: "abc123".to_string(),
+                decided_at: test_decided_at(),
+            },
+        );
         let unknown = answercallbackquery_body(&ack, &ResponseVerdict::UnknownGate);
         assert_ne!(accepted["text"], stale["text"]);
         assert_ne!(accepted["text"], unknown["text"]);
@@ -1464,6 +1534,8 @@ mod tests {
         let verdict = ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: option_key.clone(),
+            digest: "abc123".to_string(),
+            decided_at: test_decided_at(),
         };
         let body = answercallbackquery_body(&ack, &verdict);
         let text = body["text"].as_str().unwrap();
@@ -1479,6 +1551,8 @@ mod tests {
         let verdict = ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key,
+            digest: "abc123".to_string(),
+            decided_at: test_decided_at(),
         };
         let body = answercallbackquery_body(&ack, &verdict);
         let text = body["text"].as_str().unwrap();

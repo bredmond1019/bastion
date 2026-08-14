@@ -384,6 +384,7 @@ fn collecting_sink_with_log(
 async fn tick_dispatches_accepted_verdict_for_a_matching_response() {
     let payload = scripted_payload("gate-1", "diff summary");
     let resp = response_for(&payload, "approve");
+    let (digest, decided_at) = (resp.digest.clone(), resp.received_at);
     let cursor = UpdateCursor("2".to_string());
 
     let transport = ScriptedTransport::new(vec![Ok((vec![resp], Some(cursor.clone())))]);
@@ -402,6 +403,8 @@ async fn tick_dispatches_accepted_verdict_for_a_matching_response() {
         [telegram::ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
+            digest,
+            decided_at,
         }]
     );
 }
@@ -410,6 +413,7 @@ async fn tick_dispatches_accepted_verdict_for_a_matching_response() {
 async fn tick_dispatches_stale_digest_verdict_when_payload_was_mutated() {
     let shown = scripted_payload("gate-1", "original summary");
     let resp = response_for(&shown, "approve");
+    let (digest, decided_at) = (resp.digest.clone(), resp.received_at);
     // The payload the loop looks up now has a different `rendered_summary`
     // (a re-render after the operator was shown `shown`) — same gate, a
     // different digest. The response must be rejected as stale, never
@@ -427,7 +431,12 @@ async fn tick_dispatches_stale_digest_verdict_when_payload_was_mutated() {
     let verdicts = collected.lock().unwrap();
     assert_eq!(
         verdicts.as_slice(),
-        [telegram::ResponseVerdict::StaleDigest]
+        [telegram::ResponseVerdict::StaleDigest {
+            gate_id: "gate-1".to_string(),
+            option_key: "approve".to_string(),
+            digest,
+            decided_at,
+        }]
     );
 }
 
@@ -435,6 +444,7 @@ async fn tick_dispatches_stale_digest_verdict_when_payload_was_mutated() {
 async fn tick_survives_a_retryable_failure_and_resumes_at_the_correct_cursor() {
     let payload = scripted_payload("gate-1", "diff summary");
     let resp = response_for(&payload, "approve");
+    let (digest, decided_at) = (resp.digest.clone(), resp.received_at);
     let cursor = UpdateCursor("9".to_string());
 
     let transport = ScriptedTransport::new(vec![
@@ -466,6 +476,8 @@ async fn tick_survives_a_retryable_failure_and_resumes_at_the_correct_cursor() {
         [telegram::ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
+            digest,
+            decided_at,
         }]
     );
 }
@@ -523,9 +535,12 @@ async fn tick_acknowledges_every_verdict_arm_exactly_once() {
     // being shown), gate-3 resolves UnknownGate (never registered).
     let accepted_payload = scripted_payload("gate-1", "diff summary");
     let accepted_resp = response_for(&accepted_payload, "approve");
+    let (accepted_digest, accepted_decided_at) =
+        (accepted_resp.digest.clone(), accepted_resp.received_at);
 
     let shown = scripted_payload("gate-2", "original summary");
     let stale_resp = response_for(&shown, "approve");
+    let (stale_digest, stale_decided_at) = (stale_resp.digest.clone(), stale_resp.received_at);
     let mutated = scripted_payload("gate-2", "mutated summary");
 
     let unknown_payload = scripted_payload("gate-3", "diff summary");
@@ -552,8 +567,15 @@ async fn tick_acknowledges_every_verdict_arm_exactly_once() {
             telegram::ResponseVerdict::Accepted {
                 gate_id: "gate-1".to_string(),
                 option_key: "approve".to_string(),
+                digest: accepted_digest.clone(),
+                decided_at: accepted_decided_at,
             },
-            telegram::ResponseVerdict::StaleDigest,
+            telegram::ResponseVerdict::StaleDigest {
+                gate_id: "gate-2".to_string(),
+                option_key: "approve".to_string(),
+                digest: stale_digest.clone(),
+                decided_at: stale_decided_at,
+            },
             telegram::ResponseVerdict::UnknownGate,
         ]
     );
@@ -568,9 +590,19 @@ async fn tick_acknowledges_every_verdict_arm_exactly_once() {
                 telegram::ResponseVerdict::Accepted {
                     gate_id: "gate-1".to_string(),
                     option_key: "approve".to_string(),
+                    digest: accepted_digest,
+                    decided_at: accepted_decided_at,
                 }
             ),
-            ("gate-2".to_string(), telegram::ResponseVerdict::StaleDigest),
+            (
+                "gate-2".to_string(),
+                telegram::ResponseVerdict::StaleDigest {
+                    gate_id: "gate-2".to_string(),
+                    option_key: "approve".to_string(),
+                    digest: stale_digest,
+                    decided_at: stale_decided_at,
+                }
+            ),
             ("gate-3".to_string(), telegram::ResponseVerdict::UnknownGate),
         ]
     );
@@ -602,6 +634,7 @@ async fn tick_acknowledges_before_dispatching_to_the_sink() {
 async fn tick_still_dispatches_verdict_exactly_once_when_acknowledge_keeps_failing() {
     let payload = scripted_payload("gate-1", "diff summary");
     let resp = response_for(&payload, "approve");
+    let (digest, decided_at) = (resp.digest.clone(), resp.received_at);
     let cursor = UpdateCursor("5".to_string());
 
     // Both the initial attempt and the single retry fail — acknowledge must
@@ -636,6 +669,8 @@ async fn tick_still_dispatches_verdict_exactly_once_when_acknowledge_keeps_faili
         [telegram::ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
+            digest,
+            decided_at,
         }],
         "the verdict must still be dispatched exactly once"
     );
@@ -831,6 +866,7 @@ async fn e2e_sent_then_tapped_resolves_accepted() {
     registry.insert(payload.clone());
 
     let resp = response_for(&payload, "approve");
+    let (digest, decided_at) = (resp.digest.clone(), resp.received_at);
     let transport = ScriptedTransport::new(vec![Ok((vec![resp], None))]);
     let (sink, collected) = removing_sink(Arc::clone(&registry));
 
@@ -842,6 +878,8 @@ async fn e2e_sent_then_tapped_resolves_accepted() {
         [telegram::ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
+            digest,
+            decided_at,
         }]
     );
 }
@@ -851,6 +889,7 @@ async fn e2e_sent_then_mutated_then_tapped_resolves_stale_digest() {
     let registry = Arc::new(PendingPayloads::new());
     let shown = scripted_payload("gate-1", "original summary");
     let resp = response_for(&shown, "approve");
+    let (digest, decided_at) = (resp.digest.clone(), resp.received_at);
 
     // Re-render after the operator was shown `shown` — same gate, a
     // different digest, replacing the registered entry.
@@ -865,7 +904,12 @@ async fn e2e_sent_then_mutated_then_tapped_resolves_stale_digest() {
 
     assert_eq!(
         collected.lock().unwrap().as_slice(),
-        [telegram::ResponseVerdict::StaleDigest]
+        [telegram::ResponseVerdict::StaleDigest {
+            gate_id: "gate-1".to_string(),
+            option_key: "approve".to_string(),
+            digest,
+            decided_at,
+        }]
     );
     // A stale-digest verdict must not be applied — the entry stays pending
     // (unlike `Accepted`, which removes it) so a corrected re-tap could
@@ -899,6 +943,7 @@ async fn e2e_replayed_tap_of_an_already_accepted_button_resolves_unknown_gate() 
     registry.insert(payload.clone());
 
     let resp = response_for(&payload, "approve");
+    let (digest, decided_at) = (resp.digest.clone(), resp.received_at);
     // Same response observed twice — e.g. a replayed webhook/poll delivery
     // of the same tap.
     let transport =
@@ -916,6 +961,8 @@ async fn e2e_replayed_tap_of_an_already_accepted_button_resolves_unknown_gate() 
             telegram::ResponseVerdict::Accepted {
                 gate_id: "gate-1".to_string(),
                 option_key: "approve".to_string(),
+                digest,
+                decided_at,
             },
             telegram::ResponseVerdict::UnknownGate,
         ]

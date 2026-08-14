@@ -425,10 +425,11 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                                 "operator response resolved"
                             );
                         }
-                        notify::telegram::ResponseVerdict::StaleDigest => {
+                        notify::telegram::ResponseVerdict::StaleDigest { gate_id, .. } => {
                             tracing::info!(
                                 target: "bastion::serve",
                                 verdict = "stale_digest",
+                                gate_id = %gate_id,
                                 "operator response resolved"
                             );
                         }
