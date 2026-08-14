@@ -456,7 +456,13 @@ also delivered to it as a `BlockedEdgeCrossed` actix message; the hub's
 `Handler<BlockedEdgeCrossed>` fans the event out to whichever `sessions`
 subscribers are connected *right now* (a no-op when there are none),
 carrying that session's name — **a client needs no `pane:<name>`
-subscription to receive it**. This is what lets `bastion-ui`, which
+subscription to receive it**. When the poller is also wired with
+`.with_edge_tx(...)` (`tokio::sync::mpsc::Sender<BlockedEdgeRecord>`,
+`BA.20.C` task 3), each crossing already appended to the durable sink is
+additionally fanned out, via non-blocking `try_send`, to that channel — a
+*second* consumer alongside the hub, not a replacement for it; a closed or
+full channel is dropped and logged, never blocking the sink write. This is
+the session-QA bridge's (Section 27) sole source of inbound crossings. This is what lets `bastion-ui`, which
 subscribes only to `sessions` on connect, surface a needs-input alert for a
 background session it has not opened a pane view for. The hub owns no
 previous-state map of its own and never computes the rising edge itself —
@@ -3245,7 +3251,71 @@ than one operator, that is an audit gap requiring a real identity source, not a 
 
 ---
 
+## 27. Session-QA bridge (background bot, no new HTTP surface; `BA.20.C`)
+
+The session-QA bridge lets an agent stuck on a yes/no-shaped question ping the operator over
+Telegram and get an answer injected back into its tmux pane, without the operator opening a
+terminal. It adds **zero** new HTTP routes or DTOs (Section 8.1's route-table test asserts a
+handful of plausible bridge-shaped paths — `/api/session-qa`, `/api/session-qa/webhook`,
+`/api/notify/session-qa`, `/telegram/webhook` — all stay 404) — it is a pair of background tasks
+(`SessionQaBridge::run_inbound` / `run_outbound`) spawned from `run_server` alongside the existing
+poller, entirely separate from Section 26's `OperatorTransport`/approve-reject gate machinery.
+
+**Deliberately a second bot, not a reuse of Section 26's transport.** CodeSessionsBot
+(`BASTION_CODESESSIONS_BOT_TOKEN` / `BASTION_CODESESSIONS_CHAT_ID`, [config.md](config.md)) is
+distinct from BastionBot (`BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID`) — two bots,
+two token pairs, never conflated. `code_sessions_bot_config` (`src/config.rs`) mirrors
+`telegram_config`'s both-or-neither rule exactly (same typed `ConfigError::IncompleteTelegramConfig`
+error, different env var names); both absent is `Ok(None)` and leaves the bridge disabled, which is
+the expected state as of `BA.20.C` (CodeSessionsBot does not exist yet). `run_server` logs only
+whether the bridge is enabled/disabled, never the token or chat id.
+
+**Wiring at boot.** When configured, `run_server` constructs one `SessionQaBridge`, wires its
+`mpsc::Sender<BlockedEdgeRecord>` onto the always-on `BlockedEdgePoller` via `.with_edge_tx(...)`
+(Section 8.1) alongside `.with_hub(...)`, and spawns `run_inbound`/`run_outbound` as two independent
+`actix_web::rt::spawn` tasks. When absent, boot is byte-identical to pre-`BA.20.C` — no channel, no
+tasks.
+
+**Inbound (crossing → Telegram message).** Each `BlockedEdgeRecord` received over the channel is
+turned into a bounded, deduplicated `PendingQuestions` entry (`src/serve/session_qa/mod.rs`) and
+sent as a Telegram `sendMessage` with inline-keyboard buttons — one per option plus a leading
+escape-hatch button (distinguished by a leading emoji glyph, vs. `N. label` for normal options) that
+lets the operator answer free-form instead of picking a listed option. Callback data is encoded via
+`encode_question_callback`/`decode_question_callback` under Telegram's 64-byte `callback_data` cap
+(`QA_CALLBACK_DATA_MAX_BYTES`), reimplemented locally rather than shared with Section 26's
+`encode_callback_data` — deliberately, per the task's own instruction, since the two callback shapes
+(gate digest vs. question id) are not the same contract.
+
+**Outbound (Telegram tap → tmux injection).** `run_outbound` long-polls `getUpdates` (same
+no-webhook rationale as Section 26.3) and, for each `callback_query`, resolves a `QuestionVerdict`
+via `resolve_question_response`, always calls `answerCallbackQuery` first (mirroring Section 26.8's
+acknowledgement ordering), then injects the operator's answer into the originating session's tmux
+pane via `sessions::tmux::send_keys` called **directly** — not through the
+`POST /api/sessions/{name}/send` HTTP handler, which is bound to actix-web extractors and not
+factored for a direct call (recorded as a task-spec Amendment). A second escape-hatch tap while
+already awaiting a free-form reply replaces the pending question (newest tap wins) rather than being
+ignored or erroring. `ChatFollowUpState` is keyed by the update's own Telegram `chat.id` (not a
+single global slot), so the state machine is correct even though only one chat is configured today.
+
+**Testing.** `src/serve/session_qa/tests.rs` covers the full inbound/outbound cycle hermetically
+against a fake `QaTelegramClient` and injected capture/inject closures — no real network or tmux
+calls. `src/serve/mod.rs`'s `run_server_with_no_codesessions_config_spawns_no_bridge` pins the
+disabled-by-default boot decision against a real `run_server` call (bound to an ephemeral port,
+aborted after boot) by asserting on captured tracing output.
+
+---
+
 ## Amendment Log
+
+- **2026-08-14 — Section 27 added (`BA.20.C`, no contract version bump — adds no HTTP route or
+  DTO):** New Section 27, "Session-QA bridge". A second Telegram bot (CodeSessionsBot,
+  `BASTION_CODESESSIONS_BOT_TOKEN`/`BASTION_CODESESSIONS_CHAT_ID`) distinct from Section 26's
+  BastionBot lets an agent post a bounded yes/no-shaped question against a `BlockedEdgeCrossed`
+  crossing and get the operator's tap injected back into the originating tmux pane via
+  `sessions::tmux::send_keys` directly, bypassing the HTTP send route. `BlockedEdgePoller` gained
+  `.with_edge_tx(...)` (Section 8.1) as an additive second consumer of each crossing, alongside
+  `.with_hub(...)`; absent CodeSessionsBot config, boot is unchanged from pre-`BA.20.C`. No DTO,
+  route, or wire-frame shape changed, so the `serve-api` contract version is not bumped.
 
 - **2026-08-13 — v0.29 → v0.30 (`ticket-approve-and-run-seams`):** New Section 26.9,
   "Approve-and-run resolution". Before this, a tap on a real engine-queued approval resolved to
