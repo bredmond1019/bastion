@@ -58,9 +58,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.30 Contract
+# serve-api — v0.31 Contract
 
-**Version:** v0.29  
+**Version:** v0.31  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -370,6 +370,10 @@ no captured output (or a capture failure) still yields `""`. `GET
 it still returns empty `last_line` for every session, unchanged from prior
 versions.
 
+As of v0.31, a blocked session may additionally carry `blocked_reason`
+(`"permission_prompt"` / `"awaiting_question"`) on `GET /api/sessions`; see `SessionDto` in
+Section 10.3 for the absent-when-unknown semantics.
+
 As of v0.26, `agent_state` (`"idle"` / `"working"` / `"blocked"` / `"unknown"`) is populated from
 `Session::agent_state` (`detect/`) on both this push payload and `GET /api/sessions` alike — unlike
 `last_line`, this field was added with full parity across the WS and REST surfaces from the start.
@@ -668,12 +672,25 @@ Returned by `GET /api/sessions` (one element per session in the array).
 }
 ```
 
+A blocked session awaiting an `AskUserQuestion` prompt carries the optional sub-classification:
+
+```json
+{
+  "name": "main",
+  "state": "running",
+  "last_line": "",
+  "agent_state": "blocked",
+  "blocked_reason": "awaiting_question"
+}
+```
+
 | Field | Type | Description |
 |---|---|---|
 | `name` | string | tmux session name |
 | `state` | string | `"running"` when the foreground process is not a shell; `"idle"` otherwise |
 | `last_line` | string | Last non-blank line from the session's pane, or `""` when unavailable |
 | `agent_state` (v0.26) | string | Detected agent state — `"idle"` \| `"working"` \| `"blocked"` \| `"unknown"`, from `Session::agent_state` (`detect/`). Distinct from `state` (tmux pane liveness) and from attachment (the lease, `engine-rs:EN.9.B`) — `classify_state` ignores attachment and continues to. |
+| `blocked_reason` (v0.31) | string, optional | Sub-classification of `agent_state == "blocked"` — `"permission_prompt"` (a tool-use approval dialog) or `"awaiting_question"` (a Claude Code `AskUserQuestion` prompt), from `Session::blocked_reason` (`detect/`). **Absent from the payload entirely — not `null` — when unknown or when the state is not blocked**, so a consumer must treat a missing key as "no sub-classification", never as an error. `agent_state` itself stays four-valued; this field exists precisely so no fifth variant was added. |
 
 #### `PaneDto`
 
@@ -3306,6 +3323,18 @@ aborted after boot) by asserting on captured tracing output.
 ---
 
 ## Amendment Log
+
+- **2026-08-14 — v0.30 → v0.31 (`BA.20.A`, additive; documented retroactively at chain close-out):**
+  `SessionDto` gained the optional `blocked_reason` field (`"permission_prompt"` |
+  `"awaiting_question"`), populated from `Session::blocked_reason` via the `detect` manifest's new
+  `reason` key. Additive and absent-when-`None` (the key is omitted, never `null`), so no existing
+  consumer breaks. `AgentState` was deliberately NOT given a fifth variant — it is matched
+  exhaustively in 14 files plus a hand-enumerated wire test, and this field is the sub-classification
+  that avoids that ripple. **Two corrections folded in:** the field shipped in `BA.20.A` with no doc
+  coverage at all (the plan deferred one docs pass to `BA.20.D`, which is blocked on an external
+  dependency, so leaving a live wire field undocumented indefinitely was the worse trade); and the
+  `**Version:**` line still read `v0.29` while the document heading already read `v0.30` — the
+  2026-08-13 `ticket-approve-and-run-seams` bump updated the heading only. Both now read v0.31.
 
 - **2026-08-14 — Section 27 added (`BA.20.C`, no contract version bump — adds no HTTP route or
   DTO):** New Section 27, "Session-QA bridge". A second Telegram bot (CodeSessionsBot,

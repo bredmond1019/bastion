@@ -12,7 +12,7 @@ related: [bastion-cli-docs-index]
 
 # bastion detect — Agent State Detection Engine
 
-The `detect` module (`crates/bastion/src/detect/`) classifies a captured tmux pane as one of four
+The `detect` module (`src/detect/`) classifies a captured tmux pane as one of four
 agent states by evaluating a priority-ordered rule list loaded from a per-agent TOML
 manifest. The entire evaluation path is pure (no I/O, no process spawns).
 
@@ -42,8 +42,26 @@ Full outcome struct returned by `detect()`.
 | `visible_blocker` | `bool` | Show blocker / needs-input UI indicator |
 | `visible_working` | `bool` | Show working UI indicator |
 | `skip_state_update` | `bool` | When `true`, caller must not write a new state record |
+| `blocked_reason` | `Option<BlockedReason>` | Sub-classifies a `Blocked` state; `None` when the matching rule declares no `reason` |
 
-`AgentDetection::unknown()` is the sentinel returned when no rule matches (all flags `false`).
+`AgentDetection::unknown()` is the sentinel returned when no rule matches (all flags `false`,
+`blocked_reason` `None`).
+
+### `BlockedReason`
+
+Serializable enum (`snake_case`) that narrows `AgentState::Blocked`. Added by `BA.20.A` so
+consumers can tell a question apart from a yes/no approval dialog without a fifth `AgentState`
+variant — `AgentState` deliberately stays four-valued and is matched exhaustively in 14 files.
+
+| Variant | Wire string | Meaning |
+|---|---|---|
+| `PermissionPrompt` | `permission_prompt` | A tool-use approval dialog is on screen |
+| `AwaitingQuestion` | `awaiting_question` | A Claude Code `AskUserQuestion` prompt is on screen |
+
+`BlockedReason::as_str()` returns the wire string. The value is carried through `Session` and
+surfaces on the wire as the optional `SessionDto.blocked_reason` field (absent when `None`).
+`sessions::ask_question::parse_ask_question` turns an `AwaitingQuestion` pane into structured
+options — see [sessions.md](sessions.md).
 
 ## Public API
 
@@ -56,7 +74,7 @@ first matching rule's `AgentDetection`, or `AgentDetection::unknown()` on no mat
 
 ## Manifest schema (TOML)
 
-Each agent has one TOML manifest file under `crates/bastion/src/detect/manifests/`. Bundled manifests:
+Each agent has one TOML manifest file under `src/detect/manifests/`. Bundled manifests:
 `claude.toml`, `pi.toml`.
 
 ### Top-level fields
@@ -78,6 +96,7 @@ Each agent has one TOML manifest file under `crates/bastion/src/detect/manifests
 | `visible_blocker` | bool | false | UI flag |
 | `visible_working` | bool | false | UI flag |
 | `skip_state_update` | bool | false | Suppress state record write |
+| `reason` | `"permission_prompt"` \| `"awaiting_question"` | unset | Sub-classification carried into `AgentDetection.blocked_reason`. Omitting the key yields `None`, so every pre-existing manifest parses unchanged |
 
 ### `RegionSpec`
 
@@ -108,10 +127,19 @@ A matcher leaf or boolean combinator. TOML inline-table syntax:
 ```toml
 name = "claude"
 
+# Must outrank the permission-prompt rule so the two blocked sub-states never collide.
+[[rules]]
+state = "blocked"
+priority = 110
+visible_blocker = true
+reason = "awaiting_question"
+gate = { contains = "Enter to select" }
+
 [[rules]]
 state = "blocked"
 priority = 100
 visible_blocker = true
+reason = "permission_prompt"
 region = { kind = "last_lines", n = 5 }
 gate = { contains = "Do you want to proceed?" }
 
@@ -144,15 +172,23 @@ gate = { line_regex = "^> " }
 
 ## Golden test fixtures
 
-Test fixtures live in `crates/bastion/src/detect/fixtures/` and are loaded via `include_str!` (zero I/O at
+Test fixtures live in `src/detect/fixtures/` and are loaded via `include_str!` (zero I/O at
 test time). Each `.txt` file is a captured pane snapshot. Golden tests in
-`crates/bastion/src/detect/golden_tests.rs` assert expected `AgentState` and flag values for both the
-`claude` and `pi` manifests, including a cross-agent isolation case.
+`src/detect/golden_tests.rs` assert expected `AgentState`, `blocked_reason`, and flag values for
+both the `claude` and `pi` manifests, including a cross-agent isolation case.
 
 | Fixture | Expected state |
 |---|---|
-| `claude_blocked.txt` | `Blocked`, `visible_blocker = true` |
+| `claude_awaiting_question.txt` | `Blocked`, `visible_blocker = true`, `blocked_reason = AwaitingQuestion` |
+| `claude_blocked.txt` | `Blocked`, `visible_blocker = true`, `blocked_reason = PermissionPrompt` |
 | `claude_working.txt` | `Working`, `visible_working = true` |
 | `claude_idle.txt` | `Idle`, `visible_idle = true` |
 | `pi_working.txt` | `Working`, `visible_working = true` |
 | `pi_idle.txt` | `Idle`, `visible_idle = true` |
+
+> **`claude_awaiting_question.txt` is synthesized, not a real capture.** No live session was
+> sitting on an `AskUserQuestion` prompt when `BA.20.A` shipped, so the fixture was built around
+> the operator-confirmed footer line rather than captured from tmux. Tests over it validate against
+> an assumed layout, not Claude Code's real rendering — replace it with a real
+> `tmux capture-pane -p` when the chance arises, and re-run this module's and
+> `sessions::ask_question`'s tests against it.

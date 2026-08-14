@@ -289,6 +289,43 @@ and a clear stderr message — no session is created. An `unknown` directory (no
 
 **Guarantees:** DB-free (D4) — no Postgres connection. Synchronous (D5) — no async/await.
 
+### `sessions::ask_question` — parsing an `AskUserQuestion` pane (`BA.20.B`)
+
+A pure, I/O-free parser turning a captured pane into structured data. It is the bridge between
+[`detect`](detect.md)'s `BlockedReason::AwaitingQuestion` signal and any consumer that needs the
+actual question — today that is the session-QA Telegram bridge
+([serve-api.md](serve-api.md) §27), which builds one button per option from it.
+
+```rust
+pub const ASK_QUESTION_MARKER: &str = "Enter to select";
+pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt>
+```
+
+`AskQuestionPrompt` carries the `question` text plus a `Vec<QuestionOption>`; each option has a
+1-indexed `number`, a `label`, an optional `description` (indented continuation lines joined with
+single spaces), and `is_escape_hatch`.
+
+Three behaviours worth knowing before you call it:
+
+- **`None` is the common, important return.** Any screen not carrying `ASK_QUESTION_MARKER` — a
+  permission dialog, ordinary shell output, an empty string — returns `None`. So does a screen that
+  has the marker but no numbered options. Callers must treat `None` as "not a question", never as
+  an error: injecting a digit into a yes/no approval dialog is a worse failure than sending nothing.
+- **`ASK_QUESTION_MARKER` is the single source of truth for recognition**, and the same substring
+  the `claude.toml` manifest rule gates on. Change one and you must change the other; they are
+  deliberately narrower than the full footer (`Enter to select · ↑/↓ to navigate · Esc to cancel`)
+  because the separators and arrow glyphs vary by terminal width and Claude Code version.
+- **The escape hatch is matched structurally, then softly.** `is_escape_hatch` is only ever set on
+  the *last* option, and only when its label also passes a soft text check — the trailing free-text
+  option is almost always present but is not guaranteed to read "Chat about this" verbatim, so
+  neither position alone nor a hard string match would be correct.
+
+The parser strips box-drawing borders and selection-marker glyphs before classifying, and is tested
+to produce identical results for the same prompt rendered plain, bordered, marked, and hard-wrapped
+at different terminal widths. Note the caveat on fixture provenance in [detect.md](detect.md) —
+the golden fixture is synthesized, so these tests pin the parser's behaviour against an assumed
+layout rather than a verified one.
+
 ## Verifying the surface
 
 A quick manual smoke test that exercises the activity indicator and the trust pre-flight against a
