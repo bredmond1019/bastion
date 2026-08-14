@@ -331,6 +331,30 @@ impl NotifyPollLoop {
                         Some(expected) => telegram::resolve_response(&resp, &expected),
                         None => telegram::ResponseVerdict::UnknownGate,
                     };
+                    // Acknowledge first, before the (caller-supplied, possibly
+                    // blocking) sink dispatch — Telegram expires callback
+                    // queries, so the ack must not wait behind verdict
+                    // consumption. A failed ack is retried at most once; it
+                    // is logged either way but never discards the response
+                    // and never skips the dispatch below, since the verdict
+                    // is already resolved by this point regardless of
+                    // whether the operator's tap could be visibly confirmed.
+                    if let Err(err) = self.transport.acknowledge(&resp, &verdict).await {
+                        tracing::warn!(
+                            target: "bastion::serve",
+                            error = %err,
+                            gate_id = %resp.gate_id,
+                            "operator response acknowledgement failed; retrying once"
+                        );
+                        if let Err(retry_err) = self.transport.acknowledge(&resp, &verdict).await {
+                            tracing::warn!(
+                                target: "bastion::serve",
+                                error = %retry_err,
+                                gate_id = %resp.gate_id,
+                                "operator response acknowledgement retry failed; dispatching verdict anyway"
+                            );
+                        }
+                    }
                     (self.on_verdict)(verdict);
                 }
                 Ok(observed)

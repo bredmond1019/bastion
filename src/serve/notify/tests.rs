@@ -200,6 +200,18 @@ struct ScriptedTransport {
             Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError>,
         >,
     >,
+    /// Scripted outcomes for `acknowledge`, one per call, in order. Empty
+    /// (the default) means every call succeeds — most tests never script
+    /// this and don't care about acknowledgement at all.
+    ack_outcomes: std::sync::Mutex<std::collections::VecDeque<Result<(), NotifyError>>>,
+    /// Every `acknowledge` call this transport observed, in order —
+    /// `(gate_id, verdict)` — so task-4 tests can assert exactly which
+    /// responses were acknowledged and with which verdict.
+    ack_calls: std::sync::Mutex<Vec<(String, telegram::ResponseVerdict)>>,
+    /// Optional shared event log an `acknowledge` call appends `"ack"` to,
+    /// so a test can interleave it with the sink's own `"verdict"` pushes
+    /// and assert ack-before-dispatch ordering.
+    order_log: std::sync::Mutex<Option<Arc<std::sync::Mutex<Vec<String>>>>>,
 }
 
 impl ScriptedTransport {
@@ -208,7 +220,36 @@ impl ScriptedTransport {
     ) -> Self {
         Self {
             poll_outcomes: std::sync::Mutex::new(outcomes.into()),
+            ack_outcomes: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            ack_calls: std::sync::Mutex::new(Vec::new()),
+            order_log: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Script the outcomes `acknowledge` returns, one per call, in order.
+    fn with_ack_outcomes(self, outcomes: Vec<Result<(), NotifyError>>) -> Self {
+        *self
+            .ack_outcomes
+            .lock()
+            .expect("ack_outcomes mutex is never poisoned in these tests") = outcomes.into();
+        self
+    }
+
+    /// Wire a shared order-event log so `acknowledge` calls record `"ack"`
+    /// into it, interleaved with a sink pushing `"verdict"`.
+    fn with_order_log(self, log: Arc<std::sync::Mutex<Vec<String>>>) -> Self {
+        *self
+            .order_log
+            .lock()
+            .expect("order_log mutex is never poisoned in these tests") = Some(log);
+        self
+    }
+
+    fn ack_calls(&self) -> Vec<(String, telegram::ResponseVerdict)> {
+        self.ack_calls
+            .lock()
+            .expect("ack_calls mutex is never poisoned in these tests")
+            .clone()
     }
 }
 
@@ -232,6 +273,32 @@ impl OperatorTransport for ScriptedTransport {
             .expect("poll_outcomes mutex is never poisoned in these tests")
             .pop_front()
             .expect("test provided an outcome for every tick it drives")
+    }
+
+    async fn acknowledge(
+        &self,
+        response: &OperatorResponse,
+        verdict: &telegram::ResponseVerdict,
+    ) -> Result<(), NotifyError> {
+        self.ack_calls
+            .lock()
+            .expect("ack_calls mutex is never poisoned in these tests")
+            .push((response.gate_id.clone(), verdict.clone()));
+        if let Some(log) = self
+            .order_log
+            .lock()
+            .expect("order_log mutex is never poisoned in these tests")
+            .as_ref()
+        {
+            log.lock()
+                .expect("shared order log mutex is never poisoned in these tests")
+                .push("ack".to_string());
+        }
+        self.ack_outcomes
+            .lock()
+            .expect("ack_outcomes mutex is never poisoned in these tests")
+            .pop_front()
+            .unwrap_or(Ok(()))
     }
 }
 
@@ -282,6 +349,29 @@ fn collecting_sink() -> (
     let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_collected = collected.clone();
     let sink: VerdictSink = Box::new(move |verdict| {
+        sink_collected
+            .lock()
+            .expect("collected-verdicts mutex is never poisoned in these tests")
+            .push(verdict);
+    });
+    (sink, collected)
+}
+
+/// Like [`collecting_sink`], but also appends `"verdict"` to a shared order
+/// log — paired with [`ScriptedTransport::with_order_log`] to assert
+/// ack-before-dispatch ordering (task 4).
+fn collecting_sink_with_log(
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+) -> (
+    VerdictSink,
+    Arc<std::sync::Mutex<Vec<telegram::ResponseVerdict>>>,
+) {
+    let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_collected = collected.clone();
+    let sink: VerdictSink = Box::new(move |verdict| {
+        log.lock()
+            .expect("shared order log mutex is never poisoned in these tests")
+            .push("verdict".to_string());
         sink_collected
             .lock()
             .expect("collected-verdicts mutex is never poisoned in these tests")
@@ -421,6 +511,148 @@ async fn tick_dispatches_unknown_gate_verdict_when_pending_lookup_has_nothing() 
     assert_eq!(
         collected.lock().unwrap().as_slice(),
         [telegram::ResponseVerdict::UnknownGate]
+    );
+}
+
+// ── Acknowledge every verdict, ack-before-dispatch (ticket-telegram-answer-
+//    callback task 4) ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn tick_acknowledges_every_verdict_arm_exactly_once() {
+    // gate-1 resolves Accepted, gate-2 resolves StaleDigest (mutated after
+    // being shown), gate-3 resolves UnknownGate (never registered).
+    let accepted_payload = scripted_payload("gate-1", "diff summary");
+    let accepted_resp = response_for(&accepted_payload, "approve");
+
+    let shown = scripted_payload("gate-2", "original summary");
+    let stale_resp = response_for(&shown, "approve");
+    let mutated = scripted_payload("gate-2", "mutated summary");
+
+    let unknown_payload = scripted_payload("gate-3", "diff summary");
+    let unknown_resp = response_for(&unknown_payload, "approve");
+
+    let transport = ScriptedTransport::new(vec![Ok((
+        vec![accepted_resp, stale_resp, unknown_resp],
+        None,
+    ))]);
+    let mut lookup = std::collections::HashMap::new();
+    lookup.insert("gate-1".to_string(), accepted_payload);
+    lookup.insert("gate-2".to_string(), mutated);
+    let (sink, collected) = collecting_sink();
+
+    let transport = Arc::new(transport);
+    let dyn_transport: Arc<dyn OperatorTransport> = Arc::clone(&transport) as _;
+    let mut poll_loop = NotifyPollLoop::new(dyn_transport, pending_lookup_over(lookup), sink);
+    poll_loop.tick().await.expect("tick succeeds");
+
+    let verdicts = collected.lock().unwrap();
+    assert_eq!(
+        verdicts.as_slice(),
+        [
+            telegram::ResponseVerdict::Accepted {
+                gate_id: "gate-1".to_string(),
+                option_key: "approve".to_string(),
+            },
+            telegram::ResponseVerdict::StaleDigest,
+            telegram::ResponseVerdict::UnknownGate,
+        ]
+    );
+
+    let acks = transport.ack_calls();
+    assert_eq!(acks.len(), 3, "exactly one acknowledge call per response");
+    assert_eq!(
+        acks,
+        vec![
+            (
+                "gate-1".to_string(),
+                telegram::ResponseVerdict::Accepted {
+                    gate_id: "gate-1".to_string(),
+                    option_key: "approve".to_string(),
+                }
+            ),
+            ("gate-2".to_string(), telegram::ResponseVerdict::StaleDigest),
+            ("gate-3".to_string(), telegram::ResponseVerdict::UnknownGate),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn tick_acknowledges_before_dispatching_to_the_sink() {
+    let payload = scripted_payload("gate-1", "diff summary");
+    let resp = response_for(&payload, "approve");
+    let order_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let transport =
+        ScriptedTransport::new(vec![Ok((vec![resp], None))]).with_order_log(Arc::clone(&order_log));
+    let mut lookup = std::collections::HashMap::new();
+    lookup.insert("gate-1".to_string(), payload);
+    let (sink, _collected) = collecting_sink_with_log(Arc::clone(&order_log));
+
+    let mut poll_loop = NotifyPollLoop::new(Arc::new(transport), pending_lookup_over(lookup), sink);
+    poll_loop.tick().await.expect("tick succeeds");
+
+    assert_eq!(
+        order_log.lock().unwrap().as_slice(),
+        ["ack".to_string(), "verdict".to_string()],
+        "acknowledge must happen before the verdict reaches the sink"
+    );
+}
+
+#[tokio::test]
+async fn tick_still_dispatches_verdict_exactly_once_when_acknowledge_keeps_failing() {
+    let payload = scripted_payload("gate-1", "diff summary");
+    let resp = response_for(&payload, "approve");
+    let cursor = UpdateCursor("5".to_string());
+
+    // Both the initial attempt and the single retry fail — acknowledge must
+    // give up after that, per the "retried at most once" constraint, and
+    // still dispatch the resolved verdict.
+    let transport = ScriptedTransport::new(vec![
+        Ok((vec![resp], Some(cursor.clone()))),
+        Ok((Vec::new(), None)), // next tick: nothing new to reprocess
+    ])
+    .with_ack_outcomes(vec![
+        Err(NotifyError::Transport {
+            reason: "connect timeout".to_string(),
+        }),
+        Err(NotifyError::Transport {
+            reason: "connect timeout".to_string(),
+        }),
+    ]);
+    let mut lookup = std::collections::HashMap::new();
+    lookup.insert("gate-1".to_string(), payload);
+    let (sink, collected) = collecting_sink();
+
+    let transport = Arc::new(transport);
+    let dyn_transport: Arc<dyn OperatorTransport> = Arc::clone(&transport) as _;
+    let mut poll_loop = NotifyPollLoop::new(dyn_transport, pending_lookup_over(lookup), sink);
+    poll_loop
+        .tick()
+        .await
+        .expect("tick succeeds despite ack failure");
+
+    assert_eq!(
+        collected.lock().unwrap().as_slice(),
+        [telegram::ResponseVerdict::Accepted {
+            gate_id: "gate-1".to_string(),
+            option_key: "approve".to_string(),
+        }],
+        "the verdict must still be dispatched exactly once"
+    );
+    assert_eq!(
+        transport.ack_calls().len(),
+        2,
+        "acknowledge is attempted once, then retried at most once"
+    );
+
+    // Next tick observes no new responses (per the script) — the failed-ack
+    // response is never reprocessed.
+    let observed = poll_loop.tick().await.expect("second tick succeeds");
+    assert_eq!(observed, 0);
+    assert_eq!(
+        collected.lock().unwrap().len(),
+        1,
+        "the response must not be dispatched a second time on the next tick"
     );
 }
 
