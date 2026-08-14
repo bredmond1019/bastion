@@ -37,6 +37,30 @@ impl AgentState {
     }
 }
 
+/// Narrower sub-classification of `AgentState::Blocked`. Deliberately not a
+/// fifth `AgentState` variant — `AgentState` is matched exhaustively in 14+
+/// files plus a hand-enumerated wire test, so a sub-classification is threaded
+/// as an optional companion field instead of widening that enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockedReason {
+    /// A tool-use permission dialog ("Do you want to proceed?") is on screen.
+    PermissionPrompt,
+    /// An `AskUserQuestion` prompt is on screen, waiting on a multiple-choice
+    /// answer rather than a yes/no tool approval.
+    AwaitingQuestion,
+}
+
+impl BlockedReason {
+    /// Human-readable lowercase name for this reason.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BlockedReason::PermissionPrompt => "permission_prompt",
+            BlockedReason::AwaitingQuestion => "awaiting_question",
+        }
+    }
+}
+
 /// Full detection outcome: the classified state plus the visibility and control
 /// flags carried by the matching rule. On no match: `Unknown` with all flags `false`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +74,9 @@ pub struct AgentDetection {
     pub visible_working: bool,
     /// When `true`, the caller should not write a new state record.
     pub skip_state_update: bool,
+    /// Sub-classification of `state == Blocked`. `None` for every other state,
+    /// and `None` for `Blocked` when the matching rule declared no `reason`.
+    pub blocked_reason: Option<BlockedReason>,
 }
 
 impl AgentDetection {
@@ -61,6 +88,7 @@ impl AgentDetection {
             visible_blocker: false,
             visible_working: false,
             skip_state_update: false,
+            blocked_reason: None,
         }
     }
 }
@@ -80,6 +108,7 @@ pub fn detect(screen: &str, manifest: &CompiledManifest) -> AgentDetection {
                 visible_blocker: rule.visible_blocker,
                 visible_working: rule.visible_working,
                 skip_state_update: rule.skip_state_update,
+                blocked_reason: rule.reason,
             };
         }
     }
@@ -113,6 +142,105 @@ mod tests {
     #[test]
     fn as_str_unknown() {
         assert_eq!(AgentState::Unknown.as_str(), "unknown");
+    }
+
+    // ── BlockedReason::as_str round-trip ──────────────────────────────────────
+
+    #[test]
+    fn blocked_reason_as_str_permission_prompt() {
+        assert_eq!(
+            BlockedReason::PermissionPrompt.as_str(),
+            "permission_prompt"
+        );
+    }
+
+    #[test]
+    fn blocked_reason_as_str_awaiting_question() {
+        assert_eq!(
+            BlockedReason::AwaitingQuestion.as_str(),
+            "awaiting_question"
+        );
+    }
+
+    // ── detect() — blocked_reason propagation ─────────────────────────────────
+
+    #[test]
+    fn detect_propagates_reason_when_rule_declares_it() {
+        let src = r#"
+name = "test"
+
+[[rules]]
+state = "blocked"
+reason = "awaiting_question"
+visible_blocker = true
+gate = { contains = "question" }
+"#;
+        let manifest = parse_manifest(src)
+            .expect("parse failed")
+            .compile()
+            .expect("compile failed");
+
+        let detection = detect("a question is waiting", &manifest);
+        assert_eq!(detection.state, AgentState::Blocked);
+        assert_eq!(
+            detection.blocked_reason,
+            Some(BlockedReason::AwaitingQuestion)
+        );
+    }
+
+    #[test]
+    fn detect_reason_absent_when_rule_omits_it() {
+        let src = r#"
+name = "test"
+
+[[rules]]
+state = "blocked"
+visible_blocker = true
+gate = { contains = "proceed" }
+"#;
+        let manifest = parse_manifest(src)
+            .expect("parse failed")
+            .compile()
+            .expect("compile failed");
+
+        let detection = detect("do you want to proceed", &manifest);
+        assert_eq!(detection.state, AgentState::Blocked);
+        assert_eq!(detection.blocked_reason, None);
+    }
+
+    #[test]
+    fn unknown_has_no_blocked_reason() {
+        assert_eq!(AgentDetection::unknown().blocked_reason, None);
+    }
+
+    #[test]
+    fn detect_higher_priority_reason_wins_over_lower_priority_match() {
+        // Both rules match; the higher-priority (110) reason-bearing rule must win
+        // over the lower-priority (100) rule that also matches and carries no reason.
+        let src = r#"
+name = "test"
+
+[[rules]]
+state = "blocked"
+priority = 100
+gate = { contains = "proceed" }
+
+[[rules]]
+state = "blocked"
+priority = 110
+reason = "awaiting_question"
+gate = { contains = "select" }
+"#;
+        let manifest = parse_manifest(src)
+            .expect("parse failed")
+            .compile()
+            .expect("compile failed");
+
+        let detection = detect("proceed to select an option", &manifest);
+        assert_eq!(
+            detection.blocked_reason,
+            Some(BlockedReason::AwaitingQuestion)
+        );
     }
 
     // ── detect() — priority ordering ──────────────────────────────────────────
