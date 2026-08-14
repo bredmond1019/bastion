@@ -65,6 +65,58 @@ fn build_engine_dispatcher() -> Dispatcher {
     register_builtin_workflows(&mut dispatcher);
     dispatcher
 }
+
+/// Default path for the `ApproveAndRunSeams` approval ledger
+/// (`ticket-approve-and-run-seams` task 2), mirroring
+/// `blocked_edge::default_sink_path`'s exact XDG-first/`HOME`-fallback
+/// precedence and directory convention (`src/serve/blocked_edge/sink.rs`) —
+/// same env vars, same `~/.local/state/bastion/` (or `$XDG_STATE_HOME/
+/// bastion/`) directory, just a different filename. Pulled out of `run()`
+/// so the resolution is unit-testable without standing up actix.
+///
+/// Unlike its sibling, this never returns `None`: `FileApprovalLedger`
+/// construction never touches the filesystem (the file and its parent
+/// directory are created lazily on the first write, per its own doc
+/// comment), so there is no boot-time decision to skip constructing the
+/// ledger the way the blocked-edge poller skips spawning without a sink
+/// path — a relative fallback filename in the process's current directory
+/// is a safe, always-constructible default for the case neither var is set.
+/// Resolve `gate_id` against the composed `PendingLookup` source
+/// (`ticket-approve-and-run-seams` task 2): the real engine queue
+/// (`seams.lookup_pending`) tried first, falling back to the process-local
+/// `/api/notify/test` registry (`test_registry.get`). Pulled out of the
+/// closure `run()` builds so the composition itself — precedence, and that
+/// neither source is ever skipped — is unit-testable without standing up
+/// actix or a Telegram config.
+#[must_use]
+fn resolve_pending_lookup(
+    seams: &engine_core::workflows::approve_and_run::ApproveAndRunSeams,
+    test_registry: &notify::PendingPayloads,
+    gate_id: &str,
+) -> Option<engine_core::operator::ValidatedOperatorPayload> {
+    seams
+        .lookup_pending(gate_id)
+        .or_else(|| test_registry.get(gate_id))
+}
+
+fn approval_ledger_default_path(
+    xdg_state_home: Option<String>,
+    home: Option<String>,
+) -> std::path::PathBuf {
+    const FILENAME: &str = "approval-ledger.jsonl";
+    if let Some(xdg) = xdg_state_home {
+        std::path::PathBuf::from(xdg).join("bastion").join(FILENAME)
+    } else if let Some(home) = home {
+        std::path::PathBuf::from(home)
+            .join(".local")
+            .join("state")
+            .join("bastion")
+            .join(FILENAME)
+    } else {
+        std::path::PathBuf::from(FILENAME)
+    }
+}
+
 use std::sync::Arc;
 use ws::server::Hub;
 
@@ -380,6 +432,55 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // a response can be resolved against a payload this same process sent.
     let pending_payloads = std::sync::Arc::new(notify::PendingPayloads::new());
 
+    // ── ApproveAndRunSeams (ticket-approve-and-run-seams task 2) ────────────
+    //
+    // `engine_core::workflows::approve_and_run::ApproveAndRunSeams` is
+    // `engine-rs:EN.8.D`'s pair of seams this process is meant to drive:
+    // `lookup_pending` (this process's `PendingLookup` source for a real
+    // engine-queued `APPROVE_AND_RUN` gate) and `resolve_verdict` (records
+    // the ledger row and, on a matched-digest `Approved` verdict, executes).
+    // Nothing in `engine-rs` constructs one in production yet — the only
+    // existing construction sites are its own crate's tests — so this is the
+    // first production instance. It owns its own queue/records state (a
+    // fresh, empty `OperatorQueue` at boot); nothing yet drains an engine
+    // run's pending-harvest records into it (that plumbing is a separate,
+    // not-yet-written block), so `lookup_pending` legitimately resolves
+    // `None` for every gate_id until a drain call exists somewhere in this
+    // process. The live `FileApprovalLedger` and the live `HttpPost`
+    // (`engine_core::nodes::http_post::http_post_live`) are wired here — no
+    // new/invented transport, per the ticket's Notes.
+    //
+    // Cross-process caveat (ticket Notes): the Mini runs two `bastion`
+    // processes — console on `:8080` and engine on `:8090`, and only the
+    // engine process's plist sets `DATABASE_URL` / `BASTION_ENGINE_API_KEY`
+    // / the Telegram token. `run_server` is the single entry point for both,
+    // so the `Arc` shared below between these seams and the poll loop is
+    // always in-process by construction: whichever process this `run()` call
+    // is executing in, the seams instance and the poll loop that resolves
+    // taps against it live in that same process. There is nothing further
+    // to confirm here — the two only diverge if a future change moves the
+    // poll loop or the seams construction into a different binary/process
+    // than this function.
+    let approval_ledger_path = approval_ledger_default_path(
+        std::env::var("XDG_STATE_HOME").ok(),
+        std::env::var("HOME").ok(),
+    );
+    let approve_and_run_seams = std::sync::Arc::new(
+        engine_core::workflows::approve_and_run::ApproveAndRunSeams::new(
+            std::sync::Arc::new(std::sync::Mutex::new(
+                engine_core::operator::queue::OperatorQueue::new(
+                    engine_core::operator::queue::OperatorQueuePolicy::default(),
+                ),
+            )),
+            std::sync::Arc::new(engine_core::operator::ledger::FileApprovalLedger::new(
+                approval_ledger_path,
+            )),
+            engine_core::nodes::http_post::http_post_live(),
+            engine_core::operator::OperatorPayloadLimits::default(),
+            engine_core::workflows::approve_and_run::ApproveAndRunPolicy::default(),
+        ),
+    );
+
     // ── Operator-notification transport (BA.18.B task 5) ────────────────────
     //
     // Constructed only when both `BASTION_TELEGRAM_BOT_TOKEN` and
@@ -390,15 +491,23 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // `getUpdates` long-polling only, spawned as a background task — see
     // `NotifyPollLoop::run` — never a listening socket).
     //
-    // The pending-gate lookup resolves against `pending_payloads` above —
-    // payloads this process has sent via `POST /api/notify/test`
-    // (`ticket-notify-send-trigger` tasks 1-3). `engine-rs:EN.8.B`'s queue
-    // remains the eventual source for payloads it sent that this process
-    // did not (out of scope here, non-negotiable constraint 4); when it
-    // lands it replaces this registry as the `PendingLookup` source without
-    // any change to `NotifyPollLoop` itself. On `Accepted` the entry is
-    // removed from the registry so a replayed tap of the same button
-    // resolves to `UnknownGate`, not a second `Accepted`.
+    // The pending-gate lookup composes two sources (`ticket-approve-and-run-
+    // seams` task 2): `approve_and_run_seams.lookup_pending` — the real
+    // source for a gate an engine run queued via `ApproveAndRunSeams::drain`
+    // — tried first, falling back to `pending_payloads` — payloads this
+    // process has sent via `POST /api/notify/test`
+    // (`ticket-notify-send-trigger` tasks 1-3). Composed rather than
+    // replaced: the test route and its registry are how the
+    // `operator-telegram-live-smoke` session is run, and silently breaking
+    // that route is a failed task, so both must keep resolving. The two id
+    // spaces cannot collide by construction — `gate_id_for` (engine side)
+    // and the test route's per-request uuid (`build_test_payload`) draw
+    // from disjoint generators — so trying the engine source first can never
+    // shadow a real test-route gate. On `Accepted` the `pending_payloads`
+    // entry is removed so a replayed tap of the same test-route button
+    // resolves to `UnknownGate`, not a second `Accepted`; the engine-side
+    // queue's own equivalent eviction is `ApproveAndRunSeams::resolve_verdict`'s
+    // job (task 3), not this lookup's.
     match crate::config::load_telegram_config() {
         Ok(Some(telegram_config)) => {
             tracing::info!(
@@ -408,9 +517,14 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             let transport: std::sync::Arc<dyn notify::OperatorTransport> =
                 std::sync::Arc::new(notify::telegram::TelegramTransport::new(telegram_config));
             let verdict_registry = std::sync::Arc::clone(&pending_payloads);
+            let lookup_seams = std::sync::Arc::clone(&approve_and_run_seams);
+            let lookup_test_registry = std::sync::Arc::clone(&pending_payloads);
+            let pending_lookup: notify::PendingLookup = Box::new(move |gate_id: &str| {
+                resolve_pending_lookup(&lookup_seams, &lookup_test_registry, gate_id)
+            });
             let poll_loop = notify::NotifyPollLoop::new(
                 transport,
-                pending_payloads.lookup(),
+                pending_lookup,
                 Box::new(move |verdict| {
                     // Log the verdict arm and gate_id only — never the
                     // payload body, since a rendered summary may quote
@@ -4519,5 +4633,136 @@ heading = "bastion"
             .to_request();
         let resp = test::call_service(&app, with_token).await;
         assert_ne!(resp.status(), 401);
+    }
+}
+
+// ── approve_and_run_seams_wiring tests (ticket-approve-and-run-seams task 2) ─
+//
+// Kept in a dedicated module (mirroring `engine_mount_tests` above) rather
+// than inside `mod tests`, for the exact reason documented on that module:
+// `mod tests` does `use actix_web::{App, test};`, which shadows the built-in
+// `#[test]` attribute with actix's async-only test macro — a plain sync
+// `#[test] fn` there fails to compile.
+#[cfg(test)]
+mod approve_and_run_seams_wiring_tests {
+    use super::*;
+    use engine_core::nodes::harvest_gate::pending_harvest_record;
+    use engine_core::nodes::http_post::StubHttpPost;
+    use engine_core::operator::ledger::FileApprovalLedger;
+    use engine_core::operator::queue::{OperatorQueue, OperatorQueuePolicy};
+    use engine_core::operator::{
+        OperatorPayload, OperatorPayloadLimits, OperatorResponseOption, validate,
+    };
+    use engine_core::workflows::approve_and_run::{
+        ApproveAndRunPolicy, ApproveAndRunSeams, PendingHarvestRecord,
+    };
+    use std::sync::{Arc, Mutex};
+
+    // ── approval_ledger_default_path ─────────────────────────────────────
+
+    #[test]
+    fn approval_ledger_default_path_prefers_xdg_state_home() {
+        let path = approval_ledger_default_path(
+            Some("/xdg/state".to_string()),
+            Some("/home/u".to_string()),
+        );
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/xdg/state/bastion/approval-ledger.jsonl")
+        );
+    }
+
+    #[test]
+    fn approval_ledger_default_path_falls_back_to_home() {
+        let path = approval_ledger_default_path(None, Some("/home/u".to_string()));
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/home/u/.local/state/bastion/approval-ledger.jsonl")
+        );
+    }
+
+    #[test]
+    fn approval_ledger_default_path_falls_back_to_relative_filename_when_neither_var_set() {
+        let path = approval_ledger_default_path(None, None);
+        assert_eq!(path, std::path::PathBuf::from("approval-ledger.jsonl"));
+    }
+
+    // ── resolve_pending_lookup ────────────────────────────────────────────
+    //
+    // Exercises the composed `PendingLookup` source in isolation, with no
+    // actix and no Telegram config — mirrors `engine_core`'s own
+    // `ApproveAndRunSeams` seams_tests fixtures.
+
+    /// A fresh `ApproveAndRunSeams` over an empty queue and a
+    /// `FileApprovalLedger` pointed at a throwaway tempdir path — the
+    /// ledger is never exercised by `lookup_pending`, but a real
+    /// `FileApprovalLedger` is used anyway (rather than an
+    /// engine-core-internal `#[cfg(test)]`-only stub, which is not visible
+    /// to bastion as a normal downstream dependency) to mirror exactly what
+    /// `run()` constructs.
+    fn seams() -> ApproveAndRunSeams {
+        let dir = tempfile::tempdir().expect("tempdir");
+        ApproveAndRunSeams::new(
+            Arc::new(Mutex::new(OperatorQueue::new(
+                OperatorQueuePolicy::default(),
+            ))),
+            Arc::new(FileApprovalLedger::new(dir.path().join("ledger.jsonl"))),
+            Arc::new(StubHttpPost::succeeding(serde_json::json!({"ok": true}))),
+            OperatorPayloadLimits::default(),
+            ApproveAndRunPolicy::default(),
+        )
+    }
+
+    fn harvest_record(artifact_id: &str) -> PendingHarvestRecord {
+        let value = pending_harvest_record(
+            artifact_id,
+            "https://synapse.example/ingest/learning-artifact",
+            serde_json::json!({"title": "some artifact"}),
+            vec!["docs/foo.md".to_string()],
+        );
+        PendingHarvestRecord::from_value(&value).expect("record parses")
+    }
+
+    #[test]
+    fn resolves_a_gate_the_engine_seams_drained() {
+        let seams = seams();
+        let test_registry = notify::PendingPayloads::new();
+
+        let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
+        let delivered = report.delivered.expect("one item delivered");
+
+        let found = resolve_pending_lookup(&seams, &test_registry, &delivered.item_id)
+            .expect("gate drained into the engine seams should resolve");
+        assert_eq!(found.payload().gate_id, delivered.item_id);
+    }
+
+    #[test]
+    fn a_gate_never_drained_resolves_to_none() {
+        let seams = seams();
+        let test_registry = notify::PendingPayloads::new();
+
+        assert!(resolve_pending_lookup(&seams, &test_registry, "never-drained").is_none());
+    }
+
+    #[test]
+    fn a_payload_sent_via_notify_test_still_resolves() {
+        let seams = seams();
+        let test_registry = notify::PendingPayloads::new();
+
+        let payload = OperatorPayload::new(
+            "test-gate-1",
+            "a test summary",
+            vec![
+                OperatorResponseOption::new("approve", "Approve"),
+                OperatorResponseOption::new("reject", "Reject"),
+            ],
+        );
+        let validated = validate(payload, &OperatorPayloadLimits::default())
+            .expect("fixed 2-option test payload always validates");
+        test_registry.insert(validated);
+
+        let found = resolve_pending_lookup(&seams, &test_registry, "test-gate-1")
+            .expect("a payload sent via /api/notify/test should still resolve");
+        assert_eq!(found.payload().gate_id, "test-gate-1");
     }
 }
