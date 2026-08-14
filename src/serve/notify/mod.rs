@@ -39,6 +39,21 @@ mod tests;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AckHandle(pub String);
 
+/// An opaque handle identifying which message an inbound response's
+/// original prompt was delivered as, so a later edit (dropping its buttons
+/// and showing the chosen option) can target the right message. The
+/// encoding is entirely transport-specific (Telegram: `chat_id` +
+/// `message_id`); callers must not parse it, only round-trip it. A
+/// transport with no such concept, or a response the transport could not
+/// resolve a message for, carries `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageHandle {
+    /// Transport-specific chat identifier the original message lives in.
+    pub chat_id: String,
+    /// Transport-specific identifier of the original message itself.
+    pub message_id: i64,
+}
+
 /// A response the operator gave, resolved back to the gate and digest it
 /// answers. `option_key` is the stable machine key of the tapped option
 /// (`OperatorResponseOption::key`), never the operator-visible label.
@@ -60,6 +75,11 @@ pub struct OperatorResponse {
     /// captured — losing a real decision because it cannot be acknowledged
     /// is strictly worse than not acknowledging it.
     pub ack: Option<AckHandle>,
+    /// Opaque handle to the message the operator responded to, if the
+    /// transport can resolve one — used to edit that message and drop its
+    /// live buttons once a decision is taken. `None` for a transport with
+    /// no such concept, or when the location could not be captured.
+    pub message: Option<MessageHandle>,
 }
 
 /// Confirmation that [`OperatorTransport::send`] delivered a payload.

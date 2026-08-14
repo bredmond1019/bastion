@@ -257,6 +257,11 @@ pub fn getupdates_query(cursor: Option<UpdateCursor>, timeout_secs: u64) -> Vec<
 ///   `callback_query` with no `id` still yields a response with `ack: None`
 ///   — it is not skipped, since losing a real decision because it cannot
 ///   be acknowledged is strictly worse than not acknowledging it.
+/// - The `callback_query`'s `message.message_id` and `message.chat.id`,
+///   when both present and well-typed, are captured into the returned
+///   response's `message` field as an opaque
+///   [`MessageHandle`](crate::serve::notify::MessageHandle) — the same
+///   "carry it, never drop the response for lacking it" treatment as `ack`.
 /// - The returned cursor is `max(update_id) + 1` across every update that
 ///   *did* carry a parseable `update_id`, whether or not it produced an
 ///   `OperatorResponse` — an update with no callback tap still consumed an
@@ -312,12 +317,32 @@ pub fn parse_updates(
             .and_then(serde_json::Value::as_str)
             .map(|id| AckHandle(id.to_string()));
 
+        // The message location (chat_id + message_id) is captured the same
+        // opaque way as the ack handle: present when both halves are
+        // present and well-typed, `None` otherwise. A response with no
+        // resolvable message location simply cannot have its original
+        // message edited later — it is still returned rather than dropped.
+        let message = callback_query.get("message").and_then(|message| {
+            let message_id = message
+                .get("message_id")
+                .and_then(serde_json::Value::as_i64)?;
+            let chat_id = message
+                .get("chat")
+                .and_then(|chat| chat.get("id"))
+                .and_then(serde_json::Value::as_i64)?;
+            Some(crate::serve::notify::MessageHandle {
+                chat_id: chat_id.to_string(),
+                message_id,
+            })
+        });
+
         responses.push(OperatorResponse {
             gate_id: decoded.gate_id,
             digest: decoded.digest_prefix,
             option_key: decoded.option_key,
             received_at: chrono::Utc::now(),
             ack,
+            message,
         });
     }
 
@@ -376,6 +401,73 @@ pub fn resolve_response(
         gate_id: resp.gate_id.clone(),
         option_key: resp.option_key.clone(),
     }
+}
+
+/// Telegram's confirmed ceiling on an `answerCallbackQuery` `text` field, in
+/// characters (not bytes) — see the Bot API docs' 200-character limit on
+/// this parameter.
+pub const ANSWER_CALLBACK_TEXT_MAX_CHARS: usize = 200;
+
+/// Truncate `text` to at most `max_chars` **characters**, never bytes — a
+/// byte-length clamp could split a multi-byte character and produce
+/// invalid UTF-8 or a mangled glyph. Pure.
+fn clamp_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.to_string()
+    } else {
+        text.chars().take(max_chars).collect()
+    }
+}
+
+/// Render an `answerCallbackQuery` request body acknowledging `verdict` for
+/// the callback identified by `ack`. Every verdict arm gets distinct,
+/// non-empty text so the operator can tell a registered decision from a
+/// stale or already-answered tap — silence is the defect this exists to
+/// fix (`ticket-telegram-answer-callback`). Pure — no I/O.
+///
+/// Text is clamped to [`ANSWER_CALLBACK_TEXT_MAX_CHARS`] characters
+/// (counted by `.chars().count()`, never bytes) to respect Telegram's
+/// confirmed ceiling on this field.
+#[must_use]
+pub fn answercallbackquery_body(ack: &AckHandle, verdict: &ResponseVerdict) -> serde_json::Value {
+    let text = match verdict {
+        ResponseVerdict::Accepted { option_key, .. } => {
+            format!("Recorded: {option_key}")
+        }
+        ResponseVerdict::StaleDigest => "This question changed - no longer valid".to_string(),
+        ResponseVerdict::UnknownGate => "Already answered or no longer pending".to_string(),
+    };
+
+    serde_json::json!({
+        "callback_query_id": ack.0,
+        "text": clamp_chars(&text, ANSWER_CALLBACK_TEXT_MAX_CHARS),
+    })
+}
+
+/// Render an `editMessageText` request body that replaces the original
+/// prompt's text with `summary` plus which option (`chosen`) was taken, and
+/// **clears** `reply_markup` (an empty `inline_keyboard`, not an absent
+/// field) so the live buttons are gone from the operator's view. Pure — no
+/// I/O.
+///
+/// An absent `reply_markup` leaves Telegram's prior keyboard in place —
+/// that is exactly the bug (`ticket-telegram-answer-callback`) this
+/// function exists to prevent, so callers must never omit this field.
+#[must_use]
+pub fn editmessagetext_body(
+    chat_id: &str,
+    message_id: i64,
+    summary: &str,
+    chosen: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": format!("{summary}\n\nDecision: {chosen}"),
+        "reply_markup": {
+            "inline_keyboard": [],
+        },
+    })
 }
 
 // ── Thin HTTP shell (BA.18.B task 4) ────────────────────────────────────────
@@ -978,6 +1070,77 @@ mod tests {
     }
 
     #[test]
+    fn parse_updates_captures_message_location_into_message_handle() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "result": [{
+                "update_id": 100,
+                "callback_query": {
+                    "id": "cbq-1",
+                    "from": {"id": 555},
+                    "data": encode_callback_data(&CallbackData::new("gate-1", "abcdef012345", "approve")),
+                    "message": {
+                        "message_id": 999,
+                        "chat": {"id": 42},
+                    },
+                }
+            }]
+        });
+        let (responses, _cursor) = parse_updates(&raw).expect("valid envelope");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(
+            responses[0].message,
+            Some(crate::serve::notify::MessageHandle {
+                chat_id: "42".to_string(),
+                message_id: 999,
+            }),
+            "message.message_id and message.chat.id must round-trip into OperatorResponse.message"
+        );
+    }
+
+    #[test]
+    fn parse_updates_missing_message_yields_message_handle_none_not_a_dropped_response() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "result": [{
+                "update_id": 100,
+                "callback_query": {
+                    "id": "cbq-1",
+                    "from": {"id": 555},
+                    "data": encode_callback_data(&CallbackData::new("gate-1", "abcdef012345", "approve")),
+                }
+            }]
+        });
+        let (responses, _cursor) = parse_updates(&raw).expect("valid envelope");
+        assert_eq!(
+            responses.len(),
+            1,
+            "a callback_query with no message must still be parsed into a response, not skipped"
+        );
+        assert_eq!(responses[0].message, None);
+    }
+
+    #[test]
+    fn parse_updates_message_missing_message_id_yields_message_handle_none() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "result": [{
+                "update_id": 100,
+                "callback_query": {
+                    "id": "cbq-1",
+                    "data": encode_callback_data(&CallbackData::new("gate-1", "abcdef012345", "approve")),
+                    "message": {
+                        "chat": {"id": 42},
+                    },
+                }
+            }]
+        });
+        let (responses, _cursor) = parse_updates(&raw).expect("valid envelope");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].message, None);
+    }
+
+    #[test]
     fn parse_updates_multiple_updates_cursor_is_max_plus_one() {
         let raw = serde_json::json!({
             "ok": true,
@@ -1090,6 +1253,7 @@ mod tests {
             option_key: option_key.to_string(),
             received_at: chrono::Utc::now(),
             ack: None,
+            message: None,
         }
     }
 
@@ -1140,6 +1304,118 @@ mod tests {
 
         let verdict = resolve_response(&resp, &payload);
         assert_eq!(verdict, ResponseVerdict::UnknownGate);
+    }
+
+    // -- answercallbackquery_body / editmessagetext_body (task 2) -----------
+
+    #[test]
+    fn answercallbackquery_body_accepted_names_the_chosen_option() {
+        let ack = AckHandle("cbq-1".to_string());
+        let verdict = ResponseVerdict::Accepted {
+            gate_id: "gate-1".to_string(),
+            option_key: "approve".to_string(),
+        };
+        let body = answercallbackquery_body(&ack, &verdict);
+        assert_eq!(body["callback_query_id"], "cbq-1");
+        assert_eq!(body["text"], "Recorded: approve");
+    }
+
+    #[test]
+    fn answercallbackquery_body_stale_digest_distinguishes_from_accepted() {
+        let ack = AckHandle("cbq-2".to_string());
+        let body = answercallbackquery_body(&ack, &ResponseVerdict::StaleDigest);
+        let text = body["text"].as_str().unwrap();
+        assert!(!text.is_empty());
+        assert!(text.to_lowercase().contains("changed") || text.to_lowercase().contains("valid"));
+    }
+
+    #[test]
+    fn answercallbackquery_body_unknown_gate_distinguishes_from_accepted() {
+        let ack = AckHandle("cbq-3".to_string());
+        let body = answercallbackquery_body(&ack, &ResponseVerdict::UnknownGate);
+        let text = body["text"].as_str().unwrap();
+        assert!(!text.is_empty());
+        assert!(
+            text.to_lowercase().contains("answered") || text.to_lowercase().contains("pending")
+        );
+    }
+
+    #[test]
+    fn answercallbackquery_body_three_verdict_arms_produce_distinct_text() {
+        let ack = AckHandle("cbq-4".to_string());
+        let accepted = answercallbackquery_body(
+            &ack,
+            &ResponseVerdict::Accepted {
+                gate_id: "gate-1".to_string(),
+                option_key: "approve".to_string(),
+            },
+        );
+        let stale = answercallbackquery_body(&ack, &ResponseVerdict::StaleDigest);
+        let unknown = answercallbackquery_body(&ack, &ResponseVerdict::UnknownGate);
+        assert_ne!(accepted["text"], stale["text"]);
+        assert_ne!(accepted["text"], unknown["text"]);
+        assert_ne!(stale["text"], unknown["text"]);
+    }
+
+    #[test]
+    fn answercallbackquery_body_text_at_200_chars_is_not_clamped() {
+        let ack = AckHandle("cbq-5".to_string());
+        // "Recorded: " is 10 chars; pad option_key so total text is exactly 200.
+        let option_key = "x".repeat(190);
+        let verdict = ResponseVerdict::Accepted {
+            gate_id: "gate-1".to_string(),
+            option_key: option_key.clone(),
+        };
+        let body = answercallbackquery_body(&ack, &verdict);
+        let text = body["text"].as_str().unwrap();
+        assert_eq!(text.chars().count(), 200);
+        assert_eq!(text, format!("Recorded: {option_key}"));
+    }
+
+    #[test]
+    fn answercallbackquery_body_text_at_201_chars_is_clamped_to_200() {
+        let ack = AckHandle("cbq-6".to_string());
+        // 191 chars of option_key => 201 chars total before clamping.
+        let option_key = "x".repeat(191);
+        let verdict = ResponseVerdict::Accepted {
+            gate_id: "gate-1".to_string(),
+            option_key,
+        };
+        let body = answercallbackquery_body(&ack, &verdict);
+        let text = body["text"].as_str().unwrap();
+        assert_eq!(
+            text.chars().count(),
+            ANSWER_CALLBACK_TEXT_MAX_CHARS,
+            "text must be clamped to exactly the 200-char ceiling"
+        );
+    }
+
+    #[test]
+    fn editmessagetext_body_targets_chat_and_message() {
+        let body = editmessagetext_body("chat-42", 777, "the rendered diff", "approve");
+        assert_eq!(body["chat_id"], "chat-42");
+        assert_eq!(body["message_id"], 777);
+        assert!(body["text"].as_str().unwrap().contains("the rendered diff"));
+        assert!(body["text"].as_str().unwrap().contains("approve"));
+    }
+
+    #[test]
+    fn editmessagetext_body_clears_reply_markup_rather_than_omitting_it() {
+        let body = editmessagetext_body("chat-42", 777, "summary", "approve");
+        let reply_markup = body
+            .get("reply_markup")
+            .expect("reply_markup must be present, not absent");
+        let keyboard = reply_markup
+            .get("inline_keyboard")
+            .expect("inline_keyboard must be present");
+        assert_eq!(
+            keyboard
+                .as_array()
+                .expect("inline_keyboard is an array")
+                .len(),
+            0,
+            "inline_keyboard must be empty so the live buttons are gone"
+        );
     }
 
     // -- append_query_string (task 4) --------------------------------------
