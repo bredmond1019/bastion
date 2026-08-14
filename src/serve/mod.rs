@@ -99,6 +99,49 @@ fn resolve_pending_lookup(
         .or_else(|| test_registry.get(gate_id))
 }
 
+/// Build the engine-side [`ApproveAndRunVerdict`][engine_core::workflows::approve_and_run::ApproveAndRunVerdict]
+/// `ApproveAndRunSeams::resolve_verdict` needs from a resolved
+/// [`notify::telegram::ResponseVerdict`] (`ticket-approve-and-run-seams` task
+/// 3). `Accepted` and `StaleDigest` both now carry every field a verdict
+/// needs — `gate_id`, `option_key`, `digest`, `decided_at` — so both convert
+/// the same way; this function does **not** decide whether the digest
+/// matches. That is deliberate: `engine_core`'s own `decide()` (reached
+/// through `resolve_verdict`) already enforces mismatch -> a `Requeued`
+/// ledger row with no execution authorized, and re-checking here would be
+/// the exact re-implementation the ticket's Notes warn against. `UnknownGate`
+/// carries no gate id to resolve against and converts to `None` — there is
+/// nothing for `resolve_verdict` to act on.
+#[must_use]
+fn approve_and_run_verdict_for(
+    verdict: &notify::telegram::ResponseVerdict,
+    who: &str,
+) -> Option<engine_core::workflows::approve_and_run::ApproveAndRunVerdict> {
+    use notify::telegram::ResponseVerdict;
+    match verdict {
+        ResponseVerdict::Accepted {
+            gate_id,
+            option_key,
+            digest,
+            decided_at,
+        }
+        | ResponseVerdict::StaleDigest {
+            gate_id,
+            option_key,
+            digest,
+            decided_at,
+        } => Some(
+            engine_core::workflows::approve_and_run::ApproveAndRunVerdict {
+                gate_id: gate_id.clone(),
+                presented_digest: digest.clone(),
+                option_key: option_key.clone(),
+                who: who.to_string(),
+                decided_at: *decided_at,
+            },
+        ),
+        ResponseVerdict::UnknownGate => None,
+    }
+}
+
 fn approval_ledger_default_path(
     xdg_state_home: Option<String>,
     home: Option<String>,
@@ -514,9 +557,17 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                 target: "bastion::serve",
                 "operator notification transport configured (Telegram)"
             );
+            // `who` for the ledger row the sink below writes (task 3): the
+            // Telegram bot is configured against a single chat id, not an
+            // operator identity, so the ledger attributes decisions to that
+            // chat id rather than inventing one. An honest "which channel
+            // approved this" beats a fabricated "who" in an audit ledger —
+            // see the ticket's Notes.
+            let who = telegram_config.chat_id.clone();
             let transport: std::sync::Arc<dyn notify::OperatorTransport> =
                 std::sync::Arc::new(notify::telegram::TelegramTransport::new(telegram_config));
             let verdict_registry = std::sync::Arc::clone(&pending_payloads);
+            let verdict_seams = std::sync::Arc::clone(&approve_and_run_seams);
             let lookup_seams = std::sync::Arc::clone(&approve_and_run_seams);
             let lookup_test_registry = std::sync::Arc::clone(&pending_payloads);
             let pending_lookup: notify::PendingLookup = Box::new(move |gate_id: &str| {
@@ -554,6 +605,75 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                                 "operator response resolved"
                             );
                         }
+                    }
+
+                    // ── Act on the decision (ticket-approve-and-run-seams task 3) ──
+                    //
+                    // `ApproveAndRunSeams::resolve_verdict` is `async` (a
+                    // matched `Approved` verdict performs a `POST`), but this
+                    // sink is a sync `Box<dyn Fn(..) + Send + Sync>` invoked
+                    // inline from `NotifyPollLoop::tick`, which itself runs
+                    // under `actix_web::rt::spawn` — i.e. `spawn_local` on
+                    // the single-threaded `LocalSet` that also drives this
+                    // process's HTTP and WS surface. Blocking here (e.g. a
+                    // naive `block_on`) would stall that worker, and every
+                    // co-resident session's requests with it, for the
+                    // duration of the ledger write and any POST. Instead the
+                    // resolution itself is spawned onto the same local set —
+                    // `actix_web::rt::spawn` again, not a new thread or
+                    // executor — so this sink returns immediately and the
+                    // poll loop's next `tick` is never blocked behind it.
+                    if let Some(engine_verdict) = approve_and_run_verdict_for(&verdict, &who) {
+                        let seams = std::sync::Arc::clone(&verdict_seams);
+                        actix_web::rt::spawn(async move {
+                            match seams.resolve_verdict(engine_verdict).await {
+                                Ok(resolution) => {
+                                    tracing::info!(
+                                        target: "bastion::serve",
+                                        executed = resolution.executed.is_some(),
+                                        "approve-and-run verdict resolved"
+                                    );
+                                }
+                                Err(
+                                    engine_core::workflows::approve_and_run::ApproveAndRunSeamError::UnknownGate(gate_id),
+                                ) => {
+                                    // Expected whenever the resolved gate came
+                                    // from `POST /api/notify/test` rather than
+                                    // a real engine-drained item — that gate
+                                    // never existed on the engine's queue, so
+                                    // this is not a regression. Logged at the
+                                    // same level as `NotifyPollLoop`'s own
+                                    // `unknown_gate` arm above.
+                                    tracing::info!(
+                                        target: "bastion::serve",
+                                        gate_id = %gate_id,
+                                        "approve-and-run verdict: unknown gate"
+                                    );
+                                }
+                                Err(
+                                    engine_core::workflows::approve_and_run::ApproveAndRunSeamError::UnknownOption(err),
+                                ) => {
+                                    tracing::warn!(
+                                        target: "bastion::serve",
+                                        error = %err,
+                                        "approve-and-run verdict: unrecognized option key"
+                                    );
+                                }
+                                Err(
+                                    engine_core::workflows::approve_and_run::ApproveAndRunSeamError::Execution(err),
+                                ) => {
+                                    // Must stay visible: an authorized
+                                    // execution that failed to POST is the one
+                                    // failure mode this sink must never
+                                    // swallow.
+                                    tracing::error!(
+                                        target: "bastion::serve",
+                                        error = %err,
+                                        "approve-and-run execution failed"
+                                    );
+                                }
+                            }
+                        });
                     }
                 }),
             );
@@ -4764,5 +4884,59 @@ mod approve_and_run_seams_wiring_tests {
         let found = resolve_pending_lookup(&seams, &test_registry, "test-gate-1")
             .expect("a payload sent via /api/notify/test should still resolve");
         assert_eq!(found.payload().gate_id, "test-gate-1");
+    }
+
+    // ── approve_and_run_verdict_for ──────────────────────────────────────
+    //
+    // Pure conversion, no actix, no engine seams — the sink's async
+    // dispatch (`resolve_verdict`) is covered by the hermetic
+    // resolve-and-execute tests in `notify/tests.rs` (task 4); this module
+    // only proves the widened `ResponseVerdict` arms convert correctly and
+    // that `UnknownGate` yields no verdict at all.
+
+    fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0).unwrap()
+    }
+
+    #[test]
+    fn approve_and_run_verdict_for_converts_accepted() {
+        let verdict = notify::telegram::ResponseVerdict::Accepted {
+            gate_id: "gate-1".to_string(),
+            option_key: "approve".to_string(),
+            digest: "ab12".to_string(),
+            decided_at: ts(1),
+        };
+
+        let built = approve_and_run_verdict_for(&verdict, "chat-42")
+            .expect("Accepted converts to a verdict");
+        assert_eq!(built.gate_id, "gate-1");
+        assert_eq!(built.option_key, "approve");
+        assert_eq!(built.presented_digest, "ab12");
+        assert_eq!(built.who, "chat-42");
+        assert_eq!(built.decided_at, ts(1));
+    }
+
+    #[test]
+    fn approve_and_run_verdict_for_converts_stale_digest_and_keeps_its_gate_id() {
+        let verdict = notify::telegram::ResponseVerdict::StaleDigest {
+            gate_id: "gate-2".to_string(),
+            option_key: "approve".to_string(),
+            digest: "stale-digest".to_string(),
+            decided_at: ts(2),
+        };
+
+        let built = approve_and_run_verdict_for(&verdict, "chat-42")
+            .expect("StaleDigest converts to a verdict, letting decide() re-queue it");
+        assert_eq!(built.gate_id, "gate-2");
+        assert_eq!(built.presented_digest, "stale-digest");
+        assert_eq!(built.decided_at, ts(2));
+    }
+
+    #[test]
+    fn approve_and_run_verdict_for_unknown_gate_yields_none() {
+        assert!(
+            approve_and_run_verdict_for(&notify::telegram::ResponseVerdict::UnknownGate, "chat-42")
+                .is_none()
+        );
     }
 }
