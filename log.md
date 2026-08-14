@@ -11,6 +11,40 @@ timestamp: 2026-08-14T15:35:00-03:00
 
 ---
 
+## [run: 2026-08-14]
+
+BA.20.C ("Telegram bridge: detect -> notify -> inject") closed, 7 of 7 tasks, review verdict PASS.
+Task 1 extracted gate-agnostic Telegram HTTP primitives (percent-encoding, query building, HTTP
+status/error classification, `api_url`) into a new `src/serve/notify/telegram_http.rs`, with
+`telegram.rs` delegating to them. Task 2 added `CodeSessionsBotConfig`
+(`BASTION_CODESESSIONS_BOT_TOKEN`/`_CHAT_ID`) mirroring the existing both-or-neither pattern, reusing
+the redacted `BotToken` newtype. Task 3 gave `BlockedEdgePoller` an optional
+`with_edge_tx(mpsc::Sender<BlockedEdgeRecord>)` seam that fans out each durably-written crossing via
+non-blocking `try_send`, never blocking on a closed or full channel. Task 4 shipped the pure logic
+core of the session-QA bridge (`src/serve/session_qa/mod.rs`): a FIFO-bounded pending-question
+registry, question-shaped callback encode/decode under Telegram's 64-byte cap, message-body
+builders, and an escape-hatch `ChatFollowUpState` state machine — no I/O. Task 5 added the I/O shell
+(`QaTelegramClient` trait + HTTP impl, `SessionQaBridge`), injecting into `sessions::tmux::send_keys`
+directly since the `/api/sessions/{name}/send` handler isn't factored for non-HTTP calls (recorded
+as a spec Amendment). Task 6 wired `run_server` to gate the bridge on `CodeSessionsBot` config,
+attach the poller's edge-tx when configured, and spawn the bridge's inbound/outbound tasks with no
+new route. Task 7 moved the pure-core unit tests into `src/serve/session_qa/tests.rs` alongside new
+hermetic end-to-end coverage (fake Telegram client, injected capture/inject closures) and ran the
+full validation suite (fmt, clippy, cargo test, release build, contract-corpus drift) — all green.
+`docs/config.md` and `docs/serve-api.md` updated. Block `BA.20.C` flipped closed in `state.json`.
+Next: BA.20.D — Auth, docs, and coverage bar (now unblocked).
+
+```
+6b7f31a docs: update docs for BA.20.C
+26859b9 feat: implement BA.20.C-task7
+3dbbeaa feat: implement BA.20.C-task6
+cea72c3 feat: implement BA.20.C-task5
+d5e9d80 feat: implement BA.20.C-task4
+1c71d89 feat: implement BA.20.C-task3
+d376d0f feat: implement BA.20.C-task2
+88ab7b7 feat: implement BA.20.C-task1
+```
+
 ## [2026-08-14]
 
 ### okf-core BlockedBy/CarryoverKind type adaptation — bastion compiles again
