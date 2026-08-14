@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use actix::Addr;
 use chrono::Utc;
+use tokio::sync::mpsc;
 
 use crate::detect::AgentState;
 use crate::serve::poll::{SharedSessionsSweep, sessions_needing_input, sessions_snapshot};
@@ -153,6 +154,14 @@ pub struct BlockedEdgePoller {
     /// chooses not to wire WS delivery — the durable sink write happens
     /// either way.
     hub: Option<Addr<Hub>>,
+    /// A best-effort notification channel for BA.20.C's session-QA bridge
+    /// (Task 3 — the seam only; the bridge itself is Task 5), mirroring
+    /// [`Self::hub`] field-for-field. The poller's sink write is the
+    /// authoritative record; this channel is a fan-out on top of it, never a
+    /// precondition for it. `None` in every unit test in this module and
+    /// whenever the caller chooses not to wire the bridge. A closed or full
+    /// channel never blocks or fails a tick — see [`Self::tick`].
+    edge_tx: Option<mpsc::Sender<BlockedEdgeRecord>>,
 }
 
 impl BlockedEdgePoller {
@@ -176,6 +185,7 @@ impl BlockedEdgePoller {
             seeded: false,
             capture,
             hub: None,
+            edge_tx: None,
         }
     }
 
@@ -185,6 +195,16 @@ impl BlockedEdgePoller {
     /// consumer of the edge, never a precondition for recording it.
     pub fn with_hub(mut self, hub: Addr<Hub>) -> Self {
         self.hub = Some(hub);
+        self
+    }
+
+    /// Wire this poller to additionally fan each crossing's
+    /// [`BlockedEdgeRecord`] out to `tx` (BA.20.C's session-QA bridge seam).
+    /// Mirrors [`Self::with_hub`] exactly: optional, additive, and the sink
+    /// write is authoritative regardless of whether this is wired. A closed
+    /// or full receiver never blocks or fails a tick — see [`Self::tick`].
+    pub fn with_edge_tx(mut self, tx: mpsc::Sender<BlockedEdgeRecord>) -> Self {
+        self.edge_tx = Some(tx);
         self
     }
 
@@ -225,6 +245,15 @@ impl BlockedEdgePoller {
                 Utc::now(),
             );
             let _ = self.sink.append(&record);
+            if let Some(tx) = &self.edge_tx
+                && let Err(err) = tx.try_send(record)
+            {
+                tracing::debug!(
+                    session = %name,
+                    error = %err,
+                    "session-qa edge channel send failed; dropping notification (sink write already durable)"
+                );
+            }
         }
         if let Some(hub) = &self.hub
             && !crossing.is_empty()
@@ -408,6 +437,153 @@ mod tests {
         let records = sink.read_all().expect("read_all should succeed");
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|r| r.session == "sess-a"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── with_edge_tx (BA.20.C task 3 seam) ───────────────────────────────────
+
+    #[test]
+    fn wired_edge_tx_observes_exactly_the_crossings_the_sink_recorded_in_order() {
+        let path = temp_sink_path("edge-tx-wired");
+        let sink = BlockedEdgeSink::new(&path);
+        let mut ticks: Vec<Vec<(String, AgentState)>> = vec![
+            vec![state("sess-a", AgentState::Working)], // seed
+            vec![state("sess-a", AgentState::Blocked)], // crossing 1
+            vec![
+                state("sess-a", AgentState::Blocked),
+                state("sess-b", AgentState::Working),
+            ], // no new crossing
+            vec![
+                state("sess-a", AgentState::Blocked),
+                state("sess-b", AgentState::Blocked),
+            ], // crossing 2
+        ];
+        ticks.reverse();
+        let capture: CaptureFn = Box::new(move || Ok(ticks.pop().unwrap_or_default()));
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut poller =
+            BlockedEdgePoller::with_capture(sink.clone(), "test-host", capture).with_edge_tx(tx);
+
+        for _ in 0..4 {
+            poller.tick();
+        }
+
+        let sink_records = sink.read_all().expect("read_all should succeed");
+        assert_eq!(sink_records.len(), 2);
+
+        let mut received = Vec::new();
+        while let Ok(record) = rx.try_recv() {
+            received.push(record);
+        }
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0].session, sink_records[0].session);
+        assert_eq!(received[1].session, sink_records[1].session);
+        assert_eq!(received[0].session, "sess-a");
+        assert_eq!(received[1].session, "sess-b");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn no_edge_tx_wired_behaves_identically_to_today() {
+        let path = temp_sink_path("edge-tx-none");
+        let sink = BlockedEdgeSink::new(&path);
+        let mut ticks: Vec<Vec<(String, AgentState)>> = vec![
+            vec![state("sess-a", AgentState::Working)],
+            vec![state("sess-a", AgentState::Blocked)],
+        ];
+        ticks.reverse();
+        let capture: CaptureFn = Box::new(move || Ok(ticks.pop().unwrap_or_default()));
+        // No `.with_edge_tx(...)` call at all — mirrors every pre-existing test.
+        let mut poller = BlockedEdgePoller::with_capture(sink.clone(), "test-host", capture);
+
+        poller.tick();
+        poller.tick();
+
+        let records = sink.read_all().expect("read_all should succeed");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].session, "sess-a");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn dropped_receiver_does_not_panic_block_or_lose_the_sink_write() {
+        let path = temp_sink_path("edge-tx-dropped-receiver");
+        let sink = BlockedEdgeSink::new(&path);
+        let mut ticks: Vec<Vec<(String, AgentState)>> = vec![
+            vec![state("sess-a", AgentState::Working)],
+            vec![state("sess-a", AgentState::Blocked)],
+        ];
+        ticks.reverse();
+        let capture: CaptureFn = Box::new(move || Ok(ticks.pop().unwrap_or_default()));
+        let (tx, rx) = mpsc::channel(8);
+        drop(rx); // receiver gone before any crossing is emitted
+        let mut poller =
+            BlockedEdgePoller::with_capture(sink.clone(), "test-host", capture).with_edge_tx(tx);
+
+        poller.tick(); // seed — no panic
+        poller.tick(); // crossing with a closed channel — no panic, no block
+
+        let records = sink.read_all().expect("read_all should succeed");
+        assert_eq!(
+            records.len(),
+            1,
+            "the durable sink write must survive a closed edge channel"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn seed_tick_emits_nothing_on_the_edge_channel() {
+        let path = temp_sink_path("edge-tx-seed");
+        let sink = BlockedEdgeSink::new(&path);
+        let capture: CaptureFn = Box::new(|| {
+            Ok(vec![
+                state("sess-a", AgentState::Blocked),
+                state("sess-b", AgentState::Blocked),
+            ])
+        });
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut poller =
+            BlockedEdgePoller::with_capture(sink.clone(), "test-host", capture).with_edge_tx(tx);
+
+        poller.tick(); // seed tick with already-blocked sessions
+
+        assert!(
+            rx.try_recv().is_err(),
+            "seed tick must emit nothing on the edge channel"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn full_edge_channel_does_not_block_or_fail_the_tick() {
+        let path = temp_sink_path("edge-tx-full");
+        let sink = BlockedEdgeSink::new(&path);
+        let mut ticks: Vec<Vec<(String, AgentState)>> = vec![
+            vec![state("sess-a", AgentState::Working)], // seed
+            vec![state("sess-a", AgentState::Blocked)], // crossing 1 — fills the channel
+            vec![state("sess-a", AgentState::Working)], // answered
+            vec![state("sess-a", AgentState::Blocked)], // crossing 2 — channel is full
+        ];
+        ticks.reverse();
+        let capture: CaptureFn = Box::new(move || Ok(ticks.pop().unwrap_or_default()));
+        // Capacity 1, and the receiver never drains — the second send must
+        // hit `TrySendError::Full` and be dropped, not block the tick.
+        let (tx, _rx) = mpsc::channel(1);
+        let mut poller =
+            BlockedEdgePoller::with_capture(sink.clone(), "test-host", capture).with_edge_tx(tx);
+
+        for _ in 0..4 {
+            poller.tick();
+        }
+
+        let records = sink.read_all().expect("read_all should succeed");
+        assert_eq!(
+            records.len(),
+            2,
+            "the durable sink write must happen regardless of channel backpressure"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
