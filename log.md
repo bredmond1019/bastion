@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-14T15:35:00-03:00
+timestamp: 2026-08-14T17:55:00-03:00
 ---
 
 # Log — bastion
@@ -46,6 +46,31 @@ d376d0f feat: implement BA.20.C-task2
 ```
 
 ## [2026-08-14]
+
+### Telegram session Q&A — BA.20.A-C shipped, the round-trip is code-complete but unproven
+
+- **What:** Ran `plan-telegram-session-qa`'s first three blocks as one `/orchestrate` chain.
+  **BA.20.A** (5/5) added `BlockedReason` (`PermissionPrompt` | `AwaitingQuestion`) and a `reason`
+  key on the detect manifest, threaded through `AgentDetection` -> `Session` -> `SessionDto` without
+  touching `AgentState`'s four variants. **BA.20.B** (3/3) added `src/sessions/ask_question.rs` —
+  a pure `parse_ask_question` returning the question, its numbered options, and a structurally
+  matched escape-hatch flag. **BA.20.C** (7/7, review PASS, PR #38 merged `f95d9cc`) extracted
+  `src/serve/notify/telegram_http.rs` behaviour-preservingly, added `BlockedEdgePoller::with_edge_tx`
+  as an additive second consumer, and built `src/serve/session_qa/` — the bridge that turns a
+  crossing into an inline-keyboard Telegram message and injects the tapped digit back into tmux.
+  Docs patched at close-out: `detect.md`, `sessions.md`, `serve-api.md` (**v0.30 -> v0.31** for
+  `SessionDto.blocked_reason`). Tests 2274 -> 2358.
+- **Why:** A blocked agent was a dead end — the operator had to walk to the terminal to answer an
+  `AskUserQuestion` prompt. Two plan errors were caught at spec time rather than mid-run: the plan's
+  Telegram paths pointed at a module that does not exist (`src/notify/` vs the real
+  `src/serve/notify/`), and it assumed `BA.18.A`'s poller could carry a `blocked_reason` when it
+  works over `(name, AgentState)` pairs only — so the bridge consumes the plain `Blocked` crossing
+  and parses that one pane instead, leaving a freshly-tested surface alone.
+- **Caveat worth carrying:** the `AskUserQuestion` fixture is **synthesized**, not a real capture —
+  every parser test validates an assumed screen layout. `BA.20.D` is held on CodeSessionsBot
+  existing, so no Telegram message has ever actually been sent.
+- **Refs:** `planning/plan-telegram-session-qa/plan.md`,
+  `planning/orchestration-run/plan-telegram-session-qa/{notes.md,review.md}`
 
 ### okf-core BlockedBy/CarryoverKind type adaptation — bastion compiles again
 
