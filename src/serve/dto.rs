@@ -3621,9 +3621,9 @@ mod tests {
             title: "Cross-brain board read endpoint".to_owned(),
             repo: "bastion".to_owned(),
             status: Some("in_progress".to_owned()),
-            blocked_by: vec![okf_core::BlockedBy::External {
+            blocked_by: vec![okf_core::BlockedBy::External(okf_core::ExternalDep {
                 what: "reviewer availability".to_owned(),
-            }],
+            })],
             epics: vec!["bastion-surfaces".to_owned()],
             wave: Some(3),
             priority: Some(1),

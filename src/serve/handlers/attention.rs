@@ -386,7 +386,7 @@ mod tests {
     use super::*;
     use mev::TriageLane;
     use mev::brain::config::RepoEntry;
-    use okf_core::{BacklogOrigin, BlockedBy, CarryoverScope};
+    use okf_core::{BacklogOrigin, BlockedBy, CarryoverScope, ExternalDep};
 
     fn sample_config(repos: Vec<RepoEntry>) -> BrainConfig {
         BrainConfig {
@@ -776,9 +776,9 @@ mod tests {
                         "known_issue",
                         old_date(),
                         None,
-                        vec![BlockedBy::External {
+                        vec![BlockedBy::External(ExternalDep {
                             what: "waiting on vendor API".to_owned(),
-                        }],
+                        })],
                     ),
                     // Authored first, but HOT (priority 0) ranks below BLOCKING.
                     sample_carryover_ranked("hot-item", "known_issue", old_date(), Some(0), vec![]),
@@ -840,9 +840,9 @@ mod tests {
                         "known_issue",
                         old_date(),
                         None,
-                        vec![BlockedBy::External {
+                        vec![BlockedBy::External(ExternalDep {
                             what: "waiting on vendor API".to_owned(),
-                        }],
+                        })],
                     ),
                     sample_carryover("unblocked-item", "known_issue", old_date()),
                 ],

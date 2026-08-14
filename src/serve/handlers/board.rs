@@ -245,11 +245,9 @@ fn block_status_map(files: &[(StateSource, StateFile)]) -> HashMap<String, Optio
 fn unmet_deps(deps: &[BlockedBy], status_map: &HashMap<String, Option<String>>) -> Vec<BlockedBy> {
     deps.iter()
         .filter(|d| match d {
-            BlockedBy::External { .. }
-            | BlockedBy::Operator { .. }
-            | BlockedBy::Approval { .. } => true,
-            BlockedBy::Block { repo, id, .. } => {
-                let key = format!("{repo}:{id}");
+            BlockedBy::External(_) | BlockedBy::Operator(_) | BlockedBy::Approval(_) => true,
+            BlockedBy::Block(dep) => {
+                let key = format!("{}:{}", dep.repo, dep.id);
                 status_map.get(&key).and_then(|s| s.as_deref()) != Some(CLOSED_STATUS)
             }
         })
@@ -818,7 +816,7 @@ pub async fn get_board(
 mod tests {
     use super::*;
     use okf_core::BlockedBy;
-    use okf_core::{Block, Track, TrackBlock};
+    use okf_core::{ApprovalDep, Block, BlockDep, ExternalDep, OperatorDep, Track, TrackBlock};
 
     // ── resolve_scope ────────────────────────────────────────────────────────
 
@@ -1174,11 +1172,11 @@ mod tests {
     fn unmet_deps_closed_target_is_met() {
         let mut status_map = HashMap::new();
         status_map.insert("bastion:BA.1.A".to_owned(), Some("closed".to_owned()));
-        let deps = vec![BlockedBy::Block {
+        let deps = vec![BlockedBy::Block(BlockDep {
             repo: "bastion".to_owned(),
             id: "BA.1.A".to_owned(),
             what: None,
-        }];
+        })];
         assert!(unmet_deps(&deps, &status_map).is_empty());
     }
 
@@ -1186,31 +1184,31 @@ mod tests {
     fn unmet_deps_non_closed_target_is_unmet() {
         let mut status_map = HashMap::new();
         status_map.insert("bastion:BA.1.A".to_owned(), Some("open".to_owned()));
-        let deps = vec![BlockedBy::Block {
+        let deps = vec![BlockedBy::Block(BlockDep {
             repo: "bastion".to_owned(),
             id: "BA.1.A".to_owned(),
             what: None,
-        }];
+        })];
         assert_eq!(unmet_deps(&deps, &status_map), deps);
     }
 
     #[test]
     fn unmet_deps_absent_target_is_unmet() {
         let status_map: HashMap<String, Option<String>> = HashMap::new();
-        let deps = vec![BlockedBy::Block {
+        let deps = vec![BlockedBy::Block(BlockDep {
             repo: "bastion".to_owned(),
             id: "BA.1.A".to_owned(),
             what: None,
-        }];
+        })];
         assert_eq!(unmet_deps(&deps, &status_map), deps);
     }
 
     #[test]
     fn unmet_deps_external_always_unmet() {
         let status_map = HashMap::new();
-        let deps = vec![BlockedBy::External {
+        let deps = vec![BlockedBy::External(ExternalDep {
             what: "reviewer availability".to_owned(),
-        }];
+        })];
         assert_eq!(unmet_deps(&deps, &status_map), deps);
     }
 
@@ -1219,16 +1217,16 @@ mod tests {
         let mut status_map = HashMap::new();
         status_map.insert("bastion:BA.1.A".to_owned(), Some("closed".to_owned()));
         status_map.insert("bastion:BA.1.B".to_owned(), Some("open".to_owned()));
-        let closed_dep = BlockedBy::Block {
+        let closed_dep = BlockedBy::Block(BlockDep {
             repo: "bastion".to_owned(),
             id: "BA.1.A".to_owned(),
             what: None,
-        };
-        let open_dep = BlockedBy::Block {
+        });
+        let open_dep = BlockedBy::Block(BlockDep {
             repo: "bastion".to_owned(),
             id: "BA.1.B".to_owned(),
             what: None,
-        };
+        });
         let deps = vec![closed_dep, open_dep.clone()];
         assert_eq!(unmet_deps(&deps, &status_map), vec![open_dep]);
     }
@@ -1236,23 +1234,23 @@ mod tests {
     #[test]
     fn unmet_deps_operator_always_unmet() {
         let status_map = HashMap::new();
-        let deps = vec![BlockedBy::Operator {
+        let deps = vec![BlockedBy::Operator(OperatorDep {
             slug: "session-mac-mini".to_owned(),
             exit: "planning/handoff.md".to_owned(),
             start: "/begin-session mac-mini".to_owned(),
             what: None,
-        }];
+        })];
         assert_eq!(unmet_deps(&deps, &status_map), deps);
     }
 
     #[test]
     fn unmet_deps_approval_always_unmet() {
         let status_map = HashMap::new();
-        let deps = vec![BlockedBy::Approval {
+        let deps = vec![BlockedBy::Approval(ApprovalDep {
             slug: "approve-devto-sweep".to_owned(),
             what: "approve four one-line diffs".to_owned(),
             digest: "sha256:abc123".to_owned(),
-        }];
+        })];
         assert_eq!(unmet_deps(&deps, &status_map), deps);
     }
 
@@ -1271,17 +1269,17 @@ mod tests {
             Some("closed".to_owned()),
         );
         let deps = vec![
-            BlockedBy::Operator {
+            BlockedBy::Operator(OperatorDep {
                 slug: "session-mac-mini".to_owned(),
                 exit: "planning/handoff.md".to_owned(),
                 start: "/begin-session mac-mini".to_owned(),
                 what: None,
-            },
-            BlockedBy::Approval {
+            }),
+            BlockedBy::Approval(ApprovalDep {
                 slug: "approve-devto-sweep".to_owned(),
                 what: "approve four one-line diffs".to_owned(),
                 digest: "sha256:abc123".to_owned(),
-            },
+            }),
         ];
         assert_eq!(unmet_deps(&deps, &status_map), deps);
     }
@@ -1292,22 +1290,22 @@ mod tests {
     fn unmet_deps_mixed_keeps_targetless_drops_closed_block() {
         let mut status_map = HashMap::new();
         status_map.insert("bastion:BA.1.A".to_owned(), Some("closed".to_owned()));
-        let closed_dep = BlockedBy::Block {
+        let closed_dep = BlockedBy::Block(BlockDep {
             repo: "bastion".to_owned(),
             id: "BA.1.A".to_owned(),
             what: None,
-        };
-        let operator_dep = BlockedBy::Operator {
+        });
+        let operator_dep = BlockedBy::Operator(OperatorDep {
             slug: "session-telegram-bot".to_owned(),
             exit: "token in the Mini's plist".to_owned(),
             start: "/begin-session telegram-bot".to_owned(),
             what: None,
-        };
-        let approval_dep = BlockedBy::Approval {
+        });
+        let approval_dep = BlockedBy::Approval(ApprovalDep {
             slug: "approve-payload".to_owned(),
             what: "approve the operator payload contract".to_owned(),
             digest: "sha256:def456".to_owned(),
-        };
+        });
         let deps = vec![closed_dep, operator_dep.clone(), approval_dep.clone()];
         assert_eq!(
             unmet_deps(&deps, &status_map),
@@ -1353,9 +1351,9 @@ mod tests {
             blocked: vec![sample_block(
                 "BA.1.C",
                 None,
-                vec![BlockedBy::External {
+                vec![BlockedBy::External(ExternalDep {
                     what: "reviewer availability".to_owned(),
-                }],
+                })],
             )],
             deferred: Vec::new(),
         }
@@ -1438,9 +1436,9 @@ mod tests {
         assert_eq!(dto.lanes.blocked[0].blocked_by.len(), 1);
         assert_eq!(
             dto.lanes.blocked[0].blocked_by[0],
-            BlockedBy::External {
+            BlockedBy::External(ExternalDep {
                 what: "reviewer availability".to_owned()
-            }
+            })
         );
     }
 
@@ -1605,11 +1603,11 @@ mod tests {
                     sample_track_block_full(
                         "BA.1.B",
                         None,
-                        vec![BlockedBy::Block {
+                        vec![BlockedBy::Block(BlockDep {
                             repo: "bastion".to_owned(),
                             id: "BA.1.X".to_owned(),
                             what: None,
-                        }],
+                        })],
                         None,
                         None,
                         None,
@@ -1621,11 +1619,11 @@ mod tests {
                     sample_track_block_full(
                         "BA.1.E",
                         None,
-                        vec![BlockedBy::Block {
+                        vec![BlockedBy::Block(BlockDep {
                             repo: "bastion".to_owned(),
                             id: "BA.1.Y".to_owned(),
                             what: None,
-                        }],
+                        })],
                         None,
                         None,
                         None,
@@ -1693,9 +1691,9 @@ mod tests {
         assert_eq!(blocked.blocked_by.len(), 1);
         assert_eq!(
             blocked.blocked_by[0],
-            BlockedBy::External {
+            BlockedBy::External(ExternalDep {
                 what: "reviewer availability".to_owned()
-            }
+            })
         );
     }
 
