@@ -62,6 +62,11 @@ pub struct Session {
     /// Working directory of the session's first pane, from `#{pane_current_path}`.
     /// Empty string when absent (e.g. older/shorter list-sessions output).
     pub cwd: String,
+    /// Sub-classifies `agent_state == Blocked` (e.g. a permission prompt vs. an
+    /// `AskUserQuestion` prompt). `None` for every other `agent_state`, and also
+    /// `None` when the session was parsed from `list-sessions` output alone with
+    /// no pane capture to classify.
+    pub blocked_reason: Option<crate::detect::BlockedReason>,
 }
 
 /// Lightweight pane capture: the raw text from `capture-pane -p -t <session>`.
@@ -178,6 +183,7 @@ pub fn parse_session_line(line: &str) -> Result<Session> {
         last_line: String::new(), // filled in by commands.rs after capture-pane
         agent_state: crate::detect::AgentState::Unknown,
         cwd,
+        blocked_reason: None, // no pane capture here — this parser has no pane text to classify
     })
 }
 
@@ -331,6 +337,37 @@ background\t0\t1\t1718000100\tzsh\n";
         // A 5-field line (no pane_current_path) should parse without error, cwd empty.
         let s = parse_session_line("work\t0\t2\t1718000200\tcargo").unwrap();
         assert_eq!(s.cwd, "");
+    }
+
+    // ── blocked_reason ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_session_line_has_no_blocked_reason_without_pane_capture() {
+        // `list-sessions` output alone carries no pane text, so there is nothing
+        // to classify — blocked_reason must be None regardless of foreground_cmd.
+        let s = parse_session_line("work\t0\t2\t1718000200\tclaude").unwrap();
+        assert_eq!(s.blocked_reason, None);
+    }
+
+    #[test]
+    fn captured_pane_holding_ask_user_question_threads_awaiting_question_reason() {
+        // Mirrors what `sessions/ui.rs::poll_sessions` does after a real
+        // `capture-pane`: run detection on the raw pane text and copy both
+        // `state` and `blocked_reason` onto the Session, without re-deriving
+        // the reason from pane text a second time.
+        let pane = include_str!("../detect/fixtures/claude_awaiting_question.txt");
+        let detection = crate::serve::status::detect::detect(pane);
+
+        let mut s = parse_session_line("ai\t0\t1\t1718000000\tclaude").unwrap();
+        assert_eq!(s.blocked_reason, None); // pre-capture: no pane text yet
+        s.agent_state = detection.state;
+        s.blocked_reason = detection.blocked_reason;
+
+        assert_eq!(s.agent_state, crate::detect::AgentState::Blocked);
+        assert_eq!(
+            s.blocked_reason,
+            Some(crate::detect::BlockedReason::AwaitingQuestion)
+        );
     }
 
     #[test]

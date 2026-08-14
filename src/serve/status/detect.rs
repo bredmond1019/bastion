@@ -65,6 +65,12 @@ pub fn detect_state(pane: &str) -> AgentState {
     run_detection(pane).state
 }
 
+/// Returns the full [`AgentDetection`] (state + `blocked_reason` + `visible_blocker`)
+/// for callers that need the sub-classification, not just the raw state.
+pub fn detect(pane: &str) -> AgentDetection {
+    run_detection(pane)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

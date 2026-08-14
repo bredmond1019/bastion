@@ -443,7 +443,9 @@ fn poll_sessions() -> Vec<Session> {
     for s in sessions.iter_mut() {
         if let Ok(out) = tmux::capture_pane_raw(&s.name) {
             s.last_line = Pane::new(&s.name, &out).last_line().to_string();
-            s.agent_state = crate::serve::status::detect::detect_state(&out);
+            let detection = crate::serve::status::detect::detect(&out);
+            s.agent_state = detection.state;
+            s.blocked_reason = detection.blocked_reason;
         }
     }
     sessions
@@ -618,6 +620,7 @@ mod tests {
             foreground_cmd: String::new(),
             last_line: last_line.to_string(),
             agent_state: crate::detect::AgentState::Unknown,
+            blocked_reason: None,
             cwd: String::new(),
         }
     }
@@ -635,6 +638,7 @@ mod tests {
             foreground_cmd: foreground_cmd.to_string(),
             last_line: last_line.to_string(),
             agent_state: crate::detect::AgentState::Unknown,
+            blocked_reason: None,
             cwd: String::new(),
         }
     }
@@ -799,6 +803,7 @@ mod tests {
             foreground_cmd: String::new(),
             last_line: String::new(),
             agent_state: crate::detect::AgentState::Working,
+            blocked_reason: None,
             cwd: String::new(),
         };
         let mut app = make_app(&[session]);
