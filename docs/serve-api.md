@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.29"
+title: "serve-api contract v0.30"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -49,7 +49,7 @@ in-memory `PendingPayloads` registry so the `NotifyPollLoop`'s `PendingLookup` c
 clears the live buttons and shows the chosen option) before the `VerdictSink` runs, fixing the
 defect where Telegram silently timed out a tapped button because `answerCallbackQuery` was never
 called; the ack handle and message handle are opaque, transport-agnostic, and `None`-safe for any
-transport with no such concept, and no new DTO or route is introduced."
+transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -58,7 +58,7 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.29 Contract
+# serve-api — v0.30 Contract
 
 **Version:** v0.29  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
@@ -3196,9 +3196,70 @@ Both calls reuse the existing `classify_http_status` mapping (no second status-m
 neither logs a request URL — the bot token lives in the Telegram URL path, so only the method name
 and verdict arm are logged.
 
+### 26.9 Approve-and-run resolution (v0.30, `ticket-approve-and-run-seams`)
+
+Sections 26.7 and 26.8 get a payload to the operator and acknowledge the tap. This section is what
+makes the tap *do* something: a resolved verdict is recorded in an approval ledger and, when
+authorized, executed against `engine-rs`'s `ApproveAndRunSeams`.
+
+**The pending-gate lookup is composed, not replaced.** `PendingLookup` resolves in this order:
+
+1. `ApproveAndRunSeams::lookup_pending` — the real source for a gate an engine run queued via
+   `ApproveAndRunSeams::drain`.
+2. `PendingPayloads` — the process-local registry populated only by `POST /api/notify/test`
+   (Section 26.7).
+
+Both are always consulted; neither is skipped. Composing rather than swapping keeps the test-send
+route working, which is how the operator smoke test is run. The two id spaces cannot collide by
+construction — the engine's `gate_id_for` and the test route's per-request uuid draw from disjoint
+generators — so trying the engine source first can never shadow a test-route gate.
+
+**Execution never blocks the server.** `ApproveAndRunSeams::resolve_verdict` is `async` (a matched
+`Approved` verdict performs a POST), but the `VerdictSink` is a synchronous `Fn` invoked inline from
+`NotifyPollLoop::tick`, which itself runs under `actix_web::rt::spawn` — that is, `spawn_local` on
+the single-threaded `LocalSet` that also drives this process's HTTP and WebSocket surface. A
+`block_on` there would stall every co-resident request for the duration of the ledger write and the
+POST. The resolution is therefore spawned onto that same local set, so the sink returns immediately
+and the next `tick` is never queued behind it.
+
+**Failure arms are deliberately distinguished:**
+
+| Arm | Level | Why |
+|---|---|---|
+| `UnknownGate` | `info` | Expected whenever the gate came from `POST /api/notify/test` rather than a real engine-drained item. Not a regression. |
+| `UnknownOption` | `warn` | An option key the payload did not declare — a contract problem, not a failure to act. |
+| `Execution` | **`error`** | An authorized decision that failed to POST. This is the one failure mode this path must never swallow. |
+
+**Approval ledger path.** `FileApprovalLedger` resolves its file with the same XDG-first precedence
+as the blocked-edge sink (`$XDG_STATE_HOME/bastion/`, else `$HOME/.local/state/bastion/`), differing
+only in filename. Unlike the sink it never resolves to `None`: ledger construction touches no
+filesystem — the file and its parent are created lazily on first write — so a relative fallback
+filename in the process's working directory is a safe always-constructible default when neither
+variable is set.
+
+**Ledger attribution is a chat id, not a person.** The `who` recorded on each row is the configured
+`BASTION_TELEGRAM_CHAT_ID`, because the bot is configured against a single chat and there is no
+operator identity to read. This is honest about *which channel* approved something, but it means the
+ledger **cannot distinguish two people with access to that chat**. If this surface ever serves more
+than one operator, that is an audit gap requiring a real identity source, not a renamed field.
+
 ---
 
 ## Amendment Log
+
+- **2026-08-13 — v0.29 → v0.30 (`ticket-approve-and-run-seams`):** New Section 26.9,
+  "Approve-and-run resolution". Before this, a tap on a real engine-queued approval resolved to
+  `UnknownGate` and the `VerdictSink` only logged — no ledger row, no execution — because
+  `PendingLookup` pointed solely at the `/api/notify/test` registry. `PendingLookup` is now
+  **composed** (engine queue first, test registry as fallback, neither skipped), and the sink calls
+  `ApproveAndRunSeams::resolve_verdict`, spawned onto the same actix local set rather than blocked
+  on, so the single-threaded worker serving HTTP and WS is never stalled behind a ledger write or a
+  POST. `ResponseVerdict::Accepted`/`StaleDigest` widened to carry the digest and decision time that
+  `ApproveAndRunVerdict` needs. Failure arms are levelled deliberately: `UnknownGate` at `info` (the
+  expected arm for a test-route gate), `UnknownOption` at `warn`, and `Execution` at **`error`** —
+  an authorized decision that failed to POST must never be swallowed. Documents the approval
+  ledger's XDG path resolution and records the known attribution limit: rows are attributed to the
+  Telegram chat id, so the ledger cannot distinguish two operators sharing one chat.
 
 - **2026-08-13 — v0.28 → v0.29 (`ticket-telegram-answer-callback`):** New Section 26.8,
   "Acknowledgement contract". Root cause: Telegram holds a callback button in its loading state

@@ -161,6 +161,18 @@ block, logged at `info`. Exactly one set (token without chat id, or the reverse)
 half-configuration. The token is held in a `BotToken` newtype whose `Debug` impl always renders
 `BotToken(<redacted>)`.
 
+**`BASTION_TELEGRAM_CHAT_ID` doubles as the approval-ledger identity.** When a tap is resolved,
+`ticket-approve-and-run-seams` records a row attributing the decision to this chat id — the bot is
+configured against a single chat and there is no operator identity to read. That is honest about
+*which channel* approved something, but the ledger cannot distinguish two people with access to the
+same chat. See [serve-api.md §26.9](serve-api.md#269-approve-and-run-resolution-v030-ticket-approve-and-run-seams)
+for the ledger's XDG path resolution and the rest of the contract.
+
+**Deployment trap:** the Mini's plist currently carries these as `TELEGRAM_BOT_TOKEN` /
+`TELEGRAM_CHAT_ID`, **without** the `BASTION_` prefix `load_telegram_config` reads. Deployed as-is,
+the transport logs "not configured" at `info` and stays silently off. Rename the plist entries — or
+the reader — before relying on the Mini for operator notifications.
+
 ## Precedence rules
 
 An environment variable **always wins** over the config file for the same key.
