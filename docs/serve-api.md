@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.28"
+title: "serve-api contract v0.29"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -43,7 +43,13 @@ one real validated payload over the configured transport and registers it in a n
 in-memory `PendingPayloads` registry so the `NotifyPollLoop`'s `PendingLookup` can resolve
 `Accepted`/`StaleDigest`/`UnknownGate` for payloads this process sent, replacing the
 `|_gate_id: &str| None` stub Section 26.6 previously described; adds one new typeshared DTO,
-`NotifyTestResponseDto`."
+`NotifyTestResponseDto`; and the v0.29 acknowledgement contract (Section 26.8,
+`ticket-telegram-answer-callback`) — every resolved verdict is now acknowledged via
+`OperatorTransport::acknowledge` (`answerCallbackQuery`, then a best-effort message edit that
+clears the live buttons and shows the chosen option) before the `VerdictSink` runs, fixing the
+defect where Telegram silently timed out a tapped button because `answerCallbackQuery` was never
+called; the ack handle and message handle are opaque, transport-agnostic, and `None`-safe for any
+transport with no such concept, and no new DTO or route is introduced."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -52,9 +58,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.28 Contract
+# serve-api — v0.29 Contract
 
-**Version:** v0.28  
+**Version:** v0.29  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -2972,7 +2978,7 @@ a real Postgres being up or down cannot change any golden.
 
 ---
 
-## 26. Operator-notification transport (v0.27, `BA.18.B`)
+## 26. Operator-notification transport (v0.27, `BA.18.B`; acknowledgement contract v0.29, `ticket-telegram-answer-callback`)
 
 An **outbound-only** background capability, not a REST/WS route — `bastion serve` delivers an
 already-validated operator gate payload to a human over Telegram and long-polls for the tap that
@@ -3146,9 +3152,70 @@ Resolution against it follows the same rules as Section 26.5:
 - Sent, then the payload changed, then tapped → `StaleDigest` — rejected, never applied.
 - Never sent (or already resolved once) → `UnknownGate`.
 
+### 26.8 Acknowledgement contract (v0.29, `ticket-telegram-answer-callback`)
+
+**Root cause:** Telegram holds a callback button in its loading state until the bot calls
+`answerCallbackQuery` for that tap's `callback_query_id`, then times it out silently. Before this
+section, `bastion` never made that call — the button spun, un-highlighted, and the operator had
+no way to tell a registered decision from a dropped one, even though the server had already
+resolved a verdict correctly. Discovered live during `operator-telegram-live-smoke`
+(`planning/BA.18.B/tasks.md`), 2026-08-13.
+
+**Every resolved verdict is acknowledged — not only `Accepted`.** `NotifyPollLoop::tick`
+(`src/serve/notify/mod.rs`) calls `OperatorTransport::acknowledge` for `Accepted`, `StaleDigest`,
+and `UnknownGate` alike, and does so **before** dispatching to the caller-supplied
+`VerdictSink` — Telegram callback queries expire, and the sink may block. An acknowledgement
+failure is logged and retried at most once; it never discards the response, never skips the sink
+dispatch, and never causes the same response to be reprocessed on a later tick.
+
+**The ack handle is opaque, transport-agnostic, and optional.** `OperatorResponse` carries
+`ack: Option<AckHandle>` and `message: Option<MessageHandle>` (`src/serve/notify/mod.rs`) — both
+newtypes over transport-specific encodings (Telegram: the callback query's `id`, and the
+`chat_id`/`message_id` pair the original prompt was sent as) that callers round-trip without
+parsing. `OperatorTransport::acknowledge` has a no-op default implementation returning `Ok(())`,
+so a transport with no acknowledgement concept (WhatsApp, and every existing test fake) compiles
+and behaves correctly against `None` with no change required.
+
+**Telegram's implementation answers, then edits, best-effort:**
+
+1. `answerCallbackQuery` (skipped cleanly when `ack` is `None`) clears the button's loading state
+   and shows short text distinguishing the three verdict arms — the accepted option's name, "this
+   question changed — no longer valid" for `StaleDigest`, "already answered or no longer pending"
+   for `UnknownGate`. Text is clamped to Telegram's 200-character ceiling, counted by
+   `.chars().count()`, never bytes.
+2. `editMessageText` (attempted whenever `message` is present, independent of whether the answer
+   above succeeded) rewrites the original message to show which option was taken and sets an
+   **empty** `reply_markup` rather than omitting it — an absent `reply_markup` leaves Telegram's
+   prior keyboard in place, which is the second half of the bug this section fixes: without the
+   edit, a closed gate keeps inviting a second tap.
+
+The edit is deliberately best-effort: a failed edit after a successful answer is a logged warning,
+never an error return. Losing the button-clearing is cosmetic; losing the ack itself is not — that
+asymmetry is why the answer call and the edit call are not folded into one all-or-nothing step.
+Both calls reuse the existing `classify_http_status` mapping (no second status-mapping path), and
+neither logs a request URL — the bot token lives in the Telegram URL path, so only the method name
+and verdict arm are logged.
+
 ---
 
 ## Amendment Log
+
+- **2026-08-13 — v0.28 → v0.29 (`ticket-telegram-answer-callback`):** New Section 26.8,
+  "Acknowledgement contract". Root cause: Telegram holds a callback button in its loading state
+  until `answerCallbackQuery` is called, and `bastion` never called it — a tap resolved correctly
+  server-side but the operator got no feedback and the closed gate's message kept its live
+  buttons, inviting a second tap. `NotifyPollLoop::tick` now calls the new
+  `OperatorTransport::acknowledge` for every resolved verdict (`Accepted`, `StaleDigest`,
+  `UnknownGate`), before dispatching to the `VerdictSink`; a failed ack is logged, retried once,
+  and never discards or double-applies the response. `OperatorResponse` gains two opaque,
+  transport-agnostic fields — `ack: Option<AckHandle>` and `message: Option<MessageHandle>` — with
+  `acknowledge` no-op-defaulted so WhatsApp and every existing test fake need no change.
+  Telegram's implementation calls `answerCallbackQuery` (distinct, ≤200-char text per verdict arm,
+  clamped by `.chars().count()`) then, best-effort, `editMessageText` with an **empty**
+  `reply_markup` to drop the live buttons and show the chosen option — a failed edit after a
+  successful answer is a logged warning, not an error. No token or chat id is logged by either
+  call. No DTO or route changed; this is a behavioural amendment to the existing background loop
+  and Telegram transport impl, not a new wire shape.
 
 - **2026-08-13 — v0.27 → v0.28 (`ticket-notify-send-trigger`):** New Section 26.7, `POST
   /api/notify/test` — an authenticated route mounted inside the existing `web::scope("/api")`
