@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use engine_core::operator::{OperatorPayloadLimits, ValidatedOperatorPayload};
 
 use crate::config::{BotToken, TelegramConfig};
+use crate::serve::notify::telegram_http;
 use crate::serve::notify::{
     AckHandle, DeliveredMessage, NotifyError, OperatorResponse, OperatorTransport, UpdateCursor,
 };
@@ -186,44 +187,6 @@ pub fn check_whatsapp_portability(
     }
 
     Ok(())
-}
-
-/// Percent-encode `value` for use in a URL query string (RFC 3986
-/// "unreserved" characters pass through unescaped; everything else becomes
-/// `%XX`). Pure — no dependency on `reqwest`'s optional `query` feature,
-/// which this crate does not enable.
-fn percent_encode_query_value(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char);
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
-}
-
-/// Append `query` pairs onto `base_url` as a percent-encoded query string.
-/// Pure. `query` is expected to already be empty-free (no pair with an
-/// empty key), as [`getupdates_query`] guarantees.
-#[must_use]
-pub fn append_query_string(base_url: &str, query: &[(String, String)]) -> String {
-    if query.is_empty() {
-        return base_url.to_string();
-    }
-    let pairs: Vec<String> = query
-        .iter()
-        .map(|(k, v)| {
-            format!(
-                "{}={}",
-                percent_encode_query_value(k),
-                percent_encode_query_value(v)
-            )
-        })
-        .collect();
-    format!("{base_url}?{}", pairs.join("&"))
 }
 
 /// Build the `getUpdates` long-poll query. Never emits a webhook-related
@@ -517,30 +480,6 @@ pub fn editmessagetext_body(
 // `## Notes` by task 7 as an operator-run gate — the live bot token is never
 // obtained, read, or handled by an agent (non-negotiable constraint 3).
 
-/// Map an observed Telegram HTTP status code onto a [`NotifyError`]. Pure —
-/// no I/O — so the status-code → error-class mapping is unit-testable
-/// without a live call.
-///
-/// - `429` → `RateLimited`, using `retry_after_secs` from Telegram's
-///   `parameters.retry_after` field if present, else a conservative default.
-/// - `401` / `403` → `Unauthorized` (bad/revoked bot token). Deliberately
-///   carries no credential value.
-/// - Any other non-2xx status → retryable `Transport` (Telegram outages,
-///   5xx, etc. are transient from this caller's perspective).
-#[must_use]
-pub fn classify_http_status(status: u16, retry_after_secs: Option<u64>) -> Option<NotifyError> {
-    match status {
-        200..=299 => None,
-        429 => Some(NotifyError::RateLimited {
-            retry_after_secs: retry_after_secs.unwrap_or(30),
-        }),
-        401 | 403 => Some(NotifyError::Unauthorized),
-        other => Some(NotifyError::Transport {
-            reason: format!("unexpected Telegram API status {other}"),
-        }),
-    }
-}
-
 /// Thin `reqwest`-backed [`OperatorTransport`] over the Telegram Bot API.
 ///
 /// Holds the bot token as a [`BotToken`] (never `Debug`-printable) and the
@@ -577,10 +516,7 @@ impl TelegramTransport {
     /// never log the returned string; log the method name alone instead
     /// (non-negotiable constraint 3).
     fn api_url(&self, method: &str) -> String {
-        format!(
-            "https://api.telegram.org/bot{}/{method}",
-            self.bot_token.expose()
-        )
+        telegram_http::api_url(&self.bot_token, method)
     }
 }
 
@@ -604,11 +540,17 @@ impl OperatorTransport for TelegramTransport {
             .send()
             .await
             .map_err(|e| NotifyError::Transport {
-                reason: format!("{method} request failed: {}", classify_reqwest_error(&e)),
+                reason: format!(
+                    "{method} request failed: {}",
+                    telegram_http::classify_reqwest_error(&e)
+                ),
             })?;
 
         let status = resp.status().as_u16();
-        if let Some(err) = classify_http_status(status, retry_after_from_response(&resp)) {
+        if let Some(err) = telegram_http::classify_http_status(
+            status,
+            telegram_http::retry_after_from_response(&resp),
+        ) {
             return Err(err);
         }
 
@@ -635,7 +577,7 @@ impl OperatorTransport for TelegramTransport {
         tracing::debug!(method, "calling Telegram Bot API");
 
         let query = getupdates_query(since, Self::GETUPDATES_TIMEOUT_SECS);
-        let url = append_query_string(&self.api_url(method), &query);
+        let url = telegram_http::append_query_string(&self.api_url(method), &query);
         let resp = self
             .client
             .get(url)
@@ -643,11 +585,17 @@ impl OperatorTransport for TelegramTransport {
             .send()
             .await
             .map_err(|e| NotifyError::Transport {
-                reason: format!("{method} request failed: {}", classify_reqwest_error(&e)),
+                reason: format!(
+                    "{method} request failed: {}",
+                    telegram_http::classify_reqwest_error(&e)
+                ),
             })?;
 
         let status = resp.status().as_u16();
-        if let Some(err) = classify_http_status(status, retry_after_from_response(&resp)) {
+        if let Some(err) = telegram_http::classify_http_status(
+            status,
+            telegram_http::retry_after_from_response(&resp),
+        ) {
             return Err(err);
         }
 
@@ -679,11 +627,17 @@ impl OperatorTransport for TelegramTransport {
                 .send()
                 .await
                 .map_err(|e| NotifyError::Transport {
-                    reason: format!("{method} request failed: {}", classify_reqwest_error(&e)),
+                    reason: format!(
+                        "{method} request failed: {}",
+                        telegram_http::classify_reqwest_error(&e)
+                    ),
                 })?;
 
             let status = resp.status().as_u16();
-            if let Some(err) = classify_http_status(status, retry_after_from_response(&resp)) {
+            if let Some(err) = telegram_http::classify_http_status(
+                status,
+                telegram_http::retry_after_from_response(&resp),
+            ) {
                 return Err(err);
             }
         }
@@ -722,9 +676,10 @@ impl OperatorTransport for TelegramTransport {
             match edit_result {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
-                    if let Some(err) =
-                        classify_http_status(status, retry_after_from_response(&resp))
-                    {
+                    if let Some(err) = telegram_http::classify_http_status(
+                        status,
+                        telegram_http::retry_after_from_response(&resp),
+                    ) {
                         tracing::warn!(
                             method,
                             error = %err,
@@ -735,7 +690,7 @@ impl OperatorTransport for TelegramTransport {
                 Err(e) => {
                     tracing::warn!(
                         method,
-                        error = classify_reqwest_error(&e),
+                        error = telegram_http::classify_reqwest_error(&e),
                         "operator message edit request failed"
                     );
                 }
@@ -754,31 +709,6 @@ fn verdict_label(verdict: &ResponseVerdict) -> &'static str {
         ResponseVerdict::Accepted { .. } => "accepted",
         ResponseVerdict::StaleDigest { .. } => "stale_digest",
         ResponseVerdict::UnknownGate => "unknown_gate",
-    }
-}
-
-/// Pull Telegram's `Retry-After` header (seconds) off a response, if present.
-/// Pure w.r.t. the header map it's handed.
-fn retry_after_from_response(resp: &reqwest::Response) -> Option<u64> {
-    resp.headers()
-        .get("Retry-After")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-}
-
-/// Render a `reqwest::Error` without ever including request/connection
-/// details that could carry the token (the token is embedded in the URL a
-/// `reqwest::Error` may otherwise stringify). Reports only the failure
-/// class, never `e.to_string()` verbatim.
-fn classify_reqwest_error(e: &reqwest::Error) -> &'static str {
-    if e.is_timeout() {
-        "timed out"
-    } else if e.is_connect() {
-        "connection failed"
-    } else if e.is_decode() {
-        "response decode failed"
-    } else {
-        "request failed"
     }
 }
 
@@ -1589,101 +1519,6 @@ mod tests {
             0,
             "inline_keyboard must be empty so the live buttons are gone"
         );
-    }
-
-    // -- append_query_string (task 4) --------------------------------------
-
-    #[test]
-    fn append_query_string_empty_query_returns_base_unchanged() {
-        assert_eq!(
-            append_query_string("https://example.com/x", &[]),
-            "https://example.com/x"
-        );
-    }
-
-    #[test]
-    fn append_query_string_encodes_and_joins_pairs() {
-        let query = vec![
-            ("timeout".to_string(), "30".to_string()),
-            (
-                "allowed_updates".to_string(),
-                r#"["callback_query"]"#.to_string(),
-            ),
-        ];
-        let url = append_query_string("https://example.com/getUpdates", &query);
-        assert_eq!(
-            url,
-            "https://example.com/getUpdates?timeout=30&allowed_updates=%5B%22callback_query%22%5D"
-        );
-    }
-
-    #[test]
-    fn append_query_string_matches_getupdates_query_output() {
-        let query = getupdates_query(Some(UpdateCursor("42".to_string())), 30);
-        let url = append_query_string("https://example.com/getUpdates", &query);
-        assert!(url.starts_with("https://example.com/getUpdates?offset=42&timeout=30"));
-    }
-
-    // -- classify_http_status (task 4) -----------------------------------
-
-    #[test]
-    fn classify_http_status_2xx_is_success() {
-        assert_eq!(classify_http_status(200, None), None);
-        assert_eq!(classify_http_status(201, None), None);
-        assert_eq!(classify_http_status(299, None), None);
-    }
-
-    #[test]
-    fn classify_http_status_429_is_rate_limited_with_hint() {
-        let err = classify_http_status(429, Some(5)).expect("429 is an error");
-        assert_eq!(
-            err,
-            NotifyError::RateLimited {
-                retry_after_secs: 5
-            }
-        );
-        assert!(err.is_retryable());
-    }
-
-    #[test]
-    fn classify_http_status_429_without_hint_uses_default() {
-        let err = classify_http_status(429, None).expect("429 is an error");
-        assert_eq!(
-            err,
-            NotifyError::RateLimited {
-                retry_after_secs: 30
-            }
-        );
-    }
-
-    #[test]
-    fn classify_http_status_401_and_403_are_unauthorized_and_permanent() {
-        let err_401 = classify_http_status(401, None).expect("401 is an error");
-        let err_403 = classify_http_status(403, None).expect("403 is an error");
-        assert_eq!(err_401, NotifyError::Unauthorized);
-        assert_eq!(err_403, NotifyError::Unauthorized);
-        assert!(!err_401.is_retryable());
-        assert!(!err_403.is_retryable());
-    }
-
-    #[test]
-    fn classify_http_status_other_non_2xx_is_retryable_transport() {
-        let err = classify_http_status(500, None).expect("500 is an error");
-        assert!(matches!(err, NotifyError::Transport { .. }));
-        assert!(err.is_retryable());
-
-        let err = classify_http_status(400, None).expect("400 is an error");
-        assert!(matches!(err, NotifyError::Transport { .. }));
-    }
-
-    #[test]
-    fn classify_http_status_error_never_contains_a_token_shaped_value() {
-        for status in [401, 403, 429, 500] {
-            if let Some(err) = classify_http_status(status, Some(3)) {
-                let rendered = format!("{err}");
-                assert!(!rendered.to_lowercase().contains("token"));
-            }
-        }
     }
 
     // -- TelegramTransport::api_url (task 4) -------------------------------

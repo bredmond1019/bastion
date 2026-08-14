@@ -26,6 +26,7 @@ use engine_core::operator::ValidatedOperatorPayload;
 use thiserror::Error;
 
 pub mod telegram;
+pub mod telegram_http;
 
 #[cfg(test)]
 mod tests;
