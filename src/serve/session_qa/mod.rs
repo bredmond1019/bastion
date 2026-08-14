@@ -483,6 +483,536 @@ impl ChatFollowUpState {
     }
 }
 
+// ── I/O shell — bridge runtime (`BA.20.C` task 5) ───────────────────────────
+//
+// Everything below is a thin shell over the pure core above, per `CLAUDE.md`
+// rule 6: every decision (dedup, verdict resolution, follow-up state
+// transition, body construction) is delegated to the pure functions/types
+// already defined in this module. This section only performs HTTP calls,
+// tmux capture/injection, and channel plumbing — and every one of those
+// seams is injectable so task 7 can drive the whole flow with no network and
+// no tmux, exactly as `BlockedEdgePoller::with_capture` does.
+
+use std::collections::HashMap as StdHashMap;
+use std::sync::{Arc, Mutex as StdMutex};
+
+use async_trait::async_trait;
+use tokio::sync::mpsc;
+
+use crate::config::{BotToken, CodeSessionsBotConfig};
+use crate::serve::blocked_edge::sink::BlockedEdgeRecord;
+use crate::serve::notify::{NotifyError, telegram_http};
+use crate::sessions::ask_question::parse_ask_question;
+
+/// The bridge's view of the Telegram Bot API, boxed as a trait object so
+/// task 7 can inject a fake with no real network call — mirrors
+/// `BlockedEdgePoller::with_capture`'s seam.
+///
+/// Every method takes/returns pre-built `serde_json::Value` bodies (from
+/// this module's pure body builders) rather than typed request structs, so
+/// the trait stays a thin transport seam and never duplicates the pure
+/// core's shapes.
+#[async_trait]
+pub trait QaTelegramClient: Send + Sync {
+    async fn send_message(&self, body: serde_json::Value)
+    -> Result<serde_json::Value, NotifyError>;
+    async fn answer_callback_query(&self, body: serde_json::Value) -> Result<(), NotifyError>;
+    async fn edit_message_text(&self, body: serde_json::Value) -> Result<(), NotifyError>;
+    async fn get_updates(
+        &self,
+        query: &[(String, String)],
+    ) -> Result<serde_json::Value, NotifyError>;
+}
+
+/// Real `reqwest`-backed [`QaTelegramClient`] against CodeSessionsBot.
+///
+/// **Never logs the constructed API URL** — every log line below names only
+/// the bare Bot API method, per `telegram_http::api_url`'s doc comment (the
+/// token lives in that URL's path).
+pub struct HttpQaTelegramClient {
+    bot_token: BotToken,
+    client: reqwest::Client,
+}
+
+impl HttpQaTelegramClient {
+    /// Client-side request timeout for non-long-poll calls.
+    const REQUEST_TIMEOUT_SECS: u64 = 15;
+    /// Long-poll timeout asked of Telegram for `getUpdates`.
+    const GETUPDATES_TIMEOUT_SECS: u64 = 30;
+    /// Client-side timeout for `getUpdates` — must exceed the long-poll
+    /// timeout above or every call would time out on our side first.
+    const GETUPDATES_CLIENT_TIMEOUT_SECS: u64 = Self::GETUPDATES_TIMEOUT_SECS + 10;
+
+    #[must_use]
+    pub fn new(bot_token: BotToken) -> Self {
+        Self {
+            bot_token,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    fn api_url(&self, method: &str) -> String {
+        telegram_http::api_url(&self.bot_token, method)
+    }
+
+    async fn post(
+        &self,
+        method: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, NotifyError> {
+        tracing::debug!(method, "calling Telegram Bot API (session-qa bridge)");
+        let resp = self
+            .client
+            .post(self.api_url(method))
+            .timeout(std::time::Duration::from_secs(Self::REQUEST_TIMEOUT_SECS))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| NotifyError::Transport {
+                reason: format!(
+                    "{method} request failed: {}",
+                    telegram_http::classify_reqwest_error(&e)
+                ),
+            })?;
+
+        let status = resp.status().as_u16();
+        if let Some(err) = telegram_http::classify_http_status(
+            status,
+            telegram_http::retry_after_from_response(&resp),
+        ) {
+            return Err(err);
+        }
+
+        resp.json().await.map_err(|e| NotifyError::Malformed {
+            reason: format!("{method} response body was not valid JSON: {e}"),
+        })
+    }
+}
+
+#[async_trait]
+impl QaTelegramClient for HttpQaTelegramClient {
+    async fn send_message(
+        &self,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, NotifyError> {
+        self.post("sendMessage", body).await
+    }
+
+    async fn answer_callback_query(&self, body: serde_json::Value) -> Result<(), NotifyError> {
+        self.post("answerCallbackQuery", body).await.map(|_| ())
+    }
+
+    async fn edit_message_text(&self, body: serde_json::Value) -> Result<(), NotifyError> {
+        self.post("editMessageText", body).await.map(|_| ())
+    }
+
+    async fn get_updates(
+        &self,
+        query: &[(String, String)],
+    ) -> Result<serde_json::Value, NotifyError> {
+        let method = "getUpdates";
+        tracing::debug!(method, "calling Telegram Bot API (session-qa bridge)");
+        let url = telegram_http::append_query_string(&self.api_url(method), query);
+        let resp = self
+            .client
+            .get(url)
+            .timeout(std::time::Duration::from_secs(
+                Self::GETUPDATES_CLIENT_TIMEOUT_SECS,
+            ))
+            .send()
+            .await
+            .map_err(|e| NotifyError::Transport {
+                reason: format!(
+                    "{method} request failed: {}",
+                    telegram_http::classify_reqwest_error(&e)
+                ),
+            })?;
+
+        let status = resp.status().as_u16();
+        if let Some(err) = telegram_http::classify_http_status(
+            status,
+            telegram_http::retry_after_from_response(&resp),
+        ) {
+            return Err(err);
+        }
+
+        resp.json().await.map_err(|e| NotifyError::Malformed {
+            reason: format!("{method} response body was not valid JSON: {e}"),
+        })
+    }
+}
+
+/// Capture one session's pane, boxed so tests can inject a fake — mirrors
+/// `BlockedEdgePoller`'s `CaptureFn` seam, scoped to a single named session
+/// instead of a full sweep.
+pub type CapturePaneFn = Box<dyn Fn(&str) -> anyhow::Result<String> + Send + Sync>;
+
+/// Inject `text` (a digit, or relayed free text) followed by Enter into the
+/// named session. Boxed so tests can inject a fake with no live tmux server.
+pub type InjectFn = Box<dyn Fn(&str, &str) -> anyhow::Result<()> + Send + Sync>;
+
+/// Real [`CapturePaneFn`] over `sessions::tmux::capture_pane_raw`.
+fn real_capture_pane(session: &str) -> anyhow::Result<String> {
+    crate::sessions::tmux::capture_pane_raw(session)
+}
+
+/// Real [`InjectFn`] over `sessions::tmux::send_keys` — the same function
+/// `POST /api/sessions/{name}/send`'s handler calls
+/// (`handlers::sessions::send`). That handler is not factored to be called
+/// directly from here (it is bound to `actix_web::web::Path`/`web::Json`
+/// extractors and returns an `HttpResponse`), so this calls
+/// `sessions::tmux::send_keys` directly instead — the underlying tmux call is
+/// identical either way; only the HTTP-specific wrapping differs. Recorded
+/// as a deviation in this spec's Amendment Log.
+fn real_inject(session: &str, text: &str) -> anyhow::Result<()> {
+    crate::sessions::tmux::send_keys(session, text)
+}
+
+/// The Telegram-visible chat identity a follow-up-state entry is keyed by.
+/// Telegram's own `chat.id`, rendered as a string (this bridge only ever
+/// talks to one configured chat, but keying by the update's own chat id
+/// keeps the state machine correct even if that ever changes, and makes the
+/// per-chat semantics the spec calls for explicit rather than implicit).
+type ChatKey = String;
+
+/// The runtime bridge: consumes `BlockedEdgeRecord`s from task 3's channel
+/// (inbound path) and runs one `getUpdates` long-poll loop against
+/// CodeSessionsBot (outbound path). Every I/O seam — the Telegram client,
+/// pane capture, and tmux injection — is injected, so the whole flow is
+/// unit-testable with no network and no live tmux session (task 7).
+pub struct SessionQaBridge {
+    chat_id: String,
+    client: Arc<dyn QaTelegramClient>,
+    registry: Arc<PendingQuestions>,
+    capture: CapturePaneFn,
+    inject: InjectFn,
+    follow_up: StdMutex<StdHashMap<ChatKey, ChatFollowUpState>>,
+}
+
+impl SessionQaBridge {
+    /// Construct a bridge against the real Telegram API, real tmux capture,
+    /// and real tmux injection.
+    #[must_use]
+    pub fn new(config: CodeSessionsBotConfig) -> Self {
+        Self::with_seams(
+            config.chat_id,
+            Arc::new(HttpQaTelegramClient::new(config.bot_token)),
+            Box::new(real_capture_pane),
+            Box::new(real_inject),
+        )
+    }
+
+    /// Construct a bridge with every I/O seam injected — the constructor
+    /// task 7's hermetic tests use.
+    #[must_use]
+    pub fn with_seams(
+        chat_id: String,
+        client: Arc<dyn QaTelegramClient>,
+        capture: CapturePaneFn,
+        inject: InjectFn,
+    ) -> Self {
+        Self {
+            chat_id,
+            client,
+            registry: Arc::new(PendingQuestions::new()),
+            capture,
+            inject,
+            follow_up: StdMutex::new(StdHashMap::new()),
+        }
+    }
+
+    /// Read-only access to the pending-questions registry, for tests that
+    /// need to assert on it directly.
+    #[must_use]
+    pub fn registry(&self) -> &Arc<PendingQuestions> {
+        &self.registry
+    }
+
+    // ── Inbound path: crossing → message ────────────────────────────────
+
+    /// Handle one `BlockedEdgeRecord` from task 3's channel: capture that
+    /// session's pane, parse it, and — on a genuine question — send exactly
+    /// one Telegram message (never a second one for an already-pending
+    /// identical question).
+    pub async fn handle_edge_record(&self, record: BlockedEdgeRecord) {
+        let pane = match (self.capture)(&record.session) {
+            Ok(pane) => pane,
+            Err(err) => {
+                tracing::debug!(
+                    session = %record.session,
+                    error = %err,
+                    "session-qa: pane capture failed for a Blocked crossing; dropping"
+                );
+                return;
+            }
+        };
+
+        let Some(prompt) = parse_ask_question(&pane) else {
+            // Not an AskUserQuestion pane (e.g. a permission dialog) — send
+            // nothing, per the design note.
+            return;
+        };
+
+        let outcome = self
+            .registry
+            .register(record.session.clone(), prompt.clone(), Utc::now());
+
+        let RegisterOutcome::Created { question_id } = outcome else {
+            // Already pending an identical question for this session — send
+            // nothing, which is what makes "sent once" true.
+            return;
+        };
+
+        let body = sendmessage_body(&question_id, &prompt, &self.chat_id);
+        match self.client.send_message(body).await {
+            Ok(resp) => {
+                if let Some(message_id) = resp
+                    .get("result")
+                    .and_then(|r| r.get("message_id"))
+                    .and_then(serde_json::Value::as_i64)
+                {
+                    self.registry.set_message_id(&question_id, message_id);
+                } else {
+                    tracing::debug!(
+                        question_id,
+                        "session-qa: sendMessage response carried no message_id"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    question_id,
+                    session = %record.session,
+                    error = %err,
+                    "session-qa: sendMessage failed"
+                );
+            }
+        }
+    }
+
+    /// Drive [`Self::handle_edge_record`] over every record `rx` yields,
+    /// forever. Intended to be spawned once alongside the `getUpdates` loop.
+    pub async fn run_inbound(&self, mut rx: mpsc::Receiver<BlockedEdgeRecord>) {
+        while let Some(record) = rx.recv().await {
+            self.handle_edge_record(record).await;
+        }
+    }
+
+    // ── Outbound path: tap → injection ──────────────────────────────────
+
+    /// Run one `getUpdates` long-poll loop, handling every update as it
+    /// arrives, forever. Every failure path (HTTP error, rate limit,
+    /// malformed update) is logged and the loop continues — no failure ever
+    /// terminates it.
+    pub async fn run_outbound(&self) {
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut query = Vec::new();
+            if let Some(offset) = &cursor {
+                query.push(("offset".to_string(), offset.clone()));
+            }
+            query.push((
+                "timeout".to_string(),
+                HttpQaTelegramClient::GETUPDATES_TIMEOUT_SECS.to_string(),
+            ));
+
+            let raw = match self.client.get_updates(&query).await {
+                Ok(raw) => raw,
+                Err(NotifyError::RateLimited { retry_after_secs }) => {
+                    tracing::debug!(
+                        retry_after_secs,
+                        "session-qa: getUpdates rate limited; backing off"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(retry_after_secs)).await;
+                    continue;
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "session-qa: getUpdates failed; retrying");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
+            let Some(updates) = raw.get("result").and_then(serde_json::Value::as_array) else {
+                tracing::warn!("session-qa: getUpdates response missing result array");
+                continue;
+            };
+
+            for update in updates {
+                if let Some(update_id) = update.get("update_id").and_then(serde_json::Value::as_i64)
+                {
+                    cursor = Some((update_id + 1).to_string());
+                }
+                self.handle_update(update).await;
+            }
+        }
+    }
+
+    /// Dispatch one raw Telegram update: a callback-query tap, or a
+    /// plain-text message. Anything else (unrelated update types) is
+    /// silently ignored.
+    async fn handle_update(&self, update: &serde_json::Value) {
+        if let Some(callback_query) = update.get("callback_query") {
+            self.handle_callback_query(callback_query).await;
+            return;
+        }
+        if let Some(message) = update.get("message") {
+            self.handle_message(message).await;
+        }
+    }
+
+    async fn handle_callback_query(&self, callback_query: &serde_json::Value) {
+        let Some(callback_query_id) = callback_query.get("id").and_then(serde_json::Value::as_str)
+        else {
+            tracing::debug!("session-qa: callback_query missing id; cannot acknowledge, dropping");
+            return;
+        };
+
+        let Some(data) = callback_query
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return;
+        };
+        let Some(decoded) = decode_question_callback(data) else {
+            tracing::debug!("session-qa: malformed callback_data; dropping");
+            return;
+        };
+
+        let chat_id = callback_query
+            .get("message")
+            .and_then(|m| m.get("chat"))
+            .and_then(|c| c.get("id"))
+            .map(|id| id.to_string());
+        let message_id = callback_query
+            .get("message")
+            .and_then(|m| m.get("message_id"))
+            .and_then(serde_json::Value::as_i64);
+
+        let verdict = resolve_question_response(&decoded, &self.registry);
+
+        // `answerCallbackQuery` FIRST, before any injection — matching the
+        // ordering `ticket-telegram-answer-callback` established, for every
+        // verdict including rejections.
+        let ack_body = answercallbackquery_body(callback_query_id, &verdict);
+        if let Err(err) = self.client.answer_callback_query(ack_body).await {
+            tracing::warn!(error = %err, "session-qa: answerCallbackQuery failed");
+        }
+
+        match verdict {
+            QuestionVerdict::Accepted {
+                session,
+                digit,
+                is_escape_hatch,
+                ..
+            } => {
+                if is_escape_hatch {
+                    if let Some(chat_id) = chat_id {
+                        let state = self.take_follow_up_state(&chat_id).unwrap_or_default();
+                        let (new_state, _outcome) =
+                            state.on_escape_hatch_tap(decoded.question_id.clone());
+                        self.set_follow_up_state(chat_id, new_state);
+                    }
+                    // No injection yet — the escape hatch only arms the
+                    // follow-up state; the free-text message that follows is
+                    // what gets relayed (handle_message).
+                } else if let Err(err) = (self.inject)(&session, &digit) {
+                    tracing::warn!(
+                        session = %session,
+                        error = %err,
+                        "session-qa: injection failed"
+                    );
+                }
+
+                self.registry.mark_answered(&decoded.question_id);
+
+                if let Some(question) = self.registry.get(&decoded.question_id)
+                    && let Some(message_id) = message_id
+                {
+                    let chosen_label = question
+                        .prompt
+                        .options
+                        .iter()
+                        .find(|opt| opt.number == decoded.option_number)
+                        .map_or_else(|| digit.clone(), |opt| opt.label.clone());
+                    let edit_body = editmessagetext_body(
+                        &self.chat_id,
+                        message_id,
+                        &question.prompt.question,
+                        &chosen_label,
+                    );
+                    if let Err(err) = self.client.edit_message_text(edit_body).await {
+                        tracing::warn!(error = %err, "session-qa: editMessageText failed");
+                    }
+                }
+            }
+            QuestionVerdict::AlreadyAnswered | QuestionVerdict::UnknownQuestion => {
+                // Acknowledged above with a distinguishing message; no
+                // injection, no edit.
+            }
+        }
+    }
+
+    async fn handle_message(&self, message: &serde_json::Value) {
+        let Some(text) = message.get("text").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let Some(chat_id) = message
+            .get("chat")
+            .and_then(|c| c.get("id"))
+            .map(|id| id.to_string())
+        else {
+            return;
+        };
+
+        let Some(state) = self.take_follow_up_state(&chat_id) else {
+            return;
+        };
+        let (new_state, outcome) = state.on_plain_text(text.to_string());
+        self.set_follow_up_state(chat_id, new_state);
+
+        if let FollowUpOutcome::RelayText { question_id, text } = outcome {
+            let Some(question) = self.registry.get(&question_id) else {
+                tracing::debug!(
+                    question_id,
+                    "session-qa: relay for unknown question; dropping"
+                );
+                return;
+            };
+            if let Err(err) = (self.inject)(&question.session, &text) {
+                tracing::warn!(
+                    session = %question.session,
+                    error = %err,
+                    "session-qa: escape-hatch relay injection failed"
+                );
+                return;
+            }
+            self.registry.mark_answered(&question_id);
+        }
+    }
+
+    fn take_follow_up_state(&self, chat_id: &str) -> Option<ChatFollowUpState> {
+        self.follow_up
+            .lock()
+            .expect("session-qa follow_up mutex poisoned")
+            .remove(chat_id)
+    }
+
+    fn set_follow_up_state(&self, chat_id: String, state: ChatFollowUpState) {
+        if matches!(state, ChatFollowUpState::Idle) {
+            self.follow_up
+                .lock()
+                .expect("session-qa follow_up mutex poisoned")
+                .remove(&chat_id);
+        } else {
+            self.follow_up
+                .lock()
+                .expect("session-qa follow_up mutex poisoned")
+                .insert(chat_id, state);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
