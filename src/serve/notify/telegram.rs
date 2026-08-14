@@ -619,6 +619,105 @@ impl OperatorTransport for TelegramTransport {
         })?;
         parse_updates(&raw)
     }
+
+    async fn acknowledge(
+        &self,
+        response: &OperatorResponse,
+        verdict: &ResponseVerdict,
+    ) -> Result<(), NotifyError> {
+        if let Some(ack) = &response.ack {
+            let method = "answerCallbackQuery";
+            tracing::debug!(
+                method,
+                verdict = verdict_label(verdict),
+                "calling Telegram Bot API"
+            );
+
+            let body = answercallbackquery_body(ack, verdict);
+            let resp = self
+                .client
+                .post(self.api_url(method))
+                .timeout(Duration::from_secs(Self::CLIENT_TIMEOUT_SECS))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| NotifyError::Transport {
+                    reason: format!("{method} request failed: {}", classify_reqwest_error(&e)),
+                })?;
+
+            let status = resp.status().as_u16();
+            if let Some(err) = classify_http_status(status, retry_after_from_response(&resp)) {
+                return Err(err);
+            }
+        }
+
+        // The edit is best-effort: it drops the live buttons and shows the
+        // decision, but losing it is a cosmetic regression, not a lost
+        // acknowledgement — a failure here is logged and swallowed, never
+        // returned. The original rendered summary is not available at this
+        // seam (`OperatorResponse` carries no payload text), so the edited
+        // message names the gate and the outcome rather than repeating the
+        // full original prompt.
+        if let Some(message) = &response.message {
+            let chosen = match verdict {
+                ResponseVerdict::Accepted { option_key, .. } => option_key.clone(),
+                ResponseVerdict::StaleDigest => "expired (question changed)".to_string(),
+                ResponseVerdict::UnknownGate => "already answered or no longer pending".to_string(),
+            };
+            let summary = format!("Gate {}", response.gate_id);
+            let method = "editMessageText";
+            tracing::debug!(
+                method,
+                verdict = verdict_label(verdict),
+                "calling Telegram Bot API"
+            );
+
+            let body =
+                editmessagetext_body(&message.chat_id, message.message_id, &summary, &chosen);
+            let edit_result = self
+                .client
+                .post(self.api_url(method))
+                .timeout(Duration::from_secs(Self::CLIENT_TIMEOUT_SECS))
+                .json(&body)
+                .send()
+                .await;
+
+            match edit_result {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    if let Some(err) =
+                        classify_http_status(status, retry_after_from_response(&resp))
+                    {
+                        tracing::warn!(
+                            method,
+                            error = %err,
+                            "operator message edit failed"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        method,
+                        error = classify_reqwest_error(&e),
+                        "operator message edit request failed"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Short, non-sensitive label for a [`ResponseVerdict`], for log fields —
+/// never the full verdict `Debug` rendering, which could carry an option
+/// key an operator considers sensitive in some future payload.
+fn verdict_label(verdict: &ResponseVerdict) -> &'static str {
+    match verdict {
+        ResponseVerdict::Accepted { .. } => "accepted",
+        ResponseVerdict::StaleDigest => "stale_digest",
+        ResponseVerdict::UnknownGate => "unknown_gate",
+    }
 }
 
 /// Pull Telegram's `Retry-After` header (seconds) off a response, if present.

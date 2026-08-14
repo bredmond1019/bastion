@@ -196,6 +196,25 @@ pub trait OperatorTransport: Send + Sync {
         &self,
         since: Option<UpdateCursor>,
     ) -> Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError>;
+
+    /// Acknowledge `response`, whose verdict has already been resolved to
+    /// `verdict`, back to the transport it arrived on — so the operator's
+    /// tap stops spinning and (where the transport supports it) the
+    /// original message is edited to show the decision and drop its live
+    /// buttons (`ticket-telegram-answer-callback` task 3).
+    ///
+    /// Default-implemented as a no-op `Ok(())`: a transport with no
+    /// acknowledgement concept (WhatsApp, and every existing test fake)
+    /// needs no change to keep compiling and behaving correctly. Telegram
+    /// overrides this to actually call `answerCallbackQuery` (and, best
+    /// effort, `editMessageText`).
+    async fn acknowledge(
+        &self,
+        _response: &OperatorResponse,
+        _verdict: &telegram::ResponseVerdict,
+    ) -> Result<(), NotifyError> {
+        Ok(())
+    }
 }
 
 impl fmt::Debug for UpdateCursor {
