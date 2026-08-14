@@ -24,17 +24,17 @@
 
 Which colour do you prefer?
 
-❯ 1. Red
+  1. Red
      Warm, bold, high-energy.
   2. Green
      Natural, calm, balanced.
   3. Blue
      Cool, steady, classic.
-  4. Type something.
+❯ 4. Type something.
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   5. Chat about this
 
-Enter to select · ↑/↓ to navigate · Esc to cancel
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel
 
 
 
