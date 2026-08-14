@@ -10,19 +10,19 @@
 //!   — through an injected fake Telegram client and injected capture/inject
 //!   closures. No network call, no tmux process, anywhere in this file.
 use super::*;
-use crate::sessions::ask_question::QuestionOption;
+use crate::sessions::ask_question::{OptionKind, QuestionOption};
 
-fn prompt(question: &str, options: &[(usize, &str, bool)]) -> AskQuestionPrompt {
+fn prompt(question: &str, options: &[(usize, &str, OptionKind)]) -> AskQuestionPrompt {
     AskQuestionPrompt {
         header: None,
         question: question.to_string(),
         options: options
             .iter()
-            .map(|(number, label, is_escape_hatch)| QuestionOption {
+            .map(|(number, label, kind)| QuestionOption {
                 number: *number,
                 label: (*label).to_string(),
                 description: None,
-                is_escape_hatch: *is_escape_hatch,
+                kind: *kind,
             })
             .collect(),
     }
@@ -32,9 +32,9 @@ fn sample_prompt() -> AskQuestionPrompt {
     prompt(
         "Which database?",
         &[
-            (1, "Postgres", false),
-            (2, "MySQL", false),
-            (3, "Chat about this", true),
+            (1, "Postgres", OptionKind::Choice),
+            (2, "MySQL", OptionKind::Choice),
+            (3, "Chat about this", OptionKind::ChatAbout),
         ],
     )
 }
@@ -64,7 +64,7 @@ fn register_identical_unanswered_question_dedups_to_existing_id() {
 fn register_different_prompt_for_same_session_creates_second_entry() {
     let registry = PendingQuestions::new();
     let first = registry.register("session-a", sample_prompt(), Utc::now());
-    let other = prompt("Which cache?", &[(1, "Redis", false)]);
+    let other = prompt("Which cache?", &[(1, "Redis", OptionKind::Choice)]);
     let second = registry.register("session-a", other, Utc::now());
 
     assert_ne!(first.question_id(), second.question_id());
@@ -193,13 +193,13 @@ fn resolve_accepted_for_valid_option_tap() {
             session: "session-a".to_string(),
             option_number: 2,
             digit: "2".to_string(),
-            is_escape_hatch: false,
+            kind: OptionKind::Choice,
         }
     );
 }
 
 #[test]
-fn resolve_accepted_flags_escape_hatch_option() {
+fn resolve_accepted_flags_chat_about_option() {
     let registry = PendingQuestions::new();
     let outcome = registry.register("session-a", sample_prompt(), Utc::now());
     let callback = QuestionCallback {
@@ -208,9 +208,7 @@ fn resolve_accepted_flags_escape_hatch_option() {
     };
     let verdict = resolve_question_response(&callback, &registry);
     match verdict {
-        QuestionVerdict::Accepted {
-            is_escape_hatch, ..
-        } => assert!(is_escape_hatch),
+        QuestionVerdict::Accepted { kind, .. } => assert_eq!(kind, OptionKind::ChatAbout),
         other => panic!("expected Accepted, got {other:?}"),
     }
 }
@@ -305,7 +303,7 @@ fn answercallbackquery_body_distinct_text_per_verdict() {
             session: "s".to_string(),
             option_number: 1,
             digit: "1".to_string(),
-            is_escape_hatch: false,
+            kind: OptionKind::Choice,
         },
     );
     let already = answercallbackquery_body("cb1", &QuestionVerdict::AlreadyAnswered);
@@ -438,11 +436,10 @@ mod e2e {
     use crate::detect::AgentState;
     use crate::serve::blocked_edge::sink::BlockedEdgeRecord;
 
-    /// A pane that parses to a genuine `AskUserQuestion` prompt: a question,
-    /// two normal options, and a trailing escape-hatch option (soft-matches
-    /// `ESCAPE_HATCH_HINTS` via "Chat about this").
-    const SAMPLE_PANE: &str =
-        "Which database?\n1. Postgres\n2. MySQL\n3. Chat about this\nEnter to select\n";
+    /// A pane that parses to a genuine `AskUserQuestion` prompt: a question, two plain
+    /// choices, and the same rule-bounded `FreeText`/`ChatAbout` pair as the real
+    /// captured widget — options 3 and 4 sit around the separating horizontal rule.
+    const SAMPLE_PANE: &str = "Which database?\n1. Postgres\n2. MySQL\n3. Type something.\n────────────\n4. Chat about this\nEnter to select\n";
 
     /// A pane with no `AskUserQuestion` footer marker at all — e.g. a plain
     /// permission dialog. Must parse to `None`.
@@ -672,7 +669,7 @@ mod e2e {
         let buttons = sends[0]["reply_markup"]["inline_keyboard"][0]
             .as_array()
             .expect("buttons array");
-        assert_eq!(buttons.len(), 3, "one button per parsed option");
+        assert_eq!(buttons.len(), 4, "one button per parsed option");
     }
 
     #[tokio::test]
@@ -810,8 +807,8 @@ mod e2e {
         };
         let question_id = question_id_from_send_message(body);
 
-        // Option 3 is the escape hatch in SAMPLE_PANE ("Chat about this").
-        let tap = callback_query_update(1, "cbq-1", &question_id, 3, 999, 555);
+        // Option 4 is the ChatAbout option in SAMPLE_PANE ("Chat about this").
+        let tap = callback_query_update(1, "cbq-1", &question_id, 4, 999, 555);
         bridge.handle_update(&tap).await;
 
         assert!(

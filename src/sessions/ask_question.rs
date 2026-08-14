@@ -1,8 +1,9 @@
 // sessions/ask_question.rs — pure parser for the AskUserQuestion pane.
 //
 // Turns a captured tmux pane (raw text, as produced by `tmux capture-pane -p`) into a
-// structured `AskQuestionPrompt`: the question text, its numbered options, and a flag
-// marking the trailing free-text "escape hatch" option (e.g. "Chat about this").
+// structured `AskQuestionPrompt`: the question text, its numbered options, and each
+// option's `OptionKind` (an ordinary choice, the inline free-text option, or the
+// widget-closing "chat about this" option).
 //
 // This module is 100% pure: no `std::fs`, no `std::process`, no network calls, no clock
 // reads. It is the input the Telegram bridge (BA.20.C) uses to build an inline keyboard —
@@ -17,13 +18,22 @@
 /// constant rather than repeating the string literal, so the two can never drift apart.
 pub const ASK_QUESTION_MARKER: &str = "Enter to select";
 
-/// Heuristic substrings (case-insensitive) that mark an option's label as the trailing
-/// free-text "escape hatch" (e.g. "Chat about this", "Something else", "Other"). This is
-/// deliberately a soft match, never a hard string equality — the operator confirmed
-/// (2026-08-14) that the escape hatch is almost always present but is not guaranteed to
-/// read any particular string verbatim. Combined with the "last option only" structural
-/// rule in `parse_ask_question`, so structural position alone never sets the flag.
-const ESCAPE_HATCH_HINTS: &[&str] = &["chat about", "something else", "other"];
+/// Heuristic substrings (case-insensitive) that softly confirm a STRUCTURALLY classified
+/// `FreeText` option's label reads as an inline free-text prompt (e.g. "Type
+/// something."). SECONDARY confirmation only — position (immediately above the widget's
+/// separating horizontal rule) is what actually sets the classification. This has to be
+/// secondary: once the free-text option is filled in with typed text (e.g.
+/// `teal, actually`), the placeholder wording is gone entirely, so a text-first
+/// classifier would misclassify it. See `parse_ask_question`.
+const FREE_TEXT_HINTS: &[&str] = &["type something"];
+
+/// Heuristic substrings (case-insensitive) that softly confirm a STRUCTURALLY classified
+/// `ChatAbout` option's label (e.g. "Chat about this", "Something else", "Other").
+/// SECONDARY confirmation only — position (immediately below the widget's separating
+/// horizontal rule) is what actually sets the classification; the operator confirmed
+/// (2026-08-14) that the label text is not guaranteed to read any particular string
+/// verbatim.
+const CHAT_ABOUT_HINTS: &[&str] = &["chat about", "something else", "other"];
 
 /// One numbered option in an `AskUserQuestion` prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,9 +46,31 @@ pub struct QuestionOption {
     /// following the option. Wrapped multi-line descriptions are joined into one
     /// string with single spaces.
     pub description: Option<String>,
-    /// Whether this option is the trailing free-text escape hatch. Only ever `true`
-    /// for the last option, and only when its label also passes a soft text check.
-    pub is_escape_hatch: bool,
+    /// What selecting this option actually does. See [`OptionKind`].
+    pub kind: OptionKind,
+}
+
+/// The three distinct behaviours a trailing `AskUserQuestion` option can carry,
+/// replacing the old single `is_escape_hatch: bool` flag that conflated two genuinely
+/// different things (operator-confirmed 2026-08-14, reproduced live). Classified
+/// STRUCTURALLY by `parse_ask_question`: whether an option sits above, at, or below the
+/// horizontal rule separating the widget's numbered block from its trailing option is
+/// the reliable discriminator. Label text is only ever a secondary, non-authoritative
+/// confirmation signal — never the primary classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionKind {
+    /// An ordinary choice. Selecting it — digit, then Enter — answers the question with
+    /// that choice.
+    Choice,
+    /// The option immediately above the separating rule. Selecting it lets the operator
+    /// type inline: the typed text replaces the option's placeholder label in place, and
+    /// Enter submits that typed text AS THE ANSWER to the question (digit, then the
+    /// text, then Enter — verified: `Which colour do you prefer? -> teal, actually`).
+    FreeText,
+    /// The option below the separating rule. Selecting it — digit, then Enter — CLOSES
+    /// the widget and returns to the normal session prompt, where the agent replies with
+    /// something variable. It does not answer the question at all.
+    ChatAbout,
 }
 
 /// A parsed `AskUserQuestion` prompt: the question text plus its numbered options.
@@ -121,11 +153,20 @@ fn parse_option_marker(content: &str) -> Option<(usize, String)> {
     Some((number, label))
 }
 
-/// Does this label read as the trailing free-text escape hatch, per the heuristic hint
-/// list? Case-insensitive substring match — never a hard equality.
-fn looks_like_escape_hatch(label: &str) -> bool {
+/// Does this label read as the inline free-text option, per the heuristic hint list?
+/// Case-insensitive substring match — never a hard equality, and never the primary
+/// classifier (see [`OptionKind::FreeText`]).
+fn looks_like_free_text(label: &str) -> bool {
     let lower = label.to_lowercase();
-    ESCAPE_HATCH_HINTS.iter().any(|hint| lower.contains(hint))
+    FREE_TEXT_HINTS.iter().any(|hint| lower.contains(hint))
+}
+
+/// Does this label read as the widget-closing "chat about this" option, per the
+/// heuristic hint list? Case-insensitive substring match — never a hard equality, and
+/// never the primary classifier (see [`OptionKind::ChatAbout`]).
+fn looks_like_chat_about(label: &str) -> bool {
+    let lower = label.to_lowercase();
+    CHAT_ABOUT_HINTS.iter().any(|hint| lower.contains(hint))
 }
 
 /// If `raw` (an UN-decorated, original screen line) is the widget's header-chip line —
@@ -217,12 +258,23 @@ pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt> {
 
     let mut last_option: Option<QuestionOption> = None;
 
+    // The number of options parsed so far (options already flushed, plus the
+    // in-progress `last_option`, if any) at the moment the widget's separating
+    // horizontal rule is encountered. `Some(n)` means: options[0..n-1] are ordinary
+    // choices, options[n-1] is the FreeText candidate immediately above the rule, and
+    // any options after it are ChatAbout. Only the FIRST such rule counts — the widget
+    // has exactly one.
+    let mut rule_boundary: Option<usize> = None;
+
     for (i, (content, indent)) in lines.iter().enumerate() {
         if i < scroll_boundary {
             // Scrollback (or the header-chip / rule line itself): discard.
             continue;
         }
         if content.is_empty() {
+            if rule_boundary.is_none() && seen_first_option && is_rule_line(raw_lines[i]) {
+                rule_boundary = Some(options.len() + usize::from(last_option.is_some()));
+            }
             continue;
         }
         if content.contains(ASK_QUESTION_MARKER) {
@@ -241,7 +293,7 @@ pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt> {
                 number,
                 label,
                 description: None,
-                is_escape_hatch: false,
+                kind: OptionKind::Choice,
             });
             continue;
         }
@@ -273,11 +325,32 @@ pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt> {
         return None;
     }
 
-    // Flag the escape hatch: last option only, and only when its label soft-matches.
-    if let Some(last) = options.last_mut()
-        && looks_like_escape_hatch(&last.label)
+    // Classify STRUCTURALLY: only when a separating rule was found, and only when
+    // there is at least one option after it (otherwise the rule is decorative — a
+    // trailing rule with nothing following it fabricates nothing).
+    if let Some(boundary) = rule_boundary
+        && boundary >= 1
+        && boundary < options.len()
     {
-        last.is_escape_hatch = true;
+        let free_text_opt = &mut options[boundary - 1];
+        free_text_opt.kind = OptionKind::FreeText;
+        if !looks_like_free_text(&free_text_opt.label) {
+            tracing::debug!(
+                label = %free_text_opt.label,
+                "ask_question: FreeText option classified structurally; label did not \
+                 soft-match the free-text hint list"
+            );
+        }
+        for opt in &mut options[boundary..] {
+            opt.kind = OptionKind::ChatAbout;
+            if !looks_like_chat_about(&opt.label) {
+                tracing::debug!(
+                    label = %opt.label,
+                    "ask_question: ChatAbout option classified structurally; label did \
+                     not soft-match the chat-about hint list"
+                );
+            }
+        }
     }
 
     let question = question_parts.join(" ").trim().to_string();
@@ -326,6 +399,63 @@ mod tests {
         assert_eq!(parsed.options[3].label, "Type something.");
         assert_eq!(parsed.options[4].number, 5);
         assert_eq!(parsed.options[4].label, "Chat about this");
+
+        assert_eq!(
+            parsed.options.iter().map(|o| o.kind).collect::<Vec<_>>(),
+            vec![
+                OptionKind::Choice,
+                OptionKind::Choice,
+                OptionKind::Choice,
+                OptionKind::FreeText,
+                OptionKind::ChatAbout,
+            ]
+        );
+    }
+
+    const FREETEXT_FILLED_FIXTURE: &str =
+        include_str!("../detect/fixtures/claude_ask_question_freetext_filled.txt");
+    const FREETEXT_SELECTED_FIXTURE: &str =
+        include_str!("../detect/fixtures/claude_ask_question_freetext_selected.txt");
+
+    /// The kinds every one of the three real fixtures should yield, in order — the
+    /// widget's structural layout (numbered block, then a rule, then the two trailing
+    /// options) is identical across all three; only the label text or the `❯` marker
+    /// position differs between captures.
+    fn expected_real_fixture_kinds() -> Vec<OptionKind> {
+        vec![
+            OptionKind::Choice,
+            OptionKind::Choice,
+            OptionKind::Choice,
+            OptionKind::FreeText,
+            OptionKind::ChatAbout,
+        ]
+    }
+
+    #[test]
+    fn freetext_filled_label_still_classifies_as_freetext() {
+        // The case a text-first classifier gets wrong: once the free-text option is
+        // filled in with typed text, the placeholder wording ("Type something.") is
+        // gone, so only structural position (immediately above the separating rule)
+        // can still classify it correctly.
+        let parsed = parse_ask_question(FREETEXT_FILLED_FIXTURE).expect("should parse");
+        assert_eq!(
+            parsed.options.iter().map(|o| o.kind).collect::<Vec<_>>(),
+            expected_real_fixture_kinds()
+        );
+        assert_eq!(parsed.options[3].label, "teal, actually");
+    }
+
+    #[test]
+    fn freetext_selected_marker_position_does_not_affect_classification() {
+        // The `❯` selection marker sits on option 4 in this capture (vs. option 1 in
+        // `claude_awaiting_question.txt`) — classification must be identical regardless
+        // of which option currently carries the marker, because it is structural, not
+        // marker-driven.
+        let parsed = parse_ask_question(FREETEXT_SELECTED_FIXTURE).expect("should parse");
+        assert_eq!(
+            parsed.options.iter().map(|o| o.kind).collect::<Vec<_>>(),
+            expected_real_fixture_kinds()
+        );
     }
 
     #[test]
@@ -392,9 +522,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(parse_ask_question(screen), None);
     }
 
-    // --- ESCAPE HATCH ---
+    // --- OPTION KIND ---
 
-    const NO_ESCAPE_HATCH: &str = "\
+    const NO_RULE_NO_HINT: &str = "\
   What should we name the module?
 
   ❯ 1. parser
@@ -405,15 +535,15 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 ";
 
     #[test]
-    fn trailing_option_without_soft_match_is_not_flagged() {
-        let parsed = parse_ask_question(NO_ESCAPE_HATCH).expect("should parse");
+    fn no_rule_and_no_soft_match_yields_choice_for_every_option() {
+        let parsed = parse_ask_question(NO_RULE_NO_HINT).expect("should parse");
         assert_eq!(parsed.options.len(), 3);
         for opt in &parsed.options {
-            assert!(!opt.is_escape_hatch);
+            assert_eq!(opt.kind, OptionKind::Choice);
         }
     }
 
-    const SINGLE_PLUS_ESCAPE_HATCH: &str = "\
+    const MATCHING_TEXT_BUT_NO_RULE: &str = "\
   Should we proceed with the deploy?
 
   ❯ 1. Yes, deploy now
@@ -423,11 +553,38 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 ";
 
     #[test]
-    fn single_option_plus_escape_hatch_flags_only_the_second() {
-        let parsed = parse_ask_question(SINGLE_PLUS_ESCAPE_HATCH).expect("should parse");
+    fn matching_hint_text_without_a_separating_rule_does_not_fabricate_chat_about() {
+        // Structure is the discriminator, not text: a label that soft-matches the
+        // chat-about hint list must NOT be classified as `ChatAbout` when there is no
+        // separating rule above it.
+        let parsed = parse_ask_question(MATCHING_TEXT_BUT_NO_RULE).expect("should parse");
         assert_eq!(parsed.options.len(), 2);
-        assert!(!parsed.options[0].is_escape_hatch);
-        assert!(parsed.options[1].is_escape_hatch);
+        assert_eq!(parsed.options[0].kind, OptionKind::Choice);
+        assert_eq!(parsed.options[1].kind, OptionKind::Choice);
+    }
+
+    const RULE_WITH_NO_RECOGNISABLE_TEXT: &str = "\
+  Which environment should we target?
+
+  ❯ 1. staging
+    2. production
+────────────────────────────────────────────
+    3. xyz123
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    #[test]
+    fn separating_rule_with_no_recognisable_text_still_classifies_structurally() {
+        // The reliable discriminator is structural, not textual: neither "production"
+        // nor "xyz123" soft-match either hint list, yet the rule alone must still
+        // classify the option above it as `FreeText` and the option below it as
+        // `ChatAbout`.
+        let parsed = parse_ask_question(RULE_WITH_NO_RECOGNISABLE_TEXT).expect("should parse");
+        assert_eq!(parsed.options.len(), 3);
+        assert_eq!(parsed.options[0].kind, OptionKind::Choice);
+        assert_eq!(parsed.options[1].kind, OptionKind::FreeText);
+        assert_eq!(parsed.options[2].kind, OptionKind::ChatAbout);
     }
 
     // --- OPTIONS ---
@@ -473,12 +630,15 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
-    fn trailing_escape_hatch_option_is_flagged_in_multi_option_prompt() {
+    fn trailing_matching_text_without_rule_is_choice_in_multi_option_prompt() {
+        // MULTI_OPTION's last label reads exactly like the chat-about hint list
+        // ("Chat about this"), but there is no separating rule above it — structure,
+        // not text, is what would set `ChatAbout`, so this must stay `Choice`.
         let parsed = parse_ask_question(MULTI_OPTION).expect("should parse");
-        assert!(!parsed.options[0].is_escape_hatch);
-        assert!(!parsed.options[1].is_escape_hatch);
-        assert!(!parsed.options[2].is_escape_hatch);
-        assert!(parsed.options[3].is_escape_hatch);
+        assert_eq!(parsed.options[0].kind, OptionKind::Choice);
+        assert_eq!(parsed.options[1].kind, OptionKind::Choice);
+        assert_eq!(parsed.options[2].kind, OptionKind::Choice);
+        assert_eq!(parsed.options[3].kind, OptionKind::Choice);
     }
 
     const WRAPPED_DESCRIPTION: &str = "\

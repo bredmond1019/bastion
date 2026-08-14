@@ -22,7 +22,7 @@ use std::collections::{HashMap, VecDeque};
 
 use chrono::{DateTime, Utc};
 
-use crate::sessions::ask_question::AskQuestionPrompt;
+use crate::sessions::ask_question::{AskQuestionPrompt, OptionKind};
 
 // ── PendingQuestion / PendingQuestions registry ─────────────────────────────
 
@@ -263,7 +263,7 @@ pub enum QuestionVerdict {
         /// The digit/label to inject — the tapped option's 1-indexed number
         /// as text, ready to send followed by Enter.
         digit: String,
-        is_escape_hatch: bool,
+        kind: OptionKind,
     },
     /// The question exists but was already answered by an earlier tap.
     AlreadyAnswered,
@@ -304,7 +304,7 @@ pub fn resolve_question_response(
         session: question.session,
         option_number: option.number,
         digit: option.number.to_string(),
-        is_escape_hatch: option.is_escape_hatch,
+        kind: option.kind,
     }
 }
 
@@ -326,10 +326,11 @@ pub fn sendmessage_body(
         .options
         .iter()
         .map(|opt| {
-            let text = if opt.is_escape_hatch {
-                format!("💬 {}", opt.label)
-            } else {
-                format!("{}. {}", opt.number, opt.label)
+            let text = match opt.kind {
+                OptionKind::ChatAbout => format!("💬 {}", opt.label),
+                OptionKind::FreeText | OptionKind::Choice => {
+                    format!("{}. {}", opt.number, opt.label)
+                }
             };
             serde_json::json!({
                 "text": text,
@@ -903,10 +904,17 @@ impl SessionQaBridge {
             QuestionVerdict::Accepted {
                 session,
                 digit,
-                is_escape_hatch,
+                kind,
                 ..
             } => {
-                if is_escape_hatch {
+                // TODO(BA.ticket.session-qa-freetext-injection): `FreeText` takes the
+                // same path as `ChatAbout` here for now — this is KNOWN WRONG. The
+                // digit+Enter sequence below arms the follow-up state but never lets
+                // the operator type first, so a `FreeText` tap cannot actually submit
+                // an answer to the question yet. Fixing the injection sequence
+                // (digit, then relayed text, then Enter) is out of scope for this
+                // ticket; tracked separately.
+                if matches!(kind, OptionKind::ChatAbout | OptionKind::FreeText) {
                     if let Some(chat_id) = chat_id {
                         let state = self.take_follow_up_state(&chat_id).unwrap_or_default();
                         let (new_state, _outcome) =
