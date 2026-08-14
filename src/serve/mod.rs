@@ -40,6 +40,7 @@ pub mod dto;
 pub mod handlers;
 pub mod notify;
 pub mod poll;
+pub mod session_qa;
 pub mod status;
 pub mod ws;
 
