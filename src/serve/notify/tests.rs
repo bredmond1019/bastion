@@ -972,3 +972,305 @@ async fn e2e_replayed_tap_of_an_already_accepted_button_resolves_unknown_gate() 
         "accepted entry must have been removed from the registry"
     );
 }
+
+// ── ApproveAndRunSeams resolve-and-execute coverage
+//    (ticket-approve-and-run-seams task 4) ────────────────────────────────
+//
+// Exercises the sink's real action (task 3): a resolved `ResponseVerdict`
+// converted via `crate::serve::approve_and_run_verdict_for` and driven
+// through `ApproveAndRunSeams::resolve_verdict`, spawned non-blocking
+// exactly as `run_server`'s wiring does. Hermetic per the ticket's Testing
+// Strategy — no Telegram, no network, no database:
+// `ApproveAndRunSeams::new` takes injected `ApprovalLedger`/`HttpPost`
+// seams precisely so this is possible.
+//
+// The verdicts here are built directly (not via `telegram::resolve_response`
+// against a real Telegram `CallbackData`) because `resolve_response`
+// truncates the presented digest to `CALLBACK_DIGEST_PREFIX_LEN` for
+// Telegram's callback-data size limit, while `ApproveAndRunSeams::
+// resolve_verdict` (via `engine_core`'s `record_decision`) compares against
+// the item's full stored digest — the two digest lengths are a Telegram
+// transport-layer concern that is orthogonal to what this suite covers:
+// whether a resolved verdict, once built, drives the seams correctly and
+// without blocking. `approve_and_run_verdict_for`'s own pure-conversion
+// tests (`src/serve/mod.rs::approve_and_run_seams_wiring_tests`) already
+// prove the field-by-field mapping off `ResponseVerdict`; these tests start
+// one step later, from an already-built verdict, exactly like
+// `engine_core::workflows::approve_and_run::seams_tests` does at the
+// engine-core layer.
+//
+// The `/api/notify/test` regression this ticket calls out is covered
+// separately: `resolve_pending_lookup`'s composition (engine queue first,
+// falling back to the test registry) is asserted by
+// `crate::serve::approve_and_run_seams_wiring_tests::
+// a_payload_sent_via_notify_test_still_resolves`, and this file's `e2e_*`
+// tests above already prove the loop still resolves taps against
+// `PendingPayloads` end to end.
+mod resolve_and_execute_tests {
+    use super::super::*;
+    use crate::serve::approve_and_run_verdict_for;
+    use engine_core::nodes::harvest_gate::pending_harvest_record;
+    use engine_core::nodes::http_post::{HttpPost, HttpPostResponse, StubHttpPost};
+    use engine_core::operator::OperatorPayloadLimits;
+    use engine_core::operator::ledger::{ApprovalLedger, FileApprovalLedger, LedgerDecision};
+    use engine_core::operator::queue::{OperatorQueue, OperatorQueuePolicy};
+    use engine_core::workflows::approve_and_run::{
+        ApproveAndRunPolicy, ApproveAndRunSeams, OPTION_APPROVE, OPTION_SKIP, PendingHarvestRecord,
+    };
+    use std::sync::Mutex as StdMutex;
+    use std::time::{Duration, Instant};
+
+    fn harvest_record(artifact_id: &str) -> PendingHarvestRecord {
+        let value = pending_harvest_record(
+            artifact_id,
+            "https://synapse.example/ingest/learning-artifact",
+            serde_json::json!({"title": "some artifact"}),
+            vec!["docs/foo.md".to_string()],
+        );
+        PendingHarvestRecord::from_value(&value).expect("record parses")
+    }
+
+    /// A fresh `ApproveAndRunSeams` over an empty queue and a
+    /// `FileApprovalLedger` pointed at a throwaway tempdir path, plus a
+    /// shared handle to that same ledger so tests can `read_all()` it —
+    /// mirrors `src/serve/mod.rs::approve_and_run_seams_wiring_tests::
+    /// seams()` exactly, extended to hand back the ledger (that module
+    /// only needed `lookup_pending`, never a ledger read).
+    fn seams_with(http_post: Arc<dyn HttpPost>) -> (ApproveAndRunSeams, Arc<FileApprovalLedger>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ledger = Arc::new(FileApprovalLedger::new(dir.path().join("ledger.jsonl")));
+        let seams = ApproveAndRunSeams::new(
+            Arc::new(StdMutex::new(OperatorQueue::new(
+                OperatorQueuePolicy::default(),
+            ))),
+            ledger.clone(),
+            http_post,
+            OperatorPayloadLimits::default(),
+            ApproveAndRunPolicy::default(),
+        );
+        (seams, ledger)
+    }
+
+    #[tokio::test]
+    async fn resolve_and_execute_writes_one_ledger_row_and_posts_the_stored_payload_byte_for_byte()
+    {
+        let stub = StubHttpPost::succeeding(serde_json::json!({"ok": true}));
+        let stub_dyn: Arc<dyn HttpPost> = Arc::new(stub.clone());
+        let (seams, ledger) = seams_with(stub_dyn);
+
+        let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
+        let delivered = report.delivered.expect("one item delivered");
+
+        let verdict = telegram::ResponseVerdict::Accepted {
+            gate_id: delivered.item_id.clone(),
+            option_key: OPTION_APPROVE.to_string(),
+            digest: delivered.payload.digest.clone(),
+            decided_at: chrono::Utc::now(),
+        };
+        let engine_verdict = approve_and_run_verdict_for(&verdict, "operator")
+            .expect("Accepted always converts to a verdict");
+
+        let resolution = seams
+            .resolve_verdict(engine_verdict)
+            .await
+            .expect("a matched-digest approve should resolve");
+
+        assert!(resolution.outcome.ledger_outcome.should_execute);
+        let rows = ledger.read_all();
+        assert_eq!(rows.len(), 1, "exactly one ledger row");
+        assert_eq!(rows[0].decision, LedgerDecision::Approved);
+
+        assert!(resolution.executed.is_some(), "execution result present");
+        let (url, body) = stub.last_call().expect("exactly one POST should occur");
+        assert_eq!(url, "https://synapse.example/ingest/learning-artifact");
+        assert_eq!(body, serde_json::json!({"title": "some artifact"}));
+    }
+
+    #[tokio::test]
+    async fn digest_mismatch_requeues_with_zero_posts_and_stays_resolvable() {
+        let stub = StubHttpPost::succeeding(serde_json::json!({"ok": true}));
+        let stub_dyn: Arc<dyn HttpPost> = Arc::new(stub.clone());
+        let (seams, ledger) = seams_with(stub_dyn);
+
+        let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
+        let delivered = report.delivered.expect("one item delivered");
+
+        let verdict = telegram::ResponseVerdict::Accepted {
+            gate_id: delivered.item_id.clone(),
+            option_key: OPTION_APPROVE.to_string(),
+            digest: "a-different-digest-than-was-delivered".to_string(),
+            decided_at: chrono::Utc::now(),
+        };
+        let engine_verdict = approve_and_run_verdict_for(&verdict, "operator")
+            .expect("Accepted always converts to a verdict");
+
+        let resolution = seams
+            .resolve_verdict(engine_verdict)
+            .await
+            .expect("a mismatched digest should still resolve, as a requeue");
+
+        assert!(!resolution.outcome.ledger_outcome.should_execute);
+        assert!(resolution.outcome.requeued);
+        assert!(resolution.executed.is_none());
+        let rows = ledger.read_all();
+        assert_eq!(rows.len(), 1, "exactly one ledger row");
+        assert_eq!(rows[0].decision, LedgerDecision::Requeued);
+        assert!(
+            stub.last_call().is_none(),
+            "a digest mismatch must never POST"
+        );
+
+        // The item was re-queued, never dropped — a fresh delivery pass
+        // (an empty drain, since nothing new arrived) redelivers it under
+        // the same gate_id, proving it is still resolvable from the queue.
+        let redelivered = seams.drain(&[], chrono::Utc::now());
+        assert_eq!(
+            redelivered.delivered.map(|item| item.item_id),
+            Some(delivered.item_id.clone()),
+            "the requeued item should be the next one delivered"
+        );
+        assert!(seams.lookup_pending(&delivered.item_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn skip_writes_its_row_with_zero_posts() {
+        let stub = StubHttpPost::succeeding(serde_json::json!({"ok": true}));
+        let stub_dyn: Arc<dyn HttpPost> = Arc::new(stub.clone());
+        let (seams, ledger) = seams_with(stub_dyn);
+
+        let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
+        let delivered = report.delivered.expect("one item delivered");
+
+        let verdict = telegram::ResponseVerdict::Accepted {
+            gate_id: delivered.item_id.clone(),
+            option_key: OPTION_SKIP.to_string(),
+            digest: delivered.payload.digest.clone(),
+            decided_at: chrono::Utc::now(),
+        };
+        let engine_verdict = approve_and_run_verdict_for(&verdict, "operator")
+            .expect("Accepted always converts to a verdict");
+
+        let resolution = seams
+            .resolve_verdict(engine_verdict)
+            .await
+            .expect("a matched-digest skip should resolve");
+
+        assert!(!resolution.outcome.ledger_outcome.should_execute);
+        assert!(resolution.executed.is_none());
+        let rows = ledger.read_all();
+        assert_eq!(rows.len(), 1, "exactly one ledger row");
+        assert_eq!(rows[0].decision, LedgerDecision::Skipped);
+        assert!(stub.last_call().is_none(), "a skip must never POST");
+    }
+
+    #[tokio::test]
+    async fn unknown_gate_still_resolves_to_unknown_gate_and_writes_no_row() {
+        let stub: Arc<dyn HttpPost> =
+            Arc::new(StubHttpPost::succeeding(serde_json::json!({"ok": true})));
+        let (seams, ledger) = seams_with(stub);
+
+        let verdict = telegram::ResponseVerdict::Accepted {
+            gate_id: "never-drained".to_string(),
+            option_key: OPTION_APPROVE.to_string(),
+            digest: "whatever".to_string(),
+            decided_at: chrono::Utc::now(),
+        };
+        let engine_verdict = approve_and_run_verdict_for(&verdict, "operator")
+            .expect("Accepted always converts to a verdict");
+
+        let err = seams
+            .resolve_verdict(engine_verdict)
+            .await
+            .expect_err("a gate nothing ever drained should error, not silently no-op");
+
+        assert_eq!(
+            err,
+            engine_core::workflows::approve_and_run::ApproveAndRunSeamError::UnknownGate(
+                "never-drained".to_string()
+            )
+        );
+        assert!(
+            ledger.read_all().is_empty(),
+            "an unknown gate must not write a ledger row"
+        );
+    }
+
+    /// An `HttpPost` that sleeps before delegating to an inner
+    /// [`StubHttpPost`] — lets a test observe whether a caller waited for
+    /// the POST to finish or moved on without it.
+    struct DelayedHttpPost {
+        delay: Duration,
+        inner: StubHttpPost,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpPost for DelayedHttpPost {
+        async fn post(
+            &self,
+            url: &str,
+            json_body: serde_json::Value,
+        ) -> Result<HttpPostResponse, String> {
+            tokio::time::sleep(self.delay).await;
+            self.inner.post(url, json_body).await
+        }
+    }
+
+    /// Mirrors `run_server`'s sink wiring (`ticket-approve-and-run-seams`
+    /// task 3): a resolved verdict is converted, then the actual
+    /// `resolve_verdict` call is spawned onto the executor rather than
+    /// awaited inline, so the sink itself returns immediately regardless of
+    /// how long resolution takes. This test spawns onto the ambient tokio
+    /// runtime (`tokio::spawn`) rather than `actix_web::rt::spawn` — the
+    /// property under test (the sink call does not await the spawned
+    /// future) is the same either way; only production's choice of
+    /// executor differs, for the reason documented at the `run_server`
+    /// call site.
+    #[tokio::test]
+    async fn sink_returns_without_awaiting_a_slow_resolution() {
+        let delayed = DelayedHttpPost {
+            delay: Duration::from_millis(200),
+            inner: StubHttpPost::succeeding(serde_json::json!({"ok": true})),
+        };
+        let (seams, ledger) = seams_with(Arc::new(delayed));
+        let seams = Arc::new(seams);
+
+        let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
+        let delivered = report.delivered.expect("one item delivered");
+
+        let verdict = telegram::ResponseVerdict::Accepted {
+            gate_id: delivered.item_id.clone(),
+            option_key: OPTION_APPROVE.to_string(),
+            digest: delivered.payload.digest.clone(),
+            decided_at: chrono::Utc::now(),
+        };
+
+        let seams_for_sink = Arc::clone(&seams);
+        let sink = move |verdict: telegram::ResponseVerdict| {
+            if let Some(engine_verdict) = approve_and_run_verdict_for(&verdict, "operator") {
+                let seams = Arc::clone(&seams_for_sink);
+                tokio::spawn(async move {
+                    let _ = seams.resolve_verdict(engine_verdict).await;
+                });
+            }
+        };
+
+        let started = Instant::now();
+        sink(verdict);
+        let sink_call_took = started.elapsed();
+
+        assert!(
+            sink_call_took < Duration::from_millis(50),
+            "sink call took {sink_call_took:?}, which suggests it awaited the \
+             200ms-delayed resolution inline instead of spawning it"
+        );
+        // The spawned resolution has not necessarily run yet — nothing
+        // ledger-side is asserted here. Only after actually waiting past
+        // the delay does the resolution's effect become observable.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            ledger.read_all().len(),
+            1,
+            "the spawned resolution should have completed by now"
+        );
+    }
+}
