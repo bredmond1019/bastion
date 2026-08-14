@@ -905,6 +905,30 @@ export interface NodeTransitionDto {
 	usage?: RunUsageDto;
 }
 
+/**
+ * `POST /api/notify/test` response body — the `gate_id` and `digest` of the
+ * fixed 2-option `ValidatedOperatorPayload` that was just sent over the
+ * configured [`crate::serve::notify::OperatorTransport`], so the operator
+ * smoke test has something to correlate the delivered message against.
+ * 
+ * Wire format:
+ * ```json
+ * { "gate_id": "b3b8c9b0-...", "digest": "a1b2c3..." }
+ * ```
+ */
+export interface NotifyTestResponseDto {
+	/**
+	 * The gate id generated for this test send — the key the registry and
+	 * any subsequent operator response resolve against.
+	 */
+	gate_id: string;
+	/**
+	 * The digest of the rendered payload actually sent, for stale-digest
+	 * comparison.
+	 */
+	digest: string;
+}
+
 /** One entry in an opportunity's `actions` activity log. */
 export interface OpportunityActionDto {
 	/** Date/timestamp of the action (e.g. `2026-07-25`). */
@@ -1354,6 +1378,13 @@ export interface SessionDto {
 	 * `engine-rs:EN.9.B`) — `classify_state` ignores attachment and continues to.
 	 */
 	agent_state: string;
+	/**
+	 * Additive optional sub-classification of `agent_state == "blocked"`: either
+	 * `"permission_prompt"` (a tool-approval yes/no dialog) or `"awaiting_question"`
+	 * (an `AskUserQuestion` prompt). Absent from the wire payload (not `null`) when
+	 * `agent_state` is not `"blocked"`, or when no reason was classified.
+	 */
+	blocked_reason?: string;
 }
 
 /**

@@ -1324,6 +1324,7 @@ mod tests {
                 state: "idle".to_owned(),
                 last_line: String::new(),
                 agent_state: "unknown".to_owned(),
+                blocked_reason: None,
             }],
             vec![(
                 "ba18a-shared-fixture-session".to_owned(),
@@ -1391,6 +1392,7 @@ mod tests {
                 state: "running".to_owned(),
                 last_line: String::new(),
                 agent_state: "working".to_owned(),
+                blocked_reason: None,
             }],
             vec![],
         ))));

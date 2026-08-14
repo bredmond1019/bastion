@@ -289,6 +289,12 @@ pub struct SessionDto {
     /// `state` above (tmux pane liveness) and from session attachment (the lease,
     /// `engine-rs:EN.9.B`) — `classify_state` ignores attachment and continues to.
     pub agent_state: String,
+    /// Additive optional sub-classification of `agent_state == "blocked"`: either
+    /// `"permission_prompt"` (a tool-approval yes/no dialog) or `"awaiting_question"`
+    /// (an `AskUserQuestion` prompt). Absent from the wire payload (not `null`) when
+    /// `agent_state` is not `"blocked"`, or when no reason was classified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 impl From<&Session> for SessionDto {
@@ -298,6 +304,7 @@ impl From<&Session> for SessionDto {
             state: s.state.as_str().to_owned(),
             last_line: s.last_line.clone(),
             agent_state: s.agent_state.as_str().to_owned(),
+            blocked_reason: s.blocked_reason.map(|r| r.as_str().to_owned()),
         }
     }
 }
@@ -2494,6 +2501,42 @@ mod tests {
     }
 
     #[test]
+    fn session_dto_blocked_reason_round_trips_every_variant() {
+        use crate::detect::BlockedReason;
+        use crate::sessions::model::SessionState;
+
+        for (variant, expected) in [
+            (
+                Some(BlockedReason::PermissionPrompt),
+                Some("permission_prompt"),
+            ),
+            (
+                Some(BlockedReason::AwaitingQuestion),
+                Some("awaiting_question"),
+            ),
+            (None, None),
+        ] {
+            let mut s = make_session("blocked-reason-fixture", SessionState::Idle, "");
+            s.blocked_reason = variant;
+            let dto = SessionDto::from(&s);
+            assert_eq!(
+                dto.blocked_reason.as_deref(),
+                expected,
+                "BlockedReason {variant:?} must convert to SessionDto.blocked_reason == {expected:?}"
+            );
+
+            let v = serde_json::to_value(&dto).expect("serialize SessionDto");
+            match expected {
+                Some(wire) => assert_eq!(v["blocked_reason"], wire),
+                None => assert!(
+                    v.get("blocked_reason").is_none(),
+                    "blocked_reason must be absent from the wire payload when None, not null"
+                ),
+            }
+        }
+    }
+
+    #[test]
     fn session_dto_rejects_missing_name() {
         let raw = r#"{"state":"idle","last_line":""}"#;
         let result: Result<SessionDto, _> = serde_json::from_str(raw);
@@ -2895,6 +2938,7 @@ mod tests {
                 state: "running".to_owned(),
                 last_line: "$ cargo test".to_owned(),
                 agent_state: "working".to_owned(),
+                blocked_reason: None,
             }],
         };
         let json = serde_json::to_string(&p).expect("serialize");
