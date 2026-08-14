@@ -14,6 +14,7 @@ use crate::sessions::ask_question::QuestionOption;
 
 fn prompt(question: &str, options: &[(usize, &str, bool)]) -> AskQuestionPrompt {
     AskQuestionPrompt {
+        header: None,
         question: question.to_string(),
         options: options
             .iter()

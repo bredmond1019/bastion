@@ -44,6 +44,9 @@ pub struct QuestionOption {
 /// A parsed `AskUserQuestion` prompt: the question text plus its numbered options.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskQuestionPrompt {
+    /// The widget's header chip text (e.g. `Colour`), when present. Captured
+    /// separately from `question` — never concatenated into it.
+    pub header: Option<String>,
     pub question: String,
     pub options: Vec<QuestionOption>,
 }
@@ -125,6 +128,33 @@ fn looks_like_escape_hatch(label: &str) -> bool {
     ESCAPE_HATCH_HINTS.iter().any(|hint| lower.contains(hint))
 }
 
+/// If `raw` (an UN-decorated, original screen line) is the widget's header-chip line —
+/// a short line beginning with a checkbox glyph (`☐` or `□`) — return its text with the
+/// glyph and surrounding whitespace stripped. Operates on the raw line rather than the
+/// decoration-stripped one because the checkbox glyphs are not in
+/// `DECORATIVE_LEADING_CHARS` (stripping them there would erase the very signal this
+/// function looks for).
+fn parse_header_chip(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let rest = trimmed
+        .strip_prefix('☐')
+        .or_else(|| trimmed.strip_prefix('□'))?;
+    let rest = rest.trim();
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+/// Is `raw` a horizontal-rule line — a run of box-drawing dash characters (`─`/`━`) with
+/// nothing else on it? Used as the fallback top boundary of the widget when no header
+/// chip line is present.
+fn is_rule_line(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|c| c == '─' || c == '━')
+}
+
 /// Parse a captured `AskUserQuestion` pane into structured data.
 ///
 /// Returns `None` when the pane does not carry the AskUserQuestion footer marker, or
@@ -135,8 +165,40 @@ pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt> {
         return None;
     }
 
-    // Classify each line: strip decoration, record its content and indentation.
-    let lines: Vec<(String, usize)> = screen.lines().map(strip_decoration).collect();
+    // Classify each line: strip decoration, record its content and indentation. Keep the
+    // raw (un-decorated) lines alongside for structural boundary detection, since the
+    // header-chip glyphs and rule-line dashes are exactly the things decoration
+    // stripping erases.
+    let raw_lines: Vec<&str> = screen.lines().collect();
+    let lines: Vec<(String, usize)> = raw_lines.iter().map(|l| strip_decoration(l)).collect();
+
+    // Bound the widget: walk UPWARD from the first numbered option to find the top of
+    // the widget, so everything above it (scrollback: banners, warnings, the operator's
+    // own prompt) is discarded before the question is read. Prefer the header-chip line;
+    // failing that, the nearest horizontal rule. Finding neither (e.g. a prompt with no
+    // widget framing at all, as in the synthetic tests) leaves the boundary at the very
+    // start of the screen — unchanged behaviour for those cases.
+    let first_option_idx = lines
+        .iter()
+        .position(|(content, _)| parse_option_marker(content).is_some());
+    let mut header: Option<String> = None;
+    let mut scroll_boundary = 0usize;
+    if let Some(opt_idx) = first_option_idx {
+        let mut idx = opt_idx;
+        while idx > 0 {
+            idx -= 1;
+            let raw = raw_lines[idx];
+            if let Some(chip) = parse_header_chip(raw) {
+                header = Some(chip);
+                scroll_boundary = idx + 1;
+                break;
+            }
+            if is_rule_line(raw) {
+                scroll_boundary = idx + 1;
+                break;
+            }
+        }
+    }
 
     let mut question_parts: Vec<String> = Vec::new();
     let mut options: Vec<QuestionOption> = Vec::new();
@@ -155,7 +217,11 @@ pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt> {
 
     let mut last_option: Option<QuestionOption> = None;
 
-    for (content, indent) in &lines {
+    for (i, (content, indent)) in lines.iter().enumerate() {
+        if i < scroll_boundary {
+            // Scrollback (or the header-chip / rule line itself): discard.
+            continue;
+        }
         if content.is_empty() {
             continue;
         }
@@ -219,7 +285,11 @@ pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt> {
         return None;
     }
 
-    Some(AskQuestionPrompt { question, options })
+    Some(AskQuestionPrompt {
+        header,
+        question,
+        options,
+    })
 }
 
 #[cfg(test)]
@@ -230,33 +300,66 @@ mod tests {
 
     #[test]
     fn parses_real_fixture_happy_path() {
-        // Fixture provenance (see planning/BA.20.B/tasks.md Notes): this fixture is
-        // SYNTHESIZED, not a real `tmux capture-pane` capture (BA.20.A task 2 had no
-        // live AskUserQuestion session available). Its three options are all genuine
-        // retry-policy choices — none of them reads as a free-text escape hatch, so
-        // this happy-path test intentionally does NOT assert `is_escape_hatch == true`
-        // on the trailing option. See this spec's Amendment Log for the deviation from
-        // the literal tasks.json wording.
+        // Fixture provenance: this is a REAL captured `tmux capture-pane` pane
+        // (verified 2026-08-14 against a live Claude Code v2.1.233 session) — it
+        // replaces the old synthesized fixture of the same name. Everything above the
+        // widget's top boundary (the startup banner, the MCP auth warning, the auto-mode
+        // notice, and the operator's own prompt) must be discarded as scrollback, not
+        // folded into `question`. See this spec's Amendment Log for context.
         let parsed = parse_ask_question(FIXTURE).expect("fixture should parse");
 
-        assert_eq!(
-            parsed.question,
-            "Which approach should I take for the retry policy?"
-        );
-        assert_eq!(parsed.options.len(), 3);
+        assert_eq!(parsed.question, "Which colour do you prefer?");
+        assert_eq!(parsed.header, Some("Colour".to_string()));
+        assert_eq!(parsed.options.len(), 5);
 
         assert_eq!(parsed.options[0].number, 1);
-        assert_eq!(parsed.options[0].label, "Exponential backoff with jitter");
+        assert_eq!(parsed.options[0].label, "Red");
+        assert_eq!(
+            parsed.options[0].description.as_deref(),
+            Some("Warm, bold, high-energy.")
+        );
         assert_eq!(parsed.options[1].number, 2);
-        assert_eq!(parsed.options[1].label, "Fixed delay between retries");
+        assert_eq!(parsed.options[1].label, "Green");
         assert_eq!(parsed.options[2].number, 3);
-        assert_eq!(parsed.options[2].label, "No retries — fail fast");
+        assert_eq!(parsed.options[2].label, "Blue");
+        assert_eq!(parsed.options[3].number, 4);
+        assert_eq!(parsed.options[3].label, "Type something.");
+        assert_eq!(parsed.options[4].number, 5);
+        assert_eq!(parsed.options[4].label, "Chat about this");
+    }
 
-        // No option in this synthesized fixture soft-matches the escape-hatch hints —
-        // proving the parser does not fabricate the flag from structural position alone.
-        for opt in &parsed.options {
-            assert!(!opt.is_escape_hatch);
-        }
+    #[test]
+    fn real_fixture_question_excludes_scrollback_banner_text() {
+        // The cheap tripwire against a future regression to unbounded upward scanning:
+        // the banner/warning/notice strings the OLD parser used to swallow whole must
+        // never again appear in the parsed question.
+        let parsed = parse_ask_question(FIXTURE).expect("fixture should parse");
+        assert!(!parsed.question.contains("Claude Code"));
+        assert!(!parsed.question.contains("auto mode"));
+        assert!(!parsed.question.contains("MCP"));
+    }
+
+    const NO_HEADER_CHIP_RULE_FALLBACK: &str = "\
+Claude Code v2.1.233 startup banner and scrollback that must never reach the question.
+More scrollback: an MCP auth warning, an auto mode notice, the operator's own prompt.
+────────────────────────────────────────────
+Which fallback question applies here?
+
+❯ 1. Yes
+  2. No
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    #[test]
+    fn horizontal_rule_fallback_bounds_question_without_header_chip() {
+        // A widget with no header-chip line still finds its top boundary via the
+        // nearest horizontal rule above the first option — same question, no header.
+        let parsed = parse_ask_question(NO_HEADER_CHIP_RULE_FALLBACK).expect("should parse");
+        assert_eq!(parsed.header, None);
+        assert_eq!(parsed.question, "Which fallback question applies here?");
+        assert!(!parsed.question.contains("scrollback"));
+        assert!(!parsed.question.contains("Claude Code"));
     }
 
     const BLOCKED_FIXTURE: &str = include_str!("../detect/fixtures/claude_blocked.txt");
