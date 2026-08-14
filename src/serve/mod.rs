@@ -40,6 +40,7 @@ pub mod dto;
 pub mod handlers;
 pub mod notify;
 pub mod poll;
+pub mod session_qa;
 pub mod status;
 pub mod ws;
 
@@ -444,6 +445,51 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // host/instance identity in the sink — stable for the life of this
     // `bastion serve` instance and enough to distinguish it from any other
     // instance writing to the same path, with no new dependency.
+    // ── Session-QA bridge (BA.20.C task 6) ───────────────────────────────────
+    //
+    // Gated on CodeSessionsBot config (task 2) being present. Absent is the
+    // expected state today — the bot does not exist yet — and must boot
+    // byte-identically to before this block: the poller below is wired
+    // exactly as it was pre-BA.20.C and no bridge task is spawned. Computed
+    // *before* the poller so its `mpsc::Sender` (if any) can be wired onto
+    // `BlockedEdgePoller::with_edge_tx` at construction time, alongside the
+    // existing always-on poller — not replacing it. The startup log line
+    // states only whether the bridge is enabled, never the token or chat id.
+    let edge_tx = match crate::config::load_code_sessions_bot_config() {
+        Ok(Some(qa_config)) => {
+            tracing::info!(
+                target: "bastion::serve",
+                "session-QA bridge enabled (CodeSessionsBot configured)"
+            );
+            let (tx, rx) = tokio::sync::mpsc::channel(32);
+            let bridge = std::sync::Arc::new(session_qa::SessionQaBridge::new(qa_config));
+            let inbound_bridge = std::sync::Arc::clone(&bridge);
+            actix_web::rt::spawn(async move {
+                inbound_bridge.run_inbound(rx).await;
+            });
+            let outbound_bridge = std::sync::Arc::clone(&bridge);
+            actix_web::rt::spawn(async move {
+                outbound_bridge.run_outbound().await;
+            });
+            Some(tx)
+        }
+        Ok(None) => {
+            tracing::info!(
+                target: "bastion::serve",
+                "session-QA bridge disabled (BASTION_CODESESSIONS_BOT_TOKEN / BASTION_CODESESSIONS_CHAT_ID unset)"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "bastion::serve",
+                error = %e,
+                "session-QA bridge disabled — invalid CodeSessionsBot config"
+            );
+            None
+        }
+    };
+
     match blocked_edge::default_sink_path(
         std::env::var("XDG_STATE_HOME").ok(),
         std::env::var("HOME").ok(),
@@ -455,9 +501,16 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // owner and keeps writing the durable sink record regardless of
             // whether anyone is subscribed; the hub just also gets told so
             // it can fan `event{needs_input}` out to current subscribers.
-            let poller = blocked_edge::BlockedEdgePoller::new(sink, addr.clone())
+            let mut poller = blocked_edge::BlockedEdgePoller::new(sink, addr.clone())
                 .with_hub(hub.clone())
                 .with_shared_sessions(shared_sessions.clone());
+            // `.with_edge_tx(...)` (task 6) makes the session-QA bridge a
+            // *second* consumer of this poller's edge decision, mirroring
+            // `with_hub`'s additive shape exactly — `None` when the bridge
+            // is disabled, which is byte-identical to pre-BA.20.C wiring.
+            if let Some(tx) = edge_tx {
+                poller = poller.with_edge_tx(tx);
+            }
             actix_web::rt::spawn(poller.run(poll_secs));
         }
         None => {
@@ -4753,6 +4806,142 @@ heading = "bastion"
             .to_request();
         let resp = test::call_service(&app, with_token).await;
         assert_ne!(resp.status(), 401);
+    }
+
+    // ── session-QA bridge boot wiring (BA.20.C task 6) ──────────────────────
+
+    /// This block adds **no** new HTTP route — the bridge polls `getUpdates`
+    /// itself. Guards against a future edit accidentally wiring a webhook or
+    /// a `session-qa`-named endpoint into the route table by asserting a
+    /// handful of plausible such paths are all unregistered (404, not 405 —
+    /// a matched-but-wrong-method resource would 405, per this module's
+    /// `web::resource` convention documented at the top of `run_server`).
+    #[actix_web::test]
+    async fn session_qa_bridge_adds_no_new_route() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+
+        for path in [
+            "/api/session-qa",
+            "/api/session-qa/webhook",
+            "/api/notify/session-qa",
+            "/api/telegram/webhook",
+            "/telegram/webhook",
+            "/webhook",
+        ] {
+            let req = test::TestRequest::post()
+                .uri(path)
+                .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+                .to_request();
+            let status = test::call_service(&app, req).await.status();
+            assert_eq!(
+                status, 404,
+                "expected {path} to be unregistered (404), got {status} — this block must \
+                 add no new HTTP route"
+            );
+        }
+
+        // The existing routes this block's spec calls out by name stay
+        // exactly as they were (`/sessions/{name}/send`, present in both
+        // app factories per the spec's Context Pointers).
+        let send_req = test::TestRequest::post()
+            .uri("/api/sessions/nonexistent-session/send")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .set_json(serde_json::json!({"text": "hello"}))
+            .to_request();
+        let send_status = test::call_service(&app, send_req).await.status();
+        assert_ne!(
+            send_status, 404,
+            "/api/sessions/{{name}}/send must remain registered"
+        );
+    }
+
+    /// A minimal [`tracing_subscriber::fmt::MakeWriter`] that appends every
+    /// formatted log line into a shared in-memory buffer, so a test can
+    /// assert on `run_server`'s startup log lines without a real log file or
+    /// stdout capture race against sibling tests.
+    #[derive(Clone)]
+    struct SharedLogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedLogBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLogBuf {
+        type Writer = SharedLogBuf;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// `run_server`'s setup path, with CodeSessionsBot config absent, spawns
+    /// no session-QA bridge and leaves the always-on `BlockedEdgePoller`
+    /// wired exactly as it was before this block (task 3's `no_edge_tx_wired_
+    /// behaves_identically_to_today` already pins the poller side of that
+    /// claim in isolation; this test pins the boot-time *decision* that
+    /// reaches it — a real `run_server` call, never given a bridge to spawn).
+    ///
+    /// Binds `127.0.0.1:0` (OS-assigned ephemeral port, never a fixed one a
+    /// sibling test could collide on) and aborts the task shortly after
+    /// boot — `run_server` otherwise serves forever, so there is no natural
+    /// completion to await.
+    #[actix_web::test]
+    async fn run_server_with_no_codesessions_config_spawns_no_bridge() {
+        let env_lock = lock_env();
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "run_server_no_qa_bridge");
+        let _t1 = EnvVarGuard::unset(&env_lock, "BASTION_CODESESSIONS_BOT_TOKEN");
+        let _t2 = EnvVarGuard::unset(&env_lock, "BASTION_CODESESSIONS_CHAT_ID");
+        // Keep the boot path fast and deterministic — no real DB connect
+        // attempt, no real BastionBot poll loop, regardless of this dev
+        // machine's actual `.env` contents (already shadowed above, but the
+        // process env itself could still carry these from the caller's shell).
+        let _db = EnvVarGuard::unset(&env_lock, "DATABASE_URL");
+        let _engine_key = EnvVarGuard::unset(&env_lock, "BASTION_ENGINE_API_KEY");
+        let _tg_token = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN");
+        let _tg_chat = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = SharedLogBuf(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer)
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .finish();
+        let _tracing_guard = tracing::subscriber::set_default(subscriber);
+
+        let handle = actix_web::rt::spawn(run_server(
+            "127.0.0.1:0".to_string(),
+            "boot-test-token".to_string(),
+            2,
+        ));
+        // `run_server` serves forever once bound — give its setup path (which
+        // runs before `.bind(..).run().await`) time to reach and log the
+        // session-QA gate decision, then cancel the still-running server.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        handle.abort();
+        let _ = handle.await;
+
+        drop(_tracing_guard);
+        let logs =
+            String::from_utf8_lossy(&buf.lock().unwrap_or_else(|e| e.into_inner())).to_string();
+
+        assert!(
+            logs.contains("session-QA bridge disabled"),
+            "expected the disabled-bridge log line; got logs:\n{logs}"
+        );
+        assert!(
+            !logs.contains("session-QA bridge enabled"),
+            "no bridge should have been spawned with CodeSessionsBot config absent; got logs:\n{logs}"
+        );
     }
 }
 

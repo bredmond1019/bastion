@@ -386,7 +386,8 @@ mod tests {
     use super::*;
     use mev::TriageLane;
     use mev::brain::config::RepoEntry;
-    use okf_core::{BacklogOrigin, BlockedBy, CarryoverScope};
+    use mev::brain::state::carryover_kind_from_str;
+    use okf_core::{BacklogOrigin, BlockedBy, CarryoverScope, ExternalDep};
 
     fn sample_config(repos: Vec<RepoEntry>) -> BrainConfig {
         BrainConfig {
@@ -460,7 +461,7 @@ mod tests {
                 tier: None,
                 cross_repo: None,
             },
-            kind: kind.to_owned(),
+            kind: carryover_kind_from_str(kind),
             text: format!("{slug} text"),
             related: Vec::new(),
             clears_when: None,
@@ -724,6 +725,50 @@ mod tests {
         assert_eq!(dto.lanes.stale_carryover[0].threshold_days, 3);
     }
 
+    /// `Carryover.kind`'s okf-core type is now `CarryoverKind::{Known,Unknown}` — this
+    /// asserts the wire-visible DTO field still round-trips verbatim through
+    /// `carryover_kind_from_str` (bastion's write side, here) and mev's
+    /// `carryover_kind_str` (the read side inside `rank_carryover`): a known vocabulary
+    /// word stays itself, and an unrecognised/legacy word (`known_issue`) is preserved
+    /// exactly rather than collapsing to a lossy `"unknown"`.
+    #[test]
+    fn build_attention_carryover_kind_round_trips_known_and_unknown() {
+        let config = sample_config(vec![repo_entry("bastion", "core")]);
+        let files = vec![(
+            sample_source("bastion"),
+            brain_file(
+                "bastion",
+                "project",
+                Vec::new(),
+                vec![
+                    sample_carryover("known-item", "env", old_date()),
+                    sample_carryover("legacy-item", "known_issue", old_date()),
+                ],
+            ),
+        )];
+
+        let dto = build_attention(
+            BoardScope::Hq,
+            None,
+            &TierScope::All,
+            &files,
+            &config,
+            &sample_root(),
+            today(),
+        );
+
+        let kind_of = |slug: &str| {
+            dto.lanes
+                .stale_carryover
+                .iter()
+                .find(|c| c.slug == slug)
+                .map(|c| c.kind.clone())
+                .unwrap_or_else(|| panic!("missing carryover {slug}"))
+        };
+        assert_eq!(kind_of("known-item"), "env");
+        assert_eq!(kind_of("legacy-item"), "known_issue");
+    }
+
     #[test]
     fn build_attention_orders_carryover_oldest_first() {
         let config = sample_config(vec![repo_entry("bastion", "core")]);
@@ -776,9 +821,9 @@ mod tests {
                         "known_issue",
                         old_date(),
                         None,
-                        vec![BlockedBy::External {
+                        vec![BlockedBy::External(ExternalDep {
                             what: "waiting on vendor API".to_owned(),
-                        }],
+                        })],
                     ),
                     // Authored first, but HOT (priority 0) ranks below BLOCKING.
                     sample_carryover_ranked("hot-item", "known_issue", old_date(), Some(0), vec![]),
@@ -840,9 +885,9 @@ mod tests {
                         "known_issue",
                         old_date(),
                         None,
-                        vec![BlockedBy::External {
+                        vec![BlockedBy::External(ExternalDep {
                             what: "waiting on vendor API".to_owned(),
-                        }],
+                        })],
                     ),
                     sample_carryover("unblocked-item", "known_issue", old_date()),
                 ],

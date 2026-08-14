@@ -5,6 +5,7 @@
 pub mod agent_panel;
 pub mod app;
 pub mod ask;
+pub mod ask_question;
 pub mod claude_state;
 pub mod commands;
 pub mod model;

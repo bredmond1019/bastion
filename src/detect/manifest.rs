@@ -5,7 +5,7 @@
 // regex and sorts rules by descending priority. The compiled form is what
 // `detect()` in `mod.rs` operates on.
 
-use crate::detect::AgentState;
+use crate::detect::{AgentState, BlockedReason};
 use regex::Regex;
 use serde::Deserialize;
 
@@ -80,6 +80,10 @@ pub struct RuleSpec {
     pub priority: i32,
     /// The agent state to report when this rule matches.
     pub state: AgentState,
+    /// Optional sub-classification of a `Blocked` match. Absent by default so
+    /// existing manifests deserialize unchanged.
+    #[serde(default)]
+    pub reason: Option<BlockedReason>,
     /// Carry-through visibility flags for the UI layer.
     #[serde(default)]
     pub visible_idle: bool,
@@ -166,6 +170,7 @@ pub struct CompiledRule {
     pub region: RegionSpec,
     pub gate: CompiledGate,
     pub state: AgentState,
+    pub reason: Option<BlockedReason>,
     pub visible_idle: bool,
     pub visible_blocker: bool,
     pub visible_working: bool,
@@ -203,6 +208,7 @@ impl Manifest {
                         region: r.region.clone(),
                         gate,
                         state: r.state,
+                        reason: r.reason,
                         visible_idle: r.visible_idle,
                         visible_blocker: r.visible_blocker,
                         visible_working: r.visible_working,

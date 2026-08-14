@@ -48,6 +48,8 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `BASTION_ENGINE_API_KEY` | No (required to use `bastion abort` / engine routes) | — | `X-API-Key` secret for the engine's abort endpoint. **Distinct from `BASTION_SERVE_TOKEN`** — two different secrets, two different schemes, two different route groups: this key is sent by `api::client` and checked by the embedded engine's `AppState.api_key`; `BASTION_SERVE_TOKEN` gates bastion serve's own session/status routes. Never reuse one for the other. |
 | `BASTION_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token for the operator-notification transport (`BA.18.B`, [serve-api.md](serve-api.md#26-operator-notification-transport-v027-ba18b)). **Mini-plist-only** — the real value lives in `com.brandon.engine-serve.plist` on the Mac Mini and is never written to any tracked file, `.env`, test, or fixture in this repo. Both this and `BASTION_TELEGRAM_CHAT_ID` absent leaves the transport unconfigured (`bastion serve` boots unchanged); exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
 | `BASTION_TELEGRAM_CHAT_ID` | No | — | Operator's Telegram chat id the bot delivers to. Same Mini-plist-only, absent-tolerant, paired-with-the-token contract as `BASTION_TELEGRAM_BOT_TOKEN` above. |
+| `BASTION_CODESESSIONS_BOT_TOKEN` | No | — | Bot token for CodeSessionsBot, the session-QA bridge's bot (`BA.20.C`, [serve-api.md](serve-api.md#27-session-qa-bridge-background-bot-no-new-http-surface-ba20c)). **Deliberately distinct from `BASTION_TELEGRAM_BOT_TOKEN`** — that pair is BastionBot's approve/reject gate transport; this pair is a second bot, shared with the HQ chore's `claude_session_notify.sh`. CodeSessionsBot does not exist yet as of `BA.20.C`, so unset is the expected state today (bridge disabled). Both this and `BASTION_CODESESSIONS_CHAT_ID` absent leaves the bridge disabled; exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
+| `BASTION_CODESESSIONS_CHAT_ID` | No | — | The operator's Telegram chat id CodeSessionsBot delivers to. Same absent-tolerant, paired-with-the-token contract as `BASTION_CODESESSIONS_BOT_TOKEN` above. |
 
 ## Config file
 
@@ -173,6 +175,27 @@ for the ledger's XDG path resolution and the rest of the contract.
 the transport logs "not configured" at `info` and stays silently off. Rename the plist entries — or
 the reader — before relying on the Mini for operator notifications.
 
+## Session-QA bridge bot (`BA.20.C`)
+
+A second, fully optional env-var pair configures CodeSessionsBot, the session-QA bridge's bot
+(`src/serve/session_qa/`); see
+[serve-api.md §27](serve-api.md#27-session-qa-bridge-background-bot-no-new-http-surface-ba20c) for
+the full contract.
+
+| Env var | Type | Description |
+|---|---|---|
+| `BASTION_CODESESSIONS_BOT_TOKEN` | `Option<String>` | CodeSessionsBot's Telegram bot token. |
+| `BASTION_CODESESSIONS_CHAT_ID` | `Option<String>` | The operator's Telegram chat id CodeSessionsBot delivers to. |
+
+**Deliberately distinct from the pair above** — those configure BastionBot (the approve/reject gate
+transport); these configure CodeSessionsBot (the session-QA bridge, shared with the HQ chore's
+`claude_session_notify.sh`). Two bots, two token pairs, never conflated. Read via
+`load_code_sessions_bot_config` / the pure `code_sessions_bot_config`, mirroring
+`load_telegram_config`'s both-or-neither rule exactly (same `ConfigError::IncompleteTelegramConfig`
+error, reused rather than duplicated). CodeSessionsBot does not exist yet as of `BA.20.C`, so both
+absent — the bridge disabled — is the expected state today. Same `BotToken` newtype, same redacted
+`Debug`.
+
 ## Precedence rules
 
 An environment variable **always wins** over the config file for the same key.
@@ -193,7 +216,7 @@ Built-in defaults apply only when both the environment and file omit a value.
 | `NoWorkspaceRegistry` | `--workspace` used but no `[workspaces]` table exists in the config file. |
 | `MissingServeToken` | `bastion serve` started without a bearer token (neither `--token` nor `BASTION_SERVE_TOKEN` set, or either resolved to an empty string). |
 | `MalformedBudgetValue(&'static str, String, &'static str)` | A budget env var (`BASTION_MAX_TOTAL_TOKENS` or `BASTION_MAX_COST_USD`) was set but failed to parse as its expected numeric type. Carries the variable name, the offending value, and the expected type. Never silently defaults to "no cap". |
-| `IncompleteTelegramConfig(&'static str)` | Exactly one of `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` was set (`BA.18.B`). Carries the name of the missing variable. Never silently treated as "transport not configured" — that state is reserved for both absent. |
+| `IncompleteTelegramConfig(&'static str)` | Exactly one of `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` was set (`BA.18.B`), **or** exactly one of `BASTION_CODESESSIONS_BOT_TOKEN` / `BASTION_CODESESSIONS_CHAT_ID` was set (`BA.20.C`, reusing this same variant). Carries the name of the missing variable. Never silently treated as "transport/bridge not configured" — that state is reserved for both absent. |
 
 ### `FileConfig`
 

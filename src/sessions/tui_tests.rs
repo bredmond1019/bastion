@@ -283,6 +283,7 @@ mod tests {
                 foreground_cmd: String::new(),
                 last_line: String::new(),
                 agent_state: AgentState::Idle,
+                blocked_reason: None,
                 cwd: String::new(),
             },
             Session {
@@ -292,6 +293,7 @@ mod tests {
                 foreground_cmd: String::new(),
                 last_line: String::new(),
                 agent_state: AgentState::Blocked,
+                blocked_reason: Some(crate::detect::BlockedReason::PermissionPrompt),
                 cwd: String::new(),
             },
             Session {
@@ -301,6 +303,7 @@ mod tests {
                 foreground_cmd: String::new(),
                 last_line: String::new(),
                 agent_state: AgentState::Working,
+                blocked_reason: None,
                 cwd: String::new(),
             },
         ];

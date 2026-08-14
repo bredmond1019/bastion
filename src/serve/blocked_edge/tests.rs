@@ -190,6 +190,48 @@ async fn re_block_after_resolution_produces_two_records() {
     let _ = std::fs::remove_file(&path);
 }
 
+// ── Scenario 4: edge_tx seam alongside the wired hub (BA.20.C task 3) ──────
+
+/// The `with_edge_tx` seam (task 3) is additive on top of the existing
+/// `with_hub` fan-out — both a live `Hub` (with zero WS subscribers, exactly
+/// as every scenario above) and a wired edge-notification receiver observe
+/// the same crossing the durable sink records, from the same tick.
+#[actix_web::test]
+async fn edge_tx_and_hub_both_observe_the_same_crossing_the_sink_recorded() {
+    let path = temp_sink_path("edge-tx-with-hub");
+    let sink = BlockedEdgeSink::new(&path);
+    let hub = start_test_hub();
+
+    let mut ticks: Vec<Vec<(String, AgentState)>> = vec![
+        vec![state("sess-a", AgentState::Working)], // seed
+        vec![state("sess-a", AgentState::Blocked)], // rising edge
+    ];
+    ticks.reverse();
+    let capture = Box::new(move || Ok(ticks.pop().unwrap_or_default()));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let mut poller = BlockedEdgePoller::with_capture(sink, "test-host", capture)
+        .with_hub(hub)
+        .with_edge_tx(tx);
+
+    poller.tick(); // seed
+    poller.tick(); // sess-a crosses into Blocked
+
+    let reader = BlockedEdgeSink::new(&path);
+    let records = reader.read_all().expect("read_all should succeed");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].session, "sess-a");
+
+    let received = rx.try_recv().expect("edge_tx should have the crossing");
+    assert_eq!(received.session, "sess-a");
+    assert_eq!(received.to, AgentState::Blocked);
+    assert!(
+        rx.try_recv().is_err(),
+        "exactly one crossing was emitted this run"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
 // ── No real tmux server anywhere in this module ─────────────────────────────
 
 /// Documents, rather than mechanically enforces, the "no test spawns a real
