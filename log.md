@@ -2,12 +2,32 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-13T16:55:00-03:00
+timestamp: 2026-08-14T15:35:00-03:00
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-08-14]
+
+### okf-core BlockedBy/CarryoverKind type adaptation — bastion compiles again
+
+- **What:** Ran `chore-okf-core-type-adaptation` (3/3 tasks, `/sdlc-task` in-place). Adapted every
+  bastion call site to okf-core's 2026-08-14 type changes: `BlockedBy`'s four variants now wrap
+  payload structs (`ExternalDep`/`BlockDep`/`OperatorDep`/`ApprovalDep`), and `Carryover.kind` is
+  now a typed `CarryoverKind` enum. Sites: `src/serve/dto.rs`, `src/serve/handlers/attention.rs`,
+  `src/serve/handlers/board.rs` (`unmet_deps` destructuring). Added a round-trip test
+  (`build_attention_carryover_kind_round_trips_known_and_unknown`) covering a known vocab word and
+  a legacy/unrecognized one. Full `/close-out` gate green: fmt, clippy, nextest 2274/2274, release
+  build, contract-corpus-drift (35), emoji gate. Also committed a standalone `Cargo.lock` bump
+  (`tempfile` dep).
+- **Why:** The break walked okf-core → mev → bastion as each repo adapted in sequence; bastion's
+  compile broke once mev's own independent break (fixed at mev `4cf741d`) stopped masking it. Fix
+  unblocks `bastion-ui-42`'s lane (confirmed independently: `cargo check --locked` now exits 0).
+- **Refs:** `planning/chore-okf-core-type-adaptation/`
 
 ---
 
