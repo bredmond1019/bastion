@@ -30,6 +30,15 @@ pub mod telegram;
 #[cfg(test)]
 mod tests;
 
+/// An opaque handle a transport mints when it observes an inbound response,
+/// and later consumes to acknowledge that same response
+/// (`OperatorTransport::acknowledge`). The encoding is entirely
+/// transport-specific (Telegram: the callback query's `id`); callers must
+/// not parse it, only round-trip it. A transport with no acknowledgement
+/// concept (e.g. WhatsApp) never mints one — its responses carry `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AckHandle(pub String);
+
 /// A response the operator gave, resolved back to the gate and digest it
 /// answers. `option_key` is the stable machine key of the tapped option
 /// (`OperatorResponseOption::key`), never the operator-visible label.
@@ -45,6 +54,12 @@ pub struct OperatorResponse {
     pub option_key: String,
     /// When this transport observed the response.
     pub received_at: chrono::DateTime<chrono::Utc>,
+    /// Opaque handle to acknowledge this response back to the transport it
+    /// arrived on, if that transport has an acknowledgement concept. `None`
+    /// for a transport with no such concept, or when the id could not be
+    /// captured — losing a real decision because it cannot be acknowledged
+    /// is strictly worse than not acknowledging it.
+    pub ack: Option<AckHandle>,
 }
 
 /// Confirmation that [`OperatorTransport::send`] delivered a payload.

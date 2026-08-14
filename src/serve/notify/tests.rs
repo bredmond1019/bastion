@@ -109,6 +109,7 @@ fn operator_response_fields_are_reachable() {
         digest: "abc123".to_string(),
         option_key: "approve".to_string(),
         received_at: now,
+        ack: None,
     };
     assert_eq!(resp.gate_id, "gate-1");
     assert_eq!(resp.digest, "abc123");
@@ -260,6 +261,7 @@ fn response_for(payload: &ValidatedOperatorPayload, option_key: &str) -> Operato
             .collect(),
         option_key: option_key.to_string(),
         received_at: chrono::Utc::now(),
+        ack: None,
     }
 }
 

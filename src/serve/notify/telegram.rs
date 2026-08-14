@@ -22,7 +22,7 @@ use engine_core::operator::{OperatorPayloadLimits, ValidatedOperatorPayload};
 
 use crate::config::{BotToken, TelegramConfig};
 use crate::serve::notify::{
-    DeliveredMessage, NotifyError, OperatorResponse, OperatorTransport, UpdateCursor,
+    AckHandle, DeliveredMessage, NotifyError, OperatorResponse, OperatorTransport, UpdateCursor,
 };
 
 /// Number of leading hex characters of the payload's SHA-256 digest carried
@@ -252,6 +252,11 @@ pub fn getupdates_query(cursor: Option<UpdateCursor>, timeout_secs: u64) -> Vec<
 ///   no `callback_query`, or whose `callback_query.data` does not decode via
 ///   [`decode_callback_data`] is **skipped**, not fatal — the rest of the
 ///   batch is still returned.
+/// - The `callback_query`'s `id`, when present, is captured into the
+///   returned response's `ack` field as an opaque [`AckHandle`]. A
+///   `callback_query` with no `id` still yields a response with `ack: None`
+///   — it is not skipped, since losing a real decision because it cannot
+///   be acknowledged is strictly worse than not acknowledging it.
 /// - The returned cursor is `max(update_id) + 1` across every update that
 ///   *did* carry a parseable `update_id`, whether or not it produced an
 ///   `OperatorResponse` — an update with no callback tap still consumed an
@@ -284,9 +289,12 @@ pub fn parse_updates(
         };
         max_update_id = Some(max_update_id.map_or(update_id, |current| current.max(update_id)));
 
-        let Some(data) = update
-            .get("callback_query")
-            .and_then(|cq| cq.get("data"))
+        let Some(callback_query) = update.get("callback_query") else {
+            continue;
+        };
+
+        let Some(data) = callback_query
+            .get("data")
             .and_then(serde_json::Value::as_str)
         else {
             continue;
@@ -296,11 +304,20 @@ pub fn parse_updates(
             continue;
         };
 
+        // A callback_query missing an `id` still yields a response (with
+        // `ack: None`) rather than being dropped — see this module's docs
+        // on `parse_updates` and `OperatorResponse::ack`.
+        let ack = callback_query
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(|id| AckHandle(id.to_string()));
+
         responses.push(OperatorResponse {
             gate_id: decoded.gate_id,
             digest: decoded.digest_prefix,
             option_key: decoded.option_key,
             received_at: chrono::Utc::now(),
+            ack,
         });
     }
 
@@ -916,6 +933,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_updates_callback_query_id_round_trips_into_ack_handle() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "result": [{
+                "update_id": 100,
+                "callback_query": {
+                    "id": "cbq-42",
+                    "from": {"id": 555},
+                    "data": encode_callback_data(&CallbackData::new("gate-1", "abcdef012345", "approve")),
+                }
+            }]
+        });
+        let (responses, _cursor) = parse_updates(&raw).expect("valid envelope");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(
+            responses[0].ack,
+            Some(crate::serve::notify::AckHandle("cbq-42".to_string())),
+            "the callback_query's id must round-trip into OperatorResponse.ack"
+        );
+    }
+
+    #[test]
+    fn parse_updates_callback_query_missing_id_yields_ack_none_not_a_dropped_response() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "result": [{
+                "update_id": 100,
+                "callback_query": {
+                    "from": {"id": 555},
+                    "data": encode_callback_data(&CallbackData::new("gate-1", "abcdef012345", "approve")),
+                }
+            }]
+        });
+        let (responses, cursor) = parse_updates(&raw).expect("valid envelope");
+        assert_eq!(
+            responses.len(),
+            1,
+            "a callback_query with no id must still be parsed into a response, not skipped"
+        );
+        assert_eq!(responses[0].gate_id, "gate-1");
+        assert_eq!(responses[0].ack, None);
+        assert_eq!(cursor, Some(UpdateCursor("101".to_string())));
+    }
+
+    #[test]
     fn parse_updates_multiple_updates_cursor_is_max_plus_one() {
         let raw = serde_json::json!({
             "ok": true,
@@ -1027,6 +1089,7 @@ mod tests {
             digest: digest.to_string(),
             option_key: option_key.to_string(),
             received_at: chrono::Utc::now(),
+            ack: None,
         }
     }
 
