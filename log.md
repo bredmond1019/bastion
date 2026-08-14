@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-14T17:55:00-03:00
+timestamp: 2026-08-14T20:40:00-03:00
 ---
 
 # Log — bastion
@@ -46,6 +46,28 @@ d376d0f feat: implement BA.20.C-task2
 ```
 
 ## [2026-08-14]
+
+### A real pane capture broke two shipped assumptions before BA.20.D could run
+
+- **What:** Closed the `operator-codesessions-bot` session (bot created, credentials in both `.env`
+  files at mode 600, `Stop`/`Notification` hooks wired, new `scripts/setup_codesessions_bot.sh` so
+  the token never touches a transcript or shell history). Then, before running BA.20.D, captured a
+  **real** `AskUserQuestion` pane from a live Claude Code v2.1.233 tmux session and ran the shipped
+  parser against it. It failed twice. Filed and closed
+  `BA.ticket.ask-question-parser-real-pane` (3/3): the `question` field had been returning ~900
+  characters of startup banner and scrollback, and `is_escape_hatch` collapsed two behaviourally
+  distinct trailing options into one bool. Now region-bounded with `header` split out and
+  `OptionKind {Choice, FreeText, ChatAbout}` classified structurally. Replaced the synthesized
+  fixture with three real captures. Specced `BA.ticket.session-qa-freetext-injection` and re-gated
+  BA.20.D behind both tickets plus an `operator-session-qa-live-smoke` edge. 2274 -> 2363 tests.
+- **Why:** BA.20.B and BA.20.C were built against a fixture we invented, so their suites were green
+  while the code was wrong on real input — the risk carryover
+  `askuserquestion-fixture-is-synthesized` had named exactly. Running BA.20.D first would have
+  certified a coverage bar over a broken parser. The capture also exposed that the bridge does not
+  merely fail to relay free text: it silently submits option 1, because typing into an open widget
+  is ignored and the trailing Enter selects whatever is highlighted.
+- **Refs:** `planning/orchestration-run/plan-telegram-session-qa/{notes.md,review.md}`,
+  `planning/ticket-ask-question-parser-real-pane/`, `planning/ticket-session-qa-freetext-injection/`
 
 ### Telegram session Q&A — BA.20.A-C shipped, the round-trip is code-complete but unproven
 
