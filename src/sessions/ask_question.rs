@@ -61,9 +61,18 @@ const DECORATIVE_LEADING_CHARS: &[char] =
 /// description continuation lines.
 fn strip_decoration(line: &str) -> (String, usize) {
     let mut chars: Vec<char> = line.chars().collect();
-    // Trim trailing whitespace first.
-    while matches!(chars.last(), Some(c) if c.is_whitespace()) {
-        chars.pop();
+    // Trim trailing whitespace, then a trailing decorative border character (e.g. the
+    // right-hand `│` of a boxed prompt), then any whitespace that preceded it — repeat
+    // until nothing more decorative remains at the end of the line.
+    loop {
+        while matches!(chars.last(), Some(c) if c.is_whitespace()) {
+            chars.pop();
+        }
+        if matches!(chars.last(), Some(c) if DECORATIVE_LEADING_CHARS.contains(c)) {
+            chars.pop();
+        } else {
+            break;
+        }
     }
     let mut indent = 0usize;
     let mut i = 0usize;
@@ -248,5 +257,217 @@ mod tests {
         for opt in &parsed.options {
             assert!(!opt.is_escape_hatch);
         }
+    }
+
+    const BLOCKED_FIXTURE: &str = include_str!("../detect/fixtures/claude_blocked.txt");
+
+    // --- NEGATIVE ---
+
+    #[test]
+    fn empty_string_returns_none() {
+        assert_eq!(parse_ask_question(""), None);
+    }
+
+    #[test]
+    fn unrelated_shell_output_returns_none() {
+        let screen =
+            "brandon@mini ~ % ls -la\ntotal 8\ndrwxr-xr-x  3 brandon staff 96 Aug 14 09:00 .\n";
+        assert_eq!(parse_ask_question(screen), None);
+    }
+
+    #[test]
+    fn permission_dialog_fixture_returns_none() {
+        // The most important negative case: a yes/no permission dialog must never be
+        // mistaken for an AskUserQuestion prompt, or BA.20.C would send a bogus
+        // keyboard and inject a digit into a permission prompt.
+        assert_eq!(parse_ask_question(BLOCKED_FIXTURE), None);
+    }
+
+    #[test]
+    fn marker_with_no_numbered_options_returns_none() {
+        let screen = "  Which approach should I take?\n\n  Enter to select · ↑/↓ to navigate · Esc to cancel\n";
+        assert_eq!(parse_ask_question(screen), None);
+    }
+
+    // --- ESCAPE HATCH ---
+
+    const NO_ESCAPE_HATCH: &str = "\
+  What should we name the module?
+
+  ❯ 1. parser
+    2. reader
+    3. scanner
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    #[test]
+    fn trailing_option_without_soft_match_is_not_flagged() {
+        let parsed = parse_ask_question(NO_ESCAPE_HATCH).expect("should parse");
+        assert_eq!(parsed.options.len(), 3);
+        for opt in &parsed.options {
+            assert!(!opt.is_escape_hatch);
+        }
+    }
+
+    const SINGLE_PLUS_ESCAPE_HATCH: &str = "\
+  Should we proceed with the deploy?
+
+  ❯ 1. Yes, deploy now
+    2. Something else
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    #[test]
+    fn single_option_plus_escape_hatch_flags_only_the_second() {
+        let parsed = parse_ask_question(SINGLE_PLUS_ESCAPE_HATCH).expect("should parse");
+        assert_eq!(parsed.options.len(), 2);
+        assert!(!parsed.options[0].is_escape_hatch);
+        assert!(parsed.options[1].is_escape_hatch);
+    }
+
+    // --- OPTIONS ---
+
+    const MULTI_OPTION: &str = "\
+  Which database should we use?
+
+  ❯ 1. Postgres
+    2. MySQL
+       A well-known relational database.
+    3. SQLite
+    4. Chat about this
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    #[test]
+    fn multi_option_preserves_order_and_numbering() {
+        let parsed = parse_ask_question(MULTI_OPTION).expect("should parse");
+        assert_eq!(parsed.options.len(), 4);
+        for (idx, opt) in parsed.options.iter().enumerate() {
+            assert_eq!(opt.number, idx + 1);
+        }
+        assert_eq!(parsed.options[0].label, "Postgres");
+        assert_eq!(parsed.options[1].label, "MySQL");
+        assert_eq!(parsed.options[2].label, "SQLite");
+        assert_eq!(parsed.options[3].label, "Chat about this");
+    }
+
+    #[test]
+    fn option_without_description_line_is_none() {
+        let parsed = parse_ask_question(MULTI_OPTION).expect("should parse");
+        assert_eq!(parsed.options[0].description, None);
+    }
+
+    #[test]
+    fn option_with_description_line_is_captured() {
+        let parsed = parse_ask_question(MULTI_OPTION).expect("should parse");
+        assert_eq!(
+            parsed.options[1].description.as_deref(),
+            Some("A well-known relational database.")
+        );
+    }
+
+    #[test]
+    fn trailing_escape_hatch_option_is_flagged_in_multi_option_prompt() {
+        let parsed = parse_ask_question(MULTI_OPTION).expect("should parse");
+        assert!(!parsed.options[0].is_escape_hatch);
+        assert!(!parsed.options[1].is_escape_hatch);
+        assert!(!parsed.options[2].is_escape_hatch);
+        assert!(parsed.options[3].is_escape_hatch);
+    }
+
+    const WRAPPED_DESCRIPTION: &str = "\
+  Which caching strategy should we adopt?
+
+  ❯ 1. Write-through
+       Writes go to the cache and the backing
+       store at the same time, keeping both
+       in sync on every write.
+    2. Write-back
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    #[test]
+    fn multi_line_description_is_joined_with_single_spaces() {
+        let parsed = parse_ask_question(WRAPPED_DESCRIPTION).expect("should parse");
+        assert_eq!(
+            parsed.options[0].description.as_deref(),
+            Some(
+                "Writes go to the cache and the backing store at the same time, keeping both in sync on every write."
+            )
+        );
+        assert_eq!(parsed.options[1].description, None);
+    }
+
+    // --- ROBUSTNESS ---
+
+    const PLAIN_PROMPT: &str = "\
+  Which log level should we default to?
+
+  1. debug
+    2. info
+    3. warn
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    const BORDERED_PROMPT: &str = "\
+  │ Which log level should we default to?       │
+  │                                              │
+  │ ❯ 1. debug                                   │
+  │   2. info                                    │
+  │   3. warn                                    │
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    #[test]
+    fn bordered_and_selection_marked_rendering_parses_equal_to_plain() {
+        let plain = parse_ask_question(PLAIN_PROMPT).expect("plain should parse");
+        let bordered = parse_ask_question(BORDERED_PROMPT).expect("bordered should parse");
+        assert_eq!(plain, bordered);
+    }
+
+    // --- WIDTH ---
+
+    const NARROW_WIDTH_PROMPT: &str = "\
+  Should we enable the new
+  retry policy for all
+  outbound HTTP calls?
+
+  ❯ 1. Yes, enable it
+    2. No, leave as-is
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    const WIDE_WIDTH_PROMPT: &str = "\
+  Should we enable the new retry policy for all outbound HTTP calls?
+
+  ❯ 1. Yes, enable it
+    2. No, leave as-is
+
+  Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
+    #[test]
+    fn narrow_and_wide_width_renderings_produce_same_question_and_labels() {
+        let narrow = parse_ask_question(NARROW_WIDTH_PROMPT).expect("narrow should parse");
+        let wide = parse_ask_question(WIDE_WIDTH_PROMPT).expect("wide should parse");
+        assert_eq!(narrow.question, wide.question);
+        assert_eq!(
+            narrow
+                .options
+                .iter()
+                .map(|o| o.label.clone())
+                .collect::<Vec<_>>(),
+            wide.options
+                .iter()
+                .map(|o| o.label.clone())
+                .collect::<Vec<_>>()
+        );
     }
 }
