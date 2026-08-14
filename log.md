@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-13T07:20:00-03:00
+timestamp: 2026-08-13T16:55:00-03:00
 ---
 
 # Log — bastion
@@ -12,6 +12,25 @@ timestamp: 2026-08-13T07:20:00-03:00
 ---
 
 ## [2026-08-13]
+
+### Operator surface completed end to end — three gaps found by running it, not by testing it
+
+- **What:** Closed `BA.ticket.notify-send-trigger` (5/5), `BA.ticket.telegram-answer-callback`
+  (6/6) and `BA.ticket.approve-and-run-seams` (5/5), after the operator ran the live gate that
+  closed `BA.18.B`. The surface now delivers a payload inline with tap options, acknowledges the
+  tap, resolves it against the engine queue, records an approval-ledger row, and executes —
+  `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that
+  serves HTTP and WS. Also fixed a downstream break from mev's `LastTouched` reshape (`1aa5066`),
+  and patched docs in close-out: serve-api v0.29 → v0.30 with a new §26.9, since the
+  approve-and-run ticket shipped with no docs task.
+- **Why:** Each of the three tickets exists because running the previous one exposed something no
+  test would have caught. `BA.18.B` shipped a transport nothing could call. Making it callable
+  revealed that a tap gave the operator no feedback at all — Telegram holds a button in its loading
+  state until `answerCallbackQuery`, which was never called. Fixing that revealed the sink only
+  logged: no ledger row, no execution. The operator gate was not ceremony; it was the only thing
+  that found any of this.
+- **Refs:** `planning/orchestration-run/operator-surface/notes.md` (runs 2-3),
+  `planning/BA.18.B/tasks.md` (recorded gate evidence), `planning/handoff.md`
 
 ### Operator-surface chain closed, and a leaked API key rotated
 
