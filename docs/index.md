@@ -53,7 +53,7 @@ and `Bastion/docs/ownership.md`.
 | [config.md](config.md) | Configuration: env vars, config file, built-in defaults |
 | [costs.md](costs.md) | `bastion costs` — LLM spend summary surface |
 | [observ.md](observ.md) | Structured error taxonomy (C001-C014), event tracing, logging init |
-| [serve-api.md](serve-api.md) | HTTP + WebSocket API contract for `bastion serve` (v0.31) |
+| [serve-api.md](serve-api.md) | HTTP + WebSocket API contract for `bastion serve` (v0.32) |
 | [data-contract.md](data-contract.md) | bastion's pinned view of the orchestrator data contract |
 | [carryover-contract.md](carryover-contract.md) | bastion's pinned view of mev's carryover triage ranking contract |
 | [workspace-contract.md](workspace-contract.md) | bastion's pinned view of the orchestrator-owned knowledge-workspace contract (names, resolution, OKF corpus rules) |

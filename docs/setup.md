@@ -90,6 +90,13 @@ Cargo-installed CLIs — currently `typeshare` (used by `scripts/gen-types.sh` a
 resolves from Homebrew (`/opt/homebrew/bin`), so the gap stays invisible until a script goes
 looking for a cargo-installed binary and reports it "not found on PATH".
 
+`gen-types.sh` additionally requires the sibling **`okf-core`** checkout at `../okf-core` — since
+`BA.19.A` it scans that crate's `src/` alongside `src/serve`, so that the four `BlockedBy` payload
+interfaces reach `types/serve.ts` (see `serve-api.md` §19.1). `Cargo.toml` already pins the same
+sibling path, so a checkout that builds already satisfies this. If the directory is missing the
+script exits 1 naming the resolved path, rather than silently emitting a `types/serve.ts` short
+four types.
+
 Put it on PATH durably in your shell profile:
 
 ```bash

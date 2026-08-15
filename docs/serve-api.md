@@ -2337,7 +2337,7 @@ The `okf-core` scan emits four interfaces — `BlockDep`, `ExternalDep`, `Operat
 `ApprovalDep` — the payload structs backing `okf_core::state::BlockedBy`'s four variants. They are
 generated from `okf-core` rather than mirrored by hand in `src/serve/dto.rs` because `okf-core` is
 the schema crate that owns their field shapes; bastion only serialises them verbatim. See
-[D19](decisions/D19-typeshare-scan-includes-okf-core.md) for the full rationale, including why the
+**D19** (`planning/decisions/D19-typeshare-scan-includes-okf-core.md`) for the full rationale, including why the
 scan is scoped to `okf-core` specifically rather than sibling crates generally.
 
 typeshare cannot express an internally-tagged algebraic enum, so the `BlockedBy` enum itself is
@@ -3399,7 +3399,7 @@ aborted after boot) by asserting on captured tracing output.
   and the pre-existing dangling `blocked_by?: BlockedBy[]` reference is untouched — typeshare
   cannot emit the internally-tagged `BlockedBy` enum itself, so the four-arm union stays
   hand-written downstream in BastionWeb (`BW.16.A`). See
-  [D19](decisions/D19-typeshare-scan-includes-okf-core.md).
+  **D19** (`planning/decisions/D19-typeshare-scan-includes-okf-core.md`).
 
 - **2026-08-14 — v0.30 → v0.31 (`BA.20.A`, additive; documented retroactively at chain close-out):**
   `SessionDto` gained the optional `blocked_reason` field (`"permission_prompt"` |
