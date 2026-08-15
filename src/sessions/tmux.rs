@@ -268,6 +268,24 @@ pub fn send_keys(session_name: &str, keys: &str) -> Result<()> {
     Ok(())
 }
 
+/// Send `keys` literally to `session_name`, WITHOUT a trailing Enter.
+///
+/// One tmux invocation is made: `send-keys -t <session> -l -- <keys>`.
+///
+/// This exists for the `AskUserQuestion` widget's free-text option: selecting
+/// that option must move the highlight without submitting, because sending
+/// Enter on the free-text option with nothing typed yet closes the widget and
+/// submits nothing. Callers that want the widget to submit after this call
+/// send the trailing Enter themselves via a later `send_keys` /
+/// `send_enter_args` call once the actual answer text is available.
+///
+/// An unknown session surfaces as `TmuxError::ExitError`.
+pub fn send_keys_no_enter(session_name: &str, keys: &str) -> Result<()> {
+    let literal_args = send_keys_args(session_name, keys);
+    run_tmux(&literal_args).context("send-keys (literal, no Enter) failed")?;
+    Ok(())
+}
+
 /// Send a single named key (e.g. `Escape`, `Enter`, `Up`, `C-c`) to
 /// `session_name`.
 ///

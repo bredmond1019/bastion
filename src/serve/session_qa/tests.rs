@@ -574,19 +574,27 @@ mod e2e {
     }
 
     fn inject_ok() -> InjectFn {
-        Box::new(|_session, _text| Ok(()))
+        Box::new(|_session, _text, _with_enter| Ok(()))
     }
 
     fn inject_always_err() -> InjectFn {
-        Box::new(|_session, _text| Err(anyhow::anyhow!("tmux send-keys failed: no server")))
+        Box::new(|_session, _text, _with_enter| {
+            Err(anyhow::anyhow!("tmux send-keys failed: no server"))
+        })
     }
 
     /// An [`InjectFn`] that records every `(session, text)` it was called
     /// with, for tests that assert on exactly what got injected.
+    ///
+    /// The `with_enter` flag is accepted (the seam now carries it) but not
+    /// logged here — this fake preserves the pre-task-1 two-tuple log shape
+    /// so every existing assertion in this file keeps passing unchanged.
+    /// Task 3 adds an ordered `(session, text, with_enter)` fake for the
+    /// sequence-level assertions.
     fn inject_recording() -> (InjectFn, Arc<StdMutex<Vec<(String, String)>>>) {
         let log = Arc::new(StdMutex::new(Vec::new()));
         let log_for_closure = log.clone();
-        let f: InjectFn = Box::new(move |session, text| {
+        let f: InjectFn = Box::new(move |session, text, _with_enter| {
             log_for_closure
                 .lock()
                 .expect("inject log mutex poisoned")

@@ -648,9 +648,16 @@ impl QaTelegramClient for HttpQaTelegramClient {
 /// instead of a full sweep.
 pub type CapturePaneFn = Box<dyn Fn(&str) -> anyhow::Result<String> + Send + Sync>;
 
-/// Inject `text` (a digit, or relayed free text) followed by Enter into the
-/// named session. Boxed so tests can inject a fake with no live tmux server.
-pub type InjectFn = Box<dyn Fn(&str, &str) -> anyhow::Result<()> + Send + Sync>;
+/// Inject `text` (a digit, or relayed free text) into the named session,
+/// followed by an Enter keypress only when `with_enter` is `true`. Boxed so
+/// tests can inject a fake with no live tmux server.
+///
+/// The `with_enter` flag exists because the `AskUserQuestion` widget's
+/// free-text option must be selected (digit sent) WITHOUT a trailing Enter —
+/// Enter on that option with nothing typed yet closes the widget and submits
+/// nothing. `ChatAbout` and `Choice` taps, and every relayed answer, still
+/// want the trailing Enter.
+pub type InjectFn = Box<dyn Fn(&str, &str, bool) -> anyhow::Result<()> + Send + Sync>;
 
 /// Real [`CapturePaneFn`] over `sessions::tmux::capture_pane_raw`.
 fn real_capture_pane(session: &str) -> anyhow::Result<String> {
@@ -665,8 +672,12 @@ fn real_capture_pane(session: &str) -> anyhow::Result<String> {
 /// `sessions::tmux::send_keys` directly instead — the underlying tmux call is
 /// identical either way; only the HTTP-specific wrapping differs. Recorded
 /// as a deviation in this spec's Amendment Log.
-fn real_inject(session: &str, text: &str) -> anyhow::Result<()> {
-    crate::sessions::tmux::send_keys(session, text)
+fn real_inject(session: &str, text: &str, with_enter: bool) -> anyhow::Result<()> {
+    if with_enter {
+        crate::sessions::tmux::send_keys(session, text)
+    } else {
+        crate::sessions::tmux::send_keys_no_enter(session, text)
+    }
 }
 
 /// The Telegram-visible chat identity a follow-up-state entry is keyed by.
@@ -924,7 +935,7 @@ impl SessionQaBridge {
                     // No injection yet — the escape hatch only arms the
                     // follow-up state; the free-text message that follows is
                     // what gets relayed (handle_message).
-                } else if let Err(err) = (self.inject)(&session, &digit) {
+                } else if let Err(err) = (self.inject)(&session, &digit, true) {
                     tracing::warn!(
                         session = %session,
                         error = %err,
@@ -987,7 +998,7 @@ impl SessionQaBridge {
                 );
                 return;
             };
-            if let Err(err) = (self.inject)(&question.session, &text) {
+            if let Err(err) = (self.inject)(&question.session, &text, true) {
                 tracing::warn!(
                     session = %question.session,
                     error = %err,
