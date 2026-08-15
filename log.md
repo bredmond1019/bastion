@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-14T20:40:00-03:00
+timestamp: 2026-08-14T23:55:24-03:00
 ---
 
 # Log — bastion
@@ -46,6 +46,32 @@ d376d0f feat: implement BA.20.C-task2
 ```
 
 ## [2026-08-14]
+
+### The session-QA roadmap closed, with a live Telegram round-trip as the proof
+
+- **What:** Closed `BA.ticket.session-qa-freetext-injection` and `BA.20.D`, finishing
+  `plan-telegram-session-qa` (A–D). The injection ticket replaced one keystroke path with three,
+  one per `OptionKind` — `Choice` digit+Enter, `FreeText` digit-with-no-Enter then text then Enter,
+  `ChatAbout` digit+Enter then text as an ordinary turn — added `sessions::tmux::send_keys_no_enter`,
+  taught the follow-up state which kind armed it, and replaced call-count assertions with ordered
+  keystroke-sequence assertions. `BA.20.D` then wrote decision `D18-codesessions-bot-reuse`,
+  corrected `docs/serve-api.md` §27 / `docs/sessions.md` / `docs/detect.md` to the real widget
+  behaviour, and audited `BA.20.A`–`C` against the coverage bar (15 new tests). Operator session
+  `operator-session-qa-live-smoke` supplied the exit artifact: three live rounds on a real Claude
+  Code v2.1.233 widget — two `Choice` taps and one `FreeText` tap-then-reply, all answered from
+  Telegram, each confirmed with `tmux capture-pane`.
+- **Why:** `BA.20.C` shipped a bridge that answered the wrong question confidently — a free-text tap
+  sent no keys, so the operator's relayed reply was typed into a widget that ignores typing and its
+  trailing Enter submitted option 1. A wrong answer delivered confidently is the worst available
+  failure mode, and no test caught it because the tests asserted that `inject` was called rather than
+  what it injected. The live round-trip is the only evidence that can close that gap: the free-text
+  round returned `Which fruit do you prefer? → Teal, actually`, the operator's own text bound to the
+  question rather than a listed option. Two follow-ups stayed open rather than being papered over —
+  `ChatAbout` was never tapped live, and an unexplained relay reached the pane with no free-text
+  option armed (reproduce before filing).
+- **Refs:** `planning/plan-telegram-session-qa/plan.md`, `planning/BA.20.D/tasks.md`,
+  `planning/decisions/D18-codesessions-bot-reuse.md`,
+  `planning/orchestration-run/plan-telegram-session-qa/{notes.md,review.md}`
 
 ### A real pane capture broke two shipped assumptions before BA.20.D could run
 
