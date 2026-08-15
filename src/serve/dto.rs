@@ -1904,8 +1904,11 @@ pub struct ProspectLeadDto {
 // `GET /api/blocks/graph`. Bastion performs zero derivation of its own — every
 // field here is copied straight across from the upstream mev type by
 // `handlers/block_graph.rs::block_graph_dto`. `BlockEdgeKindDto` is declared
-// locally rather than reusing `okf_core::StateEdgeKind` because typeshare only
-// scans `src/serve` — an okf-core type would never reach `types/serve.ts`.
+// locally rather than reusing `okf_core::StateEdgeKind` because it mirrors a
+// **mev** type, not an okf-core one — mev is not in typeshare's scan scope
+// (`src/serve` + `../okf-core/src`, widened by `BA.19.A`/D19 for the four
+// `BlockedBy` payload structs), and widening the scan to a third sibling crate
+// for an unrelated type is out of scope for that decision.
 
 /// Mirrors `mev::brain::block_graph::BlockLane`'s six variants. Serialises
 /// `snake_case` to match upstream (`"now"`, `"next"`, `"blocked"`, `"deferred"`,
