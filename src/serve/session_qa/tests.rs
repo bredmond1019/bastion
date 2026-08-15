@@ -132,6 +132,22 @@ fn get_unknown_id_returns_none() {
     assert_eq!(registry.get("does-not-exist"), None);
 }
 
+#[test]
+fn set_message_id_on_unknown_id_is_a_no_op() {
+    let registry = PendingQuestions::new();
+    // Must not panic; there is nothing to update.
+    registry.set_message_id("does-not-exist", 42);
+    assert!(registry.is_empty());
+}
+
+#[test]
+fn mark_answered_on_unknown_id_is_a_no_op() {
+    let registry = PendingQuestions::new();
+    // Must not panic; there is nothing to mark.
+    registry.mark_answered("does-not-exist");
+    assert!(registry.is_empty());
+}
+
 // ── callback encode/decode ───────────────────────────────────────────
 
 #[test]
@@ -321,6 +337,40 @@ fn answercallbackquery_body_distinct_text_per_verdict() {
 fn answercallbackquery_body_carries_callback_query_id() {
     let body = answercallbackquery_body("cb-xyz", &QuestionVerdict::AlreadyAnswered);
     assert_eq!(body["callback_query_id"], "cb-xyz");
+}
+
+#[test]
+fn sendmessage_body_freetext_button_uses_plain_digit_format_not_emoji() {
+    // Only the ChatAbout button gets the visually-distinguishing leading
+    // glyph; a FreeText button must render exactly like an ordinary Choice
+    // button ("<number>. <label>"), since the operator taps it the same way
+    // and only its post-tap behaviour differs.
+    let p = prompt(
+        "Which colour?",
+        &[
+            (1, "Red", OptionKind::Choice),
+            (2, "Type something.", OptionKind::FreeText),
+            (3, "Chat about this", OptionKind::ChatAbout),
+        ],
+    );
+    let body = sendmessage_body("q1", &p, "12345");
+    let buttons = body["reply_markup"]["inline_keyboard"][0]
+        .as_array()
+        .expect("buttons array");
+    assert_eq!(buttons[1]["text"].as_str().unwrap(), "2. Type something.");
+    assert_eq!(buttons[0]["text"].as_str().unwrap(), "1. Red");
+}
+
+#[test]
+fn answercallbackquery_body_text_is_clamped_to_max_chars() {
+    let long_text = "x".repeat(QA_ANSWER_CALLBACK_TEXT_MAX_CHARS + 50);
+    let clamped = clamp_chars(&long_text, QA_ANSWER_CALLBACK_TEXT_MAX_CHARS);
+    assert_eq!(clamped.chars().count(), QA_ANSWER_CALLBACK_TEXT_MAX_CHARS);
+}
+
+#[test]
+fn clamp_chars_leaves_short_text_untouched() {
+    assert_eq!(clamp_chars("short", 200), "short");
 }
 
 #[test]
@@ -1038,6 +1088,263 @@ mod e2e {
             client.calls_matching(|c| matches!(c, Call::SendMessage(_))),
             2,
             "the bridge must keep working after an injection failure"
+        );
+    }
+
+    // ── Malformed-update degradation ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn callback_query_missing_id_is_dropped_with_no_calls() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        );
+        let update = json!({
+            "update_id": 1,
+            "callback_query": {
+                // no "id" field: cannot be acknowledged, must be dropped.
+                "data": encode_question_callback("q0", 1),
+            },
+        });
+        bridge.handle_update(&update).await;
+        assert!(
+            client.calls().is_empty(),
+            "a callback_query with no id must never be acknowledged or acted on"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_query_missing_data_is_dropped_with_no_calls() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        );
+        let update = json!({
+            "update_id": 1,
+            "callback_query": {
+                "id": "cbq-1",
+                // no "data" field.
+            },
+        });
+        bridge.handle_update(&update).await;
+        assert!(
+            client.calls().is_empty(),
+            "a callback_query with no data must never be acknowledged or acted on"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_query_malformed_data_is_dropped_with_no_calls() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        );
+        let update = json!({
+            "update_id": 1,
+            "callback_query": {
+                "id": "cbq-1",
+                "data": "not-a-valid-callback-payload-no-delimiter",
+            },
+        });
+        bridge.handle_update(&update).await;
+        assert!(
+            client.calls().is_empty(),
+            "callback_data that fails to decode must never be acknowledged or acted on"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_query_with_no_message_field_still_acks_with_no_edit() {
+        // A tap where the update carries no `message` object at all (chat_id
+        // and message_id both absent): the tap must still resolve and inject,
+        // but there is nothing to edit and no chat to arm follow-up state on.
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+        let question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+
+        let update = json!({
+            "update_id": 1,
+            "callback_query": {
+                "id": "cbq-1",
+                "data": encode_question_callback(&question_id, 2),
+            },
+        });
+        bridge.handle_update(&update).await;
+
+        assert_eq!(
+            log.lock().expect("mutex poisoned").clone(),
+            vec![("sess-1".to_string(), "2".to_string(), true)],
+            "a Choice tap must still inject even with no message object"
+        );
+        assert!(
+            client
+                .calls()
+                .iter()
+                .all(|c| !matches!(c, Call::EditMessageText(_))),
+            "with no message_id there is nothing to edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn message_missing_text_field_is_ignored() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+        let update = json!({
+            "update_id": 1,
+            "message": {
+                "chat": {"id": 999},
+                // no "text" field.
+            },
+        });
+        bridge.handle_update(&update).await;
+        assert!(log.lock().expect("mutex poisoned").is_empty());
+    }
+
+    #[tokio::test]
+    async fn message_missing_chat_field_is_ignored() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+        let update = json!({
+            "update_id": 1,
+            "message": {
+                "text": "hello",
+                // no "chat" field.
+            },
+        });
+        bridge.handle_update(&update).await;
+        assert!(log.lock().expect("mutex poisoned").is_empty());
+    }
+
+    #[tokio::test]
+    async fn unrelated_update_type_is_silently_ignored() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        );
+        let update = json!({
+            "update_id": 1,
+            "my_chat_member": {"some": "unrelated payload"},
+        });
+        // Must not panic.
+        bridge.handle_update(&update).await;
+        assert!(client.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sendmessage_response_missing_message_id_leaves_registry_entry_without_one() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        client.push_get_updates(Ok(json!({"ok": true, "result": []})));
+        {
+            let mut q = client
+                .send_message_queue
+                .lock()
+                .expect("queue mutex poisoned");
+            q.push_back(Ok(json!({"ok": true, "result": {}})));
+        }
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        );
+        bridge.handle_edge_record(edge_record("sess-1")).await;
+
+        let calls = client.calls();
+        let Call::SendMessage(body) = &calls[0] else {
+            panic!("expected sendMessage first");
+        };
+        let question_id = question_id_from_send_message(body);
+        let question = bridge
+            .registry()
+            .get(&question_id)
+            .expect("question must be registered");
+        assert_eq!(
+            question.message_id, None,
+            "a sendMessage response with no message_id must leave message_id unset"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_updates_non_rate_limit_error_is_logged_and_the_loop_survives() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        client.push_get_updates(Err(NotifyError::Transport {
+            reason: "connection reset".to_string(),
+        }));
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        );
+
+        // The non-rate-limit error path sleeps a fixed 1s before retrying,
+        // so the bound must exceed that.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(1300),
+            bridge.run_outbound(),
+        )
+        .await;
+        assert!(
+            outcome.is_err(),
+            "run_outbound must still be running after a transport error (timeout expected)"
+        );
+        assert!(
+            client.calls_matching(|c| matches!(c, Call::GetUpdates)) >= 2,
+            "the loop must have retried getUpdates after the non-rate-limit error"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_updates_missing_result_array_is_logged_and_the_loop_survives() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        client.push_get_updates(Ok(json!({"ok": true})));
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        );
+
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_millis(200), bridge.run_outbound())
+                .await;
+        assert!(
+            outcome.is_err(),
+            "run_outbound must still be running after a malformed response (timeout expected)"
+        );
+        assert!(
+            client.calls_matching(|c| matches!(c, Call::GetUpdates)) >= 2,
+            "the loop must have retried getUpdates after a missing result array"
         );
     }
 

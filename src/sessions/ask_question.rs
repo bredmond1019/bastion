@@ -665,6 +665,46 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(parsed.options[1].description, None);
     }
 
+    // --- parse_option_marker boundary cases (private fn, exercised directly) ---
+
+    #[test]
+    fn parse_option_marker_rejects_no_leading_digit() {
+        assert_eq!(parse_option_marker("no digit here"), None);
+    }
+
+    #[test]
+    fn parse_option_marker_rejects_digit_with_no_separator() {
+        // "1x" — digits followed directly by non-separator content.
+        assert_eq!(parse_option_marker("1x label"), None);
+    }
+
+    #[test]
+    fn parse_option_marker_rejects_empty_label_after_separator() {
+        assert_eq!(parse_option_marker("1."), None);
+        assert_eq!(parse_option_marker("1. "), None);
+    }
+
+    #[test]
+    fn parse_option_marker_accepts_dot_paren_and_dash_styles() {
+        assert_eq!(parse_option_marker("1. Red"), Some((1, "Red".to_string())));
+        assert_eq!(
+            parse_option_marker("2) Green"),
+            Some((2, "Green".to_string()))
+        );
+        assert_eq!(
+            parse_option_marker("3 - Blue"),
+            Some((3, "Blue".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_option_marker_multi_digit_number() {
+        assert_eq!(
+            parse_option_marker("12. Twelfth option"),
+            Some((12, "Twelfth option".to_string()))
+        );
+    }
+
     // --- ROBUSTNESS ---
 
     const PLAIN_PROMPT: &str = "\
