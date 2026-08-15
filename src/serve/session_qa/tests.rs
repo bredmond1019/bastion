@@ -344,17 +344,19 @@ fn editmessagetext_body_clears_keyboard_and_shows_choice() {
 #[test]
 fn idle_escape_hatch_tap_transitions_to_awaiting() {
     let state = ChatFollowUpState::Idle;
-    let (new_state, outcome) = state.on_escape_hatch_tap("q1");
+    let (new_state, outcome) = state.on_escape_hatch_tap("q1", OptionKind::FreeText);
     assert_eq!(
         new_state,
         ChatFollowUpState::AwaitingFreeText {
-            question_id: "q1".to_string()
+            question_id: "q1".to_string(),
+            kind: OptionKind::FreeText,
         }
     );
     assert_eq!(
         outcome,
         FollowUpOutcome::NowAwaiting {
-            question_id: "q1".to_string()
+            question_id: "q1".to_string(),
+            kind: OptionKind::FreeText,
         }
     );
 }
@@ -363,12 +365,14 @@ fn idle_escape_hatch_tap_transitions_to_awaiting() {
 fn second_escape_hatch_tap_while_awaiting_replaces_with_new_question() {
     let state = ChatFollowUpState::AwaitingFreeText {
         question_id: "q1".to_string(),
+        kind: OptionKind::FreeText,
     };
-    let (new_state, outcome) = state.on_escape_hatch_tap("q2");
+    let (new_state, outcome) = state.on_escape_hatch_tap("q2", OptionKind::ChatAbout);
     assert_eq!(
         new_state,
         ChatFollowUpState::AwaitingFreeText {
-            question_id: "q2".to_string()
+            question_id: "q2".to_string(),
+            kind: OptionKind::ChatAbout,
         }
     );
     assert_eq!(
@@ -376,6 +380,7 @@ fn second_escape_hatch_tap_while_awaiting_replaces_with_new_question() {
         FollowUpOutcome::ReplacedAwaiting {
             old_question_id: "q1".to_string(),
             new_question_id: "q2".to_string(),
+            new_kind: OptionKind::ChatAbout,
         }
     );
 }
@@ -384,6 +389,7 @@ fn second_escape_hatch_tap_while_awaiting_replaces_with_new_question() {
 fn plain_text_while_awaiting_relays_and_returns_to_idle() {
     let state = ChatFollowUpState::AwaitingFreeText {
         question_id: "q1".to_string(),
+        kind: OptionKind::FreeText,
     };
     let (new_state, outcome) = state.on_plain_text("use postgres please");
     assert_eq!(new_state, ChatFollowUpState::Idle);
@@ -392,6 +398,7 @@ fn plain_text_while_awaiting_relays_and_returns_to_idle() {
         FollowUpOutcome::RelayText {
             question_id: "q1".to_string(),
             text: "use postgres please".to_string(),
+            kind: OptionKind::FreeText,
         }
     );
 }
@@ -816,24 +823,27 @@ mod e2e {
         let question_id = question_id_from_send_message(body);
 
         // Option 4 is the ChatAbout option in SAMPLE_PANE ("Chat about this").
+        // The tap injects digit-with-Enter immediately (closing the widget);
+        // it does not wait for the follow-up text before injecting.
         let tap = callback_query_update(1, "cbq-1", &question_id, 4, 999, 555);
         bridge.handle_update(&tap).await;
 
-        assert!(
+        assert_eq!(
             inject_log
                 .lock()
                 .expect("inject log mutex poisoned")
-                .is_empty(),
-            "the escape-hatch tap alone must not inject anything yet"
+                .len(),
+            1,
+            "a ChatAbout tap must inject the digit at tap time"
         );
 
         let follow_up = text_message_update(2, 999, "use postgres please");
         bridge.handle_update(&follow_up).await;
 
         let injected = inject_log.lock().expect("inject log mutex poisoned");
-        assert_eq!(injected.len(), 1);
+        assert_eq!(injected.len(), 2);
         assert_eq!(
-            injected[0],
+            injected[1],
             ("sess-1".to_string(), "use postgres please".to_string())
         );
     }

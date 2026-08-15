@@ -415,8 +415,15 @@ pub enum ChatFollowUpState {
     Idle,
     /// The escape hatch was tapped for `question_id`; the next plain-text
     /// message from this chat should be relayed verbatim to that
-    /// question's session, and the state returns to `Idle`.
-    AwaitingFreeText { question_id: String },
+    /// question's session, and the state returns to `Idle`. `kind` records
+    /// which `OptionKind` armed this state (`FreeText` or `ChatAbout`) so
+    /// the relay site (`handle_message`) — and, transitively, whichever
+    /// caller reads the resulting `FollowUpOutcome` — can tell the two
+    /// cases apart. `Choice` never arms this state.
+    AwaitingFreeText {
+        question_id: String,
+        kind: OptionKind,
+    },
 }
 
 /// What happened as a result of feeding an event into the follow-up state
@@ -425,7 +432,10 @@ pub enum ChatFollowUpState {
 pub enum FollowUpOutcome {
     /// The state transitioned to (or stayed in) `AwaitingFreeText` for
     /// `question_id` — a first escape-hatch tap.
-    NowAwaiting { question_id: String },
+    NowAwaiting {
+        question_id: String,
+        kind: OptionKind,
+    },
     /// A second escape-hatch tap arrived while already awaiting free text
     /// for a (possibly different) question. The **new** tap wins: the state
     /// is reset to await free text for the new `question_id`, and the old
@@ -434,36 +444,55 @@ pub enum FollowUpOutcome {
     ReplacedAwaiting {
         old_question_id: String,
         new_question_id: String,
+        new_kind: OptionKind,
     },
     /// A plain-text message arrived while awaiting free text: the message
     /// is the relay target. State returns to `Idle`.
-    RelayText { question_id: String, text: String },
+    RelayText {
+        question_id: String,
+        text: String,
+        kind: OptionKind,
+    },
     /// A plain-text message arrived while `Idle` — nothing to relay it to.
     /// State stays `Idle`.
     Ignored,
 }
 
 impl ChatFollowUpState {
-    /// Feed an escape-hatch tap for `question_id` into the state machine,
-    /// returning the new state and what happened.
+    /// Feed an escape-hatch tap for `question_id` (armed by `kind`, either
+    /// `FreeText` or `ChatAbout`) into the state machine, returning the new
+    /// state and what happened.
     #[must_use]
-    pub fn on_escape_hatch_tap(self, question_id: impl Into<String>) -> (Self, FollowUpOutcome) {
+    pub fn on_escape_hatch_tap(
+        self,
+        question_id: impl Into<String>,
+        kind: OptionKind,
+    ) -> (Self, FollowUpOutcome) {
         let question_id = question_id.into();
         match self {
             ChatFollowUpState::Idle => {
                 let outcome = FollowUpOutcome::NowAwaiting {
                     question_id: question_id.clone(),
+                    kind,
                 };
-                (ChatFollowUpState::AwaitingFreeText { question_id }, outcome)
+                (
+                    ChatFollowUpState::AwaitingFreeText { question_id, kind },
+                    outcome,
+                )
             }
             ChatFollowUpState::AwaitingFreeText {
                 question_id: old_question_id,
+                ..
             } => {
                 let outcome = FollowUpOutcome::ReplacedAwaiting {
                     old_question_id,
                     new_question_id: question_id.clone(),
+                    new_kind: kind,
                 };
-                (ChatFollowUpState::AwaitingFreeText { question_id }, outcome)
+                (
+                    ChatFollowUpState::AwaitingFreeText { question_id, kind },
+                    outcome,
+                )
             }
         }
     }
@@ -473,11 +502,12 @@ impl ChatFollowUpState {
     pub fn on_plain_text(self, text: impl Into<String>) -> (Self, FollowUpOutcome) {
         match self {
             ChatFollowUpState::Idle => (ChatFollowUpState::Idle, FollowUpOutcome::Ignored),
-            ChatFollowUpState::AwaitingFreeText { question_id } => (
+            ChatFollowUpState::AwaitingFreeText { question_id, kind } => (
                 ChatFollowUpState::Idle,
                 FollowUpOutcome::RelayText {
                     question_id,
                     text: text.into(),
+                    kind,
                 },
             ),
         }
@@ -918,29 +948,58 @@ impl SessionQaBridge {
                 kind,
                 ..
             } => {
-                // TODO(BA.ticket.session-qa-freetext-injection): `FreeText` takes the
-                // same path as `ChatAbout` here for now — this is KNOWN WRONG. The
-                // digit+Enter sequence below arms the follow-up state but never lets
-                // the operator type first, so a `FreeText` tap cannot actually submit
-                // an answer to the question yet. Fixing the injection sequence
-                // (digit, then relayed text, then Enter) is out of scope for this
-                // ticket; tracked separately.
-                if matches!(kind, OptionKind::ChatAbout | OptionKind::FreeText) {
-                    if let Some(chat_id) = chat_id {
-                        let state = self.take_follow_up_state(&chat_id).unwrap_or_default();
-                        let (new_state, _outcome) =
-                            state.on_escape_hatch_tap(decoded.question_id.clone());
-                        self.set_follow_up_state(chat_id, new_state);
+                // The keystroke sequence differs per `OptionKind`, verified
+                // against a real AskUserQuestion widget — see
+                // `ticket-session-qa-freetext-injection`'s spec:
+                match kind {
+                    OptionKind::Choice => {
+                        // Digit moves the highlight, Enter selects. Unchanged.
+                        if let Err(err) = (self.inject)(&session, &digit, true) {
+                            tracing::warn!(
+                                session = %session,
+                                error = %err,
+                                "session-qa: injection failed"
+                            );
+                        }
                     }
-                    // No injection yet — the escape hatch only arms the
-                    // follow-up state; the free-text message that follows is
-                    // what gets relayed (handle_message).
-                } else if let Err(err) = (self.inject)(&session, &digit, true) {
-                    tracing::warn!(
-                        session = %session,
-                        error = %err,
-                        "session-qa: injection failed"
-                    );
+                    OptionKind::FreeText => {
+                        // Digit WITHOUT Enter: selecting the option opens an
+                        // inline editor without submitting. The follow-up
+                        // relay (handle_message) later injects the typed
+                        // text WITH Enter to submit it as the answer.
+                        if let Err(err) = (self.inject)(&session, &digit, false) {
+                            tracing::warn!(
+                                session = %session,
+                                error = %err,
+                                "session-qa: injection failed"
+                            );
+                        }
+                        if let Some(chat_id) = chat_id {
+                            let state = self.take_follow_up_state(&chat_id).unwrap_or_default();
+                            let (new_state, _outcome) =
+                                state.on_escape_hatch_tap(decoded.question_id.clone(), kind);
+                            self.set_follow_up_state(chat_id, new_state);
+                        }
+                    }
+                    OptionKind::ChatAbout => {
+                        // Digit WITH Enter: this closes the widget and
+                        // returns to the normal session prompt. The
+                        // follow-up relay (handle_message) later injects
+                        // the operator's text as an ordinary turn.
+                        if let Err(err) = (self.inject)(&session, &digit, true) {
+                            tracing::warn!(
+                                session = %session,
+                                error = %err,
+                                "session-qa: injection failed"
+                            );
+                        }
+                        if let Some(chat_id) = chat_id {
+                            let state = self.take_follow_up_state(&chat_id).unwrap_or_default();
+                            let (new_state, _outcome) =
+                                state.on_escape_hatch_tap(decoded.question_id.clone(), kind);
+                            self.set_follow_up_state(chat_id, new_state);
+                        }
+                    }
                 }
 
                 self.registry.mark_answered(&decoded.question_id);
@@ -990,7 +1049,16 @@ impl SessionQaBridge {
         let (new_state, outcome) = state.on_plain_text(text.to_string());
         self.set_follow_up_state(chat_id, new_state);
 
-        if let FollowUpOutcome::RelayText { question_id, text } = outcome {
+        if let FollowUpOutcome::RelayText {
+            question_id, text, ..
+        } = outcome
+        {
+            // Both `FreeText` and `ChatAbout` relay their text WITH Enter
+            // here — they differ in what was injected at TAP time, not at
+            // relay time. For `FreeText` this submits the inline editor
+            // bound to the question; for `ChatAbout` it is an ordinary
+            // prompt turn. Do not collapse this back into the tap-time
+            // branch above; the two arms diverge there, not here.
             let Some(question) = self.registry.get(&question_id) else {
                 tracing::debug!(
                     question_id,
