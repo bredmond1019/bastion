@@ -4904,4 +4904,103 @@ mod tests {
         assert_eq!(tokens_breach.cap, "max_total_tokens");
         assert_eq!(cost_breach.cap, "max_cost_usd");
     }
+
+    // ── BA.19.A: four BlockedBy payload interfaces pinned in types/serve.ts ──
+    //
+    // The behaviour these tests pin lives in a shell script's output
+    // (`scripts/gen-types.sh`), which no other Rust test observes. Without
+    // this module the scan can be narrowed back to `src/serve` alone and
+    // nothing here would fail — the client type would simply go missing
+    // again, quietly, exactly as `planning/knowledge.md:397` records. If any
+    // assertion below fails: `scripts/gen-types.sh` no longer scans
+    // `../okf-core/src`, or someone hand-edited the generated file. Fix is
+    // the same either way — rerun `scripts/gen-types.sh` from a checkout
+    // where `../okf-core/src` scans cleanly, and never hand-edit
+    // `types/serve.ts`.
+
+    const GENERATED_SERVE_TS: &str = include_str!("../../types/serve.ts");
+
+    fn assert_interface_present(name: &str) {
+        let needle = format!("export interface {name}");
+        assert!(
+            GENERATED_SERVE_TS.contains(&needle),
+            "types/serve.ts is missing `export interface {name}` — \
+             scripts/gen-types.sh no longer scans ../okf-core/src (or the \
+             annotation on okf-core::state::{name} was removed). Fix: rerun \
+             `scripts/gen-types.sh`; never hand-edit types/serve.ts."
+        );
+    }
+
+    fn assert_field_present(interface: &str, field: &str) {
+        let start = GENERATED_SERVE_TS
+            .find(&format!("export interface {interface}"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "types/serve.ts is missing `export interface {interface}` — \
+                     scripts/gen-types.sh no longer scans ../okf-core/src. Fix: \
+                     rerun `scripts/gen-types.sh`; never hand-edit types/serve.ts."
+                )
+            });
+        let end = GENERATED_SERVE_TS[start..]
+            .find('}')
+            .map(|rel| start + rel)
+            .unwrap_or(GENERATED_SERVE_TS.len());
+        let body = &GENERATED_SERVE_TS[start..end];
+        let has_field = body.contains(&format!("{field}:")) || body.contains(&format!("{field}?:"));
+        assert!(
+            has_field,
+            "types/serve.ts's `{interface}` interface is missing field \
+             `{field}` — the committed file has drifted from \
+             okf-core::state::{interface}. Fix: rerun `scripts/gen-types.sh` \
+             (it scans ../okf-core/src for this type); never hand-edit \
+             types/serve.ts."
+        );
+    }
+
+    #[test]
+    fn generated_serve_ts_contains_block_dep_interface() {
+        assert_interface_present("BlockDep");
+    }
+
+    #[test]
+    fn generated_serve_ts_contains_external_dep_interface() {
+        assert_interface_present("ExternalDep");
+    }
+
+    #[test]
+    fn generated_serve_ts_contains_operator_dep_interface() {
+        assert_interface_present("OperatorDep");
+    }
+
+    #[test]
+    fn generated_serve_ts_contains_approval_dep_interface() {
+        assert_interface_present("ApprovalDep");
+    }
+
+    #[test]
+    fn generated_serve_ts_block_dep_has_declared_fields() {
+        assert_field_present("BlockDep", "repo");
+        assert_field_present("BlockDep", "id");
+        assert_field_present("BlockDep", "what");
+    }
+
+    #[test]
+    fn generated_serve_ts_external_dep_has_declared_fields() {
+        assert_field_present("ExternalDep", "what");
+    }
+
+    #[test]
+    fn generated_serve_ts_operator_dep_has_declared_fields() {
+        assert_field_present("OperatorDep", "slug");
+        assert_field_present("OperatorDep", "exit");
+        assert_field_present("OperatorDep", "start");
+        assert_field_present("OperatorDep", "what");
+    }
+
+    #[test]
+    fn generated_serve_ts_approval_dep_has_declared_fields() {
+        assert_field_present("ApprovalDep", "slug");
+        assert_field_present("ApprovalDep", "what");
+        assert_field_present("ApprovalDep", "digest");
+    }
 }
