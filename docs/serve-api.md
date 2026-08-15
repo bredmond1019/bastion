@@ -3302,10 +3302,10 @@ variants, not the earlier single escape hatch:
 | `OptionKind` | Button rendering | What selecting it does |
 |---|---|---|
 | `Choice` | `N. label`, unchanged | An ordinary answer to the question. |
-| `FreeText` | `💬 label` | Opens Telegram's own free-form reply UI; the operator's typed text becomes the answer. |
-| `ChatAbout` | `💬 label` | Closes the widget without answering; the operator's typed text becomes an ordinary next turn to the agent, not an answer. |
+| `FreeText` | speech-balloon icon + `label` | Opens Telegram's own free-form reply UI; the operator's typed text becomes the answer. |
+| `ChatAbout` | speech-balloon icon + `label` | Closes the widget without answering; the operator's typed text becomes an ordinary next turn to the agent, not an answer. |
 
-`FreeText` and `ChatAbout` are rendered identically (both get the leading `💬`) because the
+`FreeText` and `ChatAbout` are rendered identically (both get the leading speech-balloon icon) because the
 operator-facing action is the same first step — type a reply — even though the pane-side effect
 differs; `resolve_question_response` (below) is what tells the two apart when the reply arrives.
 Callback data is encoded via `encode_question_callback`/`decode_question_callback` under Telegram's

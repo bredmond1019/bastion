@@ -333,7 +333,8 @@ Behaviours worth knowing before you call it:
   because once the free-text option is filled in with typed text the placeholder wording is gone
   entirely, and a text-first classifier would misclassify it.
 - **The widget region is bounded, not open-ended.** The parser walks upward from the first numbered
-  option to find the widget's top boundary — the header-chip line (`☐`/`□`) if present, else the
+  option to find the widget's top boundary — the header-chip line (either checkbox glyph
+  `strip_prefix` matches on) if present, else the
   nearest horizontal rule — and discards everything above it as scrollback (startup banners, MCP
   auth warnings, the operator's own prior prompt). The earlier "prose above the first numbered
   option is part of the question" rule was wrong on a real pane that had scrollback sitting above

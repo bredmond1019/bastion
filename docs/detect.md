@@ -181,7 +181,7 @@ both the `claude` and `pi` manifests, including a cross-agent isolation case.
 |---|---|
 | `claude_awaiting_question.txt` | `Blocked`, `visible_blocker = true`, `blocked_reason = AwaitingQuestion` |
 | `claude_ask_question_freetext_filled.txt` | Same as above; free-text option's label is the operator's typed reply, not the placeholder |
-| `claude_ask_question_freetext_selected.txt` | Same as above; the `❯` selection marker sits on the free-text option instead of the first choice |
+| `claude_ask_question_freetext_selected.txt` | Same as above; the chevron selection marker (one of the glyphs in `DECORATIVE_LEADING_CHARS`) sits on the free-text option instead of the first choice |
 | `claude_blocked.txt` | `Blocked`, `visible_blocker = true`, `blocked_reason = PermissionPrompt` |
 | `claude_working.txt` | `Working`, `visible_working = true` |
 | `claude_idle.txt` | `Idle`, `visible_idle = true` |
