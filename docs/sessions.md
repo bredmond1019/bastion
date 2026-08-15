@@ -301,11 +301,18 @@ pub const ASK_QUESTION_MARKER: &str = "Enter to select";
 pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt>
 ```
 
-`AskQuestionPrompt` carries the `question` text plus a `Vec<QuestionOption>`; each option has a
-1-indexed `number`, a `label`, an optional `description` (indented continuation lines joined with
-single spaces), and `is_escape_hatch`.
+`AskQuestionPrompt` carries an optional `header` (the widget's header-chip text, e.g. `Colour`,
+captured separately and never folded into `question`), the `question` text, and a
+`Vec<QuestionOption>`. Each option has a 1-indexed `number`, a `label`, an optional `description`
+(indented continuation lines joined with single spaces), and a `kind: OptionKind`.
 
-Three behaviours worth knowing before you call it:
+`OptionKind` (`Choice` / `FreeText` / `ChatAbout`) replaces the earlier single `is_escape_hatch:
+bool`, which conflated two genuinely different behaviours: the widget's trailing options are not
+one escape hatch but two, an inline free-text reply and a widget-closing "chat about this" —
+verified live 2026-08-14. `OptionKind` is documented in full, including the per-kind injected
+keystroke sequence the session-QA bridge sends on selection, in [serve-api.md](serve-api.md) §27.
+
+Behaviours worth knowing before you call it:
 
 - **`None` is the common, important return.** Any screen not carrying `ASK_QUESTION_MARKER` — a
   permission dialog, ordinary shell output, an empty string — returns `None`. So does a screen that
@@ -314,17 +321,30 @@ Three behaviours worth knowing before you call it:
 - **`ASK_QUESTION_MARKER` is the single source of truth for recognition**, and the same substring
   the `claude.toml` manifest rule gates on. Change one and you must change the other; they are
   deliberately narrower than the full footer (`Enter to select · ↑/↓ to navigate · Esc to cancel`)
-  because the separators and arrow glyphs vary by terminal width and Claude Code version.
-- **The escape hatch is matched structurally, then softly.** `is_escape_hatch` is only ever set on
-  the *last* option, and only when its label also passes a soft text check — the trailing free-text
-  option is almost always present but is not guaranteed to read "Chat about this" verbatim, so
-  neither position alone nor a hard string match would be correct.
+  because the separators and arrow glyphs vary by terminal width and Claude Code version. **Do not
+  widen it to include the `ctrl+g to edit in VS Code` footer fragment** — that fragment appears only
+  while the free-text option is highlighted, not on every `AskUserQuestion` render, so folding it
+  into the marker would make recognition depend on which option currently has focus.
+- **`OptionKind` is classified STRUCTURALLY, then softly confirmed.** Whether an option sits above,
+  at, or below the widget's separating horizontal rule is the reliable discriminator: the option
+  immediately above the rule is `FreeText`, everything below it is `ChatAbout`, everything else is
+  `Choice`. Label text (`looks_like_free_text` / `looks_like_chat_about`) is only ever a secondary,
+  non-authoritative signal, logged at `debug` when it disagrees — never the primary classifier,
+  because once the free-text option is filled in with typed text the placeholder wording is gone
+  entirely, and a text-first classifier would misclassify it.
+- **The widget region is bounded, not open-ended.** The parser walks upward from the first numbered
+  option to find the widget's top boundary — the header-chip line (`☐`/`□`) if present, else the
+  nearest horizontal rule — and discards everything above it as scrollback (startup banners, MCP
+  auth warnings, the operator's own prior prompt). The earlier "prose above the first numbered
+  option is part of the question" rule was wrong on a real pane that had scrollback sitting above
+  the widget; a real capture with no framing at all still falls back to the start-of-screen
+  behaviour, unchanged.
 
 The parser strips box-drawing borders and selection-marker glyphs before classifying, and is tested
 to produce identical results for the same prompt rendered plain, bordered, marked, and hard-wrapped
-at different terminal widths. Note the caveat on fixture provenance in [detect.md](detect.md) —
-the golden fixture is synthesized, so these tests pin the parser's behaviour against an assumed
-layout rather than a verified one.
+at different terminal widths, and across three **real** `tmux capture-pane` fixtures (a live Claude
+Code v2.1.233 session, see [detect.md](detect.md)) covering the happy path, a filled-in free-text
+answer, and the selection marker sitting on a different option.
 
 ## Verifying the surface
 

@@ -3295,24 +3295,55 @@ tasks.
 
 **Inbound (crossing → Telegram message).** Each `BlockedEdgeRecord` received over the channel is
 turned into a bounded, deduplicated `PendingQuestions` entry (`src/serve/session_qa/mod.rs`) and
-sent as a Telegram `sendMessage` with inline-keyboard buttons — one per option plus a leading
-escape-hatch button (distinguished by a leading emoji glyph, vs. `N. label` for normal options) that
-lets the operator answer free-form instead of picking a listed option. Callback data is encoded via
-`encode_question_callback`/`decode_question_callback` under Telegram's 64-byte `callback_data` cap
-(`QA_CALLBACK_DATA_MAX_BYTES`), reimplemented locally rather than shared with Section 26's
-`encode_callback_data` — deliberately, per the task's own instruction, since the two callback shapes
-(gate digest vs. question id) are not the same contract.
+sent as a Telegram `sendMessage` with inline-keyboard buttons — one per parsed
+`sessions::ask_question::QuestionOption`, whose `OptionKind` is now classified in **three**
+variants, not the earlier single escape hatch:
+
+| `OptionKind` | Button rendering | What selecting it does |
+|---|---|---|
+| `Choice` | `N. label`, unchanged | An ordinary answer to the question. |
+| `FreeText` | `💬 label` | Opens Telegram's own free-form reply UI; the operator's typed text becomes the answer. |
+| `ChatAbout` | `💬 label` | Closes the widget without answering; the operator's typed text becomes an ordinary next turn to the agent, not an answer. |
+
+`FreeText` and `ChatAbout` are rendered identically (both get the leading `💬`) because the
+operator-facing action is the same first step — type a reply — even though the pane-side effect
+differs; `resolve_question_response` (below) is what tells the two apart when the reply arrives.
+Callback data is encoded via `encode_question_callback`/`decode_question_callback` under Telegram's
+64-byte `callback_data` cap (`QA_CALLBACK_DATA_MAX_BYTES`), reimplemented locally rather than shared
+with Section 26's `encode_callback_data` — deliberately, per the task's own instruction, since the
+two callback shapes (gate digest vs. question id) are not the same contract.
 
 **Outbound (Telegram tap → tmux injection).** `run_outbound` long-polls `getUpdates` (same
 no-webhook rationale as Section 26.3) and, for each `callback_query`, resolves a `QuestionVerdict`
 via `resolve_question_response`, always calls `answerCallbackQuery` first (mirroring Section 26.8's
-acknowledgement ordering), then injects the operator's answer into the originating session's tmux
-pane via `sessions::tmux::send_keys` called **directly** — not through the
+acknowledgement ordering), then injects into the originating session's tmux pane via
+`sessions::tmux::send_keys`/`send_keys_no_enter` called **directly** — not through the
 `POST /api/sessions/{name}/send` HTTP handler, which is bound to actix-web extractors and not
-factored for a direct call (recorded as a task-spec Amendment). A second escape-hatch tap while
-already awaiting a free-form reply replaces the pending question (newest tap wins) rather than being
-ignored or erroring. `ChatFollowUpState` is keyed by the update's own Telegram `chat.id` (not a
-single global slot), so the state machine is correct even though only one chat is configured today.
+factored for a direct call (recorded as a task-spec Amendment). The injected keystroke sequence is
+**per-`OptionKind`**, verified against a real pane (`BA.ticket.session-qa-freetext-injection`):
+
+- **`Choice`** — digit, then Enter. Moves the highlight and selects in one round trip; unchanged
+  from the original single-escape-hatch design.
+- **`FreeText`** — digit **without** a trailing Enter (selecting the option opens Telegram's
+  free-form reply UI without submitting anything in the pane), then, when the operator's reply
+  arrives, the typed text **with** a trailing Enter. Sending Enter on the bare digit here would
+  close the widget with an empty free-text answer, before the operator's text ever exists.
+- **`ChatAbout`** — digit, then Enter (closes the widget and returns to the normal session
+  prompt), then, when the operator's reply arrives, the typed text **with** a trailing Enter, sent
+  as an ordinary turn — it does not answer the original question at all.
+
+A second `FreeText`/`ChatAbout` tap while already awaiting a reply replaces the pending state
+(newest tap wins) rather than being ignored or erroring. `ChatFollowUpState` is keyed by the
+update's own Telegram `chat.id` (not a single global slot), so the state machine is correct even
+though only one chat is configured today.
+
+**Auth: no bearer-gated surface added.** The bridge is poll-based (`getUpdates`) and adds **zero**
+new HTTP routes, DTOs, or bearer-gated endpoints — there is nothing here for auth middleware to
+gate. This is asserted, not merely claimed: Section 8.1's route-table test
+(`session_qa_bridge_adds_no_new_route`, `src/serve/mod.rs`) confirms `/api/session-qa`,
+`/api/session-qa/webhook`, `/api/notify/session-qa`, `/api/telegram/webhook`, and `/telegram/webhook`
+all still 404 with the bridge configured and running. `BA.20.D` re-ran this assertion and adds no
+new middleware.
 
 **Testing.** `src/serve/session_qa/tests.rs` covers the full inbound/outbound cycle hermetically
 against a fake `QaTelegramClient` and injected capture/inject closures — no real network or tmux
@@ -3323,6 +3354,21 @@ aborted after boot) by asserting on captured tracing output.
 ---
 
 ## Amendment Log
+
+- **2026-08-14 — Section 27 corrected (`BA.20.D`, no contract version bump — corrects the docs
+  only, no route or DTO changed):** Section 27's inbound description previously read "one
+  escape-hatch button (distinguished by a leading emoji glyph)" — the real widget has **two**
+  trailing option kinds with different semantics, `OptionKind::FreeText` and `OptionKind::ChatAbout`,
+  classified structurally by `sessions::ask_question::parse_ask_question` (see
+  [sessions.md](sessions.md)). The outbound paragraph previously described injection as a single
+  `sessions::tmux::send_keys` call carrying "the operator's answer" — the shipped behaviour is a
+  **per-`OptionKind` keystroke sequence** (`BA.ticket.session-qa-freetext-injection`): `Choice` is
+  digit+Enter; `FreeText` is digit with no Enter, then the operator's text, then Enter; `ChatAbout`
+  is digit+Enter to close the widget, then the text+Enter as an ordinary turn. Both corrections are
+  documentation-only — no HTTP route, DTO, or wire-frame shape changed, so this entry does not bump
+  the contract version. Also states explicitly, per this block's auth-surface acceptance criterion,
+  that the bridge adds no bearer-gated HTTP surface, naming Section 8.1's
+  `session_qa_bridge_adds_no_new_route` route-table test as the standing evidence.
 
 - **2026-08-14 — v0.30 → v0.31 (`BA.20.A`, additive; documented retroactively at chain close-out):**
   `SessionDto` gained the optional `blocked_reason` field (`"permission_prompt"` |

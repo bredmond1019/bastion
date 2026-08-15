@@ -180,15 +180,19 @@ both the `claude` and `pi` manifests, including a cross-agent isolation case.
 | Fixture | Expected state |
 |---|---|
 | `claude_awaiting_question.txt` | `Blocked`, `visible_blocker = true`, `blocked_reason = AwaitingQuestion` |
+| `claude_ask_question_freetext_filled.txt` | Same as above; free-text option's label is the operator's typed reply, not the placeholder |
+| `claude_ask_question_freetext_selected.txt` | Same as above; the `❯` selection marker sits on the free-text option instead of the first choice |
 | `claude_blocked.txt` | `Blocked`, `visible_blocker = true`, `blocked_reason = PermissionPrompt` |
 | `claude_working.txt` | `Working`, `visible_working = true` |
 | `claude_idle.txt` | `Idle`, `visible_idle = true` |
 | `pi_working.txt` | `Working`, `visible_working = true` |
 | `pi_idle.txt` | `Idle`, `visible_idle = true` |
 
-> **`claude_awaiting_question.txt` is synthesized, not a real capture.** No live session was
-> sitting on an `AskUserQuestion` prompt when `BA.20.A` shipped, so the fixture was built around
-> the operator-confirmed footer line rather than captured from tmux. Tests over it validate against
-> an assumed layout, not Claude Code's real rendering — replace it with a real
-> `tmux capture-pane -p` when the chance arises, and re-run this module's and
-> `sessions::ask_question`'s tests against it.
+> **All three `AskUserQuestion` fixtures are real captures.** `claude_awaiting_question.txt` and
+> its two siblings were replaced 2026-08-14 with `tmux capture-pane -p` output from a live Claude
+> Code v2.1.233 session (operator email redacted before committing — bastion is a public repo).
+> They cover the happy path, a filled-in free-text answer, and the selection marker sitting on the
+> free-text option instead of the first choice. `sessions::ask_question`'s tests
+> (`src/sessions/ask_question.rs`) run against all three and pin the widget-region bounding fix
+> (discarding scrollback above the widget) and the `OptionKind` structural classification against
+> real rendering, not an assumed layout.
