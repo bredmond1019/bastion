@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-14T23:55:24-03:00
+timestamp: 2026-08-15T13:24:20-03:00
 ---
 
 # Log — bastion
@@ -10,6 +10,38 @@ timestamp: 2026-08-14T23:55:24-03:00
 *Append-only working log. One dated entry per session. Newest entries at the top.*
 
 ---
+
+## [2026-08-15]
+
+### BA.19.A — four-variant `BlockedBy` on the wire
+
+- **What:** Widened `scripts/gen-types.sh` to scan `../okf-core/src` alongside `src/serve`, so
+  typeshare emits `BlockDep`, `ExternalDep`, `OperatorDep` and `ApprovalDep` into `types/serve.ts`
+  (75 lines added, 0 removed — purely additive). Added a missing-sibling guard that exits 1 naming
+  the resolved path rather than silently generating a file short four types. New gated test in
+  `src/serve/dto.rs` pins all four interfaces **and their field names** via `include_str!`, so a
+  future narrowing of the scan fails the suite here instead of surfacing two repos downstream.
+  `D19` records the rationale; `docs/serve-api.md` §19 (v0.31 → v0.32), `docs/setup.md`,
+  `docs/index.md`, the `dto.rs:1907` comment and `planning/knowledge.md`'s scan-scope entry all
+  corrected. 5/5 tasks via `/sdlc-task`, zero bails; full suite green (2354 + 43 + 4, 0 failed).
+- **Why:** `BW.16.A` was blocked: bastion-web's type union stayed two-variant, so operator and
+  approval gates were unrepresentable in the client (roadmap edge E2). **The roadmap's definition of
+  this block was wrong on both halves** — it named two edits in `core/bastion-web` (which `BW.16.A`
+  already owns) and told us to export a generated type named `BlockedBy`, which typeshare *cannot
+  emit at all*: it rejects internally-tagged algebraic enums, which is exactly why
+  `OK.ticket.blockedby-typeshare-export` annotated the four payload structs instead of the enum. A
+  P1 carryover in okf-core had flagged this a day earlier. The spec was authored against a
+  re-derived fact base, with the scope narrowed to bastion by operator decision.
+- **Verified, not assumed:** typeshare honours the `#[cfg_attr(feature = "typeshare", …)]` form
+  okf-core uses, so no `Cargo.toml` or cargo-feature change was needed. `cd ../bastion-web && npm
+  run sync:serve-types:check` exits 0 — that repo's committed generated types are **unchanged**, so
+  there is no cross-repo break window and `BW.16.A` stays independently schedulable.
+- **Left downstream:** `BW.16.A`'s `state.json` note rewritten — it must add the four *interface*
+  names to `NEEDED_EXPORTS` and hand-write the 4-arm union over them, since no `BlockedBy` symbol
+  will ever be generated. okf-core's carryover
+  `ba19a-spec-expects-a-generated-type-named-blockedby` removed; both `clears_when` halves hold.
+- **Refs:** `planning/BA.19.A/tasks.md`, `planning/decisions/D19-typeshare-scan-includes-okf-core.md`,
+  `docs/serve-api.md` §19
 
 ## [run: 2026-08-14]
 
