@@ -3,6 +3,32 @@
 */
 
 /**
+ * Payload for [`BlockedBy::Approval`] — a gated action awaiting a single
+ * operator decision.
+ * 
+ * Targetless like `Operator` — no node, skipped by dangling/cycle/topo
+ * logic — but identified via `slug` so tooling can find and clear it.
+ */
+export interface ApprovalDep {
+	/**
+	 * Kebab-case identifier. Shared across every block this gate
+	 * covers.
+	 */
+	slug: string;
+	/**
+	 * One line stating the decision (not the context) — this is what
+	 * gets rendered next to the approve control.
+	 */
+	what: string;
+	/**
+	 * Digest of the exact payload reviewed. Binds the approval to what
+	 * was seen: if the payload changes, the approval is void and
+	 * re-queues.
+	 */
+	digest: string;
+}
+
+/**
  * One `backlog[]` node that has crossed the backlog staleness threshold — used for both the
  * `aging_backlog` lane (non-capture nodes) and the `orphaned_captures` lane (`origin.type ==
  * "capture"` nodes, never both).
@@ -176,6 +202,19 @@ export interface AttentionDto {
 	lanes: AttentionLanesDto;
 	/** The resolved thresholds used to compute every `age_days` / `threshold_days` pair above. */
 	thresholds: AttentionThresholdsDto;
+}
+
+/**
+ * Payload for [`BlockedBy::Block`] — a dependency on another block (may be
+ * cross-repo).
+ */
+export interface BlockDep {
+	/** Slug of the owning repo. */
+	repo: string;
+	/** Canonical block ID (e.g. `BA.11.C`). */
+	id: string;
+	/** Optional gloss explaining the dependency. */
+	what?: string;
 }
 
 /**
@@ -788,6 +827,15 @@ export interface EventPayload {
 }
 
 /**
+ * Payload for [`BlockedBy::External`] — an environmental / external
+ * dependency (not a tracked block).
+ */
+export interface ExternalDep {
+	/** Human description of the external dependency. */
+	what: string;
+}
+
+/**
  * JSON response for `GET /repos/{name}/handoff`.
  * 
  * Mirrors [`crate::serve::status::handoff::HandoffInfo`] field-for-field — kept
@@ -927,6 +975,33 @@ export interface NotifyTestResponseDto {
 	 * comparison.
 	 */
 	digest: string;
+}
+
+/**
+ * Payload for [`BlockedBy::Operator`] — an operator working session that
+ * gates this block.
+ * 
+ * Targetless — no node, skipped by dangling/cycle/topo logic — but
+ * identified: a `slug` can be shared across several blocks so tooling can
+ * find and clear the gate they are all waiting on. Named `operator` rather
+ * than `session` to avoid colliding with `bastion sessions` (the tmux CLI);
+ * this is a `depends_on` edge discriminant only.
+ */
+export interface OperatorDep {
+	/**
+	 * Kebab-case identifier. Shared across every block this gate
+	 * covers, giving otherwise-unrelated blocks a join key.
+	 */
+	slug: string;
+	/**
+	 * The artifact whose existence ends the session — the thing you
+	 * can point at afterwards, not a description of the work.
+	 */
+	exit: string;
+	/** The command that starts the session, paste-ready. */
+	start: string;
+	/** Optional gloss: why this particular block is gated on it. */
+	what?: string;
 }
 
 /** One entry in an opportunity's `actions` activity log. */

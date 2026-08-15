@@ -39,7 +39,22 @@ if ! command -v typeshare >/dev/null 2>&1; then
     fi
 fi
 
-typeshare "$REPO_ROOT/src/serve" \
+# okf-core is the schema crate whose four BlockedBy payload structs
+# (BlockDep, ExternalDep, OperatorDep, ApprovalDep) must also reach
+# types/serve.ts — Cargo.toml already pins it as a sibling path dependency
+# (`okf-core = { path = "../okf-core" }`), so this is the same sibling
+# relationship, not a new one. Guard its presence explicitly: a missing
+# directory must not silently generate a types/serve.ts that is quietly
+# missing those four types (see planning/knowledge.md's scan-scope entry).
+OKF_CORE_SRC="$REPO_ROOT/../okf-core/src"
+if [ ! -d "$OKF_CORE_SRC" ]; then
+    echo "error: expected okf-core source tree at $OKF_CORE_SRC, but it does not exist." >&2
+    echo "typeshare must scan both src/serve and okf-core/src, or types/serve.ts would be" >&2
+    echo "silently generated without the BlockDep/ExternalDep/OperatorDep/ApprovalDep interfaces." >&2
+    exit 1
+fi
+
+typeshare "$REPO_ROOT/src/serve" "$OKF_CORE_SRC" \
     --lang typescript \
     --output-file "$OUTPUT_FILE" \
     --config-file "$REPO_ROOT/typeshare.toml"

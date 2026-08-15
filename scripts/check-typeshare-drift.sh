@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # check-typeshare-drift.sh — fail when the committed types/serve.ts is stale
-# relative to src/serve/dto.rs.
+# relative to src/serve/dto.rs and okf-core's annotated state types.
 #
 # Regenerates the TypeScript types to a temp file (via scripts/gen-types.sh, the
 # single source of truth for the typeshare invocation) and diffs it against the
@@ -48,10 +48,10 @@ trap 'rm -f "$TMP_FILE"' EXIT
 "$SCRIPT_DIR/gen-types.sh" "$TMP_FILE"
 
 if diff -u "$COMMITTED_FILE" "$TMP_FILE" >/dev/null; then
-    echo "OK: types/serve.ts is up to date with src/serve/dto.rs."
+    echo "OK: types/serve.ts is up to date with src/serve/dto.rs and okf-core/src."
     exit 0
 else
-    echo "DRIFT DETECTED: types/serve.ts is stale relative to src/serve/dto.rs." >&2
+    echo "DRIFT DETECTED: types/serve.ts is stale relative to src/serve/dto.rs and okf-core/src." >&2
     echo "Regenerate with: scripts/gen-types.sh" >&2
     echo >&2
     diff -u "$COMMITTED_FILE" "$TMP_FILE" >&2 || true
