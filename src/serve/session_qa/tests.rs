@@ -611,6 +611,26 @@ mod e2e {
         (f, log)
     }
 
+    /// An [`InjectFn`] that records an ORDERED log of `(session, text,
+    /// with_enter)` tuples — the full keystroke-sequence fake `ticket-
+    /// session-qa-freetext-injection`'s task 3 requires. Every scenario in
+    /// that ticket asserts on this full ordered sequence, never on call
+    /// counts or a two-tuple log alone: a call-count assertion is exactly
+    /// what let the shipped `BA.20.C` defect (option 1 silently submitted
+    /// under a `FreeText`/`ChatAbout` tap) through review.
+    fn inject_ordered_recording() -> (InjectFn, Arc<StdMutex<Vec<(String, String, bool)>>>) {
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let log_for_closure = log.clone();
+        let f: InjectFn = Box::new(move |session, text, with_enter| {
+            log_for_closure
+                .lock()
+                .expect("ordered inject log mutex poisoned")
+                .push((session.to_string(), text.to_string(), with_enter));
+            Ok(())
+        });
+        (f, log)
+    }
+
     fn edge_record(session: &str) -> BlockedEdgeRecord {
         BlockedEdgeRecord::new(session, "host-a", None, AgentState::Blocked, Utc::now())
     }
@@ -829,10 +849,7 @@ mod e2e {
         bridge.handle_update(&tap).await;
 
         assert_eq!(
-            inject_log
-                .lock()
-                .expect("inject log mutex poisoned")
-                .len(),
+            inject_log.lock().expect("inject log mutex poisoned").len(),
             1,
             "a ChatAbout tap must inject the digit at tap time"
         );
@@ -1097,6 +1114,229 @@ mod e2e {
         assert!(
             !logs.contains(SENTINEL_TOKEN),
             "captured log output must never contain the bot token; got:\n{logs}"
+        );
+    }
+
+    // ── Ordered keystroke-sequence coverage (ticket-session-qa-freetext-injection) ──
+    //
+    // Each test below asserts the FULL ORDERED sequence of injected
+    // `(session, text, with_enter)` tuples, never a call count alone — a
+    // call-count assertion is exactly what let the shipped `BA.20.C` defect
+    // (a `FreeText`/`ChatAbout` tap silently submitting option 1) pass
+    // review. `SAMPLE_PANE` parses to: 1/2 `Choice`, 3 `FreeText` ("Type
+    // something."), 4 `ChatAbout` ("Chat about this").
+
+    /// Sends a crossing through `bridge`, returning the question id the
+    /// bridge generated for it.
+    async fn send_sample_crossing(
+        bridge: &SessionQaBridge,
+        client: &FakeQaTelegramClient,
+        session: &str,
+    ) -> String {
+        bridge.handle_edge_record(edge_record(session)).await;
+        let calls = client.calls();
+        let Some(Call::SendMessage(body)) = calls
+            .iter()
+            .rev()
+            .find(|c| matches!(c, Call::SendMessage(_)))
+        else {
+            panic!("expected at least one sendMessage call");
+        };
+        question_id_from_send_message(body)
+    }
+
+    #[tokio::test]
+    async fn choice_tap_injects_exactly_digit_with_enter() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+        let question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+
+        // Option 2 is "MySQL", a plain `Choice`.
+        let tap = callback_query_update(1, "cbq-1", &question_id, 2, 999, 555);
+        bridge.handle_update(&tap).await;
+
+        let injected = log
+            .lock()
+            .expect("ordered inject log mutex poisoned")
+            .clone();
+        assert_eq!(
+            injected,
+            vec![("sess-1".to_string(), "2".to_string(), true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn freetext_tap_then_relay_injects_digit_no_enter_then_text_with_enter() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+        let question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+
+        // Option 3 is "Type something.", the `FreeText` option.
+        let tap = callback_query_update(1, "cbq-1", &question_id, 3, 999, 555);
+        bridge.handle_update(&tap).await;
+
+        assert_eq!(
+            log.lock().expect("mutex poisoned").clone(),
+            vec![("sess-1".to_string(), "3".to_string(), false)],
+            "a FreeText tap must inject only the digit, with no trailing Enter"
+        );
+
+        let follow_up = text_message_update(2, 999, "teal, actually");
+        bridge.handle_update(&follow_up).await;
+
+        assert_eq!(
+            log.lock().expect("mutex poisoned").clone(),
+            vec![
+                ("sess-1".to_string(), "3".to_string(), false),
+                ("sess-1".to_string(), "teal, actually".to_string(), true),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn chatabout_tap_then_relay_injects_digit_with_enter_then_text_with_enter() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+        let question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+
+        // Option 4 is "Chat about this", the `ChatAbout` option.
+        let tap = callback_query_update(1, "cbq-1", &question_id, 4, 999, 555);
+        bridge.handle_update(&tap).await;
+
+        assert_eq!(
+            log.lock().expect("mutex poisoned").clone(),
+            vec![("sess-1".to_string(), "4".to_string(), true)],
+            "a ChatAbout tap must inject the digit WITH Enter at tap time, closing the widget"
+        );
+
+        let follow_up = text_message_update(2, 999, "tell me more");
+        bridge.handle_update(&follow_up).await;
+
+        assert_eq!(
+            log.lock().expect("mutex poisoned").clone(),
+            vec![
+                ("sess-1".to_string(), "4".to_string(), true),
+                ("sess-1".to_string(), "tell me more".to_string(), true),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_text_with_no_armed_follow_up_injects_nothing() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+
+        // No crossing was ever sent, so no follow-up state is armed for
+        // this chat — a stray message must relay nowhere.
+        let stray = text_message_update(1, 999, "hello?");
+        bridge.handle_update(&stray).await;
+
+        assert!(
+            log.lock().expect("mutex poisoned").is_empty(),
+            "a relay with no armed follow-up state must inject nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn second_freetext_tap_replaces_armed_state_and_sends_second_digit_no_enter() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+
+        // Two separate crossings on the same chat, same session: tapping
+        // FreeText on the second while the first's follow-up state is
+        // still armed must replace it (`ReplacedAwaiting`), and the second
+        // tap's digit must still go out with no trailing Enter.
+        let first_question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+        let first_tap = callback_query_update(1, "cbq-1", &first_question_id, 3, 999, 555);
+        bridge.handle_update(&first_tap).await;
+
+        let second_question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+        let second_tap = callback_query_update(2, "cbq-2", &second_question_id, 3, 999, 555);
+        bridge.handle_update(&second_tap).await;
+
+        assert_eq!(
+            log.lock().expect("mutex poisoned").clone(),
+            vec![
+                ("sess-1".to_string(), "3".to_string(), false),
+                ("sess-1".to_string(), "3".to_string(), false),
+            ],
+            "both FreeText taps must inject their digit with no trailing Enter"
+        );
+
+        // The relay now resolves against the SECOND question (replaced
+        // state), and still submits the text with Enter.
+        let follow_up = text_message_update(3, 999, "final answer");
+        bridge.handle_update(&follow_up).await;
+
+        let injected = log.lock().expect("mutex poisoned").clone();
+        assert_eq!(injected.len(), 3);
+        assert_eq!(
+            injected[2],
+            ("sess-1".to_string(), "final answer".to_string(), true)
+        );
+    }
+
+    /// Regression pin for the shipped `BA.20.C` defect: a `FreeText` tap
+    /// followed by a relay must NEVER produce a log whose first entry
+    /// carries `with_enter == true` — that sequence is exactly the one
+    /// that silently submitted option 1 and discarded the operator's text.
+    #[tokio::test]
+    async fn regression_freetext_tap_first_entry_never_carries_enter() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, log) = inject_ordered_recording();
+        let bridge = SessionQaBridge::with_seams(
+            "chat-1".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        );
+        let question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+
+        let tap = callback_query_update(1, "cbq-1", &question_id, 3, 999, 555);
+        bridge.handle_update(&tap).await;
+        let follow_up = text_message_update(2, 999, "teal, actually");
+        bridge.handle_update(&follow_up).await;
+
+        let injected = log.lock().expect("mutex poisoned").clone();
+        assert!(
+            !injected.is_empty(),
+            "a FreeText tap must inject at least the digit"
+        );
+        assert!(
+            !injected[0].2,
+            "REGRESSION: the digit for a FreeText tap must never be sent with a trailing \
+             Enter — that is the shipped BA.20.C sequence that silently submitted option 1 \
+             and discarded the operator's text; got: {injected:?}"
         );
     }
 }
