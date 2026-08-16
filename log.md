@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-15T13:24:20-03:00
+timestamp: 2026-08-16T14:10:00-03:00
 ---
 
 # Log — bastion
@@ -12,6 +12,23 @@ timestamp: 2026-08-15T13:24:20-03:00
 ---
 
 ## [2026-08-16]
+
+### BA.ticket.spawn-command-delivery-race closed — readiness signal strengthened
+
+- **What:** `wait_for_claude` (`src/sessions/ask.rs`) now declares readiness only after
+  `capture_pane_raw` returns identical, non-empty content across `REQUIRED_STABLE_OBSERVATIONS`
+  (2) consecutive poll ticks, instead of the instant the tmux foreground process leaves the
+  shell. New pure functions `pane_is_stable_and_ready`/`update_readiness_streak`, exhaustively
+  unit-tested. Verified live: 3/3 fixture runs against a real spawned session confirmed reliable
+  command delivery. Full suite green (fmt, clippy, 2407 nextest, release build,
+  contract-corpus-drift).
+- **Why:** Reproduced live 2026-08-15 via `bastion-ui`'s Patrol-driven trigger test —
+  `POST /actions/command mode:"spawn"` reported success but the triggering command was silently
+  dropped, the pane sitting empty 20+ seconds. Claude's TUI keeps re-rendering (splash, MCP-auth,
+  entering alt-screen mode) after the process has already exec'd; a single non-shell-process
+  sample can't tell the difference. This readiness signal is shared by `bastion ask`'s own
+  trigger-send, not spawn-only.
+- **Refs:** `planning/ticket-spawn-command-delivery-race/tasks.md`
 
 ### Compile fix: `AttentionThresholds` gained `defect_days`/`drift_days` in mev
 
