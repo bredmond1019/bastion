@@ -11,6 +11,33 @@ timestamp: 2026-08-15T13:24:20-03:00
 
 ---
 
+## [2026-08-16]
+
+### Compile fix: `AttentionThresholds` gained `defect_days`/`drift_days` in mev
+
+- **What:** Added `defect_days: 10` and `drift_days: 10` to the `AttentionThresholds` struct
+  literal in `sample_config` (`src/serve/handlers/attention.rs:396`, a `#[cfg(test)]` helper).
+  Two lines, no behaviour change.
+- **Why:** mev's `MV.ticket.reference-container-validation` (merged as `b77cd56`, PR #40) added
+  those two fields to `AttentionThresholds` (`core/mev/src/brain/config.rs:90-98`) as part of
+  D72's narrowed carryover vocabulary — `defect` and `drift` are the kinds replacing
+  `known_issue`/`constraint`. The fields carry serde defaults, so real `brain.toml` files are
+  unaffected, but a struct *literal* must name every field, so bastion stopped compiling with
+  `E0063`. Caught by `mev check-consumers` before the merge, not after.
+- **Note for whoever picks this up:** this is the second instance of the same class — a mev
+  struct gaining a field is a public-surface change for every path-dependent consumer even though
+  it does not read like one (see mev's `adding-a-dependency-to-mev-is-a-cross-repo-change`
+  carryover). `cargo build` stayed green throughout; only `cargo test` broke, because the only
+  affected site is a test helper. `mev check-consumers` compiles consumers' *test* targets
+  precisely for this reason.
+- **Verified:** `cargo nextest run --lib --bins` — 2397 passed, 0 failed.
+- **Unrelated and untouched:** `BA.ticket.spawn-command-delivery-race` is planned
+  (`planning/ticket-spawn-command-delivery-race/`) and not started. This fix only unblocks it —
+  bastion's harness gates on `cargo test`, so that ticket would have bailed on its first
+  validation until this landed.
+
+---
+
 ## [2026-08-15]
 
 ### BA.19.A — four-variant `BlockedBy` on the wire

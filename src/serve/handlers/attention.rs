@@ -398,6 +398,8 @@ mod tests {
                 deferred_days: 5,
                 known_issue_days: 10,
                 constraint_days: 10,
+                defect_days: 10,
+                drift_days: 10,
                 backlog_days: 7,
                 knowledge_days: 45,
                 memory_days: 30,
