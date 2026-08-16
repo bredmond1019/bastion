@@ -27,6 +27,20 @@ pub const READINESS_TIMEOUT_SECS: u64 = 30;
 /// Polling interval for the Claude-readiness wait (milliseconds).
 pub const READINESS_POLL_MS: u64 = 500;
 
+/// Number of consecutive "pane content is stable and non-empty" observations
+/// required before `wait_for_claude` declares readiness.
+///
+/// A single non-shell foreground-process sample is not sufficient: Claude's
+/// TUI keeps rendering (splash screen, MCP-auth check, entering alt-screen
+/// mode) for a stretch *after* the process has already been exec'd, and a
+/// command sent into that window is silently dropped (reproduced live: an
+/// empty prompt persisted 20+ seconds after the old single-sample readiness
+/// check declared success). Requiring the captured pane content to be
+/// identical across `REQUIRED_STABLE_OBSERVATIONS` consecutive poll ticks
+/// means the wait spans the entire duration the pane is still actively
+/// re-rendering, not just one instant of it.
+pub const REQUIRED_STABLE_OBSERVATIONS: usize = 2;
+
 // ── Args struct ───────────────────────────────────────────────────────────────
 
 /// Arguments for the `ask` turn — mirrors the clap `Commands::Ask` fields.
@@ -136,6 +150,35 @@ pub fn has_session_args(name: &str) -> Vec<String> {
 pub fn has_session(name: &str) -> bool {
     let args = has_session_args(name);
     tmux::run_tmux(&args).is_ok()
+}
+
+/// Pure predicate: is this pane-content sample a "ready" observation?
+///
+/// A sample counts as ready when it is non-empty (a blank/whitespace-only
+/// capture cannot be a settled prompt) *and* identical to the previous
+/// sample — i.e. the pane stopped re-rendering between the two polls that
+/// produced them. `previous == None` (first observation, or the streak was
+/// just reset) can never count, since there is nothing yet to compare
+/// against.
+pub(crate) fn pane_is_stable_and_ready(previous: Option<&str>, current: &str) -> bool {
+    if current.trim().is_empty() {
+        return false;
+    }
+    match previous {
+        Some(prev) => prev == current,
+        None => false,
+    }
+}
+
+/// Pure state transition for the readiness streak counter: bump on a ready
+/// observation, reset to zero on anything else (non-shell-but-unstable pane,
+/// or the foreground process reverting to a shell).
+pub(crate) fn update_readiness_streak(is_ready_observation: bool, streak: usize) -> usize {
+    if is_ready_observation {
+        streak.saturating_add(1)
+    } else {
+        0
+    }
 }
 
 // ── I/O shell ─────────────────────────────────────────────────────────────────
@@ -272,25 +315,48 @@ fn ensure_session_with_claude_with_timeout(
 }
 
 /// Poll `list-sessions` until the target session's foreground command is a
-/// non-shell process (i.e. `classify_state` returns `Running`), or until
+/// non-shell process (i.e. `classify_state` returns `Running`) *and* the
+/// captured pane content has settled — identical across
+/// [`REQUIRED_STABLE_OBSERVATIONS`] consecutive poll ticks — or until
 /// `timeout_secs` elapses.
 ///
 /// We use `classify_state` rather than checking for the string `"claude"`
 /// because Claude Code renames its process via `pthread_setname_np` to the
 /// version string (e.g. `"2.1.185"`), so `#{pane_current_command}` in tmux
 /// never shows `"claude"` when a modern Claude Code is running.  Any
-/// non-idle-shell foreground command is a reliable signal that Claude is up.
+/// non-idle-shell foreground command is a reliable signal that *a* process
+/// has exec'd — but not that Claude's own TUI has finished starting up
+/// (splash render, MCP-auth check, entering its raw-input/alt-screen mode)
+/// and is actually reading stdin into its prompt box. A command sent into
+/// that gap is silently dropped, not queued or errored. Requiring the
+/// rendered pane content to stop changing across consecutive polls closes
+/// that gap: as long as Claude's own startup is still redrawing the pane, no
+/// two consecutive samples will match, so the streak keeps resetting until
+/// startup is genuinely done — however long that takes, and however far
+/// past the process-exec instant it runs.
 pub(crate) fn wait_for_claude(
     session: &str,
     timeout_secs: u64,
     interval_ms: u64,
 ) -> Result<(), AskError> {
     let max_attempts = poll_plan(timeout_secs, interval_ms);
+    let mut streak: usize = 0;
+    let mut last_pane: Option<String> = None;
 
     for _ in 0..max_attempts {
         let foreground = foreground_cmd_for(session);
         if classify_state(&foreground) == SessionState::Running {
-            return Ok(());
+            let pane = tmux::capture_pane_raw(session).unwrap_or_default();
+            let is_ready_observation = pane_is_stable_and_ready(last_pane.as_deref(), &pane);
+            streak = update_readiness_streak(is_ready_observation, streak);
+            last_pane = Some(pane);
+
+            if streak >= REQUIRED_STABLE_OBSERVATIONS {
+                return Ok(());
+            }
+        } else {
+            streak = 0;
+            last_pane = None;
         }
         thread::sleep(Duration::from_millis(interval_ms));
     }
@@ -555,6 +621,90 @@ mod tests {
         let _ = poll_plan(180, 500);
         let _ = has_session_args("test-session");
         // No assertion needed beyond "this line is reached".
+    }
+
+    // ── pane_is_stable_and_ready ──────────────────────────────────────────────
+
+    #[test]
+    fn pane_is_stable_and_ready_matching_nonempty_samples() {
+        assert!(pane_is_stable_and_ready(Some("> "), "> "));
+    }
+
+    #[test]
+    fn pane_is_stable_and_ready_differing_samples_not_ready() {
+        assert!(!pane_is_stable_and_ready(
+            Some("splash frame 1"),
+            "splash frame 2"
+        ));
+    }
+
+    #[test]
+    fn pane_is_stable_and_ready_no_previous_not_ready() {
+        // First observation (or right after a streak reset) has nothing to
+        // compare against yet, so it can never count on its own.
+        assert!(!pane_is_stable_and_ready(None, "> "));
+    }
+
+    #[test]
+    fn pane_is_stable_and_ready_empty_current_not_ready() {
+        assert!(!pane_is_stable_and_ready(Some(""), ""));
+    }
+
+    #[test]
+    fn pane_is_stable_and_ready_whitespace_only_current_not_ready() {
+        assert!(!pane_is_stable_and_ready(Some("   \n  "), "   \n  "));
+    }
+
+    #[test]
+    fn pane_is_stable_and_ready_matching_multiline_samples() {
+        let pane = "Welcome to Claude Code\n> ";
+        assert!(pane_is_stable_and_ready(Some(pane), pane));
+    }
+
+    // ── update_readiness_streak ───────────────────────────────────────────────
+
+    #[test]
+    fn update_readiness_streak_increments_on_ready_observation() {
+        assert_eq!(update_readiness_streak(true, 0), 1);
+        assert_eq!(update_readiness_streak(true, 1), 2);
+        assert_eq!(update_readiness_streak(true, 2), 3);
+    }
+
+    #[test]
+    fn update_readiness_streak_resets_on_unready_observation() {
+        assert_eq!(update_readiness_streak(false, 0), 0);
+        assert_eq!(update_readiness_streak(false, 5), 0);
+    }
+
+    #[test]
+    fn update_readiness_streak_saturates_instead_of_overflowing() {
+        assert_eq!(update_readiness_streak(true, usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn required_stable_observations_reaches_ready_after_matching_streak() {
+        // Mirrors the loop in `wait_for_claude`: two consecutive matching,
+        // non-empty samples must cross REQUIRED_STABLE_OBSERVATIONS.
+        let samples = ["splash 1", "splash 2", "> ", "> ", "> "];
+        let mut streak = 0usize;
+        let mut last: Option<&str> = None;
+        let mut reached_ready_at = None;
+
+        for (i, sample) in samples.iter().enumerate() {
+            let is_ready = pane_is_stable_and_ready(last, sample);
+            streak = update_readiness_streak(is_ready, streak);
+            last = Some(sample);
+            if streak >= REQUIRED_STABLE_OBSERVATIONS && reached_ready_at.is_none() {
+                reached_ready_at = Some(i);
+            }
+        }
+
+        assert_eq!(
+            reached_ready_at,
+            Some(4),
+            "readiness should be declared once the streak of matching '> ' samples reaches \
+             REQUIRED_STABLE_OBSERVATIONS (index 4 — the third consecutive '> ' sample)"
+        );
     }
 
     // ── wait_for_claude (readiness timeout error branch) ─────────────────────
