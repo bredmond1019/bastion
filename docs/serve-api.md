@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.30"
+title: "serve-api contract v0.34"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -49,7 +49,7 @@ in-memory `PendingPayloads` registry so the `NotifyPollLoop`'s `PendingLookup` c
 clears the live buttons and shows the chosen option) before the `VerdictSink` runs, fixing the
 defect where Telegram silently timed out a tapped button because `answerCallbackQuery` was never
 called; the ack handle and message handle are opaque, transport-agnostic, and `None`-safe for any
-transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced."
+transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced; and the v0.34 `effective_priority` field on `BoardBlockDto` (`BA.19.B`) — mev's min-propagated ranking (`mev::brain::block_graph::BlockGraphNode::effective_priority`) carried verbatim onto every board lane entry behind the same opt-in `?graph=1` gate as `dependent_count`/`ready`/`unmet_count`, absent when the block was absent from the graph export, `?graph=1` was not requested, or mev's own min-propagation never landed a value in the real `0..=3` range; bastion-web's `board-view.ts` already duck-types a read of this field, so no client-side change is required."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -58,9 +58,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.33 Contract
+# serve-api — v0.34 Contract
 
-**Version:** v0.33  
+**Version:** v0.34  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -1405,7 +1405,7 @@ Execution-path failures (after validation passes) map as follows:
 
 ---
 
-## 13. Cross-brain board API (v0.6, BA.11.K; enriched v0.11, BA.11.R; last_touched v0.14, BA.11.S; block-graph enrichment v0.19, A5; block detail fields v0.33, `BA.ticket.block-fields-serve-dto`)
+## 13. Cross-brain board API (v0.6, BA.11.K; enriched v0.11, BA.11.R; last_touched v0.14, BA.11.S; block-graph enrichment v0.19, A5; block detail fields v0.33, `BA.ticket.block-fields-serve-dto`; effective_priority v0.34, `BA.19.B`)
 
 One read-only route projecting the cross-brain now/next/blocked/finished rollup — the same
 aggregate `bastion emit-state` / `bastion validate-brain --state` already compute from the
@@ -1422,7 +1422,7 @@ brain).
 | `scope` | string | No | `"hq"` | One of `"hq"` \| `"tier"` \| `"project"` \| `"business"` \| `"epic"` (Section 13.2). An unrecognized value fails query deserialization and returns `400` (Section 13.4). |
 | `tier` | string | No | `"core"` | Tier name; only consulted when `scope` is `"tier"` or `"project"` (Section 13.2). Ignored for `"hq"`/`"business"`/`"epic"`. |
 | `epic` | string | Only for `scope=epic` | — | Epic slug (from the HQ `epics[]` registry, Section 17) to filter the board to. Required, and only consulted, when `scope=epic`; missing or unknown → `404`/`C005` (Section 13.4). Ignored for every other scope. |
-| `graph` (v0.19) | boolean | No | `false` | Opt-in gate for the A5 `dependent_count`/`ready`/`unmet_count` enrichment on every `BoardBlockDto` (Section 13.3). When `false`/absent, `assemble_board` skips the `mev::build_block_graph_export` call entirely and all three fields are omitted from the JSON body. When `true` (`?graph=1` or `?graph=true`), the export is computed once per request (task 1 measured this as roughly doubling `/api/board`'s wall-clock on the live HQ corpus — see the block's Notes) and the three fields are populated on every lane entry present in the export. |
+| `graph` (v0.19; widened v0.34) | boolean | No | `false` | Opt-in gate for the A5 `dependent_count`/`ready`/`unmet_count` enrichment on every `BoardBlockDto` (Section 13.3), and, as of v0.34, `effective_priority` too. When `false`/absent, `assemble_board` skips the `mev::build_block_graph_export` call entirely and all four fields are omitted from the JSON body. When `true` (`?graph=1` or `?graph=true`), the export is computed once per request (task 1 measured this as roughly doubling `/api/board`'s wall-clock on the live HQ corpus — see the block's Notes) and the four fields are populated on every lane entry present in the export. |
 
 **Request:**
 
@@ -1516,6 +1516,7 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 | `dependent_count` (v0.19) | number \| absent | absent | Number of other blocks (corpus-wide, across every repo) that declare this block as a dependency, carried verbatim from `mev::brain::block_graph::BlockGraphNode::dependent_count`. **Corpus-wide, not scope-filtered** — mev computes it once over the full unscoped corpus before any `scope=`/`tier=`/`epic=` filtering is applied, so the value for a given block is identical whether the board is fetched at `scope=hq` or a narrower tier/project scope (the property client-side re-derivation from a scoped lane projection cannot have). Populated on **all five lanes** (`now`/`next`/`blocked`/`deferred`/`finished`). Omitted entirely (not `null`, not `0`) when `?graph=1` was not requested, or when the block is present on the board but absent from the graph export (e.g. `max_nodes`-truncated, or filtered out of the export's scope). |
 | `ready` (v0.19) | boolean \| absent | absent | Membership in mev's `ready_order` set, carried verbatim from `BlockGraphNode::ready`. **This is the readiness signal consumers should use** — see the "readiness signal" note below. Populated on all five lanes under the same `?graph=1` gate and absence rule as `dependent_count`. |
 | `unmet_count` (v0.19) | number \| absent | absent | Count of unmet dependencies, carried verbatim from `BlockGraphNode::unmet_count`, but populated **only for `blocked`-lane entries**. Absent (not `null`, not `0`) for every `now`/`next`/`deferred`/`finished` entry, and also absent when `?graph=1` was not requested or the block is absent from the export — see the "readiness signal" note below for why this field must never be read as a bare zero-check. |
+| `effective_priority` (v0.34) | number \| absent | absent | Min-propagated ranking priority, carried verbatim from `mev::brain::block_graph::BlockGraphNode::effective_priority` — bastion performs **zero derivation** of its own. Populated on **all five lanes** under the same `?graph=1` gate as `dependent_count`/`ready`. Absent has three distinct causes, none distinguishable from the others in the payload: the block was absent from the graph export, `?graph=1` was not requested, or mev's own min-propagation never landed a value in the real `0..=3` range for that block. Never falls back to the block's own authored `priority` field — that fallback, when a client wants one, is bastion-web's own (`board-view.ts`'s `resolveEffectivePriority`), not bastion's. |
 | `description` (v0.33) | string \| absent | absent | Longer human-facing description, from the authoring `okf_core::TrackBlock.description`. Absent (not `null`) when unauthored — the overwhelming majority of blocks until the D65 backfill populates it, so an untagged block's payload is byte-identical to pre-v0.33. |
 | `created` (v0.33) | string (`YYYY-MM-DD`) \| absent | absent | Authoring date, from `okf_core::TrackBlock.created` — when this block record was written. Absent when unauthored. |
 | `closed` (v0.33) | string (`YYYY-MM-DD`) \| absent | absent | Status-transition date to `closed`, from `okf_core::TrackBlock.closed`. Paired with `commit`. Absent when unauthored, including for every non-closed block. |
@@ -1547,15 +1548,16 @@ carried verbatim as `Option<String>`, and `origin` is carried by mapping `okf_co
 onto the local `BlockOriginDto` mirror (`src/serve/dto.rs`, declared just below `BoardBlockDto`)
 field-for-field.
 
-#### `dependent_count` / `ready` / `unmet_count` (v0.19, A5) — readiness signal
+#### `dependent_count` / `ready` / `unmet_count` / `effective_priority` (v0.19 + v0.34, A5) — readiness signal
 
-These three fields are **additive and optional**, gated behind `?graph=1` (Section 13.1): a
-pre-v0.19 client (or a v0.19 request made without `?graph=1`) still deserializes the response
-correctly, with all three fields absent. When `?graph=1` **is** requested, `assemble_board` calls
+These four fields are **additive and optional**, gated behind `?graph=1` (Section 13.1): a
+pre-v0.19 client (or a v0.19+ request made without `?graph=1`) still deserializes the response
+correctly, with all four fields absent. When `?graph=1` **is** requested, `assemble_board` calls
 `mev::build_block_graph_export` **at most once** for the whole request (an unscoped export, per
 the one-derivation contract Section 23 already established for `last_touched`) and threads the
 result into every lane the same way `last_touched` is threaded — bastion performs **zero
-derivation** of its own; every value is carried verbatim from mev.
+derivation** of its own; every value is carried verbatim from mev. `effective_priority` rides the
+same single export call as the other three; it does not trigger a second `mev` computation.
 
 **`ready` — not `unmet_count == 0` — is the readiness signal.** mev defines `unmet_count` as `0`
 for every lane other than `blocked` (`BlockGraphNode::unmet_count`'s own doc comment: *"`0` for
@@ -3391,6 +3393,26 @@ aborted after boot) by asserting on captured tracing output.
 
 ## Amendment Log
 
+- **2026-08-17 — v0.33 → v0.34 (`BA.19.B`, additive):** `BoardBlockDto` (Section 13.3) gains
+  `effective_priority: Option<u8>`, carried verbatim from mev's already-computed, corpus-wide
+  min-propagation (`mev::brain::block_graph::BlockGraphNode::effective_priority`,
+  `../mev/src/brain/block_graph.rs:85`, populated at `:400`) — bastion derives nothing. Rides the
+  same `?graph=1` opt-in gate and single per-request `mev::build_block_graph_export` call as its
+  v0.19 siblings `dependent_count`/`ready`/`unmet_count`, and is populated on all five lanes
+  (`now`/`next`/`blocked`/`deferred`/`finished`) like `dependent_count`/`ready` (unlike
+  `unmet_count`, this value is lane-independent). `skip_serializing_if = "Option::is_none"`, so a
+  request without `?graph=1` — and every pre-v0.34 golden — serializes byte-identical to before
+  this bump; goldens generated without `?graph=1` were confirmed byte-identical after
+  regeneration. `board__dependent_count.json` (the `?graph=1` golden) did not gain a visible
+  `effective_priority` key in this pass, because its fixture blocks all carry `priority: null` and
+  no hot dependents, so mev's min-propagation legitimately leaves the value absent for every node
+  in that fixture — confirmed against `mev`'s own
+  `effective_priorities_absent_own_priority_and_no_hot_dependents_is_absent` test, not assumed.
+  This is a correctness fix only, not a visible ranking or briefing change (per the block's own
+  grounding measurement): min-propagation changes the rank of 1 of 70 startable blocks fleet-wide
+  as of 2026-08-13, leaving the four triggering picks tied. `types/serve.ts` regenerated (no
+  drift). bastion-web's `board-view.ts:547-552` already duck-types a read of this field — no
+  client-side change required or made. No breaking change — no field renamed, retyped, or removed.
 - **2026-08-17 — v0.32 → v0.33 (`BA.ticket.block-fields-serve-dto`, additive):** `BoardBlockDto`
   (Section 13.3) gains five optional fields carried verbatim from `okf_core::TrackBlock`, all
   `skip_serializing_if = "Option::is_none"` so a block carrying none of them (still the common
