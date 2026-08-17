@@ -1167,6 +1167,14 @@ mod tests {
         assert_eq!(dto.due, None);
         assert_eq!(dto.track, Some("Phase 11".to_owned()));
         assert_eq!(dto.status, None);
+        // BA.ticket.block-fields-serve-dto task 3 — an unauthored TrackBlock
+        // leaves description/created/closed/commit/origin absent, so the
+        // resulting payload matches what a pre-D65 block would have produced.
+        assert_eq!(dto.description, None);
+        assert_eq!(dto.created, None);
+        assert_eq!(dto.closed, None);
+        assert_eq!(dto.commit, None);
+        assert_eq!(dto.origin, None);
     }
 
     #[test]
@@ -1186,6 +1194,70 @@ mod tests {
         assert_eq!(dto.due, None);
         assert_eq!(dto.track, None);
         assert_eq!(dto.status, Some("open".to_owned()));
+        assert_eq!(dto.description, None);
+        assert_eq!(dto.created, None);
+        assert_eq!(dto.closed, None);
+        assert_eq!(dto.commit, None);
+        assert_eq!(dto.origin, None);
+    }
+
+    #[test]
+    fn enrich_block_populates_description_created_closed_commit_and_origin() {
+        let track_block = TrackBlock {
+            description: Some("Carry description through the DTO.".to_owned()),
+            created: Some("2026-08-01".to_owned()),
+            closed: Some("2026-08-15".to_owned()),
+            commit: Some("abc1234".to_owned()),
+            origin: Some(okf_core::Origin {
+                kind: "carryover".to_owned(),
+                slug: "engine-mount-env".to_owned(),
+            }),
+            ..sample_track_block("BA.1.A", Some("closed"))
+        };
+        let mut dto = board_block_from(
+            &sample_block("BA.1.A", Some("closed"), Vec::new()),
+            "bastion",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        enrich_block(&mut dto, Some((&track_block, "Phase 11")));
+
+        assert_eq!(
+            dto.description,
+            Some("Carry description through the DTO.".to_owned())
+        );
+        assert_eq!(dto.created, Some("2026-08-01".to_owned()));
+        assert_eq!(dto.closed, Some("2026-08-15".to_owned()));
+        assert_eq!(dto.commit, Some("abc1234".to_owned()));
+        let origin = dto.origin.expect("origin should be populated");
+        assert_eq!(origin.kind, "carryover");
+        assert_eq!(origin.slug, "engine-mount-env");
+    }
+
+    #[test]
+    fn enrich_block_absent_fields_yield_payload_identical_to_pre_task_shape() {
+        // A block carrying none of the new fields (the pre-D65-backfill
+        // majority) must serialize identically to how it did before this
+        // block landed — the new keys must be omitted, not emitted as null.
+        let track_block = sample_track_block("BA.1.A", Some("open"));
+        let mut dto = board_block_from(
+            &sample_block("BA.1.A", Some("open"), Vec::new()),
+            "bastion",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        enrich_block(&mut dto, Some((&track_block, "Phase 11")));
+
+        let json = serde_json::to_value(&dto).expect("serialize BoardBlockDto");
+        let obj = json.as_object().expect("object");
+        for key in ["description", "created", "closed", "commit", "origin"] {
+            assert!(
+                !obj.contains_key(key),
+                "key `{key}` should be omitted, not present as null"
+            );
+        }
     }
 
     // ── unmet_deps ────────────────────────────────────────────────────────
