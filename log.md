@@ -2,12 +2,36 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-16T14:10:00-03:00
+timestamp: 2026-08-17T16:20:00-03:00
 ---
 
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [2026-08-17]
+
+### lane-aware-briefing closed — board DTO enriched, push gate unblocked
+
+- **What:** Ran `BA.ticket.block-fields-serve-dto` (6/6) and `BA.19.B` (5/5) as one `/orchestrate`
+  chain. `BoardBlockDto` gains `description`/`created`/`closed`/`commit`/`origin` and
+  `effective_priority` (the last behind the existing `?graph=1` gate, carried verbatim from mev);
+  serve-api v0.32 -> v0.34, typeshare + contract-corpus goldens regenerated. Flipped the
+  `lane-aware-briefing` epic to `complete` (9/9 blocks) via `mev complete-epic`. Separately fixed a
+  hand-authored bare-date `timestamp:` in HQ `planning/status.md` that failed `validate-brain
+  --sync`'s RFC3339 check and had propagated into `README.md`'s `synced_from` — two errors from one
+  typo, red-gating pushes fleet-wide.
+- **Why:** `description` had existed on `TrackBlock` the whole time with 0 of 894 blocks carrying
+  one and no Surface able to render it — the D65 backfill was about to populate it, and without
+  this the content stopped at the API boundary. `BA.19.B` was the roadmap's last open block and its
+  G4 de-risk checkpoint; it is correctness-only, and the measurement answering G4 (1 of 70
+  startable blocks reorders; the top tie *widens* from 4 to 7) is why the frontier work moved to
+  `engine-orchestration` rather than being cancelled.
+- **Refs:** `planning/BA.19.B/`, `planning/BA.ticket.block-fields-serve-dto/`,
+  `planning/orchestration-run/lane-aware-briefing/` (notes + terminal review),
+  `planning/roadmaps/lane-aware-briefing/roadmap.md` (HQ), D65, D74.
 
 ---
 
