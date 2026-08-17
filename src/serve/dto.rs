@@ -5119,4 +5119,50 @@ mod tests {
         assert_field_present("ApprovalDep", "what");
         assert_field_present("ApprovalDep", "digest");
     }
+
+    // ── BA.ticket.block-fields-serve-dto task 4: description/created/closed/
+    // commit/origin pinned in types/serve.ts ──
+    //
+    // Same rationale as the BlockedBy block above: the regenerated TS file is
+    // invisible to every other test in this suite, so a drifted or
+    // never-regenerated types/serve.ts would silently ship a `BoardBlockDto`
+    // missing these fields even though the Rust struct carries them. If any
+    // assertion below fails: rerun `scripts/gen-types.sh`; never hand-edit
+    // types/serve.ts.
+
+    #[test]
+    fn generated_serve_ts_board_block_dto_has_description_field() {
+        assert_field_present("BoardBlockDto", "description");
+    }
+
+    #[test]
+    fn generated_serve_ts_board_block_dto_has_created_field() {
+        assert_field_present("BoardBlockDto", "created");
+    }
+
+    #[test]
+    fn generated_serve_ts_board_block_dto_has_closed_field() {
+        assert_field_present("BoardBlockDto", "closed");
+    }
+
+    #[test]
+    fn generated_serve_ts_board_block_dto_has_commit_field() {
+        assert_field_present("BoardBlockDto", "commit");
+    }
+
+    #[test]
+    fn generated_serve_ts_board_block_dto_has_origin_field() {
+        assert_field_present("BoardBlockDto", "origin");
+    }
+
+    #[test]
+    fn generated_serve_ts_contains_block_origin_dto_interface() {
+        assert_interface_present("BlockOriginDto");
+    }
+
+    #[test]
+    fn generated_serve_ts_block_origin_dto_has_declared_fields() {
+        assert_field_present("BlockOriginDto", "kind");
+        assert_field_present("BlockOriginDto", "slug");
+    }
 }

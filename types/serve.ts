@@ -373,6 +373,23 @@ export interface BlockGraphDto {
 }
 
 /**
+ * Local mirror of `okf_core::state::Origin` — that struct lacks the
+ * `#[cfg_attr(feature = "typeshare", ...)]` annotation `BlockedBy`'s payload
+ * structs carry, so it cannot cross the typeshare boundary directly. Declared
+ * locally instead, following the same local-mirror convention as
+ * `BlockEdgeKindDto`/`BlockLaneDto` above (mirroring a sibling-crate type that
+ * is not itself typeshare-annotated).
+ * 
+ * Wire format: `{ "kind": "carryover", "slug": "engine-mount-env" }`
+ */
+export interface BlockOriginDto {
+	/** Origin kind — `"backlog"` or `"carryover"`. */
+	kind: string;
+	/** The originating backlog or carryover node's stable `slug` key. */
+	slug: string;
+}
+
+/**
  * One lane entry (a single now/next/blocked/finished block) in a board response.
  * 
  * Wire format:
@@ -462,6 +479,36 @@ export interface BoardBlockDto {
 	 * state.
 	 */
 	unmet_count?: number;
+	/**
+	 * Longer human-facing description, from the authoring `TrackBlock`
+	 * (`okf_core::TrackBlock.description`). Absent (not `null`) when
+	 * unauthored — the overwhelming majority of blocks today, until the D65
+	 * backfill populates it — so an untagged block's payload is unchanged.
+	 */
+	description?: string;
+	/**
+	 * Authoring date (`YYYY-MM-DD`), from `okf_core::TrackBlock.created` —
+	 * when this block record was written. Absent when unauthored.
+	 */
+	created?: string;
+	/**
+	 * Status-transition date (`YYYY-MM-DD`) to `closed`, from
+	 * `okf_core::TrackBlock.closed`. Paired with `commit`. Absent when
+	 * unauthored (including for every non-closed block).
+	 */
+	closed?: string;
+	/**
+	 * Git hash of the commit that closed this block, from
+	 * `okf_core::TrackBlock.commit`. Absent when unauthored.
+	 */
+	commit?: string;
+	/**
+	 * Backlog/carryover promotion provenance, from `okf_core::TrackBlock.origin`.
+	 * The carryover variant (`kind == "carryover"`) is D65's marker that this
+	 * block was filed to resolve a `carryover[]` entry, letting a Surface link
+	 * back to it. Absent when the block has no recorded origin.
+	 */
+	origin?: BlockOriginDto;
 }
 
 /** The four now/next/blocked/finished lanes for one board (aggregate or per-repo). */
