@@ -2053,6 +2053,13 @@ mod tests {
                 "{lane_name} lane dependent_count"
             );
             assert_eq!(entry.ready, Some(true), "{lane_name} lane ready");
+            // effective_priority is lane-independent (unlike unmet_count) — it
+            // must be populated on every lane, never suppressed.
+            assert_eq!(
+                entry.effective_priority,
+                Some(1),
+                "{lane_name} lane effective_priority"
+            );
         }
     }
 
@@ -2084,11 +2091,12 @@ mod tests {
     }
 
     #[test]
-    fn build_board_block_absent_from_graph_map_yields_none_for_all_three_fields() {
+    fn build_board_block_absent_from_graph_map_yields_none_for_all_four_fields() {
         let rollups = vec![all_lanes_rollup("bastion")];
         let files = all_lanes_files("bastion");
         // Populated map, but with no entry for this fixture's block id —
-        // must yield `None`, never a fabricated `0`/`false`.
+        // must yield `None`, never a fabricated `0`/`false`, and never a
+        // fall-back to the authored `priority`.
         let mut block_graph = HashMap::new();
         block_graph.insert(
             "bastion:BA.9.Z".to_owned(),
@@ -2123,6 +2131,10 @@ mod tests {
             );
             assert_eq!(entry.ready, None, "{lane_name} lane ready");
             assert_eq!(entry.unmet_count, None, "{lane_name} lane unmet_count");
+            assert_eq!(
+                entry.effective_priority, None,
+                "{lane_name} lane effective_priority"
+            );
         }
     }
 
@@ -2151,6 +2163,7 @@ mod tests {
             assert_eq!(entry.dependent_count, None);
             assert_eq!(entry.ready, None);
             assert_eq!(entry.unmet_count, None);
+            assert_eq!(entry.effective_priority, None);
         }
     }
 
@@ -2668,6 +2681,104 @@ heading = "Beta"
         assert_eq!(mapped_a1.dependent_count, 1, "beta:B1 depends on alpha:A1");
         assert_eq!(mapped_a1.ready, direct_a1.ready);
         assert_eq!(mapped_a1.unmet_count, direct_a1.unmet_count);
+        assert_eq!(mapped_a1.effective_priority, direct_a1.effective_priority);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A one-repo fixture where the sole block carries an authored `priority:
+    /// 0` — mev's min-propagation (`effective_priorities`) then yields
+    /// `effective_priority: Some(0)` for it, a real value distinct from
+    /// `None`, exercising the boundary `filter(|(_, v)| *v <= 3)` misses if a
+    /// caller ever mistakes `0` for "absent".
+    fn make_block_graph_enrichment_priority_zero_fixture_brain_root() -> std::path::PathBuf {
+        let dir =
+            crate::testsupport::unique_temp_dir("bastion-board-block-graph-priority-zero-fixture");
+        let alpha_planning = dir.join("alpha").join("planning");
+        std::fs::create_dir_all(&alpha_planning).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"
+[[repos]]
+slug = "alpha"
+tier = "core"
+repo_path = "alpha"
+status_file = "docs/status.md"
+cache_doc = "docs/projects/alpha.md"
+heading = "Alpha"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            alpha_planning.join("state.json"),
+            r#"{
+  "repo": "alpha",
+  "kind": "project",
+  "updated": "2026-08-01",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "A1", "title": "A1 title", "status": "open", "priority": 0}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn build_block_graph_enrichment_copies_effective_priority_verbatim_including_zero() {
+        let dir = make_block_graph_enrichment_priority_zero_fixture_brain_root();
+
+        let assembly = assemble_board(&dir, &TierScope::All, true)
+            .expect("fixture corpus should assemble cleanly");
+
+        // Call build_block_graph_export directly, unscoped, over the same
+        // inputs — assert `build_block_graph_enrichment`'s map carries mev's
+        // value verbatim, never re-deriving or fabricating it.
+        let scope = BlockGraphScope {
+            tier: TierScope::All,
+            epic: None,
+            repo: None,
+            include_closed: true,
+            include_boundary: false,
+            max_nodes: usize::MAX,
+        };
+        let export = build_block_graph_export(
+            &dir,
+            &assembly.config,
+            &assembly.graph,
+            &assembly.files,
+            &scope,
+        );
+        let direct_a1 = export
+            .nodes
+            .iter()
+            .find(|n| n.key == "alpha:A1")
+            .expect("alpha:A1 must be present in the direct export");
+        assert_eq!(
+            direct_a1.effective_priority,
+            Some(0),
+            "own priority 0 must propagate as effective_priority Some(0) in mev directly"
+        );
+
+        let mapped_a1 = assembly
+            .block_graph
+            .get("alpha:A1")
+            .expect("alpha:A1 must be present in assemble_board's enrichment map");
+
+        assert_eq!(
+            mapped_a1.effective_priority,
+            Some(0),
+            "Some(0) is a real value, distinct from None — must not be dropped"
+        );
+        assert_eq!(mapped_a1.effective_priority, direct_a1.effective_priority);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

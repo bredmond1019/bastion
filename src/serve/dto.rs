@@ -4419,13 +4419,17 @@ mod tests {
         dto.dependent_count = Some(3);
         dto.ready = Some(true);
         dto.unmet_count = Some(0);
+        dto.effective_priority = Some(0);
         let json = serde_json::to_string(&dto).expect("serialize");
         let decoded: BoardBlockDto = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(dto, decoded, "round-trip must preserve all three fields");
+        assert_eq!(dto, decoded, "round-trip must preserve all four fields");
         let v = serde_json::to_value(&dto).expect("serialize to value");
         assert_eq!(v["dependent_count"], serde_json::json!(3));
         assert_eq!(v["ready"], serde_json::json!(true));
         assert_eq!(v["unmet_count"], serde_json::json!(0));
+        // Some(0) is a real min-propagated value, distinct from None — must
+        // serialize as the bare number 0, not be dropped or nulled.
+        assert_eq!(v["effective_priority"], serde_json::json!(0));
     }
 
     #[test]
@@ -4434,6 +4438,7 @@ mod tests {
         dto.dependent_count = None;
         dto.ready = None;
         dto.unmet_count = None;
+        dto.effective_priority = None;
         let v = serde_json::to_value(&dto).expect("serialize to value");
         let obj = v.as_object().expect("object");
         assert!(
@@ -4447,6 +4452,10 @@ mod tests {
         assert!(
             !obj.contains_key("unmet_count"),
             "unmet_count must be an absent key when None, got: {v}"
+        );
+        assert!(
+            !obj.contains_key("effective_priority"),
+            "effective_priority must be an absent key when None, got: {v}"
         );
         let decoded: BoardBlockDto = serde_json::from_str(&v.to_string()).expect("deserialize");
         assert_eq!(dto, decoded, "round-trip must preserve all-absent state");
