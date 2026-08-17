@@ -42,7 +42,7 @@ use serde::Deserialize;
 
 use crate::config::{FileConfig, resolve_workspace_root};
 use crate::serve::dto::{
-    BoardBlockDto, BoardDto, BoardLaneDto, BoardScope, ErrorPayload, RepoBoardDto,
+    BlockOriginDto, BoardBlockDto, BoardDto, BoardLaneDto, BoardScope, ErrorPayload, RepoBoardDto,
 };
 use crate::serve::handlers::epics::hq_epic_registry;
 
@@ -200,11 +200,19 @@ fn track_block_index<'a>(
     index
 }
 
-/// Fill `epics`/`wave`/`priority`/`due`/`track`/`status` on `dto` from the
-/// authoring `TrackBlock` + enclosing track title, when `entry` matches. An
-/// unmatched id (no `tracks[]` entry with this block's id) leaves the DTO's
-/// existing defaults (`epics: []`, four `None`s, and the rollup-fabricated
-/// `status`) untouched.
+/// Fill `epics`/`wave`/`priority`/`due`/`track`/`status`/`description`/`created`/
+/// `closed`/`commit`/`origin` on `dto` from the authoring `TrackBlock` +
+/// enclosing track title, when `entry` matches. An unmatched id (no `tracks[]`
+/// entry with this block's id) leaves the DTO's existing defaults (`epics: []`,
+/// `None`s, and the rollup-fabricated `status`) untouched.
+///
+/// `description`/`created`/`closed`/`commit` are carried verbatim from
+/// `TrackBlock` (BA.ticket.block-fields-serve-dto task 2) — absent on the vast
+/// majority of blocks until the D65 backfill populates them, so an unauthored
+/// block's payload stays unchanged. `origin` is converted from
+/// `okf_core::state::Origin` to the local [`BlockOriginDto`] mirror (that type
+/// isn't itself typeshare-annotated, so it can't cross the wire directly — see
+/// `BlockOriginDto`'s doc comment).
 fn enrich_block(dto: &mut BoardBlockDto, entry: Option<(&TrackBlock, &str)>) {
     let Some((track_block, track_title)) = entry else {
         return;
@@ -216,6 +224,14 @@ fn enrich_block(dto: &mut BoardBlockDto, entry: Option<(&TrackBlock, &str)>) {
     dto.due = track_block.due.clone();
     dto.track = Some(track_title.to_owned());
     dto.status = track_block.status.clone();
+    dto.description = track_block.description.clone();
+    dto.created = track_block.created.clone();
+    dto.closed = track_block.closed.clone();
+    dto.commit = track_block.commit.clone();
+    dto.origin = track_block.origin.as_ref().map(|origin| BlockOriginDto {
+        kind: origin.kind.clone(),
+        slug: origin.slug.clone(),
+    });
 }
 
 /// Build a `"<repo>:<id>" -> Option<status>` map from the loaded `files`, the
