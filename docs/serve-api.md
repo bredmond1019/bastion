@@ -58,9 +58,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.32 Contract
+# serve-api — v0.33 Contract
 
-**Version:** v0.32  
+**Version:** v0.33  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -1405,7 +1405,7 @@ Execution-path failures (after validation passes) map as follows:
 
 ---
 
-## 13. Cross-brain board API (v0.6, BA.11.K; enriched v0.11, BA.11.R; last_touched v0.14, BA.11.S; block-graph enrichment v0.19, A5)
+## 13. Cross-brain board API (v0.6, BA.11.K; enriched v0.11, BA.11.R; last_touched v0.14, BA.11.S; block-graph enrichment v0.19, A5; block detail fields v0.33, `BA.ticket.block-fields-serve-dto`)
 
 One read-only route projecting the cross-brain now/next/blocked/finished rollup — the same
 aggregate `bastion emit-state` / `bastion validate-brain --state` already compute from the
@@ -1516,6 +1516,11 @@ hardcoded `"core"` fallback. Tracked as a follow-up, not part of this contract.
 | `dependent_count` (v0.19) | number \| absent | absent | Number of other blocks (corpus-wide, across every repo) that declare this block as a dependency, carried verbatim from `mev::brain::block_graph::BlockGraphNode::dependent_count`. **Corpus-wide, not scope-filtered** — mev computes it once over the full unscoped corpus before any `scope=`/`tier=`/`epic=` filtering is applied, so the value for a given block is identical whether the board is fetched at `scope=hq` or a narrower tier/project scope (the property client-side re-derivation from a scoped lane projection cannot have). Populated on **all five lanes** (`now`/`next`/`blocked`/`deferred`/`finished`). Omitted entirely (not `null`, not `0`) when `?graph=1` was not requested, or when the block is present on the board but absent from the graph export (e.g. `max_nodes`-truncated, or filtered out of the export's scope). |
 | `ready` (v0.19) | boolean \| absent | absent | Membership in mev's `ready_order` set, carried verbatim from `BlockGraphNode::ready`. **This is the readiness signal consumers should use** — see the "readiness signal" note below. Populated on all five lanes under the same `?graph=1` gate and absence rule as `dependent_count`. |
 | `unmet_count` (v0.19) | number \| absent | absent | Count of unmet dependencies, carried verbatim from `BlockGraphNode::unmet_count`, but populated **only for `blocked`-lane entries**. Absent (not `null`, not `0`) for every `now`/`next`/`deferred`/`finished` entry, and also absent when `?graph=1` was not requested or the block is absent from the export — see the "readiness signal" note below for why this field must never be read as a bare zero-check. |
+| `description` (v0.33) | string \| absent | absent | Longer human-facing description, from the authoring `okf_core::TrackBlock.description`. Absent (not `null`) when unauthored — the overwhelming majority of blocks until the D65 backfill populates it, so an untagged block's payload is byte-identical to pre-v0.33. |
+| `created` (v0.33) | string (`YYYY-MM-DD`) \| absent | absent | Authoring date, from `okf_core::TrackBlock.created` — when this block record was written. Absent when unauthored. |
+| `closed` (v0.33) | string (`YYYY-MM-DD`) \| absent | absent | Status-transition date to `closed`, from `okf_core::TrackBlock.closed`. Paired with `commit`. Absent when unauthored, including for every non-closed block. |
+| `commit` (v0.33) | string \| absent | absent | Git hash of the commit that closed this block, from `okf_core::TrackBlock.commit`. Absent when unauthored. |
+| `origin` (v0.33) | `BlockOriginDto` \| absent | absent | Backlog/carryover promotion provenance, from `okf_core::TrackBlock.origin`. `{ "kind": "backlog" \| "carryover", "slug": "<origin-node-slug>" }` — the `"carryover"` kind is D65's marker that this block was filed to resolve a `carryover[]` entry, letting a Surface link back to it. Absent when the block has no recorded origin. |
 
 All five v0.11 fields are **additive and optional** — a JSON body written by the pre-v0.11 DTO
 shape (no `epics`/`wave`/`priority`/`due`/`track` keys) still deserializes into the current
@@ -1530,6 +1535,17 @@ It is computed exactly once per request, inside `assemble_board`, by the same ca
 `mev::brain::last_touched::derive_last_touched` that populates `mev::build_block_graph_export`'s
 node field of the same name (Section 23's one-derivation contract extends to this field too — the
 two read paths are cross-checked to agree, including both being absent for the same block).
+
+`description`/`created`/`closed`/`commit`/`origin` (v0.33) are likewise **additive and optional**
+— all five carry `skip_serializing_if = "Option::is_none"`, so a JSON body written before this
+block (no matching keys) still deserializes into the current `BoardBlockDto`, and a block carrying
+none of them (still the common case pending the D65 description backfill) serializes a payload
+byte-identical to pre-v0.33. All five are populated by `enrich_block` (Section 13's `board.rs`)
+and its epic-board sibling (`handlers/epics.rs`) directly from the owning repo's authored
+`okf_core::TrackBlock`, with zero derivation — `description`/`created`/`closed`/`commit` are
+carried verbatim as `Option<String>`, and `origin` is carried by mapping `okf_core::state::Origin`
+onto the local `BlockOriginDto` mirror (`src/serve/dto.rs`, declared just below `BoardBlockDto`)
+field-for-field.
 
 #### `dependent_count` / `ready` / `unmet_count` (v0.19, A5) — readiness signal
 
@@ -3374,6 +3390,25 @@ aborted after boot) by asserting on captured tracing output.
 ---
 
 ## Amendment Log
+
+- **2026-08-17 — v0.32 → v0.33 (`BA.ticket.block-fields-serve-dto`, additive):** `BoardBlockDto`
+  (Section 13.3) gains five optional fields carried verbatim from `okf_core::TrackBlock`, all
+  `skip_serializing_if = "Option::is_none"` so a block carrying none of them (still the common
+  case, since 0 of 894 blocks carried a `description` before this ticket's companion D65 backfill)
+  serializes byte-identical to pre-v0.33: `description`, `created` (`YYYY-MM-DD`), `closed`
+  (`YYYY-MM-DD`), `commit` (the git hash that closed the block), and `origin` (`BlockOriginDto` —
+  `{ kind: "backlog" | "carryover", slug }`, a local mirror of `okf_core::state::Origin` following
+  the same mirror convention as `BlockOriginDto`'s neighbors, since that upstream type is not
+  itself typeshare-annotated). Populated by both `enrich_block` (`handlers/board.rs`) and its
+  epic-board sibling (`handlers/epics.rs`) from the same `TrackBlock` lookup that already supplies
+  `epics`/`wave`/`priority`/`due`/`track`. `types/serve.ts` regenerated; a `#[cfg(test)]` assertion
+  pins the five new field names present in the generated output, closing the same generated-file
+  drift gap Section 19's Amendment Log entry (v0.32) names for the `BlockedBy` payload structs.
+  No breaking change — no field renamed, retyped, or removed. Data-contract re-pin per the brain's
+  update protocol: this document is bastion's canonical DTO contract for the fields TrackBlock
+  contributes to the board/epics read surface (`docs/data-contract.md` is a separate, narrower pin
+  — the orchestrator↔bastion `events`/`node_runs` contract — and carries no block-graph fields, so
+  it is untouched by this bump); noted in `planning/status.md`.
 
 - **2026-08-14 — Section 27 corrected (`BA.20.D`, no contract version bump — corrects the docs
   only, no route or DTO changed):** Section 27's inbound description previously read "one
