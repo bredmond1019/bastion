@@ -1149,6 +1149,19 @@ pub struct BoardBlockDto {
     /// state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unmet_count: Option<u32>,
+    /// Min-propagated effective priority, carried verbatim from
+    /// `BlockGraphNode::effective_priority` (`../mev/src/brain/block_graph.rs:85`,
+    /// populated at `:400` from a reverse-topo min-propagation over the
+    /// dependency graph) — `serve` derives nothing itself. `None` has three
+    /// distinct causes: the block was absent from the graph export (same
+    /// truncation/scope reasons as `dependent_count`/`ready`), `?graph=1` was
+    /// not requested on this call (the whole `block_graph` map is empty), or
+    /// mev's own min-propagation never landed a value in the real `0..=3`
+    /// range for this block. Never fall back to the authored `priority` field
+    /// here — that fallback belongs to the client (`lib/board-view.ts`'s
+    /// `resolveEffectivePriority`), not this DTO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_priority: Option<u8>,
     /// Longer human-facing description, from the authoring `TrackBlock`
     /// (`okf_core::TrackBlock.description`). Absent (not `null`) when
     /// unauthored — the overwhelming majority of blocks today, until the D65
@@ -3723,6 +3736,7 @@ mod tests {
             dependent_count: None,
             ready: None,
             unmet_count: None,
+            effective_priority: None,
             description: None,
             created: None,
             closed: None,
@@ -4384,6 +4398,7 @@ mod tests {
             dependent_count: Some(4),
             ready: Some(true),
             unmet_count: None,
+            effective_priority: Some(2),
             description: Some("Add a cross-brain board endpoint.".to_string()),
             created: Some("2026-07-01".to_string()),
             closed: Some("2026-07-28".to_string()),
@@ -4526,6 +4541,7 @@ mod tests {
             dependent_count: None,
             ready: None,
             unmet_count: None,
+            effective_priority: None,
             description: None,
             created: None,
             closed: None,

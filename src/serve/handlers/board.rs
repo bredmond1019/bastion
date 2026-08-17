@@ -165,6 +165,7 @@ fn board_block_from(
         dependent_count: enrichment.map(|e| e.dependent_count),
         ready: enrichment.map(|e| e.ready),
         unmet_count: None,
+        effective_priority: enrichment.and_then(|e| e.effective_priority),
         // Populated by `BA.ticket.block-fields-serve-dto` task 2, not here.
         description: None,
         created: None,
@@ -320,6 +321,7 @@ fn finished_blocks_for_repo(
                 // `None` here (mev defines it as `0` for this lane, which
                 // would read as falsely-ready if surfaced unqualified).
                 unmet_count: None,
+                effective_priority: enrichment.and_then(|e| e.effective_priority),
                 // Populated by `BA.ticket.block-fields-serve-dto` task 2, not here.
                 description: None,
                 created: None,
@@ -625,6 +627,11 @@ pub(crate) struct BlockEnrichment {
     /// Unmet-dependency count; `0` for every non-`Blocked` lane per mev's own
     /// contract — do not treat this raw `0` as "ready" on a non-blocked lane.
     pub(crate) unmet_count: u32,
+    /// Min-propagated effective priority, carried verbatim from
+    /// `BlockGraphNode::effective_priority`. `None` when mev's own
+    /// min-propagation never landed a value in the real `0..=3` range for
+    /// this node.
+    pub(crate) effective_priority: Option<u8>,
 }
 
 /// Assemble the brain-walk inputs `build_board` needs: the loaded
@@ -750,6 +757,7 @@ fn build_block_graph_enrichment(
                     dependent_count: node.dependent_count,
                     ready: node.ready,
                     unmet_count: node.unmet_count,
+                    effective_priority: node.effective_priority,
                 },
             )
         })
@@ -2010,6 +2018,7 @@ mod tests {
                 dependent_count: 7,
                 ready: true,
                 unmet_count: 2,
+                effective_priority: Some(1),
             },
         );
         map
@@ -2087,6 +2096,7 @@ mod tests {
                 dependent_count: 9,
                 ready: true,
                 unmet_count: 1,
+                effective_priority: Some(2),
             },
         );
 
