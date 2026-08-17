@@ -165,6 +165,12 @@ fn board_block_from(
         dependent_count: enrichment.map(|e| e.dependent_count),
         ready: enrichment.map(|e| e.ready),
         unmet_count: None,
+        // Populated by `BA.ticket.block-fields-serve-dto` task 2, not here.
+        description: None,
+        created: None,
+        closed: None,
+        commit: None,
+        origin: None,
     }
 }
 
@@ -298,6 +304,12 @@ fn finished_blocks_for_repo(
                 // `None` here (mev defines it as `0` for this lane, which
                 // would read as falsely-ready if surfaced unqualified).
                 unmet_count: None,
+                // Populated by `BA.ticket.block-fields-serve-dto` task 2, not here.
+                description: None,
+                created: None,
+                closed: None,
+                commit: None,
+                origin: None,
             };
             enrich_block(&mut dto, Some((block, track_title)));
             dto.blocked_by = unmet_deps(&block.depends_on, status_map);

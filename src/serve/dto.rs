@@ -1149,6 +1149,48 @@ pub struct BoardBlockDto {
     /// state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unmet_count: Option<u32>,
+    /// Longer human-facing description, from the authoring `TrackBlock`
+    /// (`okf_core::TrackBlock.description`). Absent (not `null`) when
+    /// unauthored — the overwhelming majority of blocks today, until the D65
+    /// backfill populates it — so an untagged block's payload is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Authoring date (`YYYY-MM-DD`), from `okf_core::TrackBlock.created` —
+    /// when this block record was written. Absent when unauthored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    /// Status-transition date (`YYYY-MM-DD`) to `closed`, from
+    /// `okf_core::TrackBlock.closed`. Paired with `commit`. Absent when
+    /// unauthored (including for every non-closed block).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed: Option<String>,
+    /// Git hash of the commit that closed this block, from
+    /// `okf_core::TrackBlock.commit`. Absent when unauthored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Backlog/carryover promotion provenance, from `okf_core::TrackBlock.origin`.
+    /// The carryover variant (`kind == "carryover"`) is D65's marker that this
+    /// block was filed to resolve a `carryover[]` entry, letting a Surface link
+    /// back to it. Absent when the block has no recorded origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<BlockOriginDto>,
+}
+
+/// Local mirror of `okf_core::state::Origin` — that struct lacks the
+/// `#[cfg_attr(feature = "typeshare", ...)]` annotation `BlockedBy`'s payload
+/// structs carry, so it cannot cross the typeshare boundary directly. Declared
+/// locally instead, following the same local-mirror convention as
+/// `BlockEdgeKindDto`/`BlockLaneDto` above (mirroring a sibling-crate type that
+/// is not itself typeshare-annotated).
+///
+/// Wire format: `{ "kind": "carryover", "slug": "engine-mount-env" }`
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlockOriginDto {
+    /// Origin kind — `"backlog"` or `"carryover"`.
+    pub kind: String,
+    /// The originating backlog or carryover node's stable `slug` key.
+    pub slug: String,
 }
 
 /// The four now/next/blocked/finished lanes for one board (aggregate or per-repo).
@@ -3681,6 +3723,11 @@ mod tests {
             dependent_count: None,
             ready: None,
             unmet_count: None,
+            description: None,
+            created: None,
+            closed: None,
+            commit: None,
+            origin: None,
         }
     }
 
@@ -4337,6 +4384,14 @@ mod tests {
             dependent_count: Some(4),
             ready: Some(true),
             unmet_count: None,
+            description: Some("Add a cross-brain board endpoint.".to_string()),
+            created: Some("2026-07-01".to_string()),
+            closed: Some("2026-07-28".to_string()),
+            commit: Some("abc1234".to_string()),
+            origin: Some(BlockOriginDto {
+                kind: "carryover".to_string(),
+                slug: "engine-mount-env".to_string(),
+            }),
         };
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: BoardBlockDto = serde_json::from_str(&json).expect("deserialize");
@@ -4383,6 +4438,59 @@ mod tests {
     }
 
     #[test]
+    fn board_block_dto_new_fields_absent_by_default_omits_keys() {
+        // sample_board_block() leaves description/created/closed/commit/origin
+        // unset — an untagged block's payload must be unchanged.
+        let dto = sample_board_block();
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        let obj = v.as_object().expect("object");
+        for key in ["description", "created", "closed", "commit", "origin"] {
+            assert!(
+                !obj.contains_key(key),
+                "{key} must be an absent key when None, got: {v}"
+            );
+        }
+        let decoded: BoardBlockDto = serde_json::from_str(&v.to_string()).expect("deserialize");
+        assert_eq!(dto, decoded, "round-trip must preserve all-absent state");
+    }
+
+    #[test]
+    fn board_block_dto_new_fields_populated_serialize_and_round_trip() {
+        let mut dto = sample_board_block();
+        dto.description = Some("Longer description.".to_string());
+        dto.created = Some("2026-07-01".to_string());
+        dto.closed = Some("2026-07-28".to_string());
+        dto.commit = Some("abc1234".to_string());
+        dto.origin = Some(BlockOriginDto {
+            kind: "carryover".to_string(),
+            slug: "engine-mount-env".to_string(),
+        });
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        assert_eq!(v["description"], serde_json::json!("Longer description."));
+        assert_eq!(v["created"], serde_json::json!("2026-07-01"));
+        assert_eq!(v["closed"], serde_json::json!("2026-07-28"));
+        assert_eq!(v["commit"], serde_json::json!("abc1234"));
+        assert_eq!(
+            v["origin"],
+            serde_json::json!({"kind": "carryover", "slug": "engine-mount-env"})
+        );
+        let decoded: BoardBlockDto = serde_json::from_str(&v.to_string()).expect("deserialize");
+        assert_eq!(dto, decoded, "round-trip must preserve all five fields");
+    }
+
+    #[test]
+    fn block_origin_dto_carryover_variant_round_trips() {
+        let origin = BlockOriginDto {
+            kind: "carryover".to_string(),
+            slug: "engine-mount-env".to_string(),
+        };
+        let json = serde_json::to_string(&origin).expect("serialize");
+        let decoded: BlockOriginDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(origin, decoded);
+        assert_eq!(decoded.kind, "carryover");
+    }
+
+    #[test]
     fn board_block_dto_graph_enrichment_unmet_count_present_others_absent() {
         // The blocked-lane shape: dependent_count/ready absent (block not in the
         // graph export) while unmet_count is populated. Distinct from the mix
@@ -4418,6 +4526,11 @@ mod tests {
             dependent_count: None,
             ready: None,
             unmet_count: None,
+            description: None,
+            created: None,
+            closed: None,
+            commit: None,
+            origin: None,
         };
         let v = serde_json::to_value(&dto).expect("serialize");
         assert!(v["epics"].is_array());
