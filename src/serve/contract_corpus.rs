@@ -1528,9 +1528,45 @@ heading = "Bastion"
     /// depending on it, so `BA.1`'s `now`-lane entry carries a nonzero
     /// `dependent_count` here (`None` on every other board golden above,
     /// which omit `?graph=1`).
+    ///
+    /// This is also the sole golden that exercises `effective_priority`
+    /// (BA.19.B). The shared `fixture_hq_corpus()` authors no `priority` on
+    /// any block, so mev's min-propagation (`../mev/src/brain/state.rs`'s
+    /// `effective_priorities`) lands every node at the unpropagated
+    /// `u8::MAX` sentinel and omits all three keys from its map — the golden
+    /// would carry no `effective_priority` field at all, an evidence gap
+    /// caught only at BA.19.B task 4's fixture-evidence check, not by task
+    /// 3's own drift regeneration. Overwriting `BA.2`'s authored `priority`
+    /// to `1` here (isolated to this scenario's own corpus copy, not the
+    /// shared fixture the other board goldens above reuse) makes `BA.1`
+    /// inherit that hotness through the reverse `depends_on` walk — "a block
+    /// inherits the hotness of what it gates" — giving both `BA.1` and
+    /// `BA.2` a real, in-range `effective_priority` without touching any
+    /// other board golden's output.
     #[actix_web::test]
     async fn board_corpus_dependent_count() {
         let tmp = fixture_hq_corpus();
+        write(
+            &tmp.path()
+                .join("bastion")
+                .join("planning")
+                .join("state.json"),
+            r#"{
+  "repo": "bastion",
+  "kind": "project",
+  "updated": "2026-07-28",
+  "tracks": [
+    {
+      "title": "Phase 1",
+      "blocks": [
+        {"id": "BA.1", "title": "In progress", "status": "in_progress", "epics": ["epic-alpha"], "wave": 1},
+        {"id": "BA.2", "title": "Waiting on BA.1", "status": "open", "priority": 1, "depends_on": [{"type": "block", "repo": "bastion", "id": "BA.1"}]},
+        {"id": "BA.9", "title": "Closed", "status": "closed"}
+      ]
+    }
+  ]
+}"#,
+        );
         let app = board_service!(registry(&tmp));
         let req = actix_web::test::TestRequest::get().uri("/api/board?scope=hq&graph=true");
         dump("board", "dependent_count", req, &app).await;

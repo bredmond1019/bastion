@@ -13,9 +13,10 @@
           ],
           "dependent_count": 0,
           "due": null,
+          "effective_priority": 1,
           "epics": [],
           "id": "BA.2",
-          "priority": null,
+          "priority": 1,
           "ready": false,
           "repo": "bastion",
           "status": "open",
@@ -48,6 +49,7 @@
           "blocked_by": [],
           "dependent_count": 1,
           "due": null,
+          "effective_priority": 1,
           "epics": [
             "epic-alpha"
           ],
@@ -78,9 +80,10 @@
               ],
               "dependent_count": 0,
               "due": null,
+              "effective_priority": 1,
               "epics": [],
               "id": "BA.2",
-              "priority": null,
+              "priority": 1,
               "ready": false,
               "repo": "bastion",
               "status": "open",
@@ -113,6 +116,7 @@
               "blocked_by": [],
               "dependent_count": 1,
               "due": null,
+              "effective_priority": 1,
               "epics": [
                 "epic-alpha"
               ],
