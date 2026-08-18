@@ -413,9 +413,9 @@ mod tests {
     }
 
     const FREETEXT_FILLED_FIXTURE: &str =
-        include_str!("../detect/fixtures/claude_ask_question_freetext_filled.txt");
+        include_str!("fixtures/claude_ask_question_freetext_filled.txt");
     const FREETEXT_SELECTED_FIXTURE: &str =
-        include_str!("../detect/fixtures/claude_ask_question_freetext_selected.txt");
+        include_str!("fixtures/claude_ask_question_freetext_selected.txt");
 
     /// The kinds every one of the three real fixtures should yield, in order — the
     /// widget's structural layout (numbered block, then a rule, then the two trailing
