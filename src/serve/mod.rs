@@ -1037,6 +1037,10 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // ── Cross-brain board route (BA.11.K) ───────────────────────────
             // /board — GET only (now/next/blocked/finished rollup)
             .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
+            // ── Fleet-scoped lane-segment availability route (BA.19.C) ───────
+            // /lanes — GET only (one aggregate per lane segment, pass-through
+            // over mev::lanes_brain)
+            .service(web::resource("/lanes").route(web::get().to(handlers::lanes::get_lanes)))
             // ── Cost read route (BA.11.J) ────────────────────────────────────
             // /costs — GET only (exact-count spend + budget-gate state)
             .service(web::resource("/costs").route(web::get().to(handlers::costs::get_costs)))
@@ -1423,6 +1427,10 @@ mod tests {
                 web::resource("/actions/command").route(web::post().to(handlers::actions::command)),
             )
             .service(web::resource("/board").route(web::get().to(handlers::board::get_board)))
+            // ── Fleet-scoped lane-segment availability route (BA.19.C) ───────
+            // /lanes — GET only (one aggregate per lane segment, pass-through
+            // over mev::lanes_brain)
+            .service(web::resource("/lanes").route(web::get().to(handlers::lanes::get_lanes)))
             // ── Cost read route (BA.11.J) ────────────────────────────────────
             .service(web::resource("/costs").route(web::get().to(handlers::costs::get_costs)))
             // ── Block-graph read route (BA.17.A) ─────────────────────────────
