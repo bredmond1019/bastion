@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-17T16:20:00-03:00
+timestamp: 2026-08-17T22:30:00-03:00
 ---
 
 # Log — bastion
@@ -48,6 +48,33 @@ a408241 feat: implement BA.18.F-task1
 ---
 
 ## [2026-08-17]
+
+### BA.18.F merged — term-core / term-attach extraction complete
+
+- **What:** Closed `BA.18.F` (7/7 tasks, review PASS, PR #39 merged as `f8714c3`), the second and
+  final commit of the `term-core` / `term-attach` extraction. `src/detect/` and
+  `src/sessions/{tmux,model,claude_state}.rs` are gone; both are shimmed from `term-core`, with the
+  `tmux` shim also re-exporting `term_attach::{attach_session, suspend_and_attach}`. Every
+  `include_str!` of a shared detect asset now reads a `term_core::detect` const, so the Claude
+  manifest has exactly one copy in the fleet. `cargo tree -i term-attach` shows bastion only, and no
+  pre-existing session/detect test was edited. Close-out then filled a coverage gap the PASS review
+  missed (`50b4bdf`) — task 5 deleted `non_tmux_error_maps_to_500_c010` because its
+  `&anyhow::Error` signature was gone, but the behaviour had only relocated to the failed-downcast
+  arm of `ask_error_to_status`.
+- **Why:** Lane `wire` of the `engine-orchestration` roadmap. The block was specced as a mechanical
+  shim swap and was not: `EN.9.A` had closed `closed` with a PASS review while `term-core` was
+  missing `tmux::send_keys_no_enter`, the whole `BlockedReason` sub-classification, and the
+  priority-110 `awaiting_question` rule — so it could not detect the AskUserQuestion blocked state
+  at all. Shimming as written would have silently deleted that from the serve status surface with no
+  compile error. A fourth defect surfaced while writing the spec: `src/detect/` holds embedded data
+  reached by relative `include_str!` from four files that were not moving, which no `pub use` shim
+  can re-export. A fifth surfaced while preparing the error adaptation: every public `term-core`
+  tmux fn wraps in `TmuxError::Context`, so a naive match arm would have regressed
+  `no tmux server running` from 503/C001 to 500/C010 while keeping the suite green. All fixed
+  upstream in engine-rs before this block ran.
+- **Refs:** `planning/BA.18.F/tasks.md`; run record + terminal review in
+  `planning/orchestration-run/engine-orchestration/`; durable rules distilled into
+  `planning/knowledge.md` and `planning/memory.md`.
 
 ### lane-aware-briefing closed — board DTO enriched, push gate unblocked
 
