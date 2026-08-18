@@ -56,6 +56,7 @@ use engine_serve::dispatch::Dispatcher;
 use engine_serve::durable::spawn_durable_writer;
 use engine_serve::http::AppState as EngineAppState;
 use engine_serve::live_state::LiveStateStore;
+use engine_serve::orphan::ReconcileSummary;
 use engine_serve::workflows::{init_repo_registry_from_env, register_builtin_workflows};
 
 /// Build the engine's `Dispatcher` with every builtin workflow (currently
@@ -65,6 +66,88 @@ fn build_engine_dispatcher() -> Dispatcher {
     let mut dispatcher = Dispatcher::new();
     register_builtin_workflows(&mut dispatcher);
     dispatcher
+}
+
+/// The boot-time orphan sweep's outcome (`ticket-orphan-reconcile-wiring`
+/// task 1), classified once so the caller logs exactly one deliberate line
+/// instead of the "comes back up healthy in silence" failure mode this
+/// ticket exists to end. `Skipped` covers the DB-free `:8080` console path
+/// (never produced by [`classify_orphan_sweep`] itself, which only ever
+/// sees a `Result` from an actual sweep call — callers reach for `Skipped`
+/// directly when the pool is absent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OrphanSweepOutcome {
+    Skipped,
+    Swept {
+        scanned: usize,
+        reconciled: Vec<uuid::Uuid>,
+    },
+    SweptNothing {
+        scanned: usize,
+    },
+    Failed(String),
+}
+
+/// Pure classifier: `Ok(summary)` with a non-empty `reconciled` is `Swept`;
+/// `Ok(summary)` with an empty `reconciled` is `SweptNothing` (its `scanned`
+/// may still be non-zero — a candidate found and reconciled onto a
+/// completion marker by an earlier sweep is scanned again but not
+/// re-reconciled); `Err` is `Failed`. No I/O, no logging — the caller
+/// ([`log_orphan_sweep`]) emits the decision this returns.
+fn classify_orphan_sweep(result: Result<ReconcileSummary, String>) -> OrphanSweepOutcome {
+    match result {
+        Ok(summary) if !summary.reconciled.is_empty() => OrphanSweepOutcome::Swept {
+            scanned: summary.scanned,
+            reconciled: summary.reconciled,
+        },
+        Ok(summary) => OrphanSweepOutcome::SweptNothing {
+            scanned: summary.scanned,
+        },
+        Err(msg) => OrphanSweepOutcome::Failed(msg),
+    }
+}
+
+/// Emit exactly one `tracing` line for a classified orphan-sweep outcome,
+/// `target: "bastion::serve"` matching the surrounding boot-log style.
+/// `Failed` logs at `error` (loudly, per the ticket's acceptance criteria)
+/// but never propagates — a transient database hiccup at boot must not
+/// prevent `bastion serve` from starting.
+fn log_orphan_sweep(outcome: &OrphanSweepOutcome) {
+    match outcome {
+        OrphanSweepOutcome::Skipped => {
+            tracing::info!(
+                target: "bastion::serve",
+                "orphan sweep skipped — engine not mounted (no DATABASE_URL)"
+            );
+        }
+        OrphanSweepOutcome::Swept {
+            scanned,
+            reconciled,
+        } => {
+            tracing::info!(
+                target: "bastion::serve",
+                scanned,
+                reconciled = ?reconciled,
+                "orphan sweep reconciled {} crash-stranded run(s) of {} scanned",
+                reconciled.len(),
+                scanned
+            );
+        }
+        OrphanSweepOutcome::SweptNothing { scanned } => {
+            tracing::info!(
+                target: "bastion::serve",
+                scanned,
+                "orphan sweep found nothing to reconcile ({scanned} candidate(s) scanned)"
+            );
+        }
+        OrphanSweepOutcome::Failed(msg) => {
+            tracing::error!(
+                target: "bastion::serve",
+                error = %msg,
+                "orphan sweep failed at boot — server is still starting"
+            );
+        }
+    }
 }
 
 /// Default path for the `ApproveAndRunSeams` approval ledger
@@ -395,6 +478,20 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                     // `ENGINE_BRAIN_ROOT` is absent/unresolvable — absent-`repo`
                     // events are unaffected either way.
                     init_repo_registry_from_env();
+
+                    // ticket-orphan-reconcile-wiring task 1: sweep
+                    // crash-stranded runs once at boot, before the HTTP
+                    // listener binds. `pool.clone()` is required because
+                    // `spawn_durable_writer(Some(pool))` below consumes the
+                    // pool by value; `PgPool` is a cheap `Arc` clone.
+                    let sweep = engine_serve::orphan::reconcile_orphans(
+                        engine_serve::orphan::orphan_lister_live(pool.clone()).as_ref(),
+                        &engine_core::operator::orphan::OrphanPolicy::default(),
+                        chrono::Utc::now(),
+                    )
+                    .await;
+                    log_orphan_sweep(&classify_orphan_sweep(sweep));
+
                     let state = EngineAppState {
                         dispatcher: Arc::new(build_engine_dispatcher()),
                         live: live_store.clone(),
