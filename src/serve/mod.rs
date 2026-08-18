@@ -244,6 +244,35 @@ fn approval_ledger_default_path(
     }
 }
 
+/// Resolve the `harness.json` path `engine_serve::schedule::spawn_schedule_loop`
+/// reads its `schedule` block from (`ticket-spawn-schedule-loop` task 1).
+///
+/// Reads `BASTION_ENGINE_HARNESS_PATH` only — there is **no** fallback and no
+/// derivation from `ENGINE_BRAIN_ROOT`. Both were considered and rejected
+/// (operator decision, 2026-08-18; see this spec's `tasks.md` `## Notes`):
+/// deriving the path from `ENGINE_BRAIN_ROOT` would bake engine-rs's repo
+/// layout into bastion, and that var is unset on the deployed Mac Mini today
+/// (engine-rs carryover `en7d-brain-root-not-set-in-deployment`) — so tying
+/// resolution to it would silently keep the loop unspawned in production for
+/// a reason invisible from this repo.
+///
+/// `None` on: the var unset, empty, or pointing at a path that does not
+/// exist / is not readable. Callers must treat `None` as the **ordinary**
+/// case (today's real state, `entries: []`) and log at info, not error —
+/// only a caller that reads the file and hits a parse error (a distinct,
+/// later outcome inside `spawn_schedule_loop` itself) should log loudly.
+/// This function does no file *parsing* — only a variable read and a
+/// filesystem stat — so it stays exhaustively unit-testable without a real
+/// schedule config on disk (CLAUDE.md rule 6).
+fn resolve_engine_harness_path() -> Option<std::path::PathBuf> {
+    let raw = std::env::var("BASTION_ENGINE_HARNESS_PATH").ok()?;
+    if raw.is_empty() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(raw);
+    if path.is_file() { Some(path) } else { None }
+}
+
 use std::sync::Arc;
 use ws::server::Hub;
 
