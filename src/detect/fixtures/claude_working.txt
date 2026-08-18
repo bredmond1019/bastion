@@ -1,6 +1,0 @@
-⠸ Thinking about your request...
-
-Reading file src/detect/mod.rs
-Writing 47 lines to src/detect/golden_tests.rs
-
-esc to interrupt
