@@ -355,7 +355,7 @@ background\t0\t1\t1718000100\tzsh\n";
         // `capture-pane`: run detection on the raw pane text and copy both
         // `state` and `blocked_reason` onto the Session, without re-deriving
         // the reason from pane text a second time.
-        let pane = include_str!("../detect/fixtures/claude_awaiting_question.txt");
+        let pane = term_core::detect::CLAUDE_AWAITING_QUESTION_FIXTURE;
         let detection = crate::serve::status::detect::detect(pane);
 
         let mut s = parse_session_line("ai\t0\t1\t1718000000\tclaude").unwrap();

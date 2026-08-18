@@ -22,7 +22,10 @@ use crate::detect::{self, AgentDetection, AgentState};
 // ── Embedded manifest ─────────────────────────────────────────────────────────
 
 /// The in-tree Claude agent manifest source, embedded at compile time.
-const CLAUDE_TOML: &str = include_str!("../../detect/manifests/claude.toml");
+///
+/// Sourced from term-core's `pub const` (a `pub use` shim cannot re-export an
+/// `include_str!` target, so term-core exposes the bytes directly).
+const CLAUDE_TOML: &str = term_core::detect::CLAUDE_MANIFEST_TOML;
 
 /// Returns a reference to the once-compiled Claude manifest.
 ///
