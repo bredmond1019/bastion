@@ -354,6 +354,53 @@ mod tests {
         assert_eq!(payload.code, "C001");
     }
 
+    #[test]
+    fn context_wrapped_not_installed_still_maps_to_503_c001() {
+        // Same shape as the NoServer case above, for the other 503/C001 variant.
+        let err = TmuxError::Context {
+            action: "new-session",
+            source: Box::new(TmuxError::NotInstalled),
+        };
+        let (status, payload) = tmux_error_to_status(&err);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(payload.code, "C001");
+    }
+
+    #[test]
+    fn double_context_wrapped_no_server_still_maps_to_503_c001() {
+        // send_keys wraps twice on the Enter path: an outer Context around an
+        // inner Context around the root cause. root_cause() must recurse
+        // through both layers, not just one.
+        let err = TmuxError::Context {
+            action: "send-keys enter",
+            source: Box::new(TmuxError::Context {
+                action: "send-keys",
+                source: Box::new(TmuxError::NoServer),
+            }),
+        };
+        let (status, payload) = tmux_error_to_status(&err);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(payload.code, "C001");
+    }
+
+    #[test]
+    fn context_wrapped_exit_error_unknown_session_maps_to_404_c002() {
+        // Proves `code`/`stderr` survive the unwrap: the wrapped ExitError's
+        // stderr still drives the unknown-session classification and the
+        // session name still lands in the message.
+        let err = TmuxError::Context {
+            action: "capture-pane",
+            source: Box::new(TmuxError::ExitError {
+                code: 1,
+                stderr: "can't find session: work".to_owned(),
+            }),
+        };
+        let (status, payload) = tmux_error_to_status(&err);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(payload.code, "C002");
+        assert!(payload.message.contains("work"));
+    }
+
     // ── is_unknown_session ────────────────────────────────────────────────────
 
     #[test]
