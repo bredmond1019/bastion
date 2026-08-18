@@ -11,6 +11,39 @@ timestamp: 2026-08-17T22:30:00-03:00
 
 ---
 
+## [run: 2026-08-18]
+
+### BA.19.C closed — GET /api/lanes, fleet-scoped, PASS
+
+Implemented the fleet-wide lane-availability endpoint across six tasks. Task 1 added
+`LanesDto`/`LaneSegmentDto` typeshare-annotated wire types to `dto.rs`, mirroring mev's
+`SegmentStatus`/`LaneAvailabilityEntry` field-for-field with `availability` left as mev's raw
+kebab-case string rather than a bastion enum. Task 2 added the `GET /api/lanes` handler as a pure
+pass-through over `mev::lanes_brain`, registered in both `App` builders so it inherits
+`BearerAuthMiddleware`. Task 3 added an optional `?epic=<slug>` filter, reusing `board.rs`'s
+existing epic-registry/error conventions rather than inventing a new one. Task 4 added DTO
+serialization tests (absent-key `None` fields, verbatim availability string, non-zero leverage on
+done segments) and route-level tests (401/200/404/blank-param). Task 5 documented the route in
+`docs/serve-api.md` (Section 28, v0.35) and regenerated `types/serve.ts`. Task 6 ran the full
+validation suite — fmt, clippy `-D warnings`, `cargo test` 2341 passed / 0 failed across 4
+binaries, release build, contract-corpus and typeshare drift checks — all clean, no fixes needed.
+End review verdict: PASS. Block `BA.19.C` flipped closed in `state.json` (mev-validated, no
+net-new schema errors). `mev emit-state --write` was attempted but declined to run — a
+pre-existing, unrelated `E_STATE_MALFORMED_JSON` in another lane's `clears_when` entry blocks the
+whole-corpus write; confirmed pre-existing via a 1-line diff on `state.json` (the status flip
+only). Next: pick up the next `now`/`next` item in `planning/status.md` — `BA.ticket.live-run-workflow-type` or `BA.19.D` (Concurrency-slot endpoint, still blocked on `mev` `MV.13.C` +
+`base-template` `BT.ticket.heavy-command-signals-rust-build`).
+
+```
+22ae3b1 docs: document GET /api/lanes and regenerate typeshare goldens
+647e19e test: cover /api/lanes mapping, filter, auth gate, and degraded round-trip
+2a2d72a feat: add ?epic=<slug> filter to GET /api/lanes
+6d77a93 feat: add GET /lanes handler as pure pass-through over mev::lanes_brain
+1324bd1 feat: add LanesDto + LaneSegmentDto wire types for BA.19.C
+```
+
+---
+
 ## [run: 2026-08-17]
 
 ### BA.18.F closed — term-core/term-attach extraction complete, PASS

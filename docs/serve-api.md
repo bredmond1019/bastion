@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.34"
+title: "serve-api contract v0.35"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -49,7 +49,7 @@ in-memory `PendingPayloads` registry so the `NotifyPollLoop`'s `PendingLookup` c
 clears the live buttons and shows the chosen option) before the `VerdictSink` runs, fixing the
 defect where Telegram silently timed out a tapped button because `answerCallbackQuery` was never
 called; the ack handle and message handle are opaque, transport-agnostic, and `None`-safe for any
-transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced; and the v0.34 `effective_priority` field on `BoardBlockDto` (`BA.19.B`) — mev's min-propagated ranking (`mev::brain::block_graph::BlockGraphNode::effective_priority`) carried verbatim onto every board lane entry behind the same opt-in `?graph=1` gate as `dependent_count`/`ready`/`unmet_count`, absent when the block was absent from the graph export, `?graph=1` was not requested, or mev's own min-propagation never landed a value in the real `0..=3` range; bastion-web's `board-view.ts` already duck-types a read of this field, so no client-side change is required."
+transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced; and the v0.34 `effective_priority` field on `BoardBlockDto` (`BA.19.B`) — mev's min-propagated ranking (`mev::brain::block_graph::BlockGraphNode::effective_priority`) carried verbatim onto every board lane entry behind the same opt-in `?graph=1` gate as `dependent_count`/`ready`/`unmet_count`, absent when the block was absent from the graph export, `?graph=1` was not requested, or mev's own min-propagation never landed a value in the real `0..=3` range; bastion-web's `board-view.ts` already duck-types a read of this field, so no client-side change is required, and the v0.35 fleet-scoped lane API (GET /api/lanes, `BA.19.C`) — one aggregate row per lane SEGMENT across every registered roadmap in a single call, with an optional `?epic=<slug>` filter that never fans out to a per-roadmap call, a pure pass-through over `mev::lanes_brain` with zero availability derivation performed by bastion, unblocking the engine-orchestration roadmap's input contract (D74)"
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -58,9 +58,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.34 Contract
+# serve-api — v0.35 Contract
 
-**Version:** v0.34  
+**Version:** v0.35  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -3391,8 +3391,133 @@ aborted after boot) by asserting on captured tracing output.
 
 ---
 
+## 28. Fleet-scoped lane API (v0.35, `BA.19.C`)
+
+One read-only route (D25) projecting mev's corpus-wide **lane-segment availability**
+computation onto HTTP — one aggregate row per lane SEGMENT across every registered roadmap,
+in a single call, with an optional `?epic=<slug>` filter that never fans out to a per-roadmap
+call. Lives under the bearer-protected `/api` scope (Section 2). Backing handler:
+`src/serve/handlers/lanes.rs`.
+
+**Bastion performs zero derivation of its own here.** The handler calls `mev::lanes_brain(&root)`
+(mev's read-only CLI/library surface, not the emit-state planner — it never writes
+`planning/lane-availability.json`) exactly once, and copies every field of the resulting
+`LaneAvailabilityArtifact`/`LaneAvailabilityEntry`/`SegmentStatus` straight onto the wire DTOs.
+Bastion neither reads the on-disk `planning/lane-availability.json` artifact (only as fresh as
+the last nightly `mev emit-state --write`) nor shells out to an installed `mev` binary (whose
+version can silently drift from the linked crate) — the in-process library call is both fresher
+and version-locked, mirroring `handlers/board.rs`'s existing `use mev::brain::config::...` link.
+
+### 28.1 `GET /api/lanes` — fleet-wide lane-segment availability
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `epic` | string | No | — | Roadmap/epic slug. When present and non-blank, filters `segments` to entries whose `roadmap` field equals the slug, in the same call — never a per-roadmap fan-out (the block's explicit out-of-scope). A segment's `roadmap` is used because `SegmentStatus` carries no `epic` field of its own; deriving one from the segment's head block's `epics[]` would be serve computing something this block forbids. Validated against the same HQ `epics[]` registry `GET /api/epics` (Section 17) and `?scope=epic` on `/api/board` (Section 13.2) use, via the shared `board::epic_known`/`hq_epic_registry` helpers — not a second, parallel epic-validation contract. Present-but-blank (`?epic=`) is an error, matching `board.rs::epic_param_missing`'s handling of a blank `scope=epic` slug (Section 13.4) rather than being silently ignored. |
+
+**Request:**
+
+```
+GET /api/lanes HTTP/1.1
+Authorization: Bearer <token>
+```
+
+```
+GET /api/lanes?epic=engine-orchestration HTTP/1.1
+Authorization: Bearer <token>
+```
+
+### 28.2 Response (200 OK): `LanesDto`
+
+```json
+{
+  "derived_at": "2026-08-18T10:00:00-07:00",
+  "degraded": false,
+  "segments": [
+    {
+      "roadmap": "engine-orchestration",
+      "lane": "derive",
+      "segment": 0,
+      "repo": "mev",
+      "head": "mev:MV.13.C",
+      "availability": "startable",
+      "leverage_lanes_freed": 2
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `derived_at` | string | RFC 3339 timestamp of the derivation run, carried verbatim from `LaneAvailabilityArtifact::derived_at`. |
+| `degraded` | boolean | `true` when the fleet-lock read that feeds the `held-slot` availability state degraded — lets a consumer tell a corpus with zero live holds apart from one where the fleet-lock read itself failed. Never dropped. |
+| `segments` | array of `LaneSegmentDto` | One row per lane segment fleet-wide (or, with `?epic=<slug>`, per segment whose `roadmap` matches). A known-but-unmatched slug legitimately returns an empty array with `200` — a real answer ("no lanes for that epic right now"), not an error. |
+
+#### `LaneSegmentDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `roadmap` | string | Owning roadmap slug. |
+| `lane` | string | Lane name within the roadmap. |
+| `segment` | number | Segment index within the lane. |
+| `repo` | string | Owning repo slug of the segment's head block. |
+| `head` | string \| absent | Canonical `"repo:id"` key of the segment's head block. Absent (not `null`) for a `done` segment — every block in it is closed, so there is no frontier entry and therefore no head. |
+| `availability` | string | mev's `SegmentAvailability` variant, kebab-case, carried verbatim (`"done"`, `"held-block"`, `"held-operator"`, `"held-repo-busy"`, `"held-slot"`, or `"startable"`). Deliberately a plain string, not a bastion enum: mev owns this vocabulary and its precedence order, and a mirrored enum would silently stop covering a state the moment mev adds a seventh one. |
+| `reason` | string \| absent | Human-readable why. Absent (not `null`) only for `startable` and `done`, which need no explanation. |
+| `leverage_lanes_freed` | number | Count of distinct `(roadmap, lane)` pairs freed by closing this segment. Deliberately **not** the same thing as `BlockGraphNodeDto.dependent_count` (Section 23.2), which counts individual dependent blocks corpus-wide, not lanes. **On a `done` segment this value is historical, not actionable** — mev can report a non-zero count here even though the lanes it gated are already free; bastion carries it verbatim regardless, but a Surface reading this field on a `done` segment must not treat it as something still to unblock. |
+
+### 28.3 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| `?epic=` present but blank | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_param_missing`/`board::epic_error_response` verbatim, same message shape as Section 13.4. |
+| `?epic=<slug>` present but absent from the HQ `epics[]` registry (Section 17) | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_known`/`board::epic_error_response` verbatim, message naming the unknown slug (`"unknown epic: <slug>"`). |
+| Unresolvable brain root (no `brain.toml` walking up from the workspace root), OR `mev::lanes_brain` itself failing — missing/unreadable `brain.toml`, or the underlying block-graph export reporting `truncated: true` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, via `board::brain_root_error_response`, message intact. A `lanes_brain` failure is never mapped to an empty `segments` list — that would read as "nothing to do" when the truth is "the corpus could not be measured". |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, via `board::blocking_error_response`. |
+
+### 28.4 Testing
+
+`availability_to_string`, `segment_to_dto`, `artifact_to_dto`, and `filter_segments_to_epic` are
+pure and unit-tested with no filesystem access — including the `leverage_lanes_freed`-on-`done`
+carryover case above and the ABSENT-not-`null` serialization of `head`/`reason` when `None`. The
+thin `web::block` I/O shell (`get_lanes`) and route wiring in `src/serve/mod.rs` (registered in
+**both** the production `App` and the test `build_app`, alongside `handlers::board::get_board`)
+are covered by `#[actix_web::test]` integration tests asserting the bearer-auth `401` and a `200`
+against a fixture brain root, per the block's own task-4 test plan. Not tested here: mev's
+availability computation, its six states, or their precedence order — that suite belongs to
+`mev:MV.13.C` and is deliberately not duplicated in this repo.
+
+---
+
 ## Amendment Log
 
+- **2026-08-18 — v0.34 → v0.35 (`BA.19.C`, additive):** Added Section 28 (Fleet-scoped lane API) —
+  `GET /api/lanes[?epic=<slug>]`, one aggregate row per lane SEGMENT across every registered
+  roadmap in a single call, a pure pass-through over `mev::lanes_brain` (mev's read-only
+  CLI/library surface, never the emit-state planner) with zero availability derivation performed
+  by bastion. New typeshared DTOs `LanesDto` (`derived_at`/`degraded`/`segments`) and
+  `LaneSegmentDto` (`roadmap`/`lane`/`segment`/`repo`/`head`/`availability`/`reason`/
+  `leverage_lanes_freed`), mirroring `mev::brain::availability::SegmentStatus` flattened with its
+  `LaneAvailabilityEntry.leverage`. `availability` is a plain string carrying mev's
+  `SegmentAvailability` variant verbatim (not a mirrored bastion enum — mev owns that vocabulary);
+  `head`/`reason` are absent (not `null`) on `done`/`startable` segments respectively, per the
+  established board-DTO convention. `leverage_lanes_freed` is deliberately distinct from
+  `BlockGraphNodeDto.dependent_count` (Section 23.2) — it counts distinct `(roadmap, lane)` pairs,
+  not dependent blocks — and is carried verbatim even when historical on a `done` segment (the
+  `lanes-freed-is-history-on-done-segments` carryover): a Surface must not read it as actionable
+  there. `?epic=<slug>` filters `segments` to entries whose `roadmap` equals the slug, in the same
+  call (never a per-roadmap fan-out, the block's explicit out-of-scope), validated against the
+  same HQ `epics[]` registry `?scope=epic` on `/api/board` (Section 13.2) already uses via the
+  shared `board::epic_known`/`hq_epic_registry` helpers; an unknown slug is `404`/`C005`, a
+  known-but-unmatched slug is `200` with an empty `segments` array. Bearer auth inherited from the
+  `/api` scope, registered in both the production `App` and the test `build_app` (mirroring
+  `handlers::board::get_board`'s two registration sites) — the auth policy table (Section 2.3)
+  already covers `/api/*` routes generically (per the v0.12 precedent) and gained no new row.
+  `types/serve.ts` regenerated (no drift); the contract-corpus goldens under
+  `types/contract-corpus/` are unaffected (no `*_scenarios` module yet exists for this route).
+  No breaking change — new route, new DTOs, no existing field renamed, retyped, or removed.
 - **2026-08-17 — v0.33 → v0.34 (`BA.19.B`, additive):** `BoardBlockDto` (Section 13.3) gains
   `effective_priority: Option<u8>`, carried verbatim from mev's already-computed, corpus-wide
   min-propagation (`mev::brain::block_graph::BlockGraphNode::effective_priority`,

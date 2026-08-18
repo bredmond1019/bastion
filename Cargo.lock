@@ -1226,6 +1226,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "term-core",
  "tokio",
  "uuid",
 ]
@@ -3857,10 +3858,12 @@ dependencies = [
 name = "term-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "toml 0.8.23",
 ]
 

@@ -2263,6 +2263,104 @@ pub struct NotifyTestResponseDto {
     pub digest: String,
 }
 
+// ── Lanes (BA.19.C) ──────────────────────────────────────────────────────────
+//
+// Wire types for `GET /api/lanes`, the fleet-scoped lane-availability endpoint.
+// Mechanical projection of `mev::brain::availability::LaneAvailabilityArtifact` /
+// `LaneAvailabilityEntry` / `SegmentStatus` — bastion computes none of the
+// availability logic itself; every value here is copied straight across from
+// the upstream mev types by the handler (`handlers/lanes.rs`), same posture as
+// the block-graph DTOs above.
+
+/// One lane SEGMENT's resolved availability, flattening
+/// `mev::brain::availability::SegmentStatus` together with its
+/// `LaneAvailabilityEntry.leverage` — one row per segment, not per roadmap.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "roadmap": "engine-orchestration", "lane": "derive", "segment": 0,
+///   "repo": "mev", "head": "mev:MV.13.C", "availability": "startable",
+///   "leverage_lanes_freed": 2
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LaneSegmentDto {
+    /// Owning roadmap slug.
+    pub roadmap: String,
+    /// Lane name within the roadmap.
+    pub lane: String,
+    /// Segment index within the lane.
+    #[typeshare(serialized_as = "number")]
+    pub segment: usize,
+    /// Owning repo slug of the segment's head block.
+    pub repo: String,
+    /// Canonical `"repo:id"` key of the segment's head block. `None` for a
+    /// `Done` segment — every block in it is closed, so there is no frontier
+    /// entry and therefore no head (mev availability.rs:103-105).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// `mev::brain::availability::SegmentAvailability`'s kebab-case variant
+    /// string, carried verbatim (`"done"`, `"held-block"`, `"held-operator"`,
+    /// `"held-repo-busy"`, `"held-slot"`, or `"startable"`).
+    ///
+    /// Deliberately a plain `String`, not a mirrored bastion enum: mev owns
+    /// this vocabulary and its documented precedence order, and a mirrored
+    /// enum here would silently diverge the moment mev adds a seventh state.
+    /// Do not "fix" this into an enum.
+    pub availability: String,
+    /// Human-readable why, e.g. `"blocked by bastion:BA.19.C"`. `None` only
+    /// for `Startable` and `Done`, which need no explanation
+    /// (mev availability.rs:107-109).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// `mev::brain::availability::LaneLeverage::lanes_freed` — the count of
+    /// distinct `(roadmap, lane)` pairs freed by closing this segment.
+    ///
+    /// Deliberately NOT the same thing as `BlockGraphNodeDto::dependent_count`
+    /// above, which counts individual dependent *blocks* corpus-wide; this
+    /// counts distinct *lanes* freed (mev availability.rs:743-749).
+    ///
+    /// On a `done` segment this value is historical, not actionable: mev can
+    /// report a non-zero count here even though the lanes it gated are
+    /// already free (carryover `lanes-freed-is-history-on-done-segments`).
+    /// Bastion carries it verbatim regardless — it computes nothing — but a
+    /// Surface reading this field on a `done` segment must not treat it as
+    /// something still to unblock.
+    #[typeshare(serialized_as = "number")]
+    pub leverage_lanes_freed: usize,
+}
+
+/// `GET /api/lanes[?epic=<slug>]` response body — one aggregate per lane
+/// SEGMENT across every registered roadmap in a single call, pass-through
+/// over `mev::brain::availability::LaneAvailabilityArtifact`.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "derived_at": "2026-08-18T10:00:00-07:00", "degraded": false,
+///   "segments": [{ "roadmap": "engine-orchestration", "lane": "derive",
+///     "segment": 0, "repo": "mev", "head": "mev:MV.13.C",
+///     "availability": "startable", "leverage_lanes_freed": 2 }]
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LanesDto {
+    /// RFC 3339 timestamp of the derivation run, carried verbatim from
+    /// `LaneAvailabilityArtifact::derived_at`.
+    pub derived_at: String,
+    /// `true` when the fleet-lock read that feeds `HeldSlot` degraded — lets a
+    /// consumer tell a corpus with zero live `HeldSlot` holds apart from one
+    /// where the fleet-lock read failed (mev availability.rs:948-953).
+    pub degraded: bool,
+    /// One row per lane segment across all registered roadmaps (or, with
+    /// `?epic=<slug>`, per segment whose `roadmap` equals the slug).
+    #[serde(default)]
+    pub segments: Vec<LaneSegmentDto>,
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -5189,5 +5287,114 @@ mod tests {
     fn generated_serve_ts_block_origin_dto_has_declared_fields() {
         assert_field_present("BlockOriginDto", "kind");
         assert_field_present("BlockOriginDto", "slug");
+    }
+
+    // ── LaneSegmentDto / LanesDto (BA.19.C task 4) ──────────────────────────
+
+    fn sample_lane_segment_dto() -> LaneSegmentDto {
+        LaneSegmentDto {
+            roadmap: "engine-orchestration".to_owned(),
+            lane: "derive".to_owned(),
+            segment: 0,
+            repo: "mev".to_owned(),
+            head: Some("mev:MV.13.C".to_owned()),
+            availability: "startable".to_owned(),
+            reason: None,
+            leverage_lanes_freed: 2,
+        }
+    }
+
+    #[test]
+    fn lane_segment_dto_none_head_and_reason_serialize_as_absent_keys_not_null() {
+        let dto = LaneSegmentDto {
+            head: None,
+            reason: None,
+            ..sample_lane_segment_dto()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LaneSegmentDto");
+        assert!(
+            !v.as_object().unwrap().contains_key("head"),
+            "None head must be an ABSENT key, not present with null: {v}"
+        );
+        assert!(
+            !v.as_object().unwrap().contains_key("reason"),
+            "None reason must be an ABSENT key, not present with null: {v}"
+        );
+    }
+
+    #[test]
+    fn lane_segment_dto_some_head_and_reason_serialize_as_present_strings() {
+        let dto = LaneSegmentDto {
+            head: Some("mev:MV.13.C".to_owned()),
+            reason: Some("blocked by bastion:BA.19.C".to_owned()),
+            ..sample_lane_segment_dto()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LaneSegmentDto");
+        assert_eq!(v["head"], "mev:MV.13.C");
+        assert_eq!(v["reason"], "blocked by bastion:BA.19.C");
+    }
+
+    #[test]
+    fn lane_segment_dto_availability_carries_mev_variant_string_verbatim() {
+        let dto = LaneSegmentDto {
+            availability: "held-repo-busy".to_owned(),
+            ..sample_lane_segment_dto()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LaneSegmentDto");
+        assert_eq!(v["availability"], "held-repo-busy");
+    }
+
+    #[test]
+    fn lane_segment_dto_leverage_lanes_freed_copied_including_nonzero_on_done_segment() {
+        // `lanes-freed-is-history-on-done-segments`: bastion must NOT zero
+        // this out when availability is "done".
+        let dto = LaneSegmentDto {
+            availability: "done".to_owned(),
+            head: None,
+            leverage_lanes_freed: 3,
+            ..sample_lane_segment_dto()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LaneSegmentDto");
+        assert_eq!(v["leverage_lanes_freed"], 3);
+        assert_eq!(v["availability"], "done");
+        assert!(!v.as_object().unwrap().contains_key("head"));
+    }
+
+    #[test]
+    fn lane_segment_dto_round_trips_through_json() {
+        let original = sample_lane_segment_dto();
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: LaneSegmentDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn lanes_dto_degraded_true_round_trips() {
+        let dto = LanesDto {
+            derived_at: "2026-08-18T10:00:00-07:00".to_owned(),
+            degraded: true,
+            segments: vec![sample_lane_segment_dto()],
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LanesDto");
+        assert_eq!(v["degraded"], true);
+
+        let decoded: LanesDto =
+            serde_json::from_value(v).expect("deserialize LanesDto back from its own JSON");
+        assert!(
+            decoded.degraded,
+            "degraded: true must round-trip through the DTO, not be dropped"
+        );
+    }
+
+    #[test]
+    fn lanes_dto_degraded_false_round_trips() {
+        let dto = LanesDto {
+            derived_at: "2026-08-18T10:00:00-07:00".to_owned(),
+            degraded: false,
+            segments: Vec::new(),
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LanesDto");
+        assert_eq!(v["degraded"], false);
+        assert_eq!(v["segments"], serde_json::json!([]));
     }
 }
