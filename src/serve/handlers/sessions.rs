@@ -53,46 +53,47 @@ pub struct PaneQuery {
 /// | [`TmuxError::ExitError`] — unknown session| 404    | C002  |
 /// | [`TmuxError::ExitError`] — other          | 500    | C010  |
 /// | Any other error                           | 500    | C010  |
-pub fn tmux_error_to_status(err: &anyhow::Error) -> (StatusCode, ErrorPayload) {
-    if let Some(tmux_err) = err.downcast_ref::<TmuxError>() {
-        match tmux_err {
-            TmuxError::NotInstalled => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorPayload {
-                    code: "C001".to_owned(),
-                    message: "tmux is not installed".to_owned(),
-                },
-            ),
-            TmuxError::NoServer => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorPayload {
-                    code: "C001".to_owned(),
-                    message: "no tmux server running".to_owned(),
-                },
-            ),
-            TmuxError::ExitError { stderr, .. } if is_unknown_session(stderr) => (
-                StatusCode::NOT_FOUND,
-                ErrorPayload {
-                    code: "C002".to_owned(),
-                    message: format!("session not found: {stderr}"),
-                },
-            ),
-            TmuxError::ExitError { code, stderr } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ErrorPayload {
-                    code: "C010".to_owned(),
-                    message: format!("tmux error (exit {code}): {stderr}"),
-                },
-            ),
-        }
-    } else {
-        (
+pub fn tmux_error_to_status(err: &TmuxError) -> (StatusCode, ErrorPayload) {
+    // Every public term-core tmux fn wraps its error in `TmuxError::Context`
+    // (see that type's doc comment) — unwrap to the real variant first, or a
+    // wrapped `NoServer` silently falls through to the generic 500/C010 arm
+    // below instead of the documented 503/C001.
+    match err.root_cause() {
+        TmuxError::NotInstalled => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorPayload {
+                code: "C001".to_owned(),
+                message: "tmux is not installed".to_owned(),
+            },
+        ),
+        TmuxError::NoServer => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorPayload {
+                code: "C001".to_owned(),
+                message: "no tmux server running".to_owned(),
+            },
+        ),
+        TmuxError::ExitError { stderr, .. } if is_unknown_session(stderr) => (
+            StatusCode::NOT_FOUND,
+            ErrorPayload {
+                code: "C002".to_owned(),
+                message: format!("session not found: {stderr}"),
+            },
+        ),
+        TmuxError::ExitError { code, stderr } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             ErrorPayload {
                 code: "C010".to_owned(),
-                message: err.to_string(),
+                message: format!("tmux error (exit {code}): {stderr}"),
             },
-        )
+        ),
+        other => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorPayload {
+                code: "C010".to_owned(),
+                message: other.to_string(),
+            },
+        ),
     }
 }
 
@@ -252,15 +253,11 @@ mod tests {
     use super::*;
     use crate::sessions::tmux::TmuxError;
 
-    fn make_tmux_err(e: TmuxError) -> anyhow::Error {
-        anyhow::Error::new(e)
-    }
-
     // ── tmux_error_to_status ──────────────────────────────────────────────────
 
     #[test]
     fn not_installed_maps_to_503_c001() {
-        let err = make_tmux_err(TmuxError::NotInstalled);
+        let err = TmuxError::NotInstalled;
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(payload.code, "C001");
@@ -269,7 +266,7 @@ mod tests {
 
     #[test]
     fn no_server_maps_to_503_c001() {
-        let err = make_tmux_err(TmuxError::NoServer);
+        let err = TmuxError::NoServer;
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(payload.code, "C001");
@@ -278,10 +275,10 @@ mod tests {
 
     #[test]
     fn exit_error_cant_find_session_maps_to_404_c002() {
-        let err = make_tmux_err(TmuxError::ExitError {
+        let err = TmuxError::ExitError {
             code: 1,
             stderr: "can't find session: work".to_owned(),
-        });
+        };
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(payload.code, "C002");
@@ -290,10 +287,10 @@ mod tests {
 
     #[test]
     fn exit_error_session_not_found_maps_to_404_c002() {
-        let err = make_tmux_err(TmuxError::ExitError {
+        let err = TmuxError::ExitError {
             code: 1,
             stderr: "session not found: mysession".to_owned(),
-        });
+        };
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(payload.code, "C002");
@@ -303,10 +300,10 @@ mod tests {
     fn exit_error_cant_find_pane_maps_to_404_c002() {
         // tmux's send-keys/capture-pane report an unknown session target as a
         // missing pane (observed on tmux 3.6b) — still a 404/C002, not 500.
-        let err = make_tmux_err(TmuxError::ExitError {
+        let err = TmuxError::ExitError {
             code: 1,
             stderr: "can't find pane: no-such-session".to_owned(),
-        });
+        };
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(payload.code, "C002");
@@ -314,10 +311,10 @@ mod tests {
 
     #[test]
     fn exit_error_other_maps_to_500_c010() {
-        let err = make_tmux_err(TmuxError::ExitError {
+        let err = TmuxError::ExitError {
             code: 2,
             stderr: "unexpected tmux error".to_owned(),
-        });
+        };
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(payload.code, "C010");
@@ -325,22 +322,36 @@ mod tests {
 
     #[test]
     fn exit_error_empty_stderr_maps_to_500_c010() {
-        let err = make_tmux_err(TmuxError::ExitError {
+        let err = TmuxError::ExitError {
             code: 1,
             stderr: String::new(),
-        });
+        };
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(payload.code, "C010");
     }
 
     #[test]
-    fn non_tmux_error_maps_to_500_c010() {
-        let err = anyhow::anyhow!("some completely unrelated error");
+    fn io_error_maps_to_500_c010() {
+        let err = TmuxError::Io(std::io::Error::other("boom"));
         let (status, payload) = tmux_error_to_status(&err);
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(payload.code, "C010");
         assert!(!payload.message.is_empty());
+    }
+
+    #[test]
+    fn context_wrapped_no_server_still_maps_to_503_c001() {
+        // Every public term-core tmux fn wraps its error in `Context` — a
+        // bare `NoServer` never reaches this function in production. Without
+        // unwrapping via `root_cause()` this would fall through to 500/C010.
+        let err = TmuxError::Context {
+            action: "list-sessions",
+            source: Box::new(TmuxError::NoServer),
+        };
+        let (status, payload) = tmux_error_to_status(&err);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(payload.code, "C001");
     }
 
     // ── is_unknown_session ────────────────────────────────────────────────────

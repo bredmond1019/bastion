@@ -121,8 +121,15 @@ pub fn validation_error_response(err: &CommandValidationError) -> HttpResponse {
 pub fn ask_error_to_status(err: &AskError) -> HttpResponse {
     match err {
         AskError::Tmux { source, .. } => {
-            let (status, payload) = tmux_error_to_status(source);
-            HttpResponse::build(status).json(payload)
+            if let Some(tmux_err) = source.downcast_ref::<crate::sessions::tmux::TmuxError>() {
+                let (status, payload) = tmux_error_to_status(tmux_err);
+                HttpResponse::build(status).json(payload)
+            } else {
+                HttpResponse::InternalServerError().json(ErrorPayload {
+                    code: "C010".to_owned(),
+                    message: source.to_string(),
+                })
+            }
         }
         AskError::Launch { .. } | AskError::Timeout { .. } => {
             HttpResponse::GatewayTimeout().json(ErrorPayload {
@@ -193,7 +200,7 @@ pub async fn command(body: web::Json<CommandRequest>) -> HttpResponse {
                     ensure_session_with_claude(&name, dir.as_deref(), &launch_cmd)?;
                     send_keys(&name, &command).map_err(|e| AskError::Tmux {
                         op: "send-keys (quick-action command)".to_string(),
-                        source: e,
+                        source: e.into(),
                     })
                 }
             })
