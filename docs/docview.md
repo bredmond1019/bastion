@@ -35,7 +35,8 @@ binary and cannot be imported from bastion without modifying bella's `Cargo.toml
 
 Instead, both subcommands shell out to the `bella` binary (resolved via `PATH`) with `<path>` as
 its argument and inherit the controlling terminal — the same construction-vs-execution split
-already used for tmux (`sessions/tmux.rs`): argument-vector construction is pure and unit-tested;
+already used for tmux (`term-attach`, `../engine-rs/crates/term-attach`, shimmed into
+`src/sessions/mod.rs` since BA.18.F): argument-vector construction is pure and unit-tested;
 the actual spawn is a thin, smoke-tested I/O shell.
 
 ## `view` vs `edit`

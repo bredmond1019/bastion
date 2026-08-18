@@ -12,9 +12,11 @@ related: [bastion-cli-docs-index]
 
 # bastion detect — Agent State Detection Engine
 
-The `detect` module (`src/detect/`) classifies a captured tmux pane as one of four
-agent states by evaluating a priority-ordered rule list loaded from a per-agent TOML
-manifest. The entire evaluation path is pure (no I/O, no process spawns).
+The `detect` module now lives in `term-core` (`../engine-rs/crates/term-core`, an unpinned path
+dependency — BA.18.F) and classifies a captured tmux pane as one of four agent states by
+evaluating a priority-ordered rule list loaded from a per-agent TOML manifest. The entire
+evaluation path is pure (no I/O, no process spawns). `src/main.rs` re-exports it verbatim
+(`pub use term_core::detect;`), so every `crate::detect::*` call site in this repo is unchanged.
 
 ## Core types
 
@@ -74,7 +76,7 @@ first matching rule's `AgentDetection`, or `AgentDetection::unknown()` on no mat
 
 ## Manifest schema (TOML)
 
-Each agent has one TOML manifest file under `src/detect/manifests/`. Bundled manifests:
+Each agent has one TOML manifest file under `term-core`'s `src/detect/manifests/` (`../engine-rs/crates/term-core`). Bundled manifests:
 `claude.toml`, `pi.toml`.
 
 ### Top-level fields
@@ -172,10 +174,13 @@ gate = { line_regex = "^> " }
 
 ## Golden test fixtures
 
-Test fixtures live in `src/detect/fixtures/` and are loaded via `include_str!` (zero I/O at
-test time). Each `.txt` file is a captured pane snapshot. Golden tests in
-`src/detect/golden_tests.rs` assert expected `AgentState`, `blocked_reason`, and flag values for
-both the `claude` and `pi` manifests, including a cross-agent isolation case.
+Test fixtures live in `term-core`'s `src/detect/fixtures/` and are loaded via `include_str!`
+(zero I/O at test time). Each `.txt` file is a captured pane snapshot. Golden tests in
+`term-core`'s `src/detect/golden_tests.rs` assert expected `AgentState`, `blocked_reason`, and
+flag values for both the `claude` and `pi` manifests, including a cross-agent isolation case.
+(bastion's own `src/sessions/fixtures/` still holds two `ask_question`-specific freetext
+fixtures, moved there from `src/detect/fixtures/` in BA.18.F since they are consumed only by
+`src/sessions/ask_question.rs`, not by `term-core`'s detect logic.)
 
 | Fixture | Expected state |
 |---|---|
