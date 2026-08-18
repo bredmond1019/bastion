@@ -6,18 +6,35 @@
 //! corpus-wide segment-availability computation: **serve computes nothing**.
 //!
 //! # Route
-//! - `GET /api/lanes` — no query params yet (`?epic=<slug>` lands in a later
-//!   task in this spec). Returns one aggregate row per lane SEGMENT across
-//!   every registered roadmap in a single call.
+//! - `GET /api/lanes[?epic=<slug>]` — returns one aggregate row per lane
+//!   SEGMENT across every registered roadmap in a single call. `?epic=<slug>`
+//!   filters that same aggregate in the same call (no per-roadmap fan-out) —
+//!   a segment belongs to `?epic=<slug>` when its `roadmap` field equals the
+//!   slug (`SegmentStatus` carries `roadmap`, not `epic`; deriving a
+//!   per-segment epic from its head block's `epics[]` would be serve
+//!   computing something this block forbids). The slug is validated against
+//!   the same HQ `epics[]` registry `scope=epic` on `/api/board` uses
+//!   ([`board::epic_known`] /
+//!   [`crate::serve::handlers::epics::hq_epic_registry`]) — an unknown slug
+//!   is a 404/`C005` via [`board::epic_error_response`]; a known slug that
+//!   matches no segment is a 200 with an empty `segments` array (a real
+//!   answer, not an error). `?epic=` present but blank is treated the same
+//!   way `board.rs::epic_param_missing` treats a blank `scope=epic` slug —
+//!   not silently ignored.
 //!
 //! # Pure core vs I/O shell (Rule 6)
-//! [`segment_to_dto`] / [`artifact_to_dto`] / [`availability_to_string`] are
-//! pure — unit-tested directly, no filesystem access. [`get_lanes`] is the
-//! thin async handler: it resolves a starting path from the shared
-//! [`FileConfig`] registry, walks up to the brain root
-//! (`mev::brain::config::find_brain_root`), then calls `mev::lanes_brain`
-//! under `web::block` — mirroring `handlers/epics.rs::get_epics`'s shape —
-//! and hands the result to the pure mapping functions.
+//! [`segment_to_dto`] / [`artifact_to_dto`] / [`availability_to_string`] /
+//! [`filter_segments_to_epic`] are pure — unit-tested directly, no
+//! filesystem access. [`get_lanes`] is the thin async handler: it resolves a
+//! starting path from the shared [`FileConfig`] registry, walks up to the
+//! brain root (`mev::brain::config::find_brain_root`), then calls
+//! `mev::lanes_brain` under `web::block` — mirroring
+//! `handlers/epics.rs::get_epics`'s shape — and hands the result to the pure
+//! mapping functions. When `?epic=<slug>` is present and non-blank, the same
+//! `web::block` closure additionally loads the brain config + state files
+//! (mirroring `board::assemble_board`'s discover/load step) to validate the
+//! slug against
+//! [`crate::serve::handlers::epics::hq_epic_registry`] before filtering.
 //!
 //! `mev::lanes_brain` walks the corpus and builds an untruncated block
 //! graph; it is emphatically not cheap and must never run on the actix
@@ -31,21 +48,26 @@
 //!   A `lanes_brain` failure is never mapped to an empty `segments` list —
 //!   that would read as "nothing to do" when the truth is "the corpus could
 //!   not be measured".
+//! - `?epic=` present but blank, or present and not found in the HQ
+//!   `epics[]` registry → 404 + `C005` via [`board::epic_error_response`].
 //! - `web::block` thread-pool failure → 500 + `C010` via
 //!   [`board::blocking_error_response`].
 
 use std::path::PathBuf;
 
 use actix_web::{HttpResponse, web};
+use serde::Deserialize;
 
 use crate::config::{FileConfig, resolve_workspace_root};
 use crate::serve::dto::{LaneSegmentDto, LanesDto};
 use crate::serve::handlers::board;
+use crate::serve::handlers::epics::hq_epic_registry;
 
 use mev::brain::availability::{
     LaneAvailabilityArtifact, LaneAvailabilityEntry, SegmentAvailability,
 };
-use mev::brain::config::find_brain_root;
+use mev::brain::config::{find_brain_root, load_brain_config};
+use mev::brain::state::{StateFile, StateSource, discover_state_files, load_state};
 
 // ── Pure core ────────────────────────────────────────────────────────────────
 
@@ -89,27 +111,103 @@ fn artifact_to_dto(artifact: LaneAvailabilityArtifact) -> LanesDto {
     }
 }
 
+/// Filter a mapped [`LanesDto`]'s `segments` to those whose `roadmap` field
+/// equals `slug`, in place.
+///
+/// A segment belongs to `?epic=<slug>` when its `roadmap` matches — mev's
+/// [`mev::brain::availability::SegmentStatus`] carries `roadmap`, not
+/// `epic`; deriving a per-segment epic from its head block's `epics[]`
+/// would be serve computing something this block forbids. In this corpus a
+/// roadmap is registered as an epic under the same slug, which is what makes
+/// the equality meaningful. A known-but-unmatched slug legitimately yields
+/// an empty `segments` Vec — that is a real answer ("no lanes for that
+/// epic right now"), not an error; the caller is responsible for rejecting
+/// an *unknown* slug before this runs.
+fn filter_segments_to_epic(dto: &mut LanesDto, slug: &str) {
+    dto.segments.retain(|s| s.roadmap == slug);
+}
+
 // ── I/O shell ──────────────────────────────────────────────────────────────────
+
+/// `GET /api/lanes` query params. `epic=<slug>` is optional; when present and
+/// non-blank it filters the aggregate to segments whose `roadmap` matches. A
+/// present-but-blank value is treated as an error (not silently ignored),
+/// matching `board.rs::epic_param_missing`'s convention for `scope=epic`.
+#[derive(Debug, Deserialize)]
+pub struct LanesQuery {
+    #[serde(default)]
+    pub epic: Option<String>,
+}
+
+/// The two error shapes [`get_lanes`]'s `web::block` closure can fail with:
+/// an operator-configuration brain-root problem (500/`C010`), or — only when
+/// `?epic=<slug>` is present — a slug absent from the HQ `epics[]` registry
+/// (404/`C005`). The present-but-blank `epic=` case is checked synchronously
+/// before the closure ever runs, so it isn't a variant here.
+enum LanesError {
+    BrainRoot(String),
+    UnknownEpic(String),
+}
 
 /// `GET /api/lanes` — one aggregate per lane SEGMENT across every registered
 /// roadmap, pass-through over `mev::lanes_brain` (`BA.19.C`).
 ///
 /// Bearer auth is inherited from the `/api` scope's `BearerAuthMiddleware` — a
 /// request without a valid token never reaches this handler (401 upstream).
-pub async fn get_lanes(registry: web::Data<FileConfig>) -> HttpResponse {
+pub async fn get_lanes(
+    query: web::Query<LanesQuery>,
+    registry: web::Data<FileConfig>,
+) -> HttpResponse {
+    let epic = query.into_inner().epic;
+
+    if let Some(raw) = epic.as_deref()
+        && board::epic_param_missing(Some(raw))
+    {
+        return board::epic_error_response(
+            "?epic=<slug> must be non-empty when the query param is present",
+        );
+    }
+
     let start: PathBuf =
         resolve_workspace_root(None, None, &registry).unwrap_or_else(|_| PathBuf::from("."));
 
-    match web::block(move || -> Result<LanesDto, String> {
-        let root = find_brain_root(&start)
-            .map_err(|e| format!("could not resolve brain root from {}: {e}", start.display()))?;
-        let artifact = mev::lanes_brain(&root).map_err(|e| e.to_string())?;
-        Ok(artifact_to_dto(artifact))
+    match web::block(move || -> Result<LanesDto, LanesError> {
+        let root = find_brain_root(&start).map_err(|e| {
+            LanesError::BrainRoot(format!(
+                "could not resolve brain root from {}: {e}",
+                start.display()
+            ))
+        })?;
+        let artifact = mev::lanes_brain(&root).map_err(|e| LanesError::BrainRoot(e.to_string()))?;
+        let mut dto = artifact_to_dto(artifact);
+
+        if let Some(slug) = epic {
+            let config = load_brain_config(&root.join("brain.toml")).map_err(|e| {
+                LanesError::BrainRoot(format!(
+                    "could not load brain.toml at {}: {e}",
+                    root.display()
+                ))
+            })?;
+            let (sources, _discovery_diags) = discover_state_files(&root, &config);
+            let mut loaded: Vec<(StateSource, StateFile)> = Vec::new();
+            for src in &sources {
+                if let Ok(file) = load_state(&src.abs_path) {
+                    loaded.push((src.clone(), file));
+                }
+            }
+            if !board::epic_known(&slug, hq_epic_registry(&config, &loaded)) {
+                return Err(LanesError::UnknownEpic(format!("unknown epic: {slug}")));
+            }
+            filter_segments_to_epic(&mut dto, &slug);
+        }
+
+        Ok(dto)
     })
     .await
     {
         Ok(Ok(dto)) => HttpResponse::Ok().json(dto),
-        Ok(Err(msg)) => board::brain_root_error_response(msg),
+        Ok(Err(LanesError::BrainRoot(msg))) => board::brain_root_error_response(msg),
+        Ok(Err(LanesError::UnknownEpic(msg))) => board::epic_error_response(msg),
         Err(err) => board::blocking_error_response(err),
     }
 }
@@ -236,5 +334,51 @@ mod tests {
         };
         let dto = artifact_to_dto(artifact);
         assert!(dto.segments.is_empty());
+    }
+
+    // ── filter_segments_to_epic ─────────────────────────────────────────────
+
+    fn dto_with_roadmaps(roadmaps: &[&str]) -> LanesDto {
+        LanesDto {
+            derived_at: "2026-08-18T10:00:00-07:00".to_owned(),
+            degraded: false,
+            segments: roadmaps
+                .iter()
+                .map(|roadmap| {
+                    segment_to_dto(LaneAvailabilityEntry {
+                        status: SegmentStatus {
+                            roadmap: (*roadmap).to_owned(),
+                            ..sample_status(SegmentAvailability::Startable)
+                        },
+                        leverage: LaneLeverage::default(),
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn filter_segments_to_epic_keeps_only_matching_roadmap() {
+        let mut dto = dto_with_roadmaps(&["engine-orchestration", "other-roadmap"]);
+        filter_segments_to_epic(&mut dto, "engine-orchestration");
+        assert_eq!(dto.segments.len(), 1);
+        assert_eq!(dto.segments[0].roadmap, "engine-orchestration");
+    }
+
+    #[test]
+    fn filter_segments_to_epic_known_but_unmatched_slug_yields_empty_vec() {
+        let mut dto = dto_with_roadmaps(&["engine-orchestration"]);
+        filter_segments_to_epic(&mut dto, "no-such-roadmap");
+        assert!(dto.segments.is_empty());
+    }
+
+    #[test]
+    fn filter_segments_to_epic_no_filter_leaves_all_segments() {
+        // Sanity check for the "epic absent -> no filtering runs at all" path
+        // exercised at the handler level: the pure fn itself, when never
+        // called, must not have altered anything (nothing to assert beyond
+        // construction succeeding — this documents intent for readers).
+        let dto = dto_with_roadmaps(&["engine-orchestration", "other-roadmap"]);
+        assert_eq!(dto.segments.len(), 2);
     }
 }
