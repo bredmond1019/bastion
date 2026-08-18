@@ -366,6 +366,39 @@ mod tests {
     }
 
     #[test]
+    fn ask_error_tmux_non_tmux_source_maps_to_500_c010() {
+        // `AskError::Tmux.source` stays `anyhow::Error` until BA.18.G's contract
+        // cutover, so it can carry something that is not a `TmuxError`. Before
+        // BA.18.F that case was the `else` arm of `tmux_error_to_status`, which
+        // took `&anyhow::Error`; the signature is now `&TmuxError` and the same
+        // behaviour lives in the failed-downcast arm here. This pins it — without
+        // it, that arm is the one place the swap could have silently changed a
+        // status code.
+        let err = AskError::Tmux {
+            op: "new-session".to_string(),
+            source: anyhow::anyhow!("pool exhausted"),
+        };
+        let resp = ask_error_to_status(&err);
+        assert_eq!(resp.status(), 500);
+    }
+
+    #[test]
+    fn ask_error_tmux_wrapped_source_still_maps_to_503() {
+        // Every public term-core tmux fn wraps in `TmuxError::Context`, so this —
+        // not the bare variant above — is the shape production actually produces
+        // on this path.
+        let err = AskError::Tmux {
+            op: "new-session".to_string(),
+            source: anyhow::Error::new(TmuxError::Context {
+                action: "new-session failed",
+                source: Box::new(TmuxError::NoServer),
+            }),
+        };
+        let resp = ask_error_to_status(&err);
+        assert_eq!(resp.status(), 503);
+    }
+
+    #[test]
     fn ask_error_tmux_unknown_session_maps_to_404() {
         let err = AskError::Tmux {
             op: "send-keys".to_string(),
