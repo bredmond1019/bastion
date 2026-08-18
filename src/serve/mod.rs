@@ -528,7 +528,74 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         runs: RunRegistry::new(),
                         api_key: engine_api_key,
                     };
-                    (Some(web::Data::new(state)), (true, None))
+                    let engine_data = web::Data::new(state);
+
+                    // ticket-spawn-schedule-loop task 2: spawn the schedule
+                    // tick loop from the SAME `AppState` instance actix
+                    // serves from — `web::Data<T>` is an `Arc<T>` newtype,
+                    // so `.clone().into_inner()` yields the shared `Arc`
+                    // rather than constructing a second `AppState`. A
+                    // second instance would make a scheduled fire dispatch
+                    // through a different `Dispatcher`/`RunRegistry` and
+                    // record into a different `LiveStateStore`, producing
+                    // runs invisible to `/api/runs`. `resolve_engine_harness_path()`
+                    // returns `None` (ordinary, not an error) whenever
+                    // `BASTION_ENGINE_HARNESS_PATH` is unset/unreadable —
+                    // today's deployed Mac Mini state — in which case no
+                    // loop is spawned, mirroring `Ok(None)` below.
+                    let schedule_handle = match resolve_engine_harness_path() {
+                        Some(harness_path) => engine_serve::schedule::spawn_schedule_loop(
+                            &harness_path,
+                            engine_data.clone().into_inner(),
+                        ),
+                        None => {
+                            tracing::info!(
+                                target: "bastion::serve",
+                                "schedule loop not spawned — BASTION_ENGINE_HARNESS_PATH unset or unreadable"
+                            );
+                            Ok(None)
+                        }
+                    };
+                    // Bound to this async fn's stack frame, which lives for
+                    // the lifetime of the server future below (`.run().await`)
+                    // — never dropped early. `ScheduleLoopHandle` wraps a
+                    // `tokio::JoinHandle`, which *detaches* rather than
+                    // aborts on drop, so an early drop would still run the
+                    // loop but leave it unabortable and untestable.
+                    let _schedule_handle = match schedule_handle {
+                        Ok(Some(handle)) => {
+                            // `ScheduleLoopHandle`'s public API (schedule.rs,
+                            // read-only/other repo) exposes only `abort()` —
+                            // no entry-count accessor — so the count named
+                            // here is left to the loop's own internal
+                            // `println!("schedule loop: starting with {n}
+                            // entries")` rather than duplicated registry-load
+                            // logic at this call site.
+                            tracing::info!(
+                                target: "bastion::serve",
+                                "schedule loop spawned"
+                            );
+                            Some(handle)
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                target: "bastion::serve",
+                                "schedule loop not spawned — no entries configured"
+                            );
+                            None
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                target: "bastion::serve",
+                                error = %e,
+                                "schedule loop not spawned — failed to load schedule config"
+                            );
+                            eprintln!("bastion serve: schedule loop not spawned — {e}");
+                            None
+                        }
+                    };
+
+                    (Some(engine_data), (true, None))
                 }
                 Err(e) => {
                     tracing::error!(
