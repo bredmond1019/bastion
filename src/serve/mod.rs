@@ -5505,3 +5505,168 @@ mod approve_and_run_seams_wiring_tests {
         );
     }
 }
+
+// ── ticket-spawn-schedule-loop task 3: resolver + three-outcome seam tests ─
+//
+// Tests THE SEAM ONLY — does bastion resolve a path, call
+// `engine_serve::schedule::spawn_schedule_loop`, and handle all three
+// returns? The engine's own entry-fires-through-dispatch behavior is
+// already covered by `crates/engine-serve/tests/schedule.rs` and is
+// deliberately not re-tested here (see the spec's Testing Strategy).
+//
+// Kept in a dedicated module (mirroring `engine_mount_tests` /
+// `approve_and_run_seams_wiring_tests` above) for the same reason those
+// are: `mod tests` above does `use actix_web::{App, test}`, which shadows
+// the built-in `#[test]` attribute with actix's async-only test macro — a
+// plain sync `#[test] fn` there fails to compile. This module never
+// imports `actix_web::test`, so both plain `#[test]` (for the pure
+// resolver) and `#[actix_web::test]` (for the outcome tests, which need a
+// tokio runtime because `spawn_schedule_loop` calls `tokio::spawn`
+// synchronously) coexist without conflict.
+#[cfg(test)]
+mod schedule_loop_wiring_tests {
+    use super::*;
+    use crate::testsupport::{EnvVarGuard, lock_env};
+
+    // ── resolve_engine_harness_path (task 1) ────────────────────────────────
+
+    #[test]
+    fn resolve_engine_harness_path_returns_the_path_when_set_and_readable() {
+        let _env = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let harness = dir.path().join("harness.json");
+        std::fs::write(&harness, "{}").expect("write fixture");
+        let _guard = EnvVarGuard::set(
+            &_env,
+            "BASTION_ENGINE_HARNESS_PATH",
+            harness.to_str().expect("utf8 fixture path"),
+        );
+
+        assert_eq!(resolve_engine_harness_path(), Some(harness));
+    }
+
+    #[test]
+    fn resolve_engine_harness_path_is_none_when_unset() {
+        let _env = lock_env();
+        let _guard = EnvVarGuard::unset(&_env, "BASTION_ENGINE_HARNESS_PATH");
+
+        assert_eq!(resolve_engine_harness_path(), None);
+    }
+
+    #[test]
+    fn resolve_engine_harness_path_is_none_when_path_does_not_exist() {
+        let _env = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist-harness.json");
+        let _guard = EnvVarGuard::set(
+            &_env,
+            "BASTION_ENGINE_HARNESS_PATH",
+            missing.to_str().expect("utf8 fixture path"),
+        );
+
+        assert_eq!(
+            resolve_engine_harness_path(),
+            None,
+            "a configured-but-missing path must not panic and must resolve to None"
+        );
+    }
+
+    #[test]
+    fn resolve_engine_harness_path_is_none_when_set_to_empty_string() {
+        let _env = lock_env();
+        let _guard = EnvVarGuard::set(&_env, "BASTION_ENGINE_HARNESS_PATH", "");
+
+        assert_eq!(resolve_engine_harness_path(), None);
+    }
+
+    // ── the three spawn_schedule_loop outcomes (task 2) ─────────────────────
+
+    /// A throwaway `Arc<AppState>` mirroring exactly what the production
+    /// call site builds — `web::Data::new(state).into_inner()` — but
+    /// DB-free (`spawn_durable_writer(None)`) since these tests never touch
+    /// Postgres.
+    fn schedule_test_state() -> Arc<EngineAppState> {
+        web::Data::new(EngineAppState {
+            dispatcher: Arc::new(build_engine_dispatcher()),
+            live: LiveStateStore::new(),
+            durable: spawn_durable_writer(None),
+            runs: RunRegistry::new(),
+            api_key: "schedule-loop-test-key".to_string(),
+        })
+        .into_inner()
+    }
+
+    #[actix_web::test]
+    async fn empty_entries_yields_ok_none_the_clean_no_op() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let harness_path = dir.path().join("harness.json");
+        std::fs::write(&harness_path, r#"{"schedule": {"entries": []}}"#).expect("write fixture");
+
+        let result =
+            engine_serve::schedule::spawn_schedule_loop(&harness_path, schedule_test_state());
+
+        assert!(
+            matches!(result, Ok(None)),
+            "entries: [] must yield Ok(None) — the clean no-op this ticket's \
+             Ok(None) branch handles; got Ok(Some(_)) or Err(_) instead"
+        );
+    }
+
+    #[actix_web::test]
+    async fn malformed_schedule_block_yields_err_and_the_result_stays_absorbable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let harness_path = dir.path().join("harness.json");
+        std::fs::write(
+            &harness_path,
+            r#"{"schedule": {"poll_interval_ms": "fast", "entries": []}}"#,
+        )
+        .expect("write fixture");
+
+        let result =
+            engine_serve::schedule::spawn_schedule_loop(&harness_path, schedule_test_state());
+
+        let got = match &result {
+            Ok(Some(_)) => "Ok(Some(_))",
+            Ok(None) => "Ok(None)",
+            Err(engine_serve::schedule::LoadScheduleError::Io(_)) => "Err(Io(_))",
+            Err(engine_serve::schedule::LoadScheduleError::Parse(_)) => "Err(Parse(_))",
+            Err(engine_serve::schedule::LoadScheduleError::InvalidSchedule { .. }) => {
+                "Err(InvalidSchedule { .. })"
+            }
+        };
+        assert!(
+            matches!(
+                result,
+                Err(engine_serve::schedule::LoadScheduleError::Parse(_))
+            ),
+            "a non-numeric poll_interval_ms must produce LoadScheduleError::Parse, got {got}"
+        );
+        // The 'serve still starts' criterion: `spawn_schedule_loop` returning
+        // a plain `Result` here (no panic, no early-return via `?` inside
+        // this test) is exactly the shape `run_server`'s own `match` relies
+        // on to keep booting on this arm — reaching this assertion is the
+        // proof the error is absorbable rather than fatal.
+    }
+
+    #[actix_web::test]
+    async fn absent_config_resolver_returns_none_so_nothing_is_spawned() {
+        // Mirrors the production call site's `None` arm exactly: when
+        // `resolve_engine_harness_path()` returns `None` (today's deployed
+        // Mac Mini state — `BASTION_ENGINE_HARNESS_PATH` unset), the call
+        // site never calls `spawn_schedule_loop` at all, so nothing is
+        // spawned and nothing is logged at error level.
+        let _env = lock_env();
+        let _guard = EnvVarGuard::unset(&_env, "BASTION_ENGINE_HARNESS_PATH");
+
+        assert_eq!(
+            resolve_engine_harness_path(),
+            None,
+            "unset BASTION_ENGINE_HARNESS_PATH must resolve to None, matching \
+             the deployed Mini's state until an operator sets it"
+        );
+        // No `spawn_schedule_loop` call happens in this branch — the
+        // production `match resolve_engine_harness_path() { Some(p) => ..., \
+        // None => Ok(None) }` short-circuits before touching the filesystem,
+        // which this test mirrors by never constructing a harness fixture.
+    }
+}
