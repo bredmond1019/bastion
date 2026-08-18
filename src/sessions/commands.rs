@@ -15,20 +15,21 @@ pub fn run() -> anyhow::Result<()> {
         Ok(r) => r,
         Err(e) => {
             // Graceful degradation: missing binary or no server → human message, no panic.
-            if let Some(te) = e.downcast_ref::<TmuxError>() {
-                match te {
-                    TmuxError::NotInstalled => {
-                        println!("tmux not installed — install tmux to use `bastion sessions`");
-                        return Ok(());
-                    }
-                    TmuxError::NoServer => {
-                        println!("no tmux server running");
-                        return Ok(());
-                    }
-                    TmuxError::ExitError { .. } => {}
+            // Every public term-core tmux fn wraps its error in `Context` — unwrap via
+            // `root_cause()` first, or a wrapped NoServer/NotInstalled falls through
+            // to the fatal branch below instead of degrading gracefully.
+            match e.root_cause() {
+                TmuxError::NotInstalled => {
+                    println!("tmux not installed — install tmux to use `bastion sessions`");
+                    return Ok(());
                 }
+                TmuxError::NoServer => {
+                    println!("no tmux server running");
+                    return Ok(());
+                }
+                _ => {}
             }
-            return Err(e);
+            return Err(e.into());
         }
     };
 
@@ -139,26 +140,29 @@ pub fn degrade_tmux_error(verb: &str, session_name: &str, err: &TmuxError) -> De
             "new" => Degraded::Fatal(format!("error creating session '{session_name}': {stderr}")),
             _ => Degraded::Fatal(format!("error: session '{session_name}' not found")),
         },
+        TmuxError::Io(_) | TmuxError::Timeout { .. } | TmuxError::Context { .. } => {
+            Degraded::Fatal(format!("error: {verb} '{session_name}' failed: {err}"))
+        }
     }
 }
 
 /// Apply the degradation outcome for a tmux error: print the message and either
-/// swallow (graceful) or propagate (fatal) the original error. Non-`TmuxError`
-/// errors are propagated unchanged.
-fn apply_degradation(verb: &str, session_name: &str, e: anyhow::Error) -> anyhow::Result<()> {
-    if let Some(te) = e.downcast_ref::<TmuxError>() {
-        match degrade_tmux_error(verb, session_name, te) {
-            Degraded::Graceful(msg) => {
-                println!("{msg}");
-                return Ok(());
-            }
-            Degraded::Fatal(msg) => {
-                println!("{msg}");
-                return Err(e);
-            }
+/// swallow (graceful) or propagate (fatal) the original error.
+///
+/// Every public term-core tmux fn wraps its error in `Context` — unwrap via
+/// `root_cause()` before classifying, or a wrapped NoServer/NotInstalled
+/// silently loses its graceful-degradation treatment.
+fn apply_degradation(verb: &str, session_name: &str, e: TmuxError) -> anyhow::Result<()> {
+    match degrade_tmux_error(verb, session_name, e.root_cause()) {
+        Degraded::Graceful(msg) => {
+            println!("{msg}");
+            Ok(())
+        }
+        Degraded::Fatal(msg) => {
+            println!("{msg}");
+            Err(e.into())
         }
     }
-    Err(e)
 }
 
 /// Pure formatting helpers — testable without I/O.

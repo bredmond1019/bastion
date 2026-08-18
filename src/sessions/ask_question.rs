@@ -369,7 +369,7 @@ pub fn parse_ask_question(screen: &str) -> Option<AskQuestionPrompt> {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = include_str!("../detect/fixtures/claude_awaiting_question.txt");
+    const FIXTURE: &str = term_core::detect::CLAUDE_AWAITING_QUESTION_FIXTURE;
 
     #[test]
     fn parses_real_fixture_happy_path() {
@@ -413,9 +413,9 @@ mod tests {
     }
 
     const FREETEXT_FILLED_FIXTURE: &str =
-        include_str!("../detect/fixtures/claude_ask_question_freetext_filled.txt");
+        include_str!("fixtures/claude_ask_question_freetext_filled.txt");
     const FREETEXT_SELECTED_FIXTURE: &str =
-        include_str!("../detect/fixtures/claude_ask_question_freetext_selected.txt");
+        include_str!("fixtures/claude_ask_question_freetext_selected.txt");
 
     /// The kinds every one of the three real fixtures should yield, in order — the
     /// widget's structural layout (numbered block, then a rule, then the two trailing
@@ -492,7 +492,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert!(!parsed.question.contains("Claude Code"));
     }
 
-    const BLOCKED_FIXTURE: &str = include_str!("../detect/fixtures/claude_blocked.txt");
+    const BLOCKED_FIXTURE: &str = term_core::detect::CLAUDE_BLOCKED_FIXTURE;
 
     // --- NEGATIVE ---
 

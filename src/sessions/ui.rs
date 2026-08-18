@@ -453,15 +453,11 @@ fn poll_sessions() -> Vec<Session> {
 
 // ── Action execution helper ───────────────────────────────────────────────────
 
-fn set_tmux_status(app: &mut AppState, verb: &str, name: &str, e: anyhow::Error) {
-    if let Some(te) = e.downcast_ref::<TmuxError>() {
-        let msg = match degrade_tmux_error(verb, name, te) {
-            Degraded::Graceful(m) | Degraded::Fatal(m) => m,
-        };
-        app.status = Some(msg);
-    } else {
-        app.status = Some(e.to_string());
-    }
+fn set_tmux_status(app: &mut AppState, verb: &str, name: &str, e: TmuxError) {
+    let msg = match degrade_tmux_error(verb, name, e.root_cause()) {
+        Degraded::Graceful(m) | Degraded::Fatal(m) => m,
+    };
+    app.status = Some(msg);
 }
 
 fn execute_action(action: Action, app: &mut AppState) {

@@ -53,6 +53,14 @@ engine-core = { path = "../engine-rs/crates/engine-core" }
 # Needed at normal build time (not just tests) for the object-safe
 # `OperatorTransport` trait in src/serve/notify/mod.rs (BA.18.B task 1).
 async-trait = "0.1"
+# Same unpinned cross-repo path-dependency posture as engine-serve/engine-contract/
+# engine-core above — BA.18.F Phase 0b extraction: bastion::sessions::{tmux, model}
+# become pub use shims over these. Do NOT add `default-features = false` (same
+# posture as bella-engine, CLAUDE.md standing rule 7); term-core's `tokio` feature
+# is intentionally left disabled — bastion needs only the unconditional modules
+# (tmux/model/claude_state/detect).
+term-core = { path = "../engine-rs/crates/term-core" }
+term-attach = { path = "../engine-rs/crates/term-attach" }
 
 [lib]
 name = "bastion"

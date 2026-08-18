@@ -212,7 +212,7 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
     let trigger = trigger_text(&args.prompt_file, &args.out);
     tmux::send_keys(&args.session, &trigger).map_err(|e| AskError::Tmux {
         op: "send-keys (trigger)".to_string(),
-        source: e,
+        source: e.into(),
     })?;
 
     // ── 4. Wait for completion ───────────────────────────────────────────────
@@ -283,13 +283,13 @@ fn ensure_session_with_claude_with_timeout(
         // Create a new detached session.
         tmux::new_session(session, dir).map_err(|e| AskError::Tmux {
             op: "new-session".to_string(),
-            source: e,
+            source: e.into(),
         })?;
 
         // Launch Claude.
         tmux::send_keys(session, launch_cmd).map_err(|e| AskError::Tmux {
             op: "send-keys (launch)".to_string(),
-            source: e,
+            source: e.into(),
         })?;
 
         // Wait for Claude to become the foreground process.
@@ -304,7 +304,7 @@ fn ensure_session_with_claude_with_timeout(
             // Session exists but Claude is not running — launch it.
             tmux::send_keys(session, launch_cmd).map_err(|e| AskError::Tmux {
                 op: "send-keys (launch into existing session)".to_string(),
-                source: e,
+                source: e.into(),
             })?;
             wait_for_claude(session, timeout_secs, interval_ms)?;
         }

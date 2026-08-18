@@ -10,7 +10,6 @@ mod cli;
 mod config;
 mod costs;
 mod db;
-mod detect;
 mod docview;
 mod inspect;
 mod man;
@@ -26,6 +25,11 @@ mod sessions;
 mod testsupport;
 mod ui_theme;
 mod validate;
+
+// Detect engine moved to term-core (BA.18.F Phase 0b extraction); re-exported
+// here so every existing `crate::detect::*` path in serve/ and sessions/
+// keeps resolving unchanged.
+pub use term_core::detect;
 
 use anyhow::Result;
 use clap::Parser;

@@ -691,7 +691,7 @@ pub type InjectFn = Box<dyn Fn(&str, &str, bool) -> anyhow::Result<()> + Send + 
 
 /// Real [`CapturePaneFn`] over `sessions::tmux::capture_pane_raw`.
 fn real_capture_pane(session: &str) -> anyhow::Result<String> {
-    crate::sessions::tmux::capture_pane_raw(session)
+    Ok(crate::sessions::tmux::capture_pane_raw(session)?)
 }
 
 /// Real [`InjectFn`] over `sessions::tmux::send_keys` — the same function
@@ -704,9 +704,9 @@ fn real_capture_pane(session: &str) -> anyhow::Result<String> {
 /// as a deviation in this spec's Amendment Log.
 fn real_inject(session: &str, text: &str, with_enter: bool) -> anyhow::Result<()> {
     if with_enter {
-        crate::sessions::tmux::send_keys(session, text)
+        Ok(crate::sessions::tmux::send_keys(session, text)?)
     } else {
-        crate::sessions::tmux::send_keys_no_enter(session, text)
+        Ok(crate::sessions::tmux::send_keys_no_enter(session, text)?)
     }
 }
 

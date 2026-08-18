@@ -450,6 +450,8 @@ dependencies = [
  "serde_yaml",
  "sqlx",
  "tempfile",
+ "term-attach",
+ "term-core",
  "thiserror 2.0.18",
  "tiktoken-rs",
  "tokio",
@@ -3841,6 +3843,25 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "term-attach"
+version = "0.1.0"
+dependencies = [
+ "term-core",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "term-core"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
 ]
 
 [[package]]
