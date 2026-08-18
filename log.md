@@ -11,6 +11,42 @@ timestamp: 2026-08-17T16:20:00-03:00
 
 ---
 
+## [run: 2026-08-17]
+
+### BA.18.F closed — term-core/term-attach extraction complete, PASS
+
+Second of the two-commit cross-repo extraction: bastion now depends on `term-core`/`term-attach`
+as unpinned path deps and re-exports them as `bastion::sessions::{tmux, model}` / `crate::detect`
+shims, so all 257 pre-existing session/detect tests compile and pass untouched. Task 1 added the
+path deps; task 2 relocated the two bastion-only `ask_question` freetext fixtures out of
+`src/detect/fixtures/`; task 3 repointed the three shared-asset `include_str!` call sites at
+`term_core::detect`'s consts; task 4 deleted `src/detect/` and shimmed it via `pub use
+term_core::detect;` in `main.rs` (not `lib.rs` — the binary's real module tree, per its own doc
+comment); task 5 retired `src/sessions/{tmux,model,claude_state}.rs` in favor of the term-core/
+term-attach types, threading `TmuxError::root_cause()` through every degrade/status-mapping call
+site so the 503/C001 NoServer contract survives the new `Context`-wrapped error shape (`ask.rs`'s
+own cutover stays out of scope — BA.18.G); task 6 added tests pinning `tmux_error_to_status`
+against the real Context-wrapped production shape (NotInstalled, double-wrapped NoServer, wrapped
+ExitError); task 7 ran full-suite validation — fmt, clippy, `cargo test` 2256 lib + 4 integration,
+release build, contract-corpus drift — and confirmed `cargo tree -i term-attach` shows bastion
+only. Review verdict PASS, no findings. Block `BA.18.F` flipped closed in `state.json`.
+
+Next: BA.18.G (ask.rs cutover to marker contract v0.2.0, dual-read window) or BA.19.C (/lanes
+endpoint, fleet-scoped).
+
+```
+bcace91 docs: update docs for BA.18.F
+888c9bd feat: implement BA.18.F-task6
+34fd8c6 feat: implement BA.18.F-task5
+aadcdb5 feat: implement BA.18.F-task4
+0f3ae02 feat: implement BA.18.F-task3
+86840df feat: implement BA.18.F-task2
+a408241 feat: implement BA.18.F-task1
+247378e docs: log lane-aware-briefing close-out session
+```
+
+---
+
 ## [2026-08-17]
 
 ### lane-aware-briefing closed — board DTO enriched, push gate unblocked
