@@ -5327,6 +5327,134 @@ heading = "bastion"
 
         assert_eq!(outcome, OrphanSweepOutcome::SweptNothing { scanned: 0 });
     }
+
+    // ── /api/lanes — route registration (BA.19.C task 4) ────────────────────
+    //
+    // Reuses `make_temp_board_brain_root` / `registry_with_board_fixture`:
+    // both handlers walk the same `find_brain_root` -> `discover_state_files`
+    // -> `load_state` shape, and this fixture carries no lane files, so
+    // `mev::lanes_brain` resolves successfully to an empty `segments` Vec —
+    // the route test only needs to confirm the endpoint answers at all, not
+    // exercise the availability computation itself (that's MV.13.C's suite).
+
+    #[actix_web::test]
+    async fn get_lanes_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get().uri("/api/lanes").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/lanes without a token must return 401 (inherited BearerAuthMiddleware); got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_lanes_returns_200_with_valid_token() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/lanes")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/lanes with a valid token must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(
+            body["derived_at"].is_string(),
+            "derived_at must be present: {body}"
+        );
+        assert!(
+            body["degraded"].is_boolean(),
+            "degraded must be present: {body}"
+        );
+        assert!(
+            body["segments"].is_array(),
+            "segments must be an array: {body}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_lanes_unknown_epic_returns_same_error_shape_as_board() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/lanes?epic=no-such-epic-slug")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            404,
+            "an unknown ?epic=<slug> on /api/lanes must be a 404, mirroring board::epic_error_response; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(
+            body["code"], "C005",
+            "unknown-epic error must carry the same C005 code /api/board uses: {body}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_lanes_blank_epic_param_matches_board_epic_param_missing_behavior() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/lanes?epic=")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            404,
+            "?epic= present but blank must behave like board.rs::epic_param_missing (an error, not silently ignored); got {}",
+            resp.status()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_lanes_route_registered_in_build_app_with_live_store_too() {
+        // Catches the trap called out in the task: the route must be added
+        // to BOTH `App` builders (production `run_server`'s inline scope and
+        // this test module's `build_app_with_live_store`, which `build_app`
+        // itself wraps), or a route test against only `build_app` could pass
+        // against an app whose live-store variant never registered the
+        // route. Drives `build_app_with_live_store` directly rather than
+        // through `build_app`, so a divergence between the two functions
+        // would be caught here.
+        let (app, _hub) =
+            build_app_with_live_store(FileConfig::default(), LiveStateStore::new(), (false, None));
+        let app = test::init_service(app).await;
+        let req = test::TestRequest::get().uri("/api/lanes").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/lanes must be registered in build_app_with_live_store too (401 without a token, not 404); got {}",
+            resp.status()
+        );
+    }
 }
 
 // ── approve_and_run_seams_wiring tests (ticket-approve-and-run-seams task 2) ─

@@ -5288,4 +5288,113 @@ mod tests {
         assert_field_present("BlockOriginDto", "kind");
         assert_field_present("BlockOriginDto", "slug");
     }
+
+    // ── LaneSegmentDto / LanesDto (BA.19.C task 4) ──────────────────────────
+
+    fn sample_lane_segment_dto() -> LaneSegmentDto {
+        LaneSegmentDto {
+            roadmap: "engine-orchestration".to_owned(),
+            lane: "derive".to_owned(),
+            segment: 0,
+            repo: "mev".to_owned(),
+            head: Some("mev:MV.13.C".to_owned()),
+            availability: "startable".to_owned(),
+            reason: None,
+            leverage_lanes_freed: 2,
+        }
+    }
+
+    #[test]
+    fn lane_segment_dto_none_head_and_reason_serialize_as_absent_keys_not_null() {
+        let dto = LaneSegmentDto {
+            head: None,
+            reason: None,
+            ..sample_lane_segment_dto()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LaneSegmentDto");
+        assert!(
+            !v.as_object().unwrap().contains_key("head"),
+            "None head must be an ABSENT key, not present with null: {v}"
+        );
+        assert!(
+            !v.as_object().unwrap().contains_key("reason"),
+            "None reason must be an ABSENT key, not present with null: {v}"
+        );
+    }
+
+    #[test]
+    fn lane_segment_dto_some_head_and_reason_serialize_as_present_strings() {
+        let dto = LaneSegmentDto {
+            head: Some("mev:MV.13.C".to_owned()),
+            reason: Some("blocked by bastion:BA.19.C".to_owned()),
+            ..sample_lane_segment_dto()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LaneSegmentDto");
+        assert_eq!(v["head"], "mev:MV.13.C");
+        assert_eq!(v["reason"], "blocked by bastion:BA.19.C");
+    }
+
+    #[test]
+    fn lane_segment_dto_availability_carries_mev_variant_string_verbatim() {
+        let dto = LaneSegmentDto {
+            availability: "held-repo-busy".to_owned(),
+            ..sample_lane_segment_dto()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LaneSegmentDto");
+        assert_eq!(v["availability"], "held-repo-busy");
+    }
+
+    #[test]
+    fn lane_segment_dto_leverage_lanes_freed_copied_including_nonzero_on_done_segment() {
+        // `lanes-freed-is-history-on-done-segments`: bastion must NOT zero
+        // this out when availability is "done".
+        let dto = LaneSegmentDto {
+            availability: "done".to_owned(),
+            head: None,
+            leverage_lanes_freed: 3,
+            ..sample_lane_segment_dto()
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LaneSegmentDto");
+        assert_eq!(v["leverage_lanes_freed"], 3);
+        assert_eq!(v["availability"], "done");
+        assert!(!v.as_object().unwrap().contains_key("head"));
+    }
+
+    #[test]
+    fn lane_segment_dto_round_trips_through_json() {
+        let original = sample_lane_segment_dto();
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: LaneSegmentDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn lanes_dto_degraded_true_round_trips() {
+        let dto = LanesDto {
+            derived_at: "2026-08-18T10:00:00-07:00".to_owned(),
+            degraded: true,
+            segments: vec![sample_lane_segment_dto()],
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LanesDto");
+        assert_eq!(v["degraded"], true);
+
+        let decoded: LanesDto =
+            serde_json::from_value(v).expect("deserialize LanesDto back from its own JSON");
+        assert!(
+            decoded.degraded,
+            "degraded: true must round-trip through the DTO, not be dropped"
+        );
+    }
+
+    #[test]
+    fn lanes_dto_degraded_false_round_trips() {
+        let dto = LanesDto {
+            derived_at: "2026-08-18T10:00:00-07:00".to_owned(),
+            degraded: false,
+            segments: Vec::new(),
+        };
+        let v = serde_json::to_value(&dto).expect("serialize LanesDto");
+        assert_eq!(v["degraded"], false);
+        assert_eq!(v["segments"], serde_json::json!([]));
+    }
 }
