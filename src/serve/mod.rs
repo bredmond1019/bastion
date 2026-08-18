@@ -1158,6 +1158,56 @@ mod engine_mount_tests {
             other => panic!("expected Skip, got {other:?}"),
         }
     }
+
+    // ── classify_orphan_sweep tests (ticket-orphan-reconcile-wiring task 2) ──
+    //
+    // Pure, sync, no I/O — kept in this module (not `mod tests` below) for
+    // the same shadowing reason every other test here is: `mod tests` imports
+    // `actix_web::test`, which shadows the built-in `#[test]` attribute.
+
+    #[test]
+    fn classify_orphan_sweep_ok_with_reconciled_ids_is_swept() {
+        let id1 = uuid::Uuid::new_v4();
+        let id2 = uuid::Uuid::new_v4();
+        let outcome = classify_orphan_sweep(Ok(ReconcileSummary {
+            scanned: 3,
+            reconciled: vec![id1, id2],
+        }));
+        assert_eq!(
+            outcome,
+            OrphanSweepOutcome::Swept {
+                scanned: 3,
+                reconciled: vec![id1, id2],
+            }
+        );
+    }
+
+    #[test]
+    fn classify_orphan_sweep_ok_with_nonzero_scanned_but_empty_reconciled_is_swept_nothing() {
+        // Pins the boundary the log lines differ on: a non-zero `scanned`
+        // with nothing reconciled is `SweptNothing`, NOT `Swept` with an
+        // empty vec — those two states must never collapse into each other.
+        let outcome = classify_orphan_sweep(Ok(ReconcileSummary {
+            scanned: 5,
+            reconciled: vec![],
+        }));
+        assert_eq!(outcome, OrphanSweepOutcome::SweptNothing { scanned: 5 });
+    }
+
+    #[test]
+    fn classify_orphan_sweep_default_summary_is_swept_nothing_zero() {
+        let outcome = classify_orphan_sweep(Ok(ReconcileSummary::default()));
+        assert_eq!(outcome, OrphanSweepOutcome::SweptNothing { scanned: 0 });
+    }
+
+    #[test]
+    fn classify_orphan_sweep_err_is_failed_preserving_message_verbatim() {
+        let outcome = classify_orphan_sweep(Err("connection refused".to_string()));
+        assert_eq!(
+            outcome,
+            OrphanSweepOutcome::Failed("connection refused".to_string())
+        );
+    }
 }
 
 #[cfg(test)]
@@ -5055,6 +5105,123 @@ heading = "bastion"
             !logs.contains("session-QA bridge enabled"),
             "no bridge should have been spawned with CodeSessionsBot config absent; got logs:\n{logs}"
         );
+    }
+
+    // ── boot orphan sweep, end to end against a stub OrphanLister
+    //    (ticket-orphan-reconcile-wiring task 2) ───────────────────────────
+    //
+    // Drives `engine_serve::orphan::reconcile_orphans` through
+    // `engine_serve::orphan::RecordingOrphanLister` — the no-database test
+    // seam the module docs name for exactly this caller — then classifies
+    // the result the same way `run_server`'s boot path does. No
+    // `DATABASE_URL`, no live Postgres, matching how engine-rs tests this
+    // same code (orphan.rs's own `mod tests`). `#[actix_web::test]` because
+    // this module already imports `actix_web::test` for the HTTP-handler
+    // tests above (see `engine_mount_tests` for the pure, sync cases
+    // instead).
+
+    fn orphan_row(
+        id: uuid::Uuid,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> engine_contract::EventsRow {
+        engine_contract::EventsRow {
+            id,
+            workflow_type: "CONTENT_PIPELINE".to_string(),
+            data: serde_json::json!({}),
+            task_context: empty_task_context(),
+            created_at: updated_at,
+            updated_at,
+        }
+    }
+
+    #[actix_web::test]
+    async fn boot_sweep_two_candidates_classifies_as_swept_with_both_ids() {
+        let id1 = uuid::Uuid::new_v4();
+        let id2 = uuid::Uuid::new_v4();
+        let old = chrono::Utc::now() - chrono::Duration::hours(2);
+        let lister = engine_serve::orphan::RecordingOrphanLister::new(vec![
+            orphan_row(id1, old),
+            orphan_row(id2, old),
+        ]);
+
+        let result = engine_serve::orphan::reconcile_orphans(
+            &lister,
+            &engine_core::operator::orphan::OrphanPolicy::default(),
+            chrono::Utc::now(),
+        )
+        .await;
+        let outcome = classify_orphan_sweep(result);
+
+        match outcome {
+            OrphanSweepOutcome::Swept {
+                scanned,
+                reconciled,
+            } => {
+                assert_eq!(scanned, 2);
+                assert_eq!(reconciled.len(), 2);
+                assert!(reconciled.contains(&id1));
+                assert!(reconciled.contains(&id2));
+            }
+            other => panic!("expected Swept, got {other:?}"),
+        }
+    }
+
+    #[actix_web::test]
+    async fn boot_sweep_zero_candidates_classifies_as_swept_nothing() {
+        let lister = engine_serve::orphan::RecordingOrphanLister::new(vec![]);
+
+        let result = engine_serve::orphan::reconcile_orphans(
+            &lister,
+            &engine_core::operator::orphan::OrphanPolicy::default(),
+            chrono::Utc::now(),
+        )
+        .await;
+        let outcome = classify_orphan_sweep(result);
+
+        assert_eq!(outcome, OrphanSweepOutcome::SweptNothing { scanned: 0 });
+    }
+
+    #[actix_web::test]
+    async fn boot_sweep_lister_error_classifies_as_failed_and_returns_rather_than_panicking() {
+        let lister =
+            engine_serve::orphan::RecordingOrphanLister::failing_list("connection refused");
+
+        let result = engine_serve::orphan::reconcile_orphans(
+            &lister,
+            &engine_core::operator::orphan::OrphanPolicy::default(),
+            chrono::Utc::now(),
+        )
+        .await;
+        // The call above returning at all (rather than panicking/unwinding)
+        // is the criterion that the server still starts; classification
+        // below confirms it lands on the right variant too.
+        let outcome = classify_orphan_sweep(result);
+
+        match outcome {
+            OrphanSweepOutcome::Failed(msg) => assert!(msg.contains("connection refused")),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[actix_web::test]
+    async fn boot_sweep_reconcile_on_boot_false_yields_swept_nothing_with_no_lister_call() {
+        // A lister that errors if it is ever called — `reconcile_on_boot:
+        // false` must short-circuit in `reconcile_orphans` before touching
+        // the lister at all, so a `list_orphan_candidates` call landing here
+        // would flip this test from `SweptNothing` to `Failed`.
+        let lister = engine_serve::orphan::RecordingOrphanLister::failing_list(
+            "lister must not be called when reconcile_on_boot is false",
+        );
+        let policy = engine_core::operator::orphan::OrphanPolicy {
+            reconcile_on_boot: false,
+            ..engine_core::operator::orphan::OrphanPolicy::default()
+        };
+
+        let result =
+            engine_serve::orphan::reconcile_orphans(&lister, &policy, chrono::Utc::now()).await;
+        let outcome = classify_orphan_sweep(result);
+
+        assert_eq!(outcome, OrphanSweepOutcome::SweptNothing { scanned: 0 });
     }
 }
 
