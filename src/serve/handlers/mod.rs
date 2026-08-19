@@ -8,6 +8,7 @@ pub mod actions;
 pub mod attention;
 pub mod block_graph;
 pub mod board;
+pub mod concurrency;
 pub mod costs;
 pub mod docs;
 pub mod epics;

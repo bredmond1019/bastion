@@ -28,6 +28,10 @@
 //!   [`BlockEdgeKindDto`] — `GET /api/blocks/graph` mechanical projection of
 //!   `mev::brain::block_graph::BlockGraphExport` (BA.17.A). Pure data only — no
 //!   conversion logic lives here (see `handlers/block_graph.rs::block_graph_dto`).
+//! - [`ConcurrencyDto`] / [`ConcurrencyCategoryDto`] / [`ConcurrencyRepoDto`] —
+//!   `GET /api/concurrency[?repo=<slug>]` pass-through over mev's live heavy-lane
+//!   registry (`mev::brain::availability::FleetSlotView`), one row per known
+//!   heavy category plus an optional per-repo answer (BA.19.D).
 //! - [`CostSummaryDto`] / [`WorkflowCostDto`] / [`BudgetStateDto`] / [`BudgetBreachDto`] —
 //!   `GET /api/costs` read-only projection of `costs::CostSummary` + the BA.7.C budget
 //!   state (BA.11.J). Caps are reported as configured; nothing here mutates them (mutation
@@ -2359,6 +2363,120 @@ pub struct LanesDto {
     /// `?epic=<slug>`, per segment whose `roadmap` equals the slug).
     #[serde(default)]
     pub segments: Vec<LaneSegmentDto>,
+}
+
+// ── Concurrency (BA.19.D) ────────────────────────────────────────────────────
+//
+// Wire types for `GET /api/concurrency[?repo=<slug>]`, the fleet-scoped
+// heavy-lane concurrency-slot endpoint. Mechanical pass-through over
+// `mev::brain::availability::FleetSlotView` (via its `known_categories` /
+// `live_repos` accessors and the free `category_capacity` fn) — bastion
+// computes none of the registry logic itself; the handler
+// (`handlers/concurrency.rs`) does the mapping, this module carries data only.
+
+/// One heavy-lane CATEGORY's live slot accounting, mirroring
+/// `fleet_concurrency_check.py`'s `MAX_LANES_BY_CATEGORY` cap for that
+/// category as read through `mev::brain::availability::category_capacity`.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "category": "native-build", "cap": 4, "active_count": 1,
+///   "active_repos": ["bastion"], "slots_available": 3
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConcurrencyCategoryDto {
+    /// Category name, e.g. `"native-build"` or `"browser-automation"`.
+    pub category: String,
+    /// `mev::brain::availability::category_capacity`'s documented cap for
+    /// this category (4 for `native-build`, 2 for `browser-automation` and
+    /// for any category the registry doesn't recognize).
+    #[typeshare(serialized_as = "number")]
+    pub cap: usize,
+    /// Count of repos currently holding a live (non-stale) lock in this
+    /// category.
+    #[typeshare(serialized_as = "number")]
+    pub active_count: usize,
+    /// Sorted repo slugs currently holding a live lock in this category.
+    /// Sorted deterministically by the handler — `HashSet` iteration order
+    /// from `FleetSlotView::live_repos` must never reach the wire.
+    #[serde(default)]
+    pub active_repos: Vec<String>,
+    /// `cap.saturating_sub(active_count)` — never underflows even when the
+    /// registry is over capacity (the Python `register` honours
+    /// `--max-heavy-lanes`, which can exceed the documented cap).
+    #[typeshare(serialized_as = "number")]
+    pub slots_available: usize,
+}
+
+/// `?repo=<slug>` answer: whether a specific repo may start a heavy lane
+/// right now, per the live registry.
+///
+/// Wire format:
+/// ```json
+/// { "repo": "bastion", "category": "native-build", "allowed": true,
+///   "degraded": false, "reason": null }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConcurrencyRepoDto {
+    /// The queried repo slug, carried verbatim.
+    pub repo: String,
+    /// `mev::brain::availability::heavy_category`'s classification for this
+    /// repo. `None` means the repo is light — always `allowed: true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Whether the repo may start a heavy lane right now. Only ever `false`
+    /// when the registry is NOT degraded and the repo's category is at or
+    /// over capacity — a degraded read always reports `true` here (see
+    /// [`ConcurrencyDto::degraded`]).
+    pub allowed: bool,
+    /// `true` when this repo's answer was derived from a degraded fleet-lock
+    /// read (mirrors [`ConcurrencyDto::degraded`] for the single-repo view).
+    pub degraded: bool,
+    /// Human-readable why `allowed` is `false`, or why the read is degraded.
+    /// `None` when `allowed` is `true` and the read is not degraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `GET /api/concurrency[?repo=<slug>]` response body — one row per known
+/// heavy category, plus an optional `repo` answer when `?repo=` is present.
+/// Pass-through over `mev::brain::availability::FleetSlotView`.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "degraded": false, "reason": null,
+///   "categories": [{ "category": "native-build", "cap": 4,
+///     "active_count": 0, "active_repos": [], "slots_available": 4 }],
+///   "repo": null
+/// }
+/// ```
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConcurrencyDto {
+    /// `true` when the fleet-lock read that fed this response degraded
+    /// (`mev::brain::availability::FleetSlotView::degraded`). A degraded
+    /// read is reported as `{allowed: true, degraded: true}` with a
+    /// non-empty `reason`, mirroring `fleet_concurrency_check.py`'s
+    /// degrade-to-advisory contract — it is NEVER surfaced as a hard
+    /// failure or as `allowed: false`. Same posture as
+    /// [`LanesDto::degraded`].
+    pub degraded: bool,
+    /// Human-readable why the read degraded. `None` when `degraded` is
+    /// `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// One row per category the registry knows about, from
+    /// `FleetSlotView::known_categories`.
+    #[serde(default)]
+    pub categories: Vec<ConcurrencyCategoryDto>,
+    /// Present only when the request carried `?repo=<slug>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<ConcurrencyRepoDto>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

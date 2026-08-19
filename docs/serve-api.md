@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.35"
+title: "serve-api contract v0.36"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status and leaving `workflow_type` always absent pending the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type` (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -49,7 +49,7 @@ in-memory `PendingPayloads` registry so the `NotifyPollLoop`'s `PendingLookup` c
 clears the live buttons and shows the chosen option) before the `VerdictSink` runs, fixing the
 defect where Telegram silently timed out a tapped button because `answerCallbackQuery` was never
 called; the ack handle and message handle are opaque, transport-agnostic, and `None`-safe for any
-transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced; and the v0.34 `effective_priority` field on `BoardBlockDto` (`BA.19.B`) — mev's min-propagated ranking (`mev::brain::block_graph::BlockGraphNode::effective_priority`) carried verbatim onto every board lane entry behind the same opt-in `?graph=1` gate as `dependent_count`/`ready`/`unmet_count`, absent when the block was absent from the graph export, `?graph=1` was not requested, or mev's own min-propagation never landed a value in the real `0..=3` range; bastion-web's `board-view.ts` already duck-types a read of this field, so no client-side change is required, and the v0.35 fleet-scoped lane API (GET /api/lanes, `BA.19.C`) — one aggregate row per lane SEGMENT across every registered roadmap in a single call, with an optional `?epic=<slug>` filter that never fans out to a per-roadmap call, a pure pass-through over `mev::lanes_brain` with zero availability derivation performed by bastion, unblocking the engine-orchestration roadmap's input contract (D74)"
+transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced; and the v0.34 `effective_priority` field on `BoardBlockDto` (`BA.19.B`) — mev's min-propagated ranking (`mev::brain::block_graph::BlockGraphNode::effective_priority`) carried verbatim onto every board lane entry behind the same opt-in `?graph=1` gate as `dependent_count`/`ready`/`unmet_count`, absent when the block was absent from the graph export, `?graph=1` was not requested, or mev's own min-propagation never landed a value in the real `0..=3` range; bastion-web's `board-view.ts` already duck-types a read of this field, so no client-side change is required, and the v0.35 fleet-scoped lane API (GET /api/lanes, `BA.19.C`) — one aggregate row per lane SEGMENT across every registered roadmap in a single call, with an optional `?epic=<slug>` filter that never fans out to a per-roadmap call, a pure pass-through over `mev::lanes_brain` with zero availability derivation performed by bastion, unblocking the engine-orchestration roadmap's input contract (D74), and the v0.36 fleet-scoped concurrency-slot API (GET /api/concurrency[?repo=<slug>], `BA.19.D`) — one row per known heavy-lane category (native-build, browser-automation) with cap/active_count/active_repos/slots_available, plus an optional per-repo `allowed`/`degraded`/`reason` answer, a pure pass-through over `mev::brain::availability::compute_fleet_slot_view`/`heavy_category` with zero heavy-lane classification performed by bastion, mirroring `fleet_concurrency_check.py`'s degrade-to-advisory contract (a degraded fleet-lock read is always `{allowed: true, degraded: true}`, never a hard failure or `allowed: false`) and read-only unlike the Python `status` action's sweep-on-read behavior"
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -58,10 +58,10 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.35 Contract
+# serve-api — v0.36 Contract
 
-**Version:** v0.35  
-**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26 — plus, when mounted,
+**Version:** v0.36  
+**Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26, 28–29 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
 bastion-web (`BW.3.B`) for Section 14; bastion-web (`BW.1.C`) for Section 15; bastion-web
@@ -3491,8 +3491,198 @@ availability computation, its six states, or their precedence order — that sui
 
 ---
 
+## 29. Fleet-scoped concurrency-slot API (v0.36, `BA.19.D`)
+
+One read-only route (D25) projecting `fleet_concurrency_check.py`'s live heavy-lane registry —
+per-category caps and current holds — onto HTTP. Lives under the bearer-protected `/api` scope
+(Section 2). Backing handler: `src/serve/handlers/concurrency.rs`.
+
+**Bastion performs zero heavy-lane classification or cap policy of its own here.** The handler
+calls `mev::brain::availability::compute_fleet_slot_view(&root)` (mev's read-only fleet-lock
+reader — `MV.13.C`, the same `.fleet-locks`-reading registry `fleet_concurrency_check.py` writes
+to and reads from) exactly once per request, and, when `?repo=<slug>` is present, additionally
+calls `mev::brain::availability::heavy_category` to classify that one repo. Both the per-category
+caps (`mev::brain::availability::category_capacity` — 4 for `native-build`, 2 for
+`browser-automation` and for any category the registry doesn't recognize) and the heavy/light
+classification are owned entirely by mev; bastion copies the result onto the wire DTOs and adds
+no policy of its own. This mirrors Section 28's `/api/lanes` posture over `mev::lanes_brain`.
+
+**Cap provenance.** The caps served here are **not** re-derived or hand-maintained in this repo.
+They come from `mev::brain::availability::category_capacity`, which mirrors
+`fleet_concurrency_check.py`'s `MAX_LANES_BY_CATEGORY` (D66's per-category replacement of the
+earlier single `MAX_HEAVY_LANES = 2`). A `concurrency_registry_parity_tests` suite in
+`src/serve/handlers/concurrency.rs` guards this: when a local checkout of
+`fleet_concurrency_check.py` is discoverable it asserts the served caps match the Python source's
+`MAX_LANES_BY_CATEGORY` dict byte-for-byte, and skips (not fails) when the file isn't reachable
+from the current environment — so a served cap can never silently drift from the Python registry's
+own policy without a test noticing on any machine that has the source checked out.
+
+### 29.1 `GET /api/concurrency` — fleet-wide heavy-lane category slots
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `repo` | string | No | — | Repo slug. When present and non-blank, adds a `repo` object to the response answering whether that specific repo may start a heavy lane right now. Present-but-blank (`?repo=`) is an error (404), matching `/api/lanes`'s `?epic=` convention (Section 28.1) rather than being silently ignored. A slug not found in the brain's `[[repos]]` registry is also a 404. |
+
+**Request:**
+
+```
+GET /api/concurrency HTTP/1.1
+Authorization: Bearer <token>
+```
+
+```
+GET /api/concurrency?repo=bastion HTTP/1.1
+Authorization: Bearer <token>
+```
+
+### 29.2 Response (200 OK): `ConcurrencyDto`
+
+```json
+{
+  "degraded": false,
+  "reason": null,
+  "categories": [
+    {
+      "category": "native-build",
+      "cap": 4,
+      "active_count": 1,
+      "active_repos": ["bastion"],
+      "slots_available": 3
+    },
+    {
+      "category": "browser-automation",
+      "cap": 2,
+      "active_count": 0,
+      "active_repos": [],
+      "slots_available": 2
+    }
+  ],
+  "repo": null
+}
+```
+
+With `?repo=bastion`, the same body additionally carries:
+
+```json
+{
+  "repo": {
+    "repo": "bastion",
+    "category": "native-build",
+    "allowed": true,
+    "degraded": false,
+    "reason": null
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `degraded` | boolean | `true` when the fleet-lock read that fed this response degraded (an unreadable/missing `.fleet-locks` directory, `mev::brain::availability::FleetSlotView::degraded`). |
+| `reason` | string \| absent | Human-readable why the read degraded. Absent (not `null`) when `degraded` is `false`. |
+| `categories` | array of `ConcurrencyCategoryDto` | One row per category `FleetSlotView::known_categories` knows about (`native-build`, `browser-automation` as of this writing — mev owns the vocabulary; a category mev adds later appears here automatically with no bastion change needed). |
+| `repo` | `ConcurrencyRepoDto` \| absent | Present only when the request carried `?repo=<slug>`. |
+
+#### `ConcurrencyCategoryDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `category` | string | Category name, e.g. `"native-build"` or `"browser-automation"`. |
+| `cap` | number | `category_capacity`'s documented cap for this category. |
+| `active_count` | number | Count of repos currently holding a live (non-stale, non-dead-pid) lock in this category. |
+| `active_repos` | array of string | Sorted repo slugs currently holding a live lock in this category — sorted deterministically by the handler so `HashSet` iteration order never reaches the wire. |
+| `slots_available` | number | `cap.saturating_sub(active_count)` — never underflows even when the registry is over the documented cap (the Python `register` action honours a `--max-heavy-lanes` override, which can push a category over its own documented cap). |
+
+#### `ConcurrencyRepoDto`
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | The queried repo slug, carried verbatim. |
+| `category` | string \| absent | `heavy_category`'s classification for this repo. Absent means the repo is light — always `allowed: true`. |
+| `allowed` | boolean | Whether the repo may start a heavy lane right now. Only ever `false` when the read is NOT degraded and the repo's category is at or over capacity — **a degraded read always reports `true` here**, never `false`. |
+| `degraded` | boolean | `true` when this repo's answer was derived from a degraded fleet-lock read (mirrors `ConcurrencyDto.degraded` for the single-repo view). |
+| `reason` | string \| absent | Human-readable why `allowed` is `false` (names the holding repos and the `active/cap` counts), or why the read is degraded. Absent when `allowed` is `true` and the read is not degraded. |
+
+### 29.3 The degrade-to-advisory contract
+
+An unreadable or missing `.fleet-locks` directory is **never** reported as a hard failure. It is
+served as a normal `200` with `degraded: true` and a `reason` explaining why, and — critically —
+`allowed` is **always `true`** on the `repo` object in that state, regardless of the repo's
+category or how many holders the last-known-good read showed. This mirrors
+`fleet_concurrency_check.py`'s own degrade-to-advisory posture: when the registry can't be read,
+the honest answer is "we don't know, so don't block," not "assume the worst and refuse." A
+consumer that needs to distinguish "genuinely idle" from "couldn't check" reads `degraded`, never
+infers it from an empty `active_repos` list.
+
+### 29.4 Read-only guarantee
+
+This endpoint never writes to, sweeps, or deletes any entry under `.fleet-locks`. It only reads —
+unlike the Python `fleet_concurrency_check.py status` action, which sweeps stale entries as a
+side effect of reporting status. A caller that wants stale entries cleared must still run the
+Python tool's `status`/`register` actions directly; this route's answer reflects whatever the
+registry currently holds, stale-but-unswept entries included (mev's own liveness rules — TTL +
+dead-pid detection — still exclude them from `active_count`/`active_repos`, they just aren't
+removed from disk by this read).
+
+### 29.5 Error responses
+
+| Condition | HTTP status | Body |
+|---|---|---|
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| `?repo=` present but blank | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_error_response` verbatim, same shape as Section 28.3. |
+| `?repo=<slug>` present but absent from the brain's `[[repos]]` registry | `404 Not Found` | JSON `ErrorPayload`, code `C005`, via `board::epic_error_response`, message naming the unknown slug (`"unknown repo: <slug>"`). |
+| Unresolvable brain root (no `brain.toml` walking up from the workspace root), OR a failure loading `brain.toml` when `?repo=` is present | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, via `board::brain_root_error_response`, message intact. An unreadable `.fleet-locks` directory is NOT this path — see Section 29.3. |
+| `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, via `board::blocking_error_response`. |
+
+### 29.6 Testing
+
+`category_to_dto`, `categories_to_dtos`, and `repo_to_dto` are pure and unit-tested with no
+filesystem access — including the saturating-subtraction-at-capacity case, the
+degraded-is-always-allowed case, and the unknown-category fallback case. Two further tests drive
+the real `mev::brain::availability::compute_fleet_slot_view` reader against a temp `.fleet-locks`
+fixture (live pid vs. stale-by-TTL vs. dead-pid entries; a missing directory) rather than
+restating mev's staleness rules bastion-side, keeping the suite honest about what mev actually
+decides. The thin `web::block` I/O shell (`get_concurrency`) and route wiring in `src/serve/mod.rs`
+(registered in **both** the production `App` and the test `build_app`) are covered by
+`#[actix_web::test]` integration tests asserting the bearer-auth `401`, a `200` with and without
+`?repo=`, and the `404` unknown-repo/blank-repo cases. A separate
+`concurrency_registry_parity_tests` module (skips, never fails, when
+`fleet_concurrency_check.py` isn't discoverable) asserts the served caps match the Python
+source's `MAX_LANES_BY_CATEGORY` byte-for-byte — see the provenance note above. Not tested here:
+mev's fleet-lock liveness computation itself — that suite belongs to `mev:MV.13.C` and is
+deliberately not duplicated in this repo.
+
+---
+
 ## Amendment Log
 
+- **2026-08-18 — v0.35 → v0.36 (`BA.19.D`, additive):** Added Section 29 (Fleet-scoped
+  concurrency-slot API) — `GET /api/concurrency[?repo=<slug>]`, a pure pass-through over
+  `mev::brain::availability::compute_fleet_slot_view`/`heavy_category` (`MV.13.C`'s Rust reader
+  of the live `.fleet-locks` registry `fleet_concurrency_check.py` also reads/writes) with zero
+  heavy-lane classification or cap policy performed by bastion. New typeshared DTOs
+  `ConcurrencyDto` (`degraded`/`reason`/`categories`/`repo`), `ConcurrencyCategoryDto`
+  (`category`/`cap`/`active_count`/`active_repos`/`slots_available`), and `ConcurrencyRepoDto`
+  (`repo`/`category`/`allowed`/`degraded`/`reason`). Caps come from
+  `mev::brain::availability::category_capacity`, mirroring `fleet_concurrency_check.py`'s D66
+  per-category `MAX_LANES_BY_CATEGORY` (native-build 4, browser-automation 2) — a
+  `concurrency_registry_parity_tests` suite cross-checks the served caps against the Python
+  source's dict byte-for-byte whenever that file is locally discoverable, skipping (never
+  failing) otherwise. Shipped only after `base-template:BT.ticket.heavy-command-signals-rust-build`
+  landed `cargo build --release` into `NATIVE_BUILD_SIGNALS`, so a Rust repo's own heavy build no
+  longer reports as light — the block's hard precondition. The degrade-to-advisory contract is
+  mirrored exactly: an unreadable/missing `.fleet-locks` directory is served as `200` with
+  `degraded: true` and a reason, and `?repo=<slug>`'s `allowed` is **always `true`** in that
+  state, never `false` and never a hard failure, matching `fleet_concurrency_check.py`'s own
+  posture. The endpoint is strictly read-only — it never sweeps or deletes a `.fleet-locks` entry,
+  unlike the Python `status` action's sweep-on-read side effect. `?repo=` present-but-blank is a
+  `404`/`C005` (mirrors `/api/lanes`'s `?epic=` convention, Section 28.1); an unknown repo slug is
+  also `404`/`C005`, via `board::epic_error_response` reused verbatim. Bearer auth inherited from
+  the `/api` scope, registered in both the production `App` and the test `build_app`. `types/serve.ts`
+  regenerated (no drift); `scripts/check-contract-corpus-drift.sh` reports the corpus unaffected
+  (no `*_scenarios` module yet exists for this route). No breaking change — new route, new DTOs,
+  no existing field renamed, retyped, or removed.
 - **2026-08-18 — v0.34 → v0.35 (`BA.19.C`, additive):** Added Section 28 (Fleet-scoped lane API) —
   `GET /api/lanes[?epic=<slug>]`, one aggregate row per lane SEGMENT across every registered
   roadmap in a single call, a pure pass-through over `mev::lanes_brain` (mev's read-only
