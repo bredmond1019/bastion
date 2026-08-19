@@ -2292,6 +2292,8 @@ boot) also leaves the engine routes unmounted, logged the same way.
 | `/workflows/{workflow_type}/graph` | `GET` | `X-API-Key` | The DAG schema for a registered type; `404` for an unknown one. |
 | `/events/` | `POST` | `X-API-Key` | Trigger dispatch — resolves `workflow_type`, runs the workflow, mints a `run_id` and a `CancellationToken`. |
 | `/events/{run_id}/abort` | `POST` | `X-API-Key` | The abort endpoint this block's `bastion abort <run>` calls — see [abort.md](abort.md) and [data-contract.md](data-contract.md)'s Abort section for the full 401/404/202 contract. |
+| `/approvals/ledger` | `GET` | `X-API-Key` | Paginated approval-decision rows. `limit` query param (default 100, clamped to a max of 1000); `offset` for paging. See `BA.ticket.approval-ledger-read-wiring` below for the mount/instance contract. |
+| `/approvals/ledger/stats` | `GET` | `X-API-Key` | Decisions-per-day and time-to-approval stats derived from the same ledger. |
 | every other route in `engine_serve::http::configure` (`/events/suspended`, `/events/{event_id}`, `/events/{event_id}/resume`, `/events/{event_id}/stream`, `/webhooks/email/inbound`, `/webhooks/email/events`) | — | `X-API-Key` | Same gate, applied uniformly across the whole mount (Section 18.2.1). |
 
 `X-API-Key` is required on **every route the engine mount registers except `/health`**. A request
@@ -2314,6 +2316,24 @@ empty configured key (and an empty provided header) rather than falling through 
 defense-in-depth, not a live gap. `GET /health` stays unauthenticated — it is shadowed by
 bastion's own `/health` handler before the engine mount is registered (Section 18.1's
 first-registration-wins note), so the middleware wrapping the engine scope never sees it.
+
+#### 18.2.2 `BA.ticket.approval-ledger-read-wiring` — shared ledger instance (2026-08-19)
+
+`GET /approvals/ledger` and `GET /approvals/ledger/stats` are `engine-serve` routes behind an
+additive `Option<web::Data<Arc<dyn ApprovalLedger>>>` extractor (D15) — they answered `503` until
+bastion registered a ledger. `src/serve/mod.rs` now hoists the same `FileApprovalLedger` `Arc`
+that `ApproveAndRunSeams::new(..)` already writes decisions through into a named binding, coerces
+it once to `Arc<dyn ApprovalLedger>`, and registers a clone of that exact value as
+`web::Data<Arc<dyn ApprovalLedger>>` app_data on the engine-mount branch. **The ledger these routes
+serve is the same instance the approve-and-run writer appends to** — not a second
+`FileApprovalLedger` independently resolving `approval_ledger_default_path` — so a row written
+through an approval decision is guaranteed visible on the next read, rather than incidentally
+visible because both sides happen to agree on a path. The three behaviours a client can rely on:
+
+- **`401`** without a valid `X-API-Key` (Section 18.2's uniform gate).
+- **`503`** when `bastion serve` is running without the engine mounted (Section 18.1) — the
+  `Option` extractor is `None`.
+- **`200`** with rows once the engine is mounted, sourced from the one shared ledger instance.
 
 ### 18.3 Testing
 
