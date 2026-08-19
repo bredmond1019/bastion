@@ -194,6 +194,35 @@ pub fn turn_is_complete(
     marker_satisfies(marker_content, nonce) && out_is_fresh(out_mtime, send_time)
 }
 
+/// Dual-read window (contract rule, v0.1.0 compat): does an existing legacy
+/// (bare `<out>.done`) marker satisfy the wait?
+///
+/// v0.1.0 markers were specified as empty files, so — unlike the nonce'd
+/// form — content is not checked at all. The only thing that still applies
+/// is rule 4: `out`'s mtime must postdate the send, because that rule closed
+/// a defect independent of the marker's shape and there is no compatibility
+/// reason to relax it.
+pub fn legacy_marker_satisfies(out_mtime: SystemTime, send_time: SystemTime) -> bool {
+    out_is_fresh(out_mtime, send_time)
+}
+
+/// Build the one-time deprecation warning emitted to stderr when a legacy
+/// (v0.1.0 bare) marker is accepted.
+///
+/// Names the legacy path, the v0.2.0 nonce'd form, and states that
+/// acceptance ends once the orchestrator's `BastionSessionBackend` pin
+/// advances — the caller (`ask()`) emits this exactly once per invocation,
+/// never per poll tick.
+pub fn legacy_warning_text(legacy: &Path) -> String {
+    format!(
+        "warning: deprecated v0.1.0 done-marker {} accepted — bastion now writes \
+         the v0.2.0 nonce'd marker (<out>.{{nonce}}.done); dual-read acceptance \
+         of this deprecated bare form ends once the orchestrator's \
+         BastionSessionBackend pin advances to v0.2.0",
+        legacy.display(),
+    )
+}
+
 /// Contract rule 3: the age (seconds) past which a done-marker is eligible
 /// for GC reaping, given an invocation's `--timeout`.
 ///
@@ -393,6 +422,7 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
 
     // ── 4. Wait for completion ───────────────────────────────────────────────
     let done = done_path(&args.out, &nonce);
+    let legacy_done = legacy_done_path(&args.out);
     let max_attempts = poll_plan(args.timeout_secs, POLL_INTERVAL_MS);
 
     for _ in 0..max_attempts {
@@ -408,6 +438,21 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
             // caller reading `--out` after `ask()` returns.
             return Ok(());
         }
+
+        // Dual-read window (v0.1.0 compat): the nonce'd marker is absent or
+        // unsatisfying — also check the bare legacy form. Content is not
+        // checked (v0.1.0 markers were specified as empty files); rule 4
+        // (out must postdate the send) still applies. Never removed either
+        // — `sweep_markers` already reaps `*.done` by age, covering the
+        // bare form without a special case.
+        if legacy_done.exists()
+            && let Ok(out_mtime) = std::fs::metadata(&args.out).and_then(|m| m.modified())
+            && legacy_marker_satisfies(out_mtime, send_time)
+        {
+            eprintln!("{}", legacy_warning_text(&legacy_done));
+            return Ok(());
+        }
+
         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
     }
 
@@ -822,6 +867,45 @@ mod tests {
         let send_time = SystemTime::now();
         let out_mtime = send_time - Duration::from_secs(1);
         assert!(!turn_is_complete("wrong", "abc123", out_mtime, send_time));
+    }
+
+    // ── legacy_marker_satisfies (dual-read window) ───────────────────────────
+
+    #[test]
+    fn legacy_marker_satisfies_true_when_out_fresh() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time + Duration::from_secs(1);
+        assert!(legacy_marker_satisfies(out_mtime, send_time));
+    }
+
+    #[test]
+    fn legacy_marker_satisfies_false_when_out_stale() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time - Duration::from_secs(1);
+        assert!(!legacy_marker_satisfies(out_mtime, send_time));
+    }
+
+    #[test]
+    fn legacy_marker_satisfies_false_when_out_equal() {
+        let t = SystemTime::now();
+        assert!(!legacy_marker_satisfies(t, t));
+    }
+
+    // ── legacy_warning_text ───────────────────────────────────────────────────
+
+    #[test]
+    fn legacy_warning_text_names_legacy_path() {
+        let legacy = PathBuf::from("/tmp/answer.json.done");
+        let text = legacy_warning_text(&legacy);
+        assert!(text.contains("/tmp/answer.json.done"));
+    }
+
+    #[test]
+    fn legacy_warning_text_mentions_deprecation_and_v0_2_0() {
+        let legacy = PathBuf::from("/tmp/answer.json.done");
+        let text = legacy_warning_text(&legacy);
+        assert!(text.to_lowercase().contains("deprecat"));
+        assert!(text.contains("v0.2.0"));
     }
 
     // ── gc_age_threshold_secs ────────────────────────────────────────────────
