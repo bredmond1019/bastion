@@ -2,13 +2,33 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-17T22:30:00-03:00
+timestamp: 2026-08-19T11:09:29-03:00
 ---
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
 
 ---
+
+## [run: 2026-08-19]
+
+### Fixed `reconcile_orphans` call sites after engine-serve signature change
+
+- **What:** Updated `src/serve/mod.rs`'s boot orphan sweep and its four unit tests to pass the new
+  `&LiveStateStore` second argument `engine_serve::orphan::reconcile_orphans` now requires. The boot
+  call site now threads `&live_store` (already in scope) so reconciled runs are seeded into the same
+  store `GET /events/{id}` reads. Added an assertion in
+  `boot_sweep_two_candidates_classifies_as_swept_with_both_ids` that both reconciled IDs land as
+  `terminal: true` in the store, pinning the actual regression this whole change exists to close.
+  `cargo build` clean; `cargo nextest run --lib --bins` 2356/2356 passed.
+- **Why:** Upstream `engine-rs` (`../engine-rs/crates/engine-serve`) fixed a production bug confirmed
+  on the Mac Mini 2026-08-18 — the boot orphan sweep reconciled a crash-stranded run in Postgres but
+  never seeded it into the calling process's `LiveStateStore`, so `GET /events/{id}` (which reads only
+  `LiveStateStore`, no DB fallback) 404'd it. The fix changed `reconcile_orphans`'s signature, which
+  broke bastion's build against the path dependency; this session updates bastion to compile again and
+  actually pick up the fix.
+- **Refs:** `BA.ticket.orphan-reconcile-wiring` (closed 2026-08-14) — this is a follow-up build fix
+  for an upstream signature change, not a reopening of that block.
 
 ## [run: 2026-08-18]
 

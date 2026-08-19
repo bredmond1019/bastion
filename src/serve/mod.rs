@@ -515,6 +515,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                     // pool by value; `PgPool` is a cheap `Arc` clone.
                     let sweep = engine_serve::orphan::reconcile_orphans(
                         engine_serve::orphan::orphan_lister_live(pool.clone()).as_ref(),
+                        &live_store,
                         &engine_core::operator::orphan::OrphanPolicy::default(),
                         chrono::Utc::now(),
                     )
@@ -5260,8 +5261,10 @@ heading = "bastion"
             orphan_row(id2, old),
         ]);
 
+        let live = LiveStateStore::new();
         let result = engine_serve::orphan::reconcile_orphans(
             &lister,
+            &live,
             &engine_core::operator::orphan::OrphanPolicy::default(),
             chrono::Utc::now(),
         )
@@ -5277,6 +5280,8 @@ heading = "bastion"
                 assert_eq!(reconciled.len(), 2);
                 assert!(reconciled.contains(&id1));
                 assert!(reconciled.contains(&id2));
+                assert!(live.get_record(id1).is_some_and(|r| r.terminal));
+                assert!(live.get_record(id2).is_some_and(|r| r.terminal));
             }
             other => panic!("expected Swept, got {other:?}"),
         }
@@ -5286,8 +5291,10 @@ heading = "bastion"
     async fn boot_sweep_zero_candidates_classifies_as_swept_nothing() {
         let lister = engine_serve::orphan::RecordingOrphanLister::new(vec![]);
 
+        let live = LiveStateStore::new();
         let result = engine_serve::orphan::reconcile_orphans(
             &lister,
+            &live,
             &engine_core::operator::orphan::OrphanPolicy::default(),
             chrono::Utc::now(),
         )
@@ -5302,8 +5309,10 @@ heading = "bastion"
         let lister =
             engine_serve::orphan::RecordingOrphanLister::failing_list("connection refused");
 
+        let live = LiveStateStore::new();
         let result = engine_serve::orphan::reconcile_orphans(
             &lister,
+            &live,
             &engine_core::operator::orphan::OrphanPolicy::default(),
             chrono::Utc::now(),
         )
@@ -5333,8 +5342,10 @@ heading = "bastion"
             ..engine_core::operator::orphan::OrphanPolicy::default()
         };
 
+        let live = LiveStateStore::new();
         let result =
-            engine_serve::orphan::reconcile_orphans(&lister, &policy, chrono::Utc::now()).await;
+            engine_serve::orphan::reconcile_orphans(&lister, &live, &policy, chrono::Utc::now())
+                .await;
         let outcome = classify_orphan_sweep(result);
 
         assert_eq!(outcome, OrphanSweepOutcome::SweptNothing { scanned: 0 });
