@@ -417,4 +417,118 @@ mod tests {
         assert!(names.contains(&"native-build"));
         assert!(names.contains(&"browser-automation"));
     }
+
+    // ── live-registry cases, through mev::brain::availability::compute_fleet_slot_view ─
+    //
+    // These drive the real registry reader against a temp `.fleet-locks`
+    // fixture rather than restating mev's staleness rules bastion-side, per
+    // task 4's instruction — this keeps the suite honest about what mev
+    // actually decides.
+
+    /// Write one raw `.fleet-locks/<repo>__<label>.json` entry, mirroring
+    /// `fleet_concurrency_check.py`'s on-disk shape (and mev's own test
+    /// fixture helper of the same name/shape).
+    fn write_lock_entry(
+        root: &std::path::Path,
+        repo: &str,
+        category: &str,
+        pid: i64,
+        started_at: f64,
+        label: &str,
+    ) {
+        let dir = root.join(".fleet-locks");
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = serde_json::json!({
+            "repo": repo,
+            "pid": pid,
+            "category": category,
+            "started_at": started_at,
+        });
+        std::fs::write(
+            dir.join(format!("{repo}__{label}.json")),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn now_unix_seconds() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    }
+
+    #[test]
+    fn categories_to_dtos_over_a_live_fixture_excludes_stale_and_dead_pid_entries() {
+        let root = crate::testsupport::unique_temp_dir("bastion-concurrency-live-fixture");
+        let now = now_unix_seconds();
+
+        // (a) a genuinely live entry — this process's own pid, fresh started_at.
+        write_lock_entry(
+            &root,
+            "repo-live",
+            "native-build",
+            std::process::id() as i64,
+            now,
+            "p",
+        );
+        // (b) a stale-by-ttl entry — alive pid, started_at well past the 4h TTL.
+        write_lock_entry(
+            &root,
+            "repo-stale-ttl",
+            "native-build",
+            std::process::id() as i64,
+            now - (5.0 * 60.0 * 60.0),
+            "p",
+        );
+        // (c) a dead-pid entry — an implausible pid, fresh started_at.
+        write_lock_entry(
+            &root,
+            "repo-dead-pid",
+            "native-build",
+            999_999_999,
+            now,
+            "p",
+        );
+
+        let view = compute_fleet_slot_view(&root);
+        assert!(!view.degraded);
+
+        let dtos = categories_to_dtos(&view);
+        let native = dtos
+            .iter()
+            .find(|d| d.category == "native-build")
+            .expect("native-build row must be present");
+        assert_eq!(
+            native.active_repos,
+            vec!["repo-live".to_owned()],
+            "only the genuinely live entry counts — stale-ttl and dead-pid entries \
+             must not appear in active_repos"
+        );
+        assert_eq!(native.active_count, 1);
+        assert_eq!(native.cap, 4);
+        assert_eq!(native.slots_available, 3);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_fleet_locks_dir_reports_degraded_true_never_a_hard_failure() {
+        let root = crate::testsupport::unique_temp_dir("bastion-concurrency-missing-locks");
+        // Deliberately no `.fleet-locks` directory created under `root`.
+
+        let view = compute_fleet_slot_view(&root);
+        assert!(
+            view.degraded,
+            "a missing .fleet-locks dir must degrade to advisory, not error"
+        );
+
+        let categories = categories_to_dtos(&view);
+        let dto = repo_to_dto("bastion", Some("native-build"), &categories, view.degraded);
+        assert!(dto.allowed, "degraded read must still report allowed: true");
+        assert!(dto.degraded);
+        assert!(dto.reason.is_some());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

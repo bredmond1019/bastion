@@ -5467,6 +5467,247 @@ heading = "bastion"
             resp.status()
         );
     }
+
+    // ── /api/concurrency — route registration (BA.19.D task 4) ──────────────
+    //
+    // Reuses `make_temp_board_brain_root` / `registry_with_board_fixture` —
+    // both handlers walk the same `find_brain_root` shape, and the fixture's
+    // "bastion" repo (`repo_path = "."`) is enough to exercise `?repo=`.
+
+    #[actix_web::test]
+    async fn get_concurrency_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/concurrency")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/concurrency without a token must return 401 (inherited BearerAuthMiddleware); got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_concurrency_returns_200_with_valid_token() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/concurrency")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/concurrency with a valid token must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(
+            body["degraded"].is_boolean(),
+            "degraded must be present: {body}"
+        );
+        assert!(
+            body["categories"].is_array(),
+            "categories must be an array: {body}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_concurrency_with_repo_returns_repo_object() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/concurrency?repo=bastion")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/concurrency?repo=bastion must return 200; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["repo"]["repo"], "bastion", "repo object: {body}");
+        assert!(
+            body["repo"]["allowed"].is_boolean(),
+            "repo.allowed must be present: {body}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_concurrency_unknown_repo_returns_404_c005() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/concurrency?repo=no-such-repo-slug")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            404,
+            "an unknown ?repo=<slug> on /api/concurrency must be a 404, mirroring board::epic_error_response; got {}",
+            resp.status()
+        );
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(
+            body["code"], "C005",
+            "unknown-repo error must carry the same C005 code /api/board uses: {body}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_concurrency_blank_repo_param_returns_404() {
+        let dir = make_temp_board_brain_root();
+        let registry = registry_with_board_fixture(&dir);
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/concurrency?repo=")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            404,
+            "?repo= present but blank must be an error, not silently ignored; got {}",
+            resp.status()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn get_concurrency_route_registered_in_build_app_with_live_store_too() {
+        // Catches the trap called out in the task: the route must be added
+        // to BOTH `App` builders, or a route test against only `build_app`
+        // could pass against an app whose live-store variant never
+        // registered the route.
+        let (app, _hub) =
+            build_app_with_live_store(FileConfig::default(), LiveStateStore::new(), (false, None));
+        let app = test::init_service(app).await;
+        let req = test::TestRequest::get()
+            .uri("/api/concurrency")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/concurrency must be registered in build_app_with_live_store too (401 without a token, not 404); got {}",
+            resp.status()
+        );
+    }
+}
+
+// ── registry-parity: served caps vs fleet_concurrency_check.py (D64) ────────
+//
+// Kept in a dedicated module (rather than inside `mod tests` above) for the
+// exact reason documented on `classify_orphan_sweep`'s tests: `mod tests`
+// does `use actix_web::{App, test}`, which shadows the built-in `#[test]`
+// attribute — a plain sync `#[test]` there would fail to compile.
+//
+// No bastion check compiles or runs `fleet_concurrency_check.py`, so a green
+// `cargo test` alone is not evidence the caps this endpoint serves match the
+// Python registry's. This test is the declared un-gateable evidence stand-in
+// for that missing gate: it parses `MAX_LANES_BY_CATEGORY` directly out of
+// the Python source and asserts it against
+// `mev::brain::availability::category_capacity`.
+#[cfg(test)]
+mod concurrency_registry_parity_tests {
+    #[test]
+    fn served_caps_match_fleet_concurrency_check_py_max_lanes_by_category() {
+        let start = std::env::current_dir().unwrap();
+        let brain_root = match mev::brain::config::find_brain_root(&start) {
+            Ok(root) => root,
+            Err(_) => {
+                eprintln!(
+                    "skipping served_caps_match_fleet_concurrency_check_py_max_lanes_by_category: \
+                     no brain.toml found walking up from {} (clone without the brain root)",
+                    start.display()
+                );
+                return;
+            }
+        };
+        let script = brain_root
+            .join("base-template")
+            .join("scripts")
+            .join("fleet_concurrency_check.py");
+        let contents = match std::fs::read_to_string(&script) {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!(
+                    "skipping served_caps_match_fleet_concurrency_check_py_max_lanes_by_category: \
+                     {} not reachable",
+                    script.display()
+                );
+                return;
+            }
+        };
+
+        let block_start = match contents.find("MAX_LANES_BY_CATEGORY = {") {
+            Some(idx) => idx,
+            None => {
+                eprintln!(
+                    "skipping served_caps_match_fleet_concurrency_check_py_max_lanes_by_category: \
+                     MAX_LANES_BY_CATEGORY not found in {}",
+                    script.display()
+                );
+                return;
+            }
+        };
+        let block_end = contents[block_start..]
+            .find('}')
+            .map(|i| block_start + i)
+            .expect("MAX_LANES_BY_CATEGORY block must close with '}'");
+        let block = &contents[block_start..block_end];
+
+        let mut found_any = false;
+        for line in block.lines() {
+            let line = line.trim().trim_end_matches(',');
+            if let Some((key, value)) = line.split_once(':') {
+                let key = key.trim().trim_matches('"');
+                if key.is_empty() {
+                    continue;
+                }
+                let value: usize = match value.trim().parse() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                found_any = true;
+                assert_eq!(
+                    mev::brain::availability::category_capacity(key),
+                    value,
+                    "category_capacity({key:?}) must match MAX_LANES_BY_CATEGORY[{key:?}] = {value} \
+                     from {}",
+                    script.display()
+                );
+            }
+        }
+        assert!(
+            found_any,
+            "parsed zero entries out of MAX_LANES_BY_CATEGORY in {}",
+            script.display()
+        );
+    }
 }
 
 // ── approve_and_run_seams_wiring tests (ticket-approve-and-run-seams task 2) ─
