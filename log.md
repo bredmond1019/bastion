@@ -2,11 +2,41 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-19T11:09:29-03:00
+timestamp: 2026-08-19T17:58:02-03:00
 ---
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [run: 2026-08-19]
+
+### BA.15.3 — the licensing two-thirds landed elsewhere; block re-scoped, not closed
+
+- **What:** BA.15.3 ("Licensing + front-door README") specifies three deliverables: a root `LICENSE`
+  (MIT OR Apache-2.0 dual), per-crate `license` fields, and a top-level README framing the system with
+  install instructions and a `bastion init` quickstart. **The first two are done** — landed 2026-08-19
+  under HQ **D75**, fleet-wide rather than in this block: `LICENSE-MIT` + `LICENSE-APACHE` in the repo
+  root, `license = "MIT OR Apache-2.0"` in `Cargo.toml`, a `## License` README section, and a
+  `deny.toml` pinning the dependency-license policy. `cargo deny check licenses` passes here and on
+  all six Rust repos in the fleet; no GPL/AGPL/LGPL-only dependency exists anywhere. The block record
+  in `planning/state.json` now carries a `description` and a `note` saying exactly this, plus a new
+  `depends_on` edge on **BA.15.8**. **Status stays `deferred`** — the remaining third cannot be
+  written because the `bastion init` quickstart it must document does not exist until BA.15.8 ships.
+- **Why:** Closing the block would have claimed a README that does not exist; leaving it silent would
+  have sent the next session to redo licensing that is already committed in every repo. The honest
+  record is a partially-satisfied block with the reason its remainder is stuck, made visible on the
+  boards as a real dependency edge instead of prose nobody reads.
+- **Refs:** [HQ D75](../../docs/decisions/D75-mit-or-apache-2-0-on-the-public-repos.md) ·
+  [`master-plan.md` Block BA.15.3](planning/master-plan.md) ·
+  HQ `planning/cli-surface-to-skills/assessment.md` (the assessment that surfaced the unlicensed repos)
+- **Watch out:** the licensing commit is **local and unpushed** in every repo. HQ's
+  `HQ.chore.public-repo-readmes-human-facing` is gated on the operator session
+  `operator-readme-voice-pass`, whose exit requires a dated approval line per repo *before any is
+  pushed to its public remote*. That same HQ block rewrites all 9 public READMEs — **including
+  bastion's** — so it overlaps BA.15.3's remaining third. Settle which block owns bastion's front door
+  before starting either, or two sessions will write the same file.
 
 ---
 
