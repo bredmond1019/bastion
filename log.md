@@ -12,6 +12,43 @@ timestamp: 2026-08-19T11:09:29-03:00
 
 ## [run: 2026-08-19]
 
+### BA.18.G — ask.rs marker contract v0.2.0 cutover (BAILED after task 4)
+
+Implemented tasks 1–3 of the nonce'd `.done` marker cutover: task 1 gives `ask.rs` a per-invocation
+nonce and derives the v0.2.0 marker path `{out}.{nonce}.done` via `done_path`/`trigger_text`, keeping
+`legacy_done_path` for the v0.1.0 bare form; task 2 makes the wait loop accept a marker only when its
+content equals the nonce AND `--out`'s mtime postdates the send (`marker_satisfies`/`out_is_fresh`/
+`turn_is_complete`); task 3 stops deleting the marker on success and adds an age-gated GC sweep
+(`gc_age_threshold_secs`/`is_reapable`/`sweep_markers`) that runs once at the start of `ask()`, before
+the nonce is generated, so a turn can never reap its own evidence. Task 4 (dual-read fallback to the
+legacy bare marker, with a one-time deprecation warning) implemented cleanly but its test run failed
+`costs_corpus_no_database_url` (expected 503, got 200) — a test with no relation to task 4's diff
+(`src/sessions/ask.rs` only). Triaged by re-running the isolated test and the full `cargo nextest run
+--lib --bins` suite (2388 passed, 0 failed) both on the task-4 HEAD (`dd8ced1`) and on the pre-task-4
+base commit (`90e2143`) via a sibling worktree — clean pass in both states, isolated and full-suite.
+Concluded this is environment-dependent test flakiness (likely a `DATABASE_URL`/env leak into the
+harness's test process), not a code defect in task 4, and bailed the run rather than force a merge
+past an unreproducible failure. Tasks 5 (docs re-pin) and 6 (review/PR) did not run.
+
+Next: resume `/sdlc-flow BA.18.G` from task 4 — either re-run task 4's test in a clean env to confirm
+the flake theory, or isolate `costs_corpus_no_database_url`'s env dependency so it can't leak across
+tests in CI/harness runs.
+
+```
+dd8ced1 feat: implement BA.18.G-task4
+90e2143 feat: never delete ask() done-marker, add age-based GC sweep (BA.18.G task 3)
+cd36760 feat: implement BA.18.G-task2
+e12d1ff feat: nonce'd done-marker path + trigger text (BA.18.G task 1)
+a075eda chore(harness): pull base-template 7d8f0b595fbc — D69 initiative-wide consistency pass + state.json routing rule
+6250b87 fix(serve): thread LiveStateStore through the boot orphan sweep
+9353817 chore(harness): carryover routing — operator edges over carryover, D72 kind vocabulary
+9d9b9f7 chore(harness): pull base-template 11b4a0a — README layout and run artifacts corrected
+```
+
+---
+
+## [run: 2026-08-19]
+
 ### Fixed `reconcile_orphans` call sites after engine-serve signature change
 
 - **What:** Updated `src/serve/mod.rs`'s boot orphan sweep and its four unit tests to pass the new
