@@ -4,12 +4,45 @@ title: bastion Development Log
 description: Chronological log of work completed for bastion.
 timestamp: 2026-08-17T22:30:00-03:00
 ---
-
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
 
 ---
+
+## [run: 2026-08-18]
+
+### BA.19.D closed — GET /api/concurrency, PASS
+
+Implemented the fleet concurrency-slot endpoint across six tasks. Task 1 added additive read-only
+accessors (`known_categories()`/`live_repos()`) plus a `pub category_capacity()` on mev's
+`FleetSlotView` in a separate mev-repo commit, so the fleet-lock registry `MV.13.C` already computes
+is reachable from bastion without a second source of truth. Task 2 added
+`ConcurrencyDto`/`ConcurrencyCategoryDto`/`ConcurrencyRepoDto` typeshare-annotated wire types to
+`dto.rs`. Task 3 added the `GET /api/concurrency` handler as a pure pass-through over
+`mev::brain::availability::compute_fleet_slot_view`/`heavy_category`, registered at both `/api`
+route-registration sites, reusing `board::epic_error_response` for blank/unknown `?repo=` rather
+than hand-rolling a new error path. Task 4 added live-registry fixture tests (live/stale-ttl/dead-pid),
+degraded-path assertions, route-level auth/200/404 tests, and a registry-parity test asserting served
+caps match `MAX_LANES_BY_CATEGORY` parsed straight from `base-template/scripts/fleet_concurrency_check.py`.
+Task 5 documented the route in `docs/serve-api.md` (Section 29, v0.36) and regenerated `types/serve.ts`.
+Task 6 confirmed the full validation suite already passed clean via `NEXTEST_POLICY_OVERRIDE=1 cargo
+test`. End review verdict: PASS. Block `BA.19.D` flipped closed in `state.json` (mev-validated, no
+net-new schema errors); `mev emit-state --write` regenerated all derived surfaces (HQ board, unified
+priority board, epic board, lane segments/frontier/availability) cleanly, 0 errors. Next: pick up the
+next `now`/`next` item in `planning/status.md`.
+
+```
+a7f2eca docs: update docs for BA.19.D
+df50717 feat: implement BA.19.D-task5
+bacc22a feat: implement BA.19.D-task4
+3253614 feat: implement BA.19.D-task3
+8eb063e feat: implement BA.19.D-task2
+91ca850 chore(harness): pull base-template 61a5488 — README Phase 0 pre-plan + refreshed authoring sections
+07e6393 chore(harness): pull base-template eb60845 — pre-plan pipeline + authoring command revisions
+4587b8a BA.19.C — /lanes endpoint, fleet-scoped (#40)
+```
+
 
 ## [run: 2026-08-18]
 
