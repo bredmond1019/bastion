@@ -7,7 +7,7 @@
 // Decision D5: synchronous blocking — no tokio/async.
 // Decision D6: malformed tmux output is skipped with a warning, not fatal.
 //
-// Contract: brain doc `docs/integrations/claude-code-llm-provider.md` §2 (v0.1.0).
+// Contract: brain doc `docs/integrations/claude-code-llm-provider.md` §2 (v0.2.0).
 
 use crate::sessions::claude_state::{TrustStatus, trust_status};
 use crate::sessions::model::{SessionState, classify_state, parse_sessions};
@@ -15,6 +15,7 @@ use crate::sessions::tmux;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
+use uuid::Uuid;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -93,12 +94,40 @@ pub enum AskError {
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-/// Derive the done-marker path from `out`: append `.done` to the full filename.
+/// Generate a per-invocation nonce for the done-marker contract (v0.2.0).
+///
+/// Uses the simple (no-hyphen) hex form of a v4 UUID so the value is
+/// filename-safe by construction and does not need escaping when embedded in
+/// a path or a trigger string.
+pub fn generate_nonce() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
+/// Derive the nonce'd done-marker path from `out`: append `.{nonce}.done` to
+/// the full filename, preserving the parent directory exactly.
+///
+/// Examples:
+/// - `/tmp/answer.json`, `"abc"`  → `/tmp/answer.json.abc.done`
+/// - `/tmp/answer`, `"abc"`       → `/tmp/answer.abc.done`
+pub fn done_path(out: &Path, nonce: &str) -> PathBuf {
+    let mut name = out.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(nonce);
+    name.push(".done");
+    out.with_file_name(name)
+}
+
+/// Derive the legacy (v0.1.0) bare done-marker path from `out`: append
+/// `.done` to the full filename, with no nonce.
+///
+/// This is the dual-read-window form — task 4 accepts it alongside the
+/// nonce'd `done_path` above for one release. Kept under this name so the
+/// eventual removal at window close is a one-symbol grep.
 ///
 /// Examples:
 /// - `/tmp/answer.json`  → `/tmp/answer.json.done`
 /// - `/tmp/answer`       → `/tmp/answer.done`
-pub fn done_path(out: &Path) -> PathBuf {
+pub fn legacy_done_path(out: &Path) -> PathBuf {
     let mut name = out.file_name().unwrap_or_default().to_os_string();
     name.push(".done");
     out.with_file_name(name)
@@ -106,18 +135,21 @@ pub fn done_path(out: &Path) -> PathBuf {
 
 /// Build the fixed trigger text sent to Claude.
 ///
-/// Contract (v0.1.0): the exact wording from
+/// Contract (v0.2.0): the exact wording from
 /// `docs/integrations/claude-code-llm-provider.md` §2 — flag names and marker
-/// filename must match verbatim.
-pub fn trigger_text(prompt_file: &Path, out: &Path) -> String {
-    let done = done_path(out);
+/// filename must match verbatim. The marker must be created containing
+/// exactly the nonce text (not empty) — this is what lets the wait loop tell
+/// this invocation's evidence apart from a stale marker left by a prior run.
+pub fn trigger_text(prompt_file: &Path, out: &Path, nonce: &str) -> String {
+    let done = done_path(out, nonce);
     format!(
         "Read {} and follow its instructions exactly. \
          Write your complete answer to {}. \
-         When finished, create an empty file {}",
+         When finished, create a file {} containing exactly the text {}",
         prompt_file.display(),
         out.display(),
         done.display(),
+        nonce,
     )
 }
 
@@ -209,14 +241,15 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
     ensure_session_with_claude(&args.session, dir_str.as_deref(), &args.launch_cmd)?;
 
     // ── 3. Send the trigger ──────────────────────────────────────────────────
-    let trigger = trigger_text(&args.prompt_file, &args.out);
+    let nonce = generate_nonce();
+    let trigger = trigger_text(&args.prompt_file, &args.out, &nonce);
     tmux::send_keys(&args.session, &trigger).map_err(|e| AskError::Tmux {
         op: "send-keys (trigger)".to_string(),
         source: e.into(),
     })?;
 
     // ── 4. Wait for completion ───────────────────────────────────────────────
-    let done = done_path(&args.out);
+    let done = done_path(&args.out, &nonce);
     let max_attempts = poll_plan(args.timeout_secs, POLL_INTERVAL_MS);
 
     for _ in 0..max_attempts {
@@ -388,34 +421,82 @@ mod tests {
     use anyhow::anyhow;
     use std::path::PathBuf;
 
+    // ── generate_nonce ────────────────────────────────────────────────────────
+
+    #[test]
+    fn generate_nonce_is_non_empty_and_filename_safe() {
+        let nonce = generate_nonce();
+        assert!(!nonce.is_empty(), "nonce must not be empty");
+        assert!(
+            nonce.chars().all(|c| c.is_ascii_alphanumeric()),
+            "nonce must be filename-safe (alphanumeric only): {nonce}"
+        );
+    }
+
+    #[test]
+    fn generate_nonce_two_calls_differ() {
+        let a = generate_nonce();
+        let b = generate_nonce();
+        assert_ne!(a, b, "two generate_nonce() calls must not collide");
+    }
+
     // ── done_path ─────────────────────────────────────────────────────────────
 
     #[test]
     fn done_path_with_extension() {
         let out = PathBuf::from("/tmp/answer.json");
-        let done = done_path(&out);
-        assert_eq!(done, PathBuf::from("/tmp/answer.json.done"));
+        let done = done_path(&out, "abc");
+        assert_eq!(done, PathBuf::from("/tmp/answer.json.abc.done"));
     }
 
     #[test]
     fn done_path_without_extension() {
         let out = PathBuf::from("/tmp/answer");
-        let done = done_path(&out);
-        assert_eq!(done, PathBuf::from("/tmp/answer.done"));
+        let done = done_path(&out, "abc");
+        assert_eq!(done, PathBuf::from("/tmp/answer.abc.done"));
     }
 
     #[test]
     fn done_path_preserves_parent_directory() {
         let out = PathBuf::from("/home/user/project/out.txt");
-        let done = done_path(&out);
-        assert_eq!(done, PathBuf::from("/home/user/project/out.txt.done"));
+        let done = done_path(&out, "nonce123");
+        assert_eq!(
+            done,
+            PathBuf::from("/home/user/project/out.txt.nonce123.done")
+        );
     }
 
     #[test]
     fn done_path_simple_filename() {
         let out = PathBuf::from("/var/tmp/result.md");
-        let done = done_path(&out);
-        assert_eq!(done, PathBuf::from("/var/tmp/result.md.done"));
+        let done = done_path(&out, "xyz");
+        assert_eq!(done, PathBuf::from("/var/tmp/result.md.xyz.done"));
+    }
+
+    #[test]
+    fn done_path_places_nonce_between_filename_and_done() {
+        let out = PathBuf::from("/tmp/answer.json");
+        let done = done_path(&out, "abc");
+        assert_eq!(
+            done.file_name().unwrap().to_str().unwrap(),
+            "answer.json.abc.done"
+        );
+    }
+
+    // ── legacy_done_path ──────────────────────────────────────────────────────
+
+    #[test]
+    fn legacy_done_path_is_bare_v0_1_0_form() {
+        let out = PathBuf::from("/tmp/answer.json");
+        let done = legacy_done_path(&out);
+        assert_eq!(done, PathBuf::from("/tmp/answer.json.done"));
+    }
+
+    #[test]
+    fn legacy_done_path_preserves_parent_directory() {
+        let out = PathBuf::from("/home/user/project/out.txt");
+        let done = legacy_done_path(&out);
+        assert_eq!(done, PathBuf::from("/home/user/project/out.txt.done"));
     }
 
     // ── trigger_text ──────────────────────────────────────────────────────────
@@ -424,7 +505,7 @@ mod tests {
     fn trigger_text_contains_prompt_file_path() {
         let prompt = PathBuf::from("/tmp/prompt.txt");
         let out = PathBuf::from("/tmp/answer.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "abc");
         assert!(
             text.contains("/tmp/prompt.txt"),
             "trigger should contain prompt path: {text}"
@@ -435,7 +516,7 @@ mod tests {
     fn trigger_text_contains_out_path() {
         let prompt = PathBuf::from("/tmp/prompt.txt");
         let out = PathBuf::from("/tmp/answer.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "abc");
         assert!(
             text.contains("/tmp/answer.json"),
             "trigger should contain out path: {text}"
@@ -443,13 +524,28 @@ mod tests {
     }
 
     #[test]
-    fn trigger_text_contains_done_marker_path() {
+    fn trigger_text_contains_nonced_done_marker_path() {
         let prompt = PathBuf::from("/tmp/prompt.txt");
         let out = PathBuf::from("/tmp/answer.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "abc123");
         assert!(
-            text.contains("/tmp/answer.json.done"),
-            "trigger should contain done marker path: {text}"
+            text.contains("/tmp/answer.json.abc123.done"),
+            "trigger should contain nonce'd done marker path: {text}"
+        );
+    }
+
+    #[test]
+    fn trigger_text_instructs_marker_content_equals_nonce() {
+        let prompt = PathBuf::from("/tmp/prompt.txt");
+        let out = PathBuf::from("/tmp/answer.json");
+        let text = trigger_text(&prompt, &out, "thenonce");
+        assert!(
+            text.contains("thenonce"),
+            "trigger should mention the nonce as required marker content: {text}"
+        );
+        assert!(
+            text.contains("containing exactly the text"),
+            "trigger should instruct the marker content requirement: {text}"
         );
     }
 
@@ -457,7 +553,7 @@ mod tests {
     fn trigger_text_contract_wording() {
         let prompt = PathBuf::from("/tmp/p.txt");
         let out = PathBuf::from("/tmp/o.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "n1");
         assert!(
             text.contains("Read "),
             "trigger must start with 'Read': {text}"
@@ -471,8 +567,8 @@ mod tests {
             "trigger must contain 'Write your complete answer to': {text}"
         );
         assert!(
-            text.contains("create an empty file"),
-            "trigger must contain 'create an empty file': {text}"
+            text.contains("containing exactly the text"),
+            "trigger must instruct the marker to contain the nonce: {text}"
         );
     }
 
@@ -480,7 +576,7 @@ mod tests {
     fn trigger_text_absolute_paths_present() {
         let prompt = PathBuf::from("/absolute/prompt.txt");
         let out = PathBuf::from("/absolute/out.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "n2");
         // Both the prompt and out paths must appear as absolute paths.
         assert!(
             text.contains("/absolute/prompt.txt"),
@@ -616,8 +712,8 @@ mod tests {
         let out = PathBuf::from("/tmp/answer.json");
 
         // These must not panic or return a config error.
-        let _ = done_path(&out);
-        let _ = trigger_text(&prompt, &out);
+        let _ = done_path(&out, "nonce");
+        let _ = trigger_text(&prompt, &out, "nonce");
         let _ = poll_plan(180, 500);
         let _ = has_session_args("test-session");
         // No assertion needed beyond "this line is reached".
