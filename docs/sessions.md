@@ -238,7 +238,7 @@ bastion capture work
 bastion capture work --lines 50
 ```
 
-### `bastion ask` — one Claude Code turn (brain contract v0.1.0)
+### `bastion ask` — one Claude Code turn (brain contract v0.2.0)
 
 Run a single non-interactive Claude Code turn against an interactive tmux session. This is the
 stable command the Python orchestrator's `CLAUDE_CODE_SESSION` LLM provider shells out to — it
@@ -260,25 +260,44 @@ bastion ask \
 |---|---|---|---|
 | `--session` | yes | — | tmux session name; created if absent |
 | `--prompt-file` | yes | — | Path to a file containing the full prompt text |
-| `--out` | yes | — | Path Claude should write the answer to; bastion waits for `<out>.done` |
+| `--out` | yes | — | Path Claude should write the answer to; bastion waits for `<out>.{nonce}.done` |
 | `--dir` | no | — | Working directory if the session must be created; must be Claude-trusted |
-| `--timeout` | no | `180` | Seconds to wait for `<out>.done` to appear |
+| `--timeout` | no | `180` | Seconds to wait for `<out>.{nonce}.done` to appear |
 | `--launch-cmd` | no | `claude --permission-mode bypassPermissions` | Command to start Claude if the session is cold |
 
 **Protocol:**
 
-1. If the named session does not exist, bastion creates it (using `--dir` if provided) and
+1. Before doing anything else, bastion sweeps `--out`'s parent directory for stale `*.done`
+   markers past the age-based GC threshold (see below) — run first, so this invocation's own
+   marker cannot possibly exist yet and can never be reaped by its own sweep.
+2. If the named session does not exist, bastion creates it (using `--dir` if provided) and
    launches Claude Code with `--launch-cmd`.
-2. If the session exists but Claude is not the foreground process, bastion launches Claude Code.
-3. bastion sends a fixed trigger keystroke that instructs Claude Code to read `--prompt-file`,
-   write its answer to `--out`, then write `<out>.done` to signal completion.
-4. bastion polls until `<out>.done` appears (or `--timeout` expires), then removes the marker
-   and exits.
+3. If the session exists but Claude is not the foreground process, bastion launches Claude Code.
+4. bastion generates a per-invocation nonce, records the send time immediately before sending,
+   then sends a trigger keystroke that instructs Claude Code to read `--prompt-file`, write its
+   answer to `--out`, then write `<out>.{nonce}.done` **containing exactly the nonce** to signal
+   completion.
+5. bastion polls until the marker exists AND its content equals the nonce AND `--out`'s mtime
+   postdates the send time (or `--timeout` expires). A marker that exists but doesn't yet satisfy
+   all three conditions is neither success nor error — bastion keeps polling. On success, bastion
+   never removes the marker; a GC sweep reaps markers past `max(--timeout, 1h)` on a later
+   invocation instead (contract rule 3).
 
 **Exit semantics (contract):**
 
-- Exits `0` only when `<out>.done` was observed and the turn completed.
+- Exits `0` only when the nonce'd marker (or, during the dual-read window, the legacy bare
+  marker) was observed satisfying the wait and the turn completed.
 - Exits non-zero with a diagnostic message on stderr on timeout or any error.
+
+**Dual-read window:**
+
+For one release, `bastion ask` also accepts the v0.1.0 bare `<out>.done` marker: if it exists and
+`--out`'s mtime postdates the send time, the wait is satisfied regardless of the marker's content
+(v0.1.0 markers were specified as empty files, so the nonce-content check does not apply to this
+form). Accepting a legacy marker emits one deprecation warning per invocation on stderr, naming
+the bare path and the v0.2.0 nonce'd form. Neither marker form is ever deleted by `ask()` —
+dual-read acceptance ends when the orchestrator's `BastionSessionBackend` pin advances to
+v0.2.0, at which point legacy-marker support is removed as its own follow-up.
 
 **Trust pre-flight:**
 
