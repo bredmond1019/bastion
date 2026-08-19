@@ -5081,6 +5081,164 @@ heading = "bastion"
         assert_eq!(resp.status(), 200);
     }
 
+    // ── Approval-ledger read wiring (task 2, BA.ticket.approval-ledger-read-wiring) ─
+    //
+    // A `200 OK` alone does not prove reader and writer share one `Arc` — a
+    // second `FileApprovalLedger` on a different path also answers `200`
+    // with zero rows, and neither side errors (see this ticket's Notes).
+    // These tests prove the shared-instance property directly: write a row
+    // through the ledger `Arc` the way `ApproveAndRunSeams` does, then read
+    // it back through the HTTP route, using the exact registration shape
+    // production's `if let Some(engine_data)` branch uses (task 1).
+
+    /// Variant of [`engine_test_service`] that optionally registers a
+    /// `web::Data<Arc<dyn ApprovalLedger>>` app_data, mirroring production's
+    /// `if let Some(engine_data)` branch (task 1) exactly: the ledger
+    /// app_data is only ever registered alongside the engine mount.
+    /// `ledger: None` reproduces the "engine mounted, no ledger registered"
+    /// case that must still 503.
+    async fn engine_test_service_with_ledger(
+        api_key: &str,
+        ledger: Option<Arc<dyn engine_core::operator::ledger::ApprovalLedger>>,
+    ) -> impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    > {
+        let state = EngineAppState {
+            dispatcher: Arc::new(build_engine_dispatcher()),
+            live: LiveStateStore::new(),
+            durable: spawn_durable_writer(None),
+            runs: RunRegistry::new(),
+            api_key: api_key.to_string(),
+        };
+        let engine_data = web::Data::new(state);
+
+        let mut app = App::new()
+            .service(web::resource("/health").route(web::get().to(health)))
+            .app_data(engine_data);
+
+        if let Some(ledger) = ledger {
+            app = app.app_data(web::Data::new(ledger));
+        }
+
+        let app = app.service(
+            web::scope("")
+                .wrap(ApiKeyAuthMiddleware::new(api_key))
+                .configure(engine_serve::http::configure),
+        );
+
+        test::init_service(app).await
+    }
+
+    const LEDGER_TEST_KEY: &str = "ledger-test-key-xyz";
+
+    fn ledger_test_row() -> engine_core::operator::ledger::ApprovalLedgerRow {
+        engine_core::operator::ledger::ApprovalLedgerRow {
+            item_id: "item-round-trip".to_string(),
+            digest: "digest-round-trip".to_string(),
+            decision: engine_core::operator::ledger::LedgerDecision::Approved,
+            who: "operator-round-trip".to_string(),
+            delivered_at: chrono::Utc::now(),
+            decided_at: chrono::Utc::now(),
+            rendered_diff: "rendered round-trip diff".to_string(),
+        }
+    }
+
+    /// The one criterion that actually tests this ticket: a row written
+    /// through the ledger `Arc` (the writer's side, mirroring
+    /// `ApproveAndRunSeams`) is read back through `GET /approvals/ledger`
+    /// (the reader's side) — proving both sides share one instance, not
+    /// two independently-resolving ledgers that would both silently
+    /// answer `200` with zero rows.
+    #[actix_web::test]
+    async fn ledger_round_trip_proves_shared_instance() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ledger: Arc<dyn engine_core::operator::ledger::ApprovalLedger> = Arc::new(
+            engine_core::operator::ledger::FileApprovalLedger::new(dir.path().join("ledger.jsonl")),
+        );
+
+        // Writer side: append directly through the same `Arc` that will be
+        // registered as app_data below, exactly as `ApproveAndRunSeams`
+        // holds it in production.
+        ledger.append(ledger_test_row());
+
+        let service = engine_test_service_with_ledger(LEDGER_TEST_KEY, Some(ledger)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/approvals/ledger")
+            .insert_header(("X-API-Key", LEDGER_TEST_KEY))
+            .to_request();
+        let resp = test::call_service(&service, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let item_ids: Vec<&str> = body["rows"]
+            .as_array()
+            .expect("rows array")
+            .iter()
+            .map(|r| r["item_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            item_ids,
+            vec!["item-round-trip"],
+            "the row appended through the writer's Arc must come back through \
+             the reader's route — same instance, not a second empty ledger"
+        );
+    }
+
+    /// The negative that makes the positive above meaningful: with the
+    /// engine mounted but no ledger app_data registered, the route must
+    /// still 503 (engine-serve's `Option<LedgerData>` extractor stays
+    /// `None`). Without this case, the positive test cannot distinguish
+    /// "wired" from "happened to work".
+    #[actix_web::test]
+    async fn ledger_route_503_when_no_ledger_registered() {
+        let service = engine_test_service_with_ledger(LEDGER_TEST_KEY, None).await;
+
+        let req = test::TestRequest::get()
+            .uri("/approvals/ledger")
+            .insert_header(("X-API-Key", LEDGER_TEST_KEY))
+            .to_request();
+        let resp = test::call_service(&service, req).await;
+        assert_eq!(resp.status(), 503);
+
+        let req = test::TestRequest::get()
+            .uri("/approvals/ledger/stats")
+            .insert_header(("X-API-Key", LEDGER_TEST_KEY))
+            .to_request();
+        let resp = test::call_service(&service, req).await;
+        assert_eq!(resp.status(), 503);
+    }
+
+    /// Auth still precedes the ledger seam: missing or wrong `X-API-Key`
+    /// on either ledger route is 401, even with a ledger registered.
+    #[actix_web::test]
+    async fn ledger_routes_reject_missing_or_wrong_api_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ledger: Arc<dyn engine_core::operator::ledger::ApprovalLedger> = Arc::new(
+            engine_core::operator::ledger::FileApprovalLedger::new(dir.path().join("ledger.jsonl")),
+        );
+        let service = engine_test_service_with_ledger(LEDGER_TEST_KEY, Some(ledger)).await;
+
+        for path in ["/approvals/ledger", "/approvals/ledger/stats"] {
+            let no_header = test::TestRequest::get().uri(path).to_request();
+            let resp = test::call_service(&service, no_header).await;
+            assert_eq!(resp.status(), 401, "{path} without X-API-Key must be 401");
+
+            let bogus = test::TestRequest::get()
+                .uri(path)
+                .insert_header(("X-API-Key", "totally-bogus-value"))
+                .to_request();
+            let resp = test::call_service(&service, bogus).await;
+            assert_eq!(
+                resp.status(),
+                401,
+                "{path} with a bogus X-API-Key must be 401"
+            );
+        }
+    }
+
     /// Existing `/api/*` bearer routes are unaffected by the engine-mount
     /// change — same `build_app` harness used throughout this module, which
     /// never mounts the engine, still enforces bearer auth exactly as
