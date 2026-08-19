@@ -12,6 +12,38 @@ timestamp: 2026-08-19T11:09:29-03:00
 
 ## [run: 2026-08-19]
 
+### BA.18.G — ask.rs marker contract v0.2.0 cutover, tasks 5–6 (PASS, spec closed)
+
+Resumed BA.18.G after the prior bail and finished it. Task 5 found `docs/sessions.md` already
+correctly re-pinned to contract v0.2.0 in commit `963c348` (protocol steps renumbered 1–5 to slot
+the GC sweep ahead of session creation, the dual-read window kept as its own subsection) — a first
+test-stage run reported "no data" with no specific assertion failure, retried once, and both the
+targeted greps and the full `cargo nextest run --lib --bins` suite (2388/2388) passed clean, so no
+fix was needed. Task 6 ran the spec's full validation suite with `NEXTEST_POLICY_OVERRIDE=1`
+(fmt, clippy, `cargo test` 2345 passed, release build, contract-corpus drift — all green) and
+manually smoke-tested `ask()` end-to-end against a real tmux session with a live `claude
+--permission-mode bypassPermissions` process, using the freshly built `target/release/bastion`
+source binary rather than the stale installed one: run 1 confirmed the marker is never deleted on
+success, run 2 (same `--out` path, ~20s delayed reply) proved the stale nonce1 marker from run 1
+did not satisfy run 2's wait loop — closing the exact stale-marker race the block exists to fix.
+Evidence recorded in `planning/blocks/BA.18.G.json` / rendered `planning/BA.18.G/tasks.md` Notes.
+End review verdict: PASS, no findings. Block `BA.18.G` flipped closed in `state.json`. Next: pick
+up the next queued item per `planning/status.md`'s `next` list.
+
+```
+963c348 docs: re-pin sessions.md to ask contract v0.2.0
+6c45e43 chore(license): dual-license MIT OR Apache-2.0 (HQ D75)
+afacf22 chore: wrap up BA.18.G
+dd8ced1 feat: implement BA.18.G-task4
+90e2143 feat: never delete ask() done-marker, add age-based GC sweep (BA.18.G task 3)
+cd36760 feat: implement BA.18.G-task2
+e12d1ff feat: nonce'd done-marker path + trigger text (BA.18.G task 1)
+```
+
+---
+
+## [run: 2026-08-19]
+
 ### BA.18.G — ask.rs marker contract v0.2.0 cutover (BAILED after task 4)
 
 Implemented tasks 1–3 of the nonce'd `.done` marker cutover: task 1 gives `ask.rs` a per-invocation
