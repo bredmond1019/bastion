@@ -14,7 +14,7 @@ use crate::sessions::model::{SessionState, classify_state, parse_sessions};
 use crate::sessions::tmux;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -153,6 +153,41 @@ pub fn trigger_text(prompt_file: &Path, out: &Path, nonce: &str) -> String {
     )
 }
 
+/// Contract rule 2: does `marker_content` satisfy the nonce check?
+///
+/// True only when the content, trimmed of surrounding whitespace, equals
+/// `nonce` exactly. Empty, whitespace-only, mismatched, and truncated
+/// content are all false — a marker whose bytes do not prove *this*
+/// invocation wrote it must never be treated as evidence the turn completed.
+pub fn marker_satisfies(marker_content: &str, nonce: &str) -> bool {
+    marker_content.trim() == nonce
+}
+
+/// Contract rule 4: does `out`'s mtime postdate the send?
+///
+/// Strictly greater-than — an mtime equal to `send_time` is NOT fresh. A
+/// filesystem with coarse mtime granularity (e.g. 1s resolution on some
+/// platforms/filesystems) could otherwise let a stale `--out` written in the
+/// same tick as the send pass the check, which is the exact defect this
+/// rule exists to close.
+pub fn out_is_fresh(out_mtime: SystemTime, send_time: SystemTime) -> bool {
+    out_mtime > send_time
+}
+
+/// Contract rules 2 and 4 composed: is this turn complete?
+///
+/// True only when the marker's content proves it belongs to this invocation
+/// (rule 2) AND `--out`'s mtime postdates the send (rule 4). Used so the
+/// wait loop's condition is one tested pure call rather than inline logic.
+pub fn turn_is_complete(
+    marker_content: &str,
+    nonce: &str,
+    out_mtime: SystemTime,
+    send_time: SystemTime,
+) -> bool {
+    marker_satisfies(marker_content, nonce) && out_is_fresh(out_mtime, send_time)
+}
+
 /// Pure computation of the maximum number of poll attempts.
 ///
 /// `timeout_secs * 1000 / interval_ms`, rounding up so that a fractional
@@ -243,6 +278,10 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
     // ── 3. Send the trigger ──────────────────────────────────────────────────
     let nonce = generate_nonce();
     let trigger = trigger_text(&args.prompt_file, &args.out, &nonce);
+    // Recorded immediately BEFORE send_keys, not after: a send that blocks
+    // would otherwise stamp a time later than a fast reply's write and
+    // reject a legitimate answer (contract rule 4).
+    let send_time = SystemTime::now();
     tmux::send_keys(&args.session, &trigger).map_err(|e| AskError::Tmux {
         op: "send-keys (trigger)".to_string(),
         source: e.into(),
@@ -253,8 +292,13 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
     let max_attempts = poll_plan(args.timeout_secs, POLL_INTERVAL_MS);
 
     for _ in 0..max_attempts {
-        if done.exists() {
-            // Marker found — remove it and return success.
+        // A marker that exists but fails the check is not an error and not
+        // a success — keep polling until the timeout.
+        if let Ok(marker_content) = std::fs::read_to_string(&done)
+            && let Ok(out_mtime) = std::fs::metadata(&args.out).and_then(|m| m.modified())
+            && turn_is_complete(&marker_content, &nonce, out_mtime, send_time)
+        {
+            // Marker satisfied — remove it and return success.
             let _ = std::fs::remove_file(&done);
             return Ok(());
         }
@@ -586,6 +630,92 @@ mod tests {
             text.contains("/absolute/out.json"),
             "absolute out path missing: {text}"
         );
+    }
+
+    // ── marker_satisfies ──────────────────────────────────────────────────────
+
+    #[test]
+    fn marker_satisfies_exact_match() {
+        assert!(marker_satisfies("abc123", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_empty_content_false() {
+        assert!(!marker_satisfies("", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_whitespace_only_false() {
+        assert!(!marker_satisfies("   \n\t  ", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_wrong_nonce_false() {
+        assert!(!marker_satisfies("xyz789", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_trims_surrounding_whitespace() {
+        assert!(marker_satisfies("  abc123\n", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_prefix_of_content_false() {
+        // Content that merely starts with the nonce (e.g. truncated write on
+        // top of a longer stale value) must not satisfy — the match is exact.
+        assert!(!marker_satisfies("abc123extra", "abc123"));
+    }
+
+    // ── out_is_fresh ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn out_is_fresh_true_when_strictly_after() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time + Duration::from_secs(1);
+        assert!(out_is_fresh(out_mtime, send_time));
+    }
+
+    #[test]
+    fn out_is_fresh_false_when_equal() {
+        let t = SystemTime::now();
+        assert!(!out_is_fresh(t, t));
+    }
+
+    #[test]
+    fn out_is_fresh_false_when_before() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time - Duration::from_secs(1);
+        assert!(!out_is_fresh(out_mtime, send_time));
+    }
+
+    // ── turn_is_complete ──────────────────────────────────────────────────────
+
+    #[test]
+    fn turn_is_complete_true_when_both_hold() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time + Duration::from_secs(1);
+        assert!(turn_is_complete("abc123", "abc123", out_mtime, send_time));
+    }
+
+    #[test]
+    fn turn_is_complete_false_when_marker_mismatched() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time + Duration::from_secs(1);
+        assert!(!turn_is_complete("wrong", "abc123", out_mtime, send_time));
+    }
+
+    #[test]
+    fn turn_is_complete_false_when_out_stale() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time - Duration::from_secs(1);
+        assert!(!turn_is_complete("abc123", "abc123", out_mtime, send_time));
+    }
+
+    #[test]
+    fn turn_is_complete_false_when_both_fail() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time - Duration::from_secs(1);
+        assert!(!turn_is_complete("wrong", "abc123", out_mtime, send_time));
     }
 
     // ── poll_plan ─────────────────────────────────────────────────────────────
