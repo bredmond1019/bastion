@@ -1041,6 +1041,13 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // /lanes — GET only (one aggregate per lane segment, pass-through
             // over mev::lanes_brain)
             .service(web::resource("/lanes").route(web::get().to(handlers::lanes::get_lanes)))
+            // ── Concurrency-slot route (BA.19.D) ──────────────────────────────
+            // /concurrency — GET only (fleet heavy-lane registry, pass-through
+            // over mev::brain::availability::compute_fleet_slot_view)
+            .service(
+                web::resource("/concurrency")
+                    .route(web::get().to(handlers::concurrency::get_concurrency)),
+            )
             // ── Cost read route (BA.11.J) ────────────────────────────────────
             // /costs — GET only (exact-count spend + budget-gate state)
             .service(web::resource("/costs").route(web::get().to(handlers::costs::get_costs)))
@@ -1431,6 +1438,11 @@ mod tests {
             // /lanes — GET only (one aggregate per lane segment, pass-through
             // over mev::lanes_brain)
             .service(web::resource("/lanes").route(web::get().to(handlers::lanes::get_lanes)))
+            // ── Concurrency-slot route (BA.19.D) ──────────────────────────────
+            .service(
+                web::resource("/concurrency")
+                    .route(web::get().to(handlers::concurrency::get_concurrency)),
+            )
             // ── Cost read route (BA.11.J) ────────────────────────────────────
             .service(web::resource("/costs").route(web::get().to(handlers::costs::get_costs)))
             // ── Block-graph read route (BA.17.A) ─────────────────────────────
