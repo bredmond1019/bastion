@@ -771,6 +771,15 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         std::env::var("XDG_STATE_HOME").ok(),
         std::env::var("HOME").ok(),
     );
+    // Hoisted so the same instance can be registered as engine-serve
+    // app_data below (`BA.ticket.approval-ledger-read-wiring` task 1) —
+    // reader and writer MUST share one `Arc`, or the read routes silently
+    // serve an empty second ledger instead of erroring (see this ticket's
+    // Notes).
+    let approval_ledger: std::sync::Arc<dyn engine_core::operator::ledger::ApprovalLedger> =
+        std::sync::Arc::new(engine_core::operator::ledger::FileApprovalLedger::new(
+            approval_ledger_path,
+        ));
     let approve_and_run_seams = std::sync::Arc::new(
         engine_core::workflows::approve_and_run::ApproveAndRunSeams::new(
             std::sync::Arc::new(std::sync::Mutex::new(
@@ -778,9 +787,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                     engine_core::operator::queue::OperatorQueuePolicy::default(),
                 ),
             )),
-            std::sync::Arc::new(engine_core::operator::ledger::FileApprovalLedger::new(
-                approval_ledger_path,
-            )),
+            approval_ledger.clone(),
             engine_core::nodes::http_post::http_post_live(),
             engine_core::operator::OperatorPayloadLimits::default(),
             engine_core::workflows::approve_and_run::ApproveAndRunPolicy::default(),
@@ -971,6 +978,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         let engine_data = engine_data.clone();
         let live_data = live_data.clone();
         let pending_payloads = pending_payloads.clone();
+        let approval_ledger = approval_ledger.clone();
 
         // Protected scope — bearer auth enforced on all children.
         //
@@ -1156,7 +1164,11 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         // the engine mount here does not touch that liveness contract.
         if let Some(engine_data) = engine_data {
             let engine_api_key = engine_data.api_key.clone();
-            app = app.app_data(engine_data).service(
+            // Same `Arc` the approve-and-run writer holds (hoisted above) —
+            // registered only on this branch so an unmounted engine
+            // registers no ledger app_data and boot stays unchanged.
+            let ledger_data = web::Data::new(approval_ledger.clone());
+            app = app.app_data(engine_data).app_data(ledger_data).service(
                 web::scope("")
                     .wrap(ApiKeyAuthMiddleware::new(engine_api_key))
                     .configure(engine_serve::http::configure),
