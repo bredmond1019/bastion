@@ -42,6 +42,12 @@ pub const READINESS_POLL_MS: u64 = 500;
 /// re-rendering, not just one instant of it.
 pub const REQUIRED_STABLE_OBSERVATIONS: usize = 2;
 
+/// Contract rule 3: floor below which no done-marker is ever reaped by the
+/// GC sweep, regardless of how short a given invocation's `--timeout` is.
+/// A `--timeout 5` invocation must still be safe against a concurrent
+/// long-running turn whose marker hasn't been written yet.
+pub const MARKER_GC_MIN_AGE_SECS: u64 = 3600;
+
 // ── Args struct ───────────────────────────────────────────────────────────────
 
 /// Arguments for the `ask` turn — mirrors the clap `Commands::Ask` fields.
@@ -188,6 +194,25 @@ pub fn turn_is_complete(
     marker_satisfies(marker_content, nonce) && out_is_fresh(out_mtime, send_time)
 }
 
+/// Contract rule 3: the age (seconds) past which a done-marker is eligible
+/// for GC reaping, given an invocation's `--timeout`.
+///
+/// Never returns less than `MARKER_GC_MIN_AGE_SECS` — the contract forbids
+/// reaping a marker younger than the invocation's own `--timeout`, and the
+/// floor keeps a short-timeout invocation from making a concurrent
+/// long-running turn's still-pending marker eligible for reaping.
+pub fn gc_age_threshold_secs(timeout_secs: u64) -> u64 {
+    timeout_secs.max(MARKER_GC_MIN_AGE_SECS)
+}
+
+/// Contract rule 3: is a marker of `age_secs` past `threshold_secs` eligible
+/// for reaping?
+///
+/// Strictly greater-than — a marker exactly at the threshold survives.
+pub fn is_reapable(age_secs: u64, threshold_secs: u64) -> bool {
+    age_secs > threshold_secs
+}
+
 /// Pure computation of the maximum number of poll attempts.
 ///
 /// `timeout_secs * 1000 / interval_ms`, rounding up so that a fractional
@@ -250,18 +275,97 @@ pub(crate) fn update_readiness_streak(is_ready_observation: bool, streak: usize)
 
 // ── I/O shell ─────────────────────────────────────────────────────────────────
 
+/// Contract rule 3: reap done-markers (`*.done`, either form) in `dir` whose
+/// age exceeds `threshold_secs`.
+///
+/// The thin I/O shell over `is_reapable` — enumerate `*.done` entries in
+/// `dir`, compute each one's age from its mtime, and remove only those the
+/// pure predicate says are past the threshold. Returns the count reaped. A
+/// directory-read error or an unreadable entry is skipped with a warning,
+/// never fatal (decision D6) — a GC sweep must never abort an `ask()` turn.
+pub fn sweep_markers(dir: &Path, threshold_secs: u64) -> usize {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!(
+                "warning: marker GC sweep could not read {}: {e}",
+                dir.display()
+            );
+            return 0;
+        }
+    };
+
+    let now = SystemTime::now();
+    let mut reaped = 0usize;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                eprintln!("warning: marker GC sweep skipped an unreadable entry: {e}");
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("done") {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "warning: marker GC sweep could not stat {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let mtime = match metadata.modified() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "warning: marker GC sweep could not read mtime of {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        let age_secs = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
+
+        if is_reapable(age_secs, threshold_secs) && std::fs::remove_file(&path).is_ok() {
+            reaped += 1;
+        }
+    }
+
+    reaped
+}
+
 /// Run a single Claude Code "turn" against an interactive tmux session.
 ///
 /// Steps:
+///   0. GC sweep — reap done-markers older than `max(--timeout, 1h)` in
+///      `--out`'s parent directory, before this invocation's own marker can
+///      possibly exist. This is what makes it structurally impossible for a
+///      turn to reap its own evidence.
 ///   1. Trust pre-flight — fail fast if `--dir` is explicitly Untrusted.
 ///   2. Ensure session + Claude — create session and/or launch Claude when cold,
 ///      skip launch when `classify_state` reports a non-shell process running
 ///      (covers `"claude"` as well as version-string names like `"2.1.185"`).
 ///   3. Send the trigger — the only keystrokes sent.
 ///   4. Wait for completion — poll `done_path(--out)` up to `--timeout`; on
-///      found, remove the marker and return `Ok(())`; on timeout, capture
-///      the pane and return `AskError::Timeout`.
+///      found, return `Ok(())` WITHOUT removing the marker (contract rule 3
+///      — a GC sweep reaps by age, `ask()` never deletes); on timeout,
+///      capture the pane and return `AskError::Timeout`.
 pub fn ask(args: AskArgs) -> Result<(), AskError> {
+    // ── 0. GC sweep ──────────────────────────────────────────────────────────
+    // Runs before the nonce is generated and before the trigger is sent, so
+    // this invocation's own (not-yet-written) marker can never be reaped.
+    if let Some(dir) = args.out.parent() {
+        sweep_markers(dir, gc_age_threshold_secs(args.timeout_secs));
+    }
+
     // ── 1. Trust pre-flight ──────────────────────────────────────────────────
     if let Some(ref dir) = args.dir {
         let dir_str = dir.to_string_lossy();
@@ -298,8 +402,10 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
             && let Ok(out_mtime) = std::fs::metadata(&args.out).and_then(|m| m.modified())
             && turn_is_complete(&marker_content, &nonce, out_mtime, send_time)
         {
-            // Marker satisfied — remove it and return success.
-            let _ = std::fs::remove_file(&done);
+            // Marker satisfied. Never remove it (contract rule 3) — the
+            // GC sweep above reaps markers by age instead, so this turn's
+            // own evidence survives a crash between "marker seen" and any
+            // caller reading `--out` after `ask()` returns.
             return Ok(());
         }
         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
@@ -716,6 +822,78 @@ mod tests {
         let send_time = SystemTime::now();
         let out_mtime = send_time - Duration::from_secs(1);
         assert!(!turn_is_complete("wrong", "abc123", out_mtime, send_time));
+    }
+
+    // ── gc_age_threshold_secs ────────────────────────────────────────────────
+
+    #[test]
+    fn gc_age_threshold_secs_floors_short_timeout() {
+        assert_eq!(gc_age_threshold_secs(60), MARKER_GC_MIN_AGE_SECS);
+    }
+
+    #[test]
+    fn gc_age_threshold_secs_uses_longer_timeout() {
+        assert_eq!(gc_age_threshold_secs(7200), 7200);
+    }
+
+    #[test]
+    fn gc_age_threshold_secs_never_below_floor() {
+        assert!(gc_age_threshold_secs(0) >= MARKER_GC_MIN_AGE_SECS);
+    }
+
+    // ── is_reapable ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_reapable_false_at_exactly_threshold() {
+        assert!(!is_reapable(3600, 3600));
+    }
+
+    #[test]
+    fn is_reapable_true_one_second_past_threshold() {
+        assert!(is_reapable(3601, 3600));
+    }
+
+    #[test]
+    fn is_reapable_false_below_threshold() {
+        assert!(!is_reapable(100, 3600));
+    }
+
+    // ── sweep_markers ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn sweep_markers_reaps_only_past_threshold() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A marker whose mtime is far in the past — past the threshold.
+        let backdated = dir.path().join("backdated.nonce.done");
+        let old_mtime = SystemTime::now() - Duration::from_secs(10_000);
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&backdated).expect("create backdated marker");
+            file.write_all(b"nonce").expect("write backdated marker");
+            file.set_modified(old_mtime).expect("set backdated mtime");
+        }
+
+        // A fresh marker — within the threshold.
+        let fresh = dir.path().join("fresh.nonce.done");
+        std::fs::write(&fresh, "nonce").expect("write fresh marker");
+
+        // A non-marker file that must never be touched.
+        let other = dir.path().join("answer.json");
+        std::fs::write(&other, "hello").expect("write non-marker file");
+
+        let reaped = sweep_markers(dir.path(), MARKER_GC_MIN_AGE_SECS);
+
+        assert_eq!(reaped, 1);
+        assert!(!backdated.exists(), "backdated marker should be reaped");
+        assert!(fresh.exists(), "fresh marker must survive");
+        assert!(other.exists(), "non-marker file must survive");
+    }
+
+    #[test]
+    fn sweep_markers_missing_dir_returns_zero() {
+        let missing = PathBuf::from("/nonexistent/path/for/bastion/ask/tests");
+        assert_eq!(sweep_markers(&missing, MARKER_GC_MIN_AGE_SECS), 0);
     }
 
     // ── poll_plan ─────────────────────────────────────────────────────────────
