@@ -667,6 +667,124 @@ export interface CommandResponse {
 	session: string;
 }
 
+/**
+ * One heavy-lane CATEGORY's live slot accounting, mirroring
+ * `fleet_concurrency_check.py`'s `MAX_LANES_BY_CATEGORY` cap for that
+ * category as read through `mev::brain::availability::category_capacity`.
+ * 
+ * Wire format:
+ * ```json
+ * {
+ * "category": "native-build", "cap": 4, "active_count": 1,
+ * "active_repos": ["bastion"], "slots_available": 3
+ * }
+ * ```
+ */
+export interface ConcurrencyCategoryDto {
+	/** Category name, e.g. `"native-build"` or `"browser-automation"`. */
+	category: string;
+	/**
+	 * `mev::brain::availability::category_capacity`'s documented cap for
+	 * this category (4 for `native-build`, 2 for `browser-automation` and
+	 * for any category the registry doesn't recognize).
+	 */
+	cap: number;
+	/**
+	 * Count of repos currently holding a live (non-stale) lock in this
+	 * category.
+	 */
+	active_count: number;
+	/**
+	 * Sorted repo slugs currently holding a live lock in this category.
+	 * Sorted deterministically by the handler — `HashSet` iteration order
+	 * from `FleetSlotView::live_repos` must never reach the wire.
+	 */
+	active_repos?: string[];
+	/**
+	 * `cap.saturating_sub(active_count)` — never underflows even when the
+	 * registry is over capacity (the Python `register` honours
+	 * `--max-heavy-lanes`, which can exceed the documented cap).
+	 */
+	slots_available: number;
+}
+
+/**
+ * `?repo=<slug>` answer: whether a specific repo may start a heavy lane
+ * right now, per the live registry.
+ * 
+ * Wire format:
+ * ```json
+ * { "repo": "bastion", "category": "native-build", "allowed": true,
+ * "degraded": false, "reason": null }
+ * ```
+ */
+export interface ConcurrencyRepoDto {
+	/** The queried repo slug, carried verbatim. */
+	repo: string;
+	/**
+	 * `mev::brain::availability::heavy_category`'s classification for this
+	 * repo. `None` means the repo is light — always `allowed: true`.
+	 */
+	category?: string;
+	/**
+	 * Whether the repo may start a heavy lane right now. Only ever `false`
+	 * when the registry is NOT degraded and the repo's category is at or
+	 * over capacity — a degraded read always reports `true` here (see
+	 * [`ConcurrencyDto::degraded`]).
+	 */
+	allowed: boolean;
+	/**
+	 * `true` when this repo's answer was derived from a degraded fleet-lock
+	 * read (mirrors [`ConcurrencyDto::degraded`] for the single-repo view).
+	 */
+	degraded: boolean;
+	/**
+	 * Human-readable why `allowed` is `false`, or why the read is degraded.
+	 * `None` when `allowed` is `true` and the read is not degraded.
+	 */
+	reason?: string;
+}
+
+/**
+ * `GET /api/concurrency[?repo=<slug>]` response body — one row per known
+ * heavy category, plus an optional `repo` answer when `?repo=` is present.
+ * Pass-through over `mev::brain::availability::FleetSlotView`.
+ * 
+ * Wire format:
+ * ```json
+ * {
+ * "degraded": false, "reason": null,
+ * "categories": [{ "category": "native-build", "cap": 4,
+ * "active_count": 0, "active_repos": [], "slots_available": 4 }],
+ * "repo": null
+ * }
+ * ```
+ */
+export interface ConcurrencyDto {
+	/**
+	 * `true` when the fleet-lock read that fed this response degraded
+	 * (`mev::brain::availability::FleetSlotView::degraded`). A degraded
+	 * read is reported as `{allowed: true, degraded: true}` with a
+	 * non-empty `reason`, mirroring `fleet_concurrency_check.py`'s
+	 * degrade-to-advisory contract — it is NEVER surfaced as a hard
+	 * failure or as `allowed: false`. Same posture as
+	 * [`LanesDto::degraded`].
+	 */
+	degraded: boolean;
+	/**
+	 * Human-readable why the read degraded. `None` when `degraded` is
+	 * `false`.
+	 */
+	reason?: string;
+	/**
+	 * One row per category the registry knows about, from
+	 * `FleetSlotView::known_categories`.
+	 */
+	categories?: ConcurrencyCategoryDto[];
+	/** Present only when the request carried `?repo=<slug>`. */
+	repo?: ConcurrencyRepoDto;
+}
+
 /** A single contact channel bundle for an opportunity. */
 export interface ContactDto {
 	name?: string;
