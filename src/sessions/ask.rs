@@ -7,14 +7,15 @@
 // Decision D5: synchronous blocking — no tokio/async.
 // Decision D6: malformed tmux output is skipped with a warning, not fatal.
 //
-// Contract: brain doc `docs/integrations/claude-code-llm-provider.md` §2 (v0.1.0).
+// Contract: brain doc `docs/integrations/claude-code-llm-provider.md` §2 (v0.2.0).
 
 use crate::sessions::claude_state::{TrustStatus, trust_status};
 use crate::sessions::model::{SessionState, classify_state, parse_sessions};
 use crate::sessions::tmux;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+use uuid::Uuid;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,12 @@ pub const READINESS_POLL_MS: u64 = 500;
 /// means the wait spans the entire duration the pane is still actively
 /// re-rendering, not just one instant of it.
 pub const REQUIRED_STABLE_OBSERVATIONS: usize = 2;
+
+/// Contract rule 3: floor below which no done-marker is ever reaped by the
+/// GC sweep, regardless of how short a given invocation's `--timeout` is.
+/// A `--timeout 5` invocation must still be safe against a concurrent
+/// long-running turn whose marker hasn't been written yet.
+pub const MARKER_GC_MIN_AGE_SECS: u64 = 3600;
 
 // ── Args struct ───────────────────────────────────────────────────────────────
 
@@ -93,12 +100,40 @@ pub enum AskError {
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-/// Derive the done-marker path from `out`: append `.done` to the full filename.
+/// Generate a per-invocation nonce for the done-marker contract (v0.2.0).
+///
+/// Uses the simple (no-hyphen) hex form of a v4 UUID so the value is
+/// filename-safe by construction and does not need escaping when embedded in
+/// a path or a trigger string.
+pub fn generate_nonce() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
+/// Derive the nonce'd done-marker path from `out`: append `.{nonce}.done` to
+/// the full filename, preserving the parent directory exactly.
+///
+/// Examples:
+/// - `/tmp/answer.json`, `"abc"`  → `/tmp/answer.json.abc.done`
+/// - `/tmp/answer`, `"abc"`       → `/tmp/answer.abc.done`
+pub fn done_path(out: &Path, nonce: &str) -> PathBuf {
+    let mut name = out.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(nonce);
+    name.push(".done");
+    out.with_file_name(name)
+}
+
+/// Derive the legacy (v0.1.0) bare done-marker path from `out`: append
+/// `.done` to the full filename, with no nonce.
+///
+/// This is the dual-read-window form — task 4 accepts it alongside the
+/// nonce'd `done_path` above for one release. Kept under this name so the
+/// eventual removal at window close is a one-symbol grep.
 ///
 /// Examples:
 /// - `/tmp/answer.json`  → `/tmp/answer.json.done`
 /// - `/tmp/answer`       → `/tmp/answer.done`
-pub fn done_path(out: &Path) -> PathBuf {
+pub fn legacy_done_path(out: &Path) -> PathBuf {
     let mut name = out.file_name().unwrap_or_default().to_os_string();
     name.push(".done");
     out.with_file_name(name)
@@ -106,19 +141,105 @@ pub fn done_path(out: &Path) -> PathBuf {
 
 /// Build the fixed trigger text sent to Claude.
 ///
-/// Contract (v0.1.0): the exact wording from
+/// Contract (v0.2.0): the exact wording from
 /// `docs/integrations/claude-code-llm-provider.md` §2 — flag names and marker
-/// filename must match verbatim.
-pub fn trigger_text(prompt_file: &Path, out: &Path) -> String {
-    let done = done_path(out);
+/// filename must match verbatim. The marker must be created containing
+/// exactly the nonce text (not empty) — this is what lets the wait loop tell
+/// this invocation's evidence apart from a stale marker left by a prior run.
+pub fn trigger_text(prompt_file: &Path, out: &Path, nonce: &str) -> String {
+    let done = done_path(out, nonce);
     format!(
         "Read {} and follow its instructions exactly. \
          Write your complete answer to {}. \
-         When finished, create an empty file {}",
+         When finished, create a file {} containing exactly the text {}",
         prompt_file.display(),
         out.display(),
         done.display(),
+        nonce,
     )
+}
+
+/// Contract rule 2: does `marker_content` satisfy the nonce check?
+///
+/// True only when the content, trimmed of surrounding whitespace, equals
+/// `nonce` exactly. Empty, whitespace-only, mismatched, and truncated
+/// content are all false — a marker whose bytes do not prove *this*
+/// invocation wrote it must never be treated as evidence the turn completed.
+pub fn marker_satisfies(marker_content: &str, nonce: &str) -> bool {
+    marker_content.trim() == nonce
+}
+
+/// Contract rule 4: does `out`'s mtime postdate the send?
+///
+/// Strictly greater-than — an mtime equal to `send_time` is NOT fresh. A
+/// filesystem with coarse mtime granularity (e.g. 1s resolution on some
+/// platforms/filesystems) could otherwise let a stale `--out` written in the
+/// same tick as the send pass the check, which is the exact defect this
+/// rule exists to close.
+pub fn out_is_fresh(out_mtime: SystemTime, send_time: SystemTime) -> bool {
+    out_mtime > send_time
+}
+
+/// Contract rules 2 and 4 composed: is this turn complete?
+///
+/// True only when the marker's content proves it belongs to this invocation
+/// (rule 2) AND `--out`'s mtime postdates the send (rule 4). Used so the
+/// wait loop's condition is one tested pure call rather than inline logic.
+pub fn turn_is_complete(
+    marker_content: &str,
+    nonce: &str,
+    out_mtime: SystemTime,
+    send_time: SystemTime,
+) -> bool {
+    marker_satisfies(marker_content, nonce) && out_is_fresh(out_mtime, send_time)
+}
+
+/// Dual-read window (contract rule, v0.1.0 compat): does an existing legacy
+/// (bare `<out>.done`) marker satisfy the wait?
+///
+/// v0.1.0 markers were specified as empty files, so — unlike the nonce'd
+/// form — content is not checked at all. The only thing that still applies
+/// is rule 4: `out`'s mtime must postdate the send, because that rule closed
+/// a defect independent of the marker's shape and there is no compatibility
+/// reason to relax it.
+pub fn legacy_marker_satisfies(out_mtime: SystemTime, send_time: SystemTime) -> bool {
+    out_is_fresh(out_mtime, send_time)
+}
+
+/// Build the one-time deprecation warning emitted to stderr when a legacy
+/// (v0.1.0 bare) marker is accepted.
+///
+/// Names the legacy path, the v0.2.0 nonce'd form, and states that
+/// acceptance ends once the orchestrator's `BastionSessionBackend` pin
+/// advances — the caller (`ask()`) emits this exactly once per invocation,
+/// never per poll tick.
+pub fn legacy_warning_text(legacy: &Path) -> String {
+    format!(
+        "warning: deprecated v0.1.0 done-marker {} accepted — bastion now writes \
+         the v0.2.0 nonce'd marker (<out>.{{nonce}}.done); dual-read acceptance \
+         of this deprecated bare form ends once the orchestrator's \
+         BastionSessionBackend pin advances to v0.2.0",
+        legacy.display(),
+    )
+}
+
+/// Contract rule 3: the age (seconds) past which a done-marker is eligible
+/// for GC reaping, given an invocation's `--timeout`.
+///
+/// Never returns less than `MARKER_GC_MIN_AGE_SECS` — the contract forbids
+/// reaping a marker younger than the invocation's own `--timeout`, and the
+/// floor keeps a short-timeout invocation from making a concurrent
+/// long-running turn's still-pending marker eligible for reaping.
+pub fn gc_age_threshold_secs(timeout_secs: u64) -> u64 {
+    timeout_secs.max(MARKER_GC_MIN_AGE_SECS)
+}
+
+/// Contract rule 3: is a marker of `age_secs` past `threshold_secs` eligible
+/// for reaping?
+///
+/// Strictly greater-than — a marker exactly at the threshold survives.
+pub fn is_reapable(age_secs: u64, threshold_secs: u64) -> bool {
+    age_secs > threshold_secs
 }
 
 /// Pure computation of the maximum number of poll attempts.
@@ -183,18 +304,97 @@ pub(crate) fn update_readiness_streak(is_ready_observation: bool, streak: usize)
 
 // ── I/O shell ─────────────────────────────────────────────────────────────────
 
+/// Contract rule 3: reap done-markers (`*.done`, either form) in `dir` whose
+/// age exceeds `threshold_secs`.
+///
+/// The thin I/O shell over `is_reapable` — enumerate `*.done` entries in
+/// `dir`, compute each one's age from its mtime, and remove only those the
+/// pure predicate says are past the threshold. Returns the count reaped. A
+/// directory-read error or an unreadable entry is skipped with a warning,
+/// never fatal (decision D6) — a GC sweep must never abort an `ask()` turn.
+pub fn sweep_markers(dir: &Path, threshold_secs: u64) -> usize {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!(
+                "warning: marker GC sweep could not read {}: {e}",
+                dir.display()
+            );
+            return 0;
+        }
+    };
+
+    let now = SystemTime::now();
+    let mut reaped = 0usize;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                eprintln!("warning: marker GC sweep skipped an unreadable entry: {e}");
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("done") {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "warning: marker GC sweep could not stat {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let mtime = match metadata.modified() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "warning: marker GC sweep could not read mtime of {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        let age_secs = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
+
+        if is_reapable(age_secs, threshold_secs) && std::fs::remove_file(&path).is_ok() {
+            reaped += 1;
+        }
+    }
+
+    reaped
+}
+
 /// Run a single Claude Code "turn" against an interactive tmux session.
 ///
 /// Steps:
+///   0. GC sweep — reap done-markers older than `max(--timeout, 1h)` in
+///      `--out`'s parent directory, before this invocation's own marker can
+///      possibly exist. This is what makes it structurally impossible for a
+///      turn to reap its own evidence.
 ///   1. Trust pre-flight — fail fast if `--dir` is explicitly Untrusted.
 ///   2. Ensure session + Claude — create session and/or launch Claude when cold,
 ///      skip launch when `classify_state` reports a non-shell process running
 ///      (covers `"claude"` as well as version-string names like `"2.1.185"`).
 ///   3. Send the trigger — the only keystrokes sent.
 ///   4. Wait for completion — poll `done_path(--out)` up to `--timeout`; on
-///      found, remove the marker and return `Ok(())`; on timeout, capture
-///      the pane and return `AskError::Timeout`.
+///      found, return `Ok(())` WITHOUT removing the marker (contract rule 3
+///      — a GC sweep reaps by age, `ask()` never deletes); on timeout,
+///      capture the pane and return `AskError::Timeout`.
 pub fn ask(args: AskArgs) -> Result<(), AskError> {
+    // ── 0. GC sweep ──────────────────────────────────────────────────────────
+    // Runs before the nonce is generated and before the trigger is sent, so
+    // this invocation's own (not-yet-written) marker can never be reaped.
+    if let Some(dir) = args.out.parent() {
+        sweep_markers(dir, gc_age_threshold_secs(args.timeout_secs));
+    }
+
     // ── 1. Trust pre-flight ──────────────────────────────────────────────────
     if let Some(ref dir) = args.dir {
         let dir_str = dir.to_string_lossy();
@@ -209,22 +409,50 @@ pub fn ask(args: AskArgs) -> Result<(), AskError> {
     ensure_session_with_claude(&args.session, dir_str.as_deref(), &args.launch_cmd)?;
 
     // ── 3. Send the trigger ──────────────────────────────────────────────────
-    let trigger = trigger_text(&args.prompt_file, &args.out);
+    let nonce = generate_nonce();
+    let trigger = trigger_text(&args.prompt_file, &args.out, &nonce);
+    // Recorded immediately BEFORE send_keys, not after: a send that blocks
+    // would otherwise stamp a time later than a fast reply's write and
+    // reject a legitimate answer (contract rule 4).
+    let send_time = SystemTime::now();
     tmux::send_keys(&args.session, &trigger).map_err(|e| AskError::Tmux {
         op: "send-keys (trigger)".to_string(),
         source: e.into(),
     })?;
 
     // ── 4. Wait for completion ───────────────────────────────────────────────
-    let done = done_path(&args.out);
+    let done = done_path(&args.out, &nonce);
+    let legacy_done = legacy_done_path(&args.out);
     let max_attempts = poll_plan(args.timeout_secs, POLL_INTERVAL_MS);
 
     for _ in 0..max_attempts {
-        if done.exists() {
-            // Marker found — remove it and return success.
-            let _ = std::fs::remove_file(&done);
+        // A marker that exists but fails the check is not an error and not
+        // a success — keep polling until the timeout.
+        if let Ok(marker_content) = std::fs::read_to_string(&done)
+            && let Ok(out_mtime) = std::fs::metadata(&args.out).and_then(|m| m.modified())
+            && turn_is_complete(&marker_content, &nonce, out_mtime, send_time)
+        {
+            // Marker satisfied. Never remove it (contract rule 3) — the
+            // GC sweep above reaps markers by age instead, so this turn's
+            // own evidence survives a crash between "marker seen" and any
+            // caller reading `--out` after `ask()` returns.
             return Ok(());
         }
+
+        // Dual-read window (v0.1.0 compat): the nonce'd marker is absent or
+        // unsatisfying — also check the bare legacy form. Content is not
+        // checked (v0.1.0 markers were specified as empty files); rule 4
+        // (out must postdate the send) still applies. Never removed either
+        // — `sweep_markers` already reaps `*.done` by age, covering the
+        // bare form without a special case.
+        if legacy_done.exists()
+            && let Ok(out_mtime) = std::fs::metadata(&args.out).and_then(|m| m.modified())
+            && legacy_marker_satisfies(out_mtime, send_time)
+        {
+            eprintln!("{}", legacy_warning_text(&legacy_done));
+            return Ok(());
+        }
+
         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
     }
 
@@ -388,34 +616,82 @@ mod tests {
     use anyhow::anyhow;
     use std::path::PathBuf;
 
+    // ── generate_nonce ────────────────────────────────────────────────────────
+
+    #[test]
+    fn generate_nonce_is_non_empty_and_filename_safe() {
+        let nonce = generate_nonce();
+        assert!(!nonce.is_empty(), "nonce must not be empty");
+        assert!(
+            nonce.chars().all(|c| c.is_ascii_alphanumeric()),
+            "nonce must be filename-safe (alphanumeric only): {nonce}"
+        );
+    }
+
+    #[test]
+    fn generate_nonce_two_calls_differ() {
+        let a = generate_nonce();
+        let b = generate_nonce();
+        assert_ne!(a, b, "two generate_nonce() calls must not collide");
+    }
+
     // ── done_path ─────────────────────────────────────────────────────────────
 
     #[test]
     fn done_path_with_extension() {
         let out = PathBuf::from("/tmp/answer.json");
-        let done = done_path(&out);
-        assert_eq!(done, PathBuf::from("/tmp/answer.json.done"));
+        let done = done_path(&out, "abc");
+        assert_eq!(done, PathBuf::from("/tmp/answer.json.abc.done"));
     }
 
     #[test]
     fn done_path_without_extension() {
         let out = PathBuf::from("/tmp/answer");
-        let done = done_path(&out);
-        assert_eq!(done, PathBuf::from("/tmp/answer.done"));
+        let done = done_path(&out, "abc");
+        assert_eq!(done, PathBuf::from("/tmp/answer.abc.done"));
     }
 
     #[test]
     fn done_path_preserves_parent_directory() {
         let out = PathBuf::from("/home/user/project/out.txt");
-        let done = done_path(&out);
-        assert_eq!(done, PathBuf::from("/home/user/project/out.txt.done"));
+        let done = done_path(&out, "nonce123");
+        assert_eq!(
+            done,
+            PathBuf::from("/home/user/project/out.txt.nonce123.done")
+        );
     }
 
     #[test]
     fn done_path_simple_filename() {
         let out = PathBuf::from("/var/tmp/result.md");
-        let done = done_path(&out);
-        assert_eq!(done, PathBuf::from("/var/tmp/result.md.done"));
+        let done = done_path(&out, "xyz");
+        assert_eq!(done, PathBuf::from("/var/tmp/result.md.xyz.done"));
+    }
+
+    #[test]
+    fn done_path_places_nonce_between_filename_and_done() {
+        let out = PathBuf::from("/tmp/answer.json");
+        let done = done_path(&out, "abc");
+        assert_eq!(
+            done.file_name().unwrap().to_str().unwrap(),
+            "answer.json.abc.done"
+        );
+    }
+
+    // ── legacy_done_path ──────────────────────────────────────────────────────
+
+    #[test]
+    fn legacy_done_path_is_bare_v0_1_0_form() {
+        let out = PathBuf::from("/tmp/answer.json");
+        let done = legacy_done_path(&out);
+        assert_eq!(done, PathBuf::from("/tmp/answer.json.done"));
+    }
+
+    #[test]
+    fn legacy_done_path_preserves_parent_directory() {
+        let out = PathBuf::from("/home/user/project/out.txt");
+        let done = legacy_done_path(&out);
+        assert_eq!(done, PathBuf::from("/home/user/project/out.txt.done"));
     }
 
     // ── trigger_text ──────────────────────────────────────────────────────────
@@ -424,7 +700,7 @@ mod tests {
     fn trigger_text_contains_prompt_file_path() {
         let prompt = PathBuf::from("/tmp/prompt.txt");
         let out = PathBuf::from("/tmp/answer.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "abc");
         assert!(
             text.contains("/tmp/prompt.txt"),
             "trigger should contain prompt path: {text}"
@@ -435,7 +711,7 @@ mod tests {
     fn trigger_text_contains_out_path() {
         let prompt = PathBuf::from("/tmp/prompt.txt");
         let out = PathBuf::from("/tmp/answer.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "abc");
         assert!(
             text.contains("/tmp/answer.json"),
             "trigger should contain out path: {text}"
@@ -443,13 +719,28 @@ mod tests {
     }
 
     #[test]
-    fn trigger_text_contains_done_marker_path() {
+    fn trigger_text_contains_nonced_done_marker_path() {
         let prompt = PathBuf::from("/tmp/prompt.txt");
         let out = PathBuf::from("/tmp/answer.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "abc123");
         assert!(
-            text.contains("/tmp/answer.json.done"),
-            "trigger should contain done marker path: {text}"
+            text.contains("/tmp/answer.json.abc123.done"),
+            "trigger should contain nonce'd done marker path: {text}"
+        );
+    }
+
+    #[test]
+    fn trigger_text_instructs_marker_content_equals_nonce() {
+        let prompt = PathBuf::from("/tmp/prompt.txt");
+        let out = PathBuf::from("/tmp/answer.json");
+        let text = trigger_text(&prompt, &out, "thenonce");
+        assert!(
+            text.contains("thenonce"),
+            "trigger should mention the nonce as required marker content: {text}"
+        );
+        assert!(
+            text.contains("containing exactly the text"),
+            "trigger should instruct the marker content requirement: {text}"
         );
     }
 
@@ -457,7 +748,7 @@ mod tests {
     fn trigger_text_contract_wording() {
         let prompt = PathBuf::from("/tmp/p.txt");
         let out = PathBuf::from("/tmp/o.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "n1");
         assert!(
             text.contains("Read "),
             "trigger must start with 'Read': {text}"
@@ -471,8 +762,8 @@ mod tests {
             "trigger must contain 'Write your complete answer to': {text}"
         );
         assert!(
-            text.contains("create an empty file"),
-            "trigger must contain 'create an empty file': {text}"
+            text.contains("containing exactly the text"),
+            "trigger must instruct the marker to contain the nonce: {text}"
         );
     }
 
@@ -480,7 +771,7 @@ mod tests {
     fn trigger_text_absolute_paths_present() {
         let prompt = PathBuf::from("/absolute/prompt.txt");
         let out = PathBuf::from("/absolute/out.json");
-        let text = trigger_text(&prompt, &out);
+        let text = trigger_text(&prompt, &out, "n2");
         // Both the prompt and out paths must appear as absolute paths.
         assert!(
             text.contains("/absolute/prompt.txt"),
@@ -490,6 +781,203 @@ mod tests {
             text.contains("/absolute/out.json"),
             "absolute out path missing: {text}"
         );
+    }
+
+    // ── marker_satisfies ──────────────────────────────────────────────────────
+
+    #[test]
+    fn marker_satisfies_exact_match() {
+        assert!(marker_satisfies("abc123", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_empty_content_false() {
+        assert!(!marker_satisfies("", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_whitespace_only_false() {
+        assert!(!marker_satisfies("   \n\t  ", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_wrong_nonce_false() {
+        assert!(!marker_satisfies("xyz789", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_trims_surrounding_whitespace() {
+        assert!(marker_satisfies("  abc123\n", "abc123"));
+    }
+
+    #[test]
+    fn marker_satisfies_prefix_of_content_false() {
+        // Content that merely starts with the nonce (e.g. truncated write on
+        // top of a longer stale value) must not satisfy — the match is exact.
+        assert!(!marker_satisfies("abc123extra", "abc123"));
+    }
+
+    // ── out_is_fresh ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn out_is_fresh_true_when_strictly_after() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time + Duration::from_secs(1);
+        assert!(out_is_fresh(out_mtime, send_time));
+    }
+
+    #[test]
+    fn out_is_fresh_false_when_equal() {
+        let t = SystemTime::now();
+        assert!(!out_is_fresh(t, t));
+    }
+
+    #[test]
+    fn out_is_fresh_false_when_before() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time - Duration::from_secs(1);
+        assert!(!out_is_fresh(out_mtime, send_time));
+    }
+
+    // ── turn_is_complete ──────────────────────────────────────────────────────
+
+    #[test]
+    fn turn_is_complete_true_when_both_hold() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time + Duration::from_secs(1);
+        assert!(turn_is_complete("abc123", "abc123", out_mtime, send_time));
+    }
+
+    #[test]
+    fn turn_is_complete_false_when_marker_mismatched() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time + Duration::from_secs(1);
+        assert!(!turn_is_complete("wrong", "abc123", out_mtime, send_time));
+    }
+
+    #[test]
+    fn turn_is_complete_false_when_out_stale() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time - Duration::from_secs(1);
+        assert!(!turn_is_complete("abc123", "abc123", out_mtime, send_time));
+    }
+
+    #[test]
+    fn turn_is_complete_false_when_both_fail() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time - Duration::from_secs(1);
+        assert!(!turn_is_complete("wrong", "abc123", out_mtime, send_time));
+    }
+
+    // ── legacy_marker_satisfies (dual-read window) ───────────────────────────
+
+    #[test]
+    fn legacy_marker_satisfies_true_when_out_fresh() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time + Duration::from_secs(1);
+        assert!(legacy_marker_satisfies(out_mtime, send_time));
+    }
+
+    #[test]
+    fn legacy_marker_satisfies_false_when_out_stale() {
+        let send_time = SystemTime::now();
+        let out_mtime = send_time - Duration::from_secs(1);
+        assert!(!legacy_marker_satisfies(out_mtime, send_time));
+    }
+
+    #[test]
+    fn legacy_marker_satisfies_false_when_out_equal() {
+        let t = SystemTime::now();
+        assert!(!legacy_marker_satisfies(t, t));
+    }
+
+    // ── legacy_warning_text ───────────────────────────────────────────────────
+
+    #[test]
+    fn legacy_warning_text_names_legacy_path() {
+        let legacy = PathBuf::from("/tmp/answer.json.done");
+        let text = legacy_warning_text(&legacy);
+        assert!(text.contains("/tmp/answer.json.done"));
+    }
+
+    #[test]
+    fn legacy_warning_text_mentions_deprecation_and_v0_2_0() {
+        let legacy = PathBuf::from("/tmp/answer.json.done");
+        let text = legacy_warning_text(&legacy);
+        assert!(text.to_lowercase().contains("deprecat"));
+        assert!(text.contains("v0.2.0"));
+    }
+
+    // ── gc_age_threshold_secs ────────────────────────────────────────────────
+
+    #[test]
+    fn gc_age_threshold_secs_floors_short_timeout() {
+        assert_eq!(gc_age_threshold_secs(60), MARKER_GC_MIN_AGE_SECS);
+    }
+
+    #[test]
+    fn gc_age_threshold_secs_uses_longer_timeout() {
+        assert_eq!(gc_age_threshold_secs(7200), 7200);
+    }
+
+    #[test]
+    fn gc_age_threshold_secs_never_below_floor() {
+        assert!(gc_age_threshold_secs(0) >= MARKER_GC_MIN_AGE_SECS);
+    }
+
+    // ── is_reapable ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_reapable_false_at_exactly_threshold() {
+        assert!(!is_reapable(3600, 3600));
+    }
+
+    #[test]
+    fn is_reapable_true_one_second_past_threshold() {
+        assert!(is_reapable(3601, 3600));
+    }
+
+    #[test]
+    fn is_reapable_false_below_threshold() {
+        assert!(!is_reapable(100, 3600));
+    }
+
+    // ── sweep_markers ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn sweep_markers_reaps_only_past_threshold() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A marker whose mtime is far in the past — past the threshold.
+        let backdated = dir.path().join("backdated.nonce.done");
+        let old_mtime = SystemTime::now() - Duration::from_secs(10_000);
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&backdated).expect("create backdated marker");
+            file.write_all(b"nonce").expect("write backdated marker");
+            file.set_modified(old_mtime).expect("set backdated mtime");
+        }
+
+        // A fresh marker — within the threshold.
+        let fresh = dir.path().join("fresh.nonce.done");
+        std::fs::write(&fresh, "nonce").expect("write fresh marker");
+
+        // A non-marker file that must never be touched.
+        let other = dir.path().join("answer.json");
+        std::fs::write(&other, "hello").expect("write non-marker file");
+
+        let reaped = sweep_markers(dir.path(), MARKER_GC_MIN_AGE_SECS);
+
+        assert_eq!(reaped, 1);
+        assert!(!backdated.exists(), "backdated marker should be reaped");
+        assert!(fresh.exists(), "fresh marker must survive");
+        assert!(other.exists(), "non-marker file must survive");
+    }
+
+    #[test]
+    fn sweep_markers_missing_dir_returns_zero() {
+        let missing = PathBuf::from("/nonexistent/path/for/bastion/ask/tests");
+        assert_eq!(sweep_markers(&missing, MARKER_GC_MIN_AGE_SECS), 0);
     }
 
     // ── poll_plan ─────────────────────────────────────────────────────────────
@@ -616,8 +1104,8 @@ mod tests {
         let out = PathBuf::from("/tmp/answer.json");
 
         // These must not panic or return a config error.
-        let _ = done_path(&out);
-        let _ = trigger_text(&prompt, &out);
+        let _ = done_path(&out, "nonce");
+        let _ = trigger_text(&prompt, &out, "nonce");
         let _ = poll_plan(180, 500);
         let _ = has_session_args("test-session");
         // No assertion needed beyond "this line is reached".
