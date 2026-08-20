@@ -42,6 +42,14 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json_logs: bool,
 
+    /// Print the compiled-in build provenance stamp as JSON and exit.
+    ///
+    /// Emits `{"git_sha": ..., "dirty": ..., "source_dir": ...}` to stdout — the
+    /// pinned three-key contract mev's `toolchain-freshness` check queries. Works
+    /// with no subcommand present; checked before subcommand dispatch.
+    #[arg(long)]
+    pub build_stamp: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
