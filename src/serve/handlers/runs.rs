@@ -198,23 +198,29 @@ fn run_timestamps(ctx: &TaskContext) -> (Option<String>, Option<String>) {
 ///
 /// Reuses `db::workflows::derive_run_status` for `status` rather than
 /// reimplementing the aggregate/cancellation/budget-halt priority order.
-/// `workflow_type` is always `None` today — see `RunSummaryDto`'s doc comment
-/// and the task spec's Notes for why.
 ///
-/// `repo` is passed in already-resolved (via [`resolve_repo_for_run`]) rather
-/// than resolved here, so this projection stays pure — the registry walk that
-/// resolution requires is the caller's ([`list_runs`]'s) I/O concern, gated
-/// behind `?with_repo=1` (A7).
+/// `workflow_type` and `repo` are both passed in already-resolved rather than
+/// resolved here, so this projection stays pure. `repo` comes from
+/// [`resolve_repo_for_run`]; `workflow_type` comes from the caller's
+/// (`list_runs`'s) unconditional lookup against
+/// `engine_serve::http::live_run_workflow_type` — unlike the `repo` join,
+/// this is a single in-memory map read, not a registry walk, so it is never
+/// gated behind `?with_repo=1` (A7).
 ///
 /// Pure — no I/O.
-pub fn project_run_summary(run_id: Uuid, ctx: &TaskContext, repo: Option<String>) -> RunSummaryDto {
+pub fn project_run_summary(
+    run_id: Uuid,
+    ctx: &TaskContext,
+    repo: Option<String>,
+    workflow_type: Option<String>,
+) -> RunSummaryDto {
     let nodes = node_states_from(ctx);
     let (status, _budget_halt) = workflows::derive_run_status(&nodes, &ctx.metadata);
     let (started_at, updated_at) = run_timestamps(ctx);
 
     RunSummaryDto {
         run_id: run_id.to_string(),
-        workflow_type: None,
+        workflow_type,
         status: run_status_str(status),
         spec_slug: spec_slug_from_event(&ctx.event),
         started_at,
@@ -349,7 +355,9 @@ pub async fn list_runs(
         .into_iter()
         .map(|(id, ctx)| {
             let repo = resolve_repo_for_run(&id.to_string(), &workflows);
-            project_run_summary(id, &ctx, repo)
+            let workflow_type = engine_serve::http::live_run_workflow_type(id)
+                .map(|(workflow_type, _registered_at)| workflow_type);
+            project_run_summary(id, &ctx, repo, workflow_type)
         })
         .collect();
     HttpResponse::Ok().json(summaries)
@@ -991,7 +999,7 @@ mod tests {
         };
         let run_id = Uuid::new_v4();
 
-        let dto = project_run_summary(run_id, &ctx, None);
+        let dto = project_run_summary(run_id, &ctx, None, None);
 
         assert_eq!(dto.run_id, run_id.to_string());
         assert_eq!(dto.workflow_type, None);
@@ -1005,6 +1013,81 @@ mod tests {
     }
 
     #[test]
+    fn project_run_summary_populated_workflow_type_passes_through() {
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: HashMap::new(),
+        };
+        let run_id = Uuid::new_v4();
+
+        let dto = project_run_summary(run_id, &ctx, None, Some("SDLC_FLOW".to_string()));
+
+        assert_eq!(dto.workflow_type, Some("SDLC_FLOW".to_string()));
+
+        let json = serde_json::to_value(&dto).expect("serialize dto");
+        assert_eq!(
+            json.get("workflow_type")
+                .and_then(serde_json::Value::as_str),
+            Some("SDLC_FLOW"),
+            "populated workflow_type must serialize as the real value: {json:?}"
+        );
+    }
+
+    #[test]
+    fn project_run_summary_absent_workflow_type_omits_key_from_raw_json() {
+        let ctx = TaskContext {
+            event: serde_json::json!({}),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs: HashMap::new(),
+        };
+
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None, None);
+        assert_eq!(dto.workflow_type, None);
+
+        let json = serde_json::to_value(&dto).expect("serialize dto");
+        let obj = json.as_object().expect("object dto");
+        assert!(
+            !obj.contains_key("workflow_type"),
+            "absent workflow_type must be an omitted key, not null: {obj:?}"
+        );
+    }
+
+    #[test]
+    fn project_run_summary_absent_workflow_type_does_not_blank_other_fields() {
+        let mut node_runs = HashMap::new();
+        node_runs.insert(
+            "PlanNode".to_string(),
+            node_run_with_times(
+                NodeRunStatus::Success,
+                Some("2026-01-01T00:00:00Z"),
+                Some("2026-01-01T00:05:00Z"),
+            ),
+        );
+        let ctx = TaskContext {
+            event: serde_json::json!({ "spec_slug": "11.T-run-summary-projection" }),
+            nodes: HashMap::new(),
+            metadata: serde_json::json!({}),
+            node_runs,
+        };
+        let run_id = Uuid::new_v4();
+
+        let dto = project_run_summary(run_id, &ctx, Some("bastion".to_string()), None);
+
+        assert_eq!(dto.workflow_type, None);
+        assert_eq!(dto.status, "success");
+        assert_eq!(
+            dto.spec_slug,
+            Some("11.T-run-summary-projection".to_string())
+        );
+        assert_eq!(dto.started_at.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+        assert_eq!(dto.updated_at.as_deref(), Some("2026-01-01T00:05:00+00:00"));
+        assert_eq!(dto.repo, Some("bastion".to_string()));
+    }
+
+    #[test]
     fn project_run_summary_event_with_no_spec_slug_omits_field() {
         let ctx = TaskContext {
             event: serde_json::json!({ "ticket_id": "T-1" }),
@@ -1013,7 +1096,7 @@ mod tests {
             node_runs: HashMap::new(),
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx, None);
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None, None);
 
         assert_eq!(dto.spec_slug, None);
         assert_eq!(dto.status, "success");
@@ -1032,7 +1115,7 @@ mod tests {
             node_runs,
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx, None);
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None, None);
         assert_eq!(dto.status, "cancelled");
     }
 
@@ -1056,7 +1139,7 @@ mod tests {
             node_runs,
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx, None);
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None, None);
         assert_eq!(dto.status, "budget_halted");
     }
 
@@ -1074,7 +1157,7 @@ mod tests {
             node_runs,
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx, None);
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, None, None);
         assert_eq!(dto.status, "suspended");
     }
 
@@ -1087,7 +1170,7 @@ mod tests {
             node_runs: HashMap::new(),
         };
 
-        let dto = project_run_summary(Uuid::new_v4(), &ctx, Some("bastion".to_string()));
+        let dto = project_run_summary(Uuid::new_v4(), &ctx, Some("bastion".to_string()), None);
         assert_eq!(dto.repo, Some("bastion".to_string()));
     }
 
