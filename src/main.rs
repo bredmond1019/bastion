@@ -258,7 +258,11 @@ async fn dispatch(cli: Cli) -> Result<()> {
             // pass-throughs to the `mev` path-dep library (D15 / BA.15.2).
             Commands::Manifest { path, pretty } => brainval::run_manifest(path, pretty),
             Commands::Graph { path } => brainval::run_graph(path),
-            Commands::EmitState { path, write } => brainval::run_emit_state(path, write),
+            Commands::EmitState {
+                path,
+                write,
+                fail_on_drift,
+            } => brainval::run_emit_state(path, write, fail_on_drift),
             // Serve is DB-free — does NOT call Config::load() or require DATABASE_URL.
             // The actix System runs on a dedicated OS thread (runtime-spike outcome, Task 1).
             Commands::Serve { addr, token } => {
@@ -575,6 +579,7 @@ mod tests {
             command_name(&Commands::EmitState {
                 path: PathBuf::from("."),
                 write: false,
+                fail_on_drift: false,
             }),
             "emit-state"
         );

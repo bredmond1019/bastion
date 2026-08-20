@@ -314,6 +314,13 @@ pub enum Commands {
         /// Apply the derived writes instead of dry-run reporting them
         #[arg(long)]
         write: bool,
+        /// Hard-fail (non-zero exit, nothing written) when the running binary's build
+        /// provenance has drifted from the live source tree, instead of the default
+        /// warn-and-proceed. Same effect as setting BASTION_FAIL_ON_BUILD_DRIFT truthy —
+        /// intended for unattended runs (e.g. scripts/routine.sh on the Mini) that must
+        /// refuse to write from a stale build rather than doing it silently.
+        #[arg(long)]
+        fail_on_drift: bool,
     },
 
     /// Query the code-as-graph surface for symbol definitions, references, and dependents
@@ -865,9 +872,14 @@ mod tests {
     fn emit_state_defaults_parse() {
         let cli = Cli::try_parse_from(["bastion", "emit-state"]).unwrap();
         match cli.command {
-            Some(Commands::EmitState { path, write }) => {
+            Some(Commands::EmitState {
+                path,
+                write,
+                fail_on_drift,
+            }) => {
                 assert_eq!(path, PathBuf::from("."));
                 assert!(!write);
+                assert!(!fail_on_drift);
             }
             other => panic!("expected EmitState, got {other:?}"),
         }
@@ -877,9 +889,26 @@ mod tests {
     fn emit_state_write_and_path_parse() {
         let cli = Cli::try_parse_from(["bastion", "emit-state", "/some/root", "--write"]).unwrap();
         match cli.command {
-            Some(Commands::EmitState { path, write }) => {
+            Some(Commands::EmitState {
+                path,
+                write,
+                fail_on_drift,
+            }) => {
                 assert_eq!(path, PathBuf::from("/some/root"));
                 assert!(write);
+                assert!(!fail_on_drift);
+            }
+            other => panic!("expected EmitState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_state_fail_on_drift_parses() {
+        let cli =
+            Cli::try_parse_from(["bastion", "emit-state", "--write", "--fail-on-drift"]).unwrap();
+        match cli.command {
+            Some(Commands::EmitState { fail_on_drift, .. }) => {
+                assert!(fail_on_drift);
             }
             other => panic!("expected EmitState, got {other:?}"),
         }
