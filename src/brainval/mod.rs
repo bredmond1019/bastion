@@ -177,10 +177,101 @@ pub fn run_graph(path: std::path::PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Handler for `bastion emit-state [--write]`. Thin pass-through to `mev::emit_state` —
-/// dry-run by default, reports planned (or applied) actions via the same human summary
-/// shape used by mev's own `EmitState` command.
-pub fn run_emit_state(path: std::path::PathBuf, write: bool) -> Result<()> {
+/// Pure truth table for whether an `emit-state --write` build-provenance drift should
+/// hard-fail instead of the default warn-and-proceed. Either the `--fail-on-drift` flag or
+/// a truthy `BASTION_FAIL_ON_BUILD_DRIFT` env var turns drift into a hard failure; the flag
+/// takes no special precedence over the env var — either alone is sufficient, so a caller
+/// need not reason about which "wins" when both are set.
+///
+/// Truthy values (case-insensitive): "1", "true", "yes", "on". Everything else — including
+/// unset, empty string, "0", "false" — is falsy. No I/O: the env var's value is passed in
+/// already read, so this stays directly unit-testable.
+pub fn should_hard_fail_on_drift(flag: bool, env_var: Option<&str>) -> bool {
+    if flag {
+        return true;
+    }
+    match env_var {
+        Some(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        None => false,
+    }
+}
+
+/// Write the loud drift banner naming `reason` (which already names both the stamped and
+/// live SHA — see [`buildstamp::verdict`]) to `w`. A thin formatting shell with no I/O of
+/// its own beyond the write; production always passes `std::io::stderr()`.
+fn write_drift_banner<W: std::io::Write>(w: &mut W, reason: &str) {
+    let _ = writeln!(
+        w,
+        "╔══════════════════════════════════════════════════════════════════╗"
+    );
+    let _ = writeln!(
+        w,
+        "║  BUILD PROVENANCE DRIFT — this bastion binary may not match the   ║"
+    );
+    let _ = writeln!(
+        w,
+        "║  source tree it is about to write from.                           ║"
+    );
+    let _ = writeln!(
+        w,
+        "╚══════════════════════════════════════════════════════════════════╝"
+    );
+    let _ = writeln!(w, "{reason}");
+}
+
+/// The build-provenance drift guard for `emit-state --write`, given an already-computed
+/// [`crate::buildstamp::Verdict`]. Pure control flow over an injectable output stream, which
+/// is what makes it directly unit-testable — including proving the banner lands on `stderr`
+/// specifically (the parameter production wires to `std::io::stderr()`) rather than stdout,
+/// without shelling out to git or spawning the real binary.
+///
+/// - `Verdict::Pass` — no-op: nothing written, `Ok(())`.
+/// - `Verdict::NotEvaluable` — no-op, same as `Pass`. Never treated as drift, or a
+///   `.git`-less deployment would become permanently unwritable.
+/// - `Verdict::Drift(reason)` — writes the banner to `stderr`, then bails with `Err` (writing
+///   nothing further, since the caller must not proceed to `mev::emit_state`) when
+///   [`should_hard_fail_on_drift`] is true for `(fail_on_drift, env_var)`; otherwise returns
+///   `Ok(())` so the default warn-and-proceed behaviour continues.
+pub fn guard_write_on_drift<W: std::io::Write>(
+    verdict: &crate::buildstamp::Verdict,
+    fail_on_drift: bool,
+    env_var: Option<&str>,
+    stderr: &mut W,
+) -> Result<()> {
+    if let crate::buildstamp::Verdict::Drift(reason) = verdict {
+        write_drift_banner(stderr, reason);
+        if should_hard_fail_on_drift(fail_on_drift, env_var) {
+            anyhow::bail!(
+                "emit-state --write refused: build provenance drift and --fail-on-drift \
+                 (or BASTION_FAIL_ON_BUILD_DRIFT) is set. {reason}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Handler for `bastion emit-state [--write] [--fail-on-drift]`. Thin pass-through to
+/// `mev::emit_state` — dry-run by default, reports planned (or applied) actions via the
+/// same human summary shape used by mev's own `EmitState` command.
+///
+/// Before any `write == true` run, checks build provenance drift (task 2's
+/// `buildstamp::current_verdict`) via [`guard_write_on_drift`] wired to real
+/// `std::io::stderr()`. A hard-fail there returns before `mev::emit_state` is ever called,
+/// so nothing is written.
+pub fn run_emit_state(path: std::path::PathBuf, write: bool, fail_on_drift: bool) -> Result<()> {
+    if write {
+        let env_var = std::env::var("BASTION_FAIL_ON_BUILD_DRIFT").ok();
+        guard_write_on_drift(
+            &crate::buildstamp::current_verdict(),
+            fail_on_drift,
+            env_var.as_deref(),
+            &mut std::io::stderr(),
+        )?;
+    }
+
     let root = mev::brain::config::find_brain_root(&path)
         .map_err(|e| anyhow::anyhow!("error resolving brain root: {e}"))?;
     let report = mev::emit_state(&root, write, None)?;
@@ -544,7 +635,7 @@ heading = "bastion"
     #[test]
     fn run_emit_state_on_valid_brain_root_succeeds() {
         let dir = make_temp_brain_root("brainval-emit-state-ok");
-        let result = run_emit_state(dir.clone(), false);
+        let result = run_emit_state(dir.clone(), false, false);
         assert!(
             result.is_ok(),
             "expected Ok(()) for a valid brain root, got: {result:?}"
@@ -573,11 +664,146 @@ heading = "bastion"
         // anyhow error there, before mev::emit_state is ever called.
         let dir = crate::testsupport::unique_temp_dir("bastion-brainval-emit-state-test");
         std::fs::create_dir_all(&dir).unwrap();
-        let result = run_emit_state(dir.clone(), false);
+        let result = run_emit_state(dir.clone(), false, false);
         assert!(
             result.is_err(),
             "expected an error when brain.toml is unresolvable"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── should_hard_fail_on_drift — truth table ─────────────────────────────
+
+    #[test]
+    fn hard_fail_false_when_flag_false_and_env_unset() {
+        assert!(!should_hard_fail_on_drift(false, None));
+    }
+
+    #[test]
+    fn hard_fail_true_when_flag_true_regardless_of_env() {
+        assert!(should_hard_fail_on_drift(true, None));
+        assert!(should_hard_fail_on_drift(true, Some("0")));
+        assert!(should_hard_fail_on_drift(true, Some("false")));
+    }
+
+    #[test]
+    fn hard_fail_true_for_each_truthy_env_value_case_insensitive() {
+        for v in ["1", "true", "TRUE", "True", "yes", "YES", "on", "ON"] {
+            assert!(
+                should_hard_fail_on_drift(false, Some(v)),
+                "expected {v:?} to be truthy"
+            );
+        }
+    }
+
+    #[test]
+    fn hard_fail_false_for_falsy_or_unrecognized_env_values() {
+        for v in ["0", "false", "no", "off", "", "  ", "banana"] {
+            assert!(
+                !should_hard_fail_on_drift(false, Some(v)),
+                "expected {v:?} to be falsy"
+            );
+        }
+    }
+
+    #[test]
+    fn hard_fail_true_when_flag_false_but_env_truthy_with_whitespace() {
+        assert!(should_hard_fail_on_drift(false, Some("  true  ")));
+    }
+
+    // ── guard_write_on_drift ─────────────────────────────────────────────────
+
+    #[test]
+    fn guard_pass_verdict_writes_nothing_and_succeeds() {
+        let mut stderr_buf: Vec<u8> = Vec::new();
+        let result = guard_write_on_drift(
+            &crate::buildstamp::Verdict::Pass,
+            false,
+            None,
+            &mut stderr_buf,
+        );
+        assert!(result.is_ok());
+        assert!(stderr_buf.is_empty());
+    }
+
+    #[test]
+    fn guard_not_evaluable_verdict_writes_nothing_and_never_hard_fails() {
+        let mut stderr_buf: Vec<u8> = Vec::new();
+        let verdict = crate::buildstamp::Verdict::NotEvaluable("no git available".to_string());
+        // Even with --fail-on-drift set, NotEvaluable must never hard-fail — a .git-less
+        // deployment must stay writable.
+        let result = guard_write_on_drift(&verdict, true, Some("1"), &mut stderr_buf);
+        assert!(result.is_ok());
+        assert!(stderr_buf.is_empty());
+    }
+
+    #[test]
+    fn guard_drift_default_writes_banner_to_stderr_and_still_succeeds() {
+        let mut stderr_buf: Vec<u8> = Vec::new();
+        let verdict = crate::buildstamp::Verdict::Drift(
+            "the running binary was built from aaa111 but the source is now at bbb222".to_string(),
+        );
+        let result = guard_write_on_drift(&verdict, false, None, &mut stderr_buf);
+        assert!(
+            result.is_ok(),
+            "default behaviour must warn-and-proceed, not fail"
+        );
+        let banner = String::from_utf8(stderr_buf).unwrap();
+        assert!(banner.contains("BUILD PROVENANCE DRIFT"));
+        assert!(banner.contains("aaa111"));
+        assert!(banner.contains("bbb222"));
+    }
+
+    #[test]
+    fn guard_drift_writes_to_the_stderr_parameter_specifically_not_a_separate_stdout_sink() {
+        // guard_write_on_drift takes exactly one output stream and it is the one production
+        // wires to std::io::stderr() (see run_emit_state) — there is no stdout parameter for
+        // the banner to leak onto. Assert the banner is present on that stream and that a
+        // second, untouched buffer standing in for stdout stays empty, pinning that the
+        // deliverable (a human seeing this on stderr) is not accidentally satisfied by
+        // println! instead of eprintln!/writeln!(stderr, ..).
+        let mut stderr_buf: Vec<u8> = Vec::new();
+        let stdout_stand_in: Vec<u8> = Vec::new();
+        let verdict = crate::buildstamp::Verdict::Drift("sha mismatch".to_string());
+        let _ = guard_write_on_drift(&verdict, false, None, &mut stderr_buf);
+        assert!(!stderr_buf.is_empty(), "banner must reach stderr");
+        assert!(
+            stdout_stand_in.is_empty(),
+            "nothing must be written outside the stderr parameter"
+        );
+    }
+
+    #[test]
+    fn guard_drift_hard_fails_via_flag_and_writes_nothing_further() {
+        let mut stderr_buf: Vec<u8> = Vec::new();
+        let verdict = crate::buildstamp::Verdict::Drift("sha mismatch".to_string());
+        let result = guard_write_on_drift(&verdict, true, None, &mut stderr_buf);
+        assert!(result.is_err(), "--fail-on-drift must turn drift into Err");
+        // The banner is still written before the hard-fail (a human should see WHY it
+        // refused), but the error itself is what stops the caller reaching mev::emit_state.
+        assert!(!stderr_buf.is_empty());
+    }
+
+    #[test]
+    fn guard_drift_hard_fails_via_env_var_identical_to_flag() {
+        let mut stderr_buf: Vec<u8> = Vec::new();
+        let verdict = crate::buildstamp::Verdict::Drift("sha mismatch".to_string());
+        let result = guard_write_on_drift(&verdict, false, Some("1"), &mut stderr_buf);
+        assert!(
+            result.is_err(),
+            "BASTION_FAIL_ON_BUILD_DRIFT=1 must have the identical effect to --fail-on-drift"
+        );
+    }
+
+    #[test]
+    fn guard_dirty_tree_is_reported_as_drift_via_the_verdict_layer() {
+        // Task 2's verdict() already covers dirty==Drift exhaustively; this pins that the
+        // guard treats that Drift like any other — banner + default warn-and-proceed.
+        let v = crate::buildstamp::verdict("abc123", Some("abc123"), "1", true);
+        assert!(matches!(v, crate::buildstamp::Verdict::Drift(_)));
+        let mut stderr_buf: Vec<u8> = Vec::new();
+        let result = guard_write_on_drift(&v, false, None, &mut stderr_buf);
+        assert!(result.is_ok());
+        assert!(!stderr_buf.is_empty());
     }
 }

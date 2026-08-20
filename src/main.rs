@@ -6,6 +6,7 @@ mod api;
 mod assess;
 mod brain;
 mod brainval;
+mod buildstamp;
 mod cli;
 mod config;
 mod costs;
@@ -257,7 +258,11 @@ async fn dispatch(cli: Cli) -> Result<()> {
             // pass-throughs to the `mev` path-dep library (D15 / BA.15.2).
             Commands::Manifest { path, pretty } => brainval::run_manifest(path, pretty),
             Commands::Graph { path } => brainval::run_graph(path),
-            Commands::EmitState { path, write } => brainval::run_emit_state(path, write),
+            Commands::EmitState {
+                path,
+                write,
+                fail_on_drift,
+            } => brainval::run_emit_state(path, write, fail_on_drift),
             // Serve is DB-free — does NOT call Config::load() or require DATABASE_URL.
             // The actix System runs on a dedicated OS thread (runtime-spike outcome, Task 1).
             Commands::Serve { addr, token } => {
@@ -308,6 +313,15 @@ async fn dispatch(cli: Cli) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Handle --build-stamp before any subcommand dispatch or tracing init: it is a
+    // top-level flag that must work with no subcommand present, and its output is a
+    // single JSON line on stdout meant for machine consumers (mev's toolchain-freshness
+    // check), not something to interleave with tracing.
+    if cli.build_stamp {
+        println!("{}", buildstamp::stamp_json());
+        return Ok(());
+    }
 
     // Install the global tracing subscriber before any dispatch.
     // verbose/json_logs are global flags parsed by clap before the subcommand.
@@ -565,6 +579,7 @@ mod tests {
             command_name(&Commands::EmitState {
                 path: PathBuf::from("."),
                 write: false,
+                fail_on_drift: false,
             }),
             "emit-state"
         );

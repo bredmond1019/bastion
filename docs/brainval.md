@@ -6,7 +6,7 @@ doc_id: brainval
 layer: [console, brain]
 project: bastion
 status: active
-keywords: [mev, validate-brain, manifest, graph, emit-state, OKF, pass-through]
+keywords: [mev, validate-brain, manifest, graph, emit-state, OKF, pass-through, build-stamp, drift]
 related: [brain, validate, okf]
 ---
 
@@ -25,10 +25,64 @@ or graph logic.
 bastion validate-brain [PATH] [--sync] [--graph] [--state] [--links] [--structure] [--json]
 bastion manifest [PATH] [--pretty]
 bastion graph [PATH]
-bastion emit-state [PATH] [--write]
+bastion emit-state [PATH] [--write] [--fail-on-drift]
 ```
 
 `PATH` defaults to `.` for all four subcommands.
+
+## `--build-stamp` and the build-provenance drift guard
+
+`bastion` stamps its own build provenance at compile time (`build.rs`, mirroring
+`core/mev/build.rs`): the git SHA it was built from, whether the source tree was dirty at build
+time, and the source directory. `bastion --build-stamp` is a top-level flag (no subcommand —
+it works before dispatch) that prints that stamp to stdout as JSON and exits 0:
+
+```
+$ bastion --build-stamp
+{"git_sha": "a1b2c3...", "dirty": false, "source_dir": "/Users/alice/agentic-portfolio/core/bastion"}
+```
+
+**This exact three-key shape — `git_sha`, `dirty`, `source_dir` — is a pinned cross-repo
+contract with `mev`'s `toolchain-freshness` check
+(`mev:MV.ticket.toolchain-freshness-covers-the-writer`).** Do not add, rename, or drop a key;
+mev queries this shape verbatim to detect a stale-binary write before it silently no-ops or
+destroys corpus state. `dirty` is a JSON boolean (`true`/`false`) when the build-time flag was
+determinable, or the literal string `"unknown"` when it could not be (e.g. no `.git/` present at
+build time) — never guessed.
+
+### The drift banner on `emit-state --write`
+
+`emit-state --write` is the only corpus-writing path in this binary. Before it calls
+`mev::emit_state`, it re-derives the *live* HEAD of the stamped source directory and compares it
+against the compiled-in stamp. When they disagree — a different SHA, or the tree was dirty at
+build time — that is **drift**: the running binary's provenance does not match (or cannot vouch
+for) the source it is about to write from.
+
+On drift, a loud banner is printed to **stderr**, naming both the stamped SHA and the live SHA:
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║  BUILD PROVENANCE DRIFT — this bastion binary may not match the   ║
+║  source tree it is about to write from.                           ║
+╚══════════════════════════════════════════════════════════════════╝
+the running binary was built from <stamped-sha> but the source is now at <live-sha>; rebuild before any --write run
+```
+
+**The default is warn-and-proceed** — the write still completes with exit 0. Mid-flight drift
+(a binary installed from an earlier commit than the current working tree) is normal in this
+fleet's day-to-day operator workflow, and blocking every `--write` on it would be the wrong
+trade for interactive use.
+
+For unattended runs (e.g. the Mac Mini's nightly `scripts/routine.sh`), opt in to a hard fail
+instead: pass `--fail-on-drift` on `emit-state`, or set the `BASTION_FAIL_ON_BUILD_DRIFT`
+environment variable to a truthy value (`1`, `true`, `yes`, `on`, case-insensitive). Either one
+turns the same drift into a non-zero exit **before** `mev::emit_state` is called, so nothing is
+written. The env var exists specifically so an HQ-owned script can refuse to write from a stale
+build without bastion's own CLI arguments needing to change.
+
+A build tree that could not be evaluated at all (no `.git/`, an unknown stamp, or a missing
+source directory) is reported as `NotEvaluable`, not drift — it never prints the banner and
+never hard-fails, so a `.git`-less deployment is not made permanently unwritable.
 
 ## `validate-brain`
 
