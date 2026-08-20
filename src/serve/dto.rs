@@ -1671,12 +1671,11 @@ pub struct RunStateDto {
 pub struct RunSummaryDto {
     /// The run's UUID as a string.
     pub run_id: String,
-    /// Workflow identity (e.g. `"sdlc-flow"`). **Always absent today** — no production code
-    /// stamps a workflow-identity key anywhere `bastion` can read it from a live `TaskContext`;
-    /// `engine-serve` only tracks it in a process-local, `pub(crate)`-scoped side table. Tracked
-    /// by the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type`
-    /// (`core/engine-rs/planning/ticket-expose-live-run-workflow-type/`); this DTO does not
-    /// fabricate a value in the meantime.
+    /// Workflow identity (e.g. `"sdlc-flow"`). Populated from `engine-serve`'s live-run
+    /// metadata (`engine_serve::http::live_run_workflow_type`) for runs this process
+    /// dispatched. Absent — never `null` — when the engine has no metadata for the run: this
+    /// covers a run that predates a process restart (the side table is process-local) and a run
+    /// dispatched by an out-of-process engine. Neither case is fabricated a value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_type: Option<String>,
     /// Lifecycle status as the lowercase wire string, derived via
