@@ -3327,3 +3327,177 @@ heading = "Fixture Repo"
         dump("concurrency", "repo-404", req, &app).await;
     }
 }
+
+/// `/api/sessions*` corpus scenarios (`BA.22.A`, task 4) — the six tmux
+/// session routes (`handlers::sessions::{list_sessions, get_pane, send,
+/// send_key, create_session, delete_session}`).
+///
+/// # Why only the tmux-absent shape is frozen
+///
+/// All six handlers shell out to tmux via term-core's free functions with no
+/// injection seam, so their 2xx shapes depend on whether the machine running
+/// `cargo test` has a live tmux server — not something a checked-in golden
+/// may depend on (the `costs_scenarios` precedent for a route whose success
+/// shape cannot be frozen). This module therefore freezes only the one shape
+/// every route can reach deterministically on any machine, tmux installed or
+/// not: `run_tmux` (`../engine-rs/crates/term-core/src/tmux.rs`) maps
+/// `io::ErrorKind::NotFound` from `Command::new("tmux")` to
+/// `TmuxError::NotInstalled`, which `tmux_error_to_status` maps to 503 +
+/// `C001`. Pointing `PATH` at an empty temp directory for the duration of
+/// each scenario makes `tmux` unresolvable via `$PATH` lookup, so every
+/// route reaches that branch regardless of whether the host actually has
+/// tmux installed. The 2xx session shapes (a real session list, a real pane
+/// capture, a real create/delete) are deliberately NOT in this corpus.
+///
+/// # Env discipline
+///
+/// `PATH` is process-global and `web::block` runs the tmux call on a
+/// threadpool that inherits it, so every scenario takes
+/// `crate::testsupport::lock_env()` for its **entire** body (including the
+/// `dump_with` call, which awaits the real handler) and restores the
+/// original `PATH` via `EnvVarGuard`'s `Drop`, never by hand — the same
+/// discipline `notify_test_send_c005` (`src/serve/mod.rs`) uses for its env
+/// vars. Every scenario dispatches through `dump_with(&CorpusConfig::
+/// from_env_locked(&env_lock), ...)` rather than the plain `dump()` shell —
+/// `dump()` internally calls `CorpusConfig::from_env()`, which acquires
+/// `lock_env()` itself; since the mutex is not reentrant, calling it while
+/// already holding the lock deadlocks (the `costs_scenarios` precedent for
+/// this exact hazard). An unlocked `PATH` mutation would separately race
+/// every other test in the binary that shells out
+/// (`ticket-serve-env-test-race`).
+#[cfg(test)]
+mod sessions_scenarios {
+    use actix_web::web;
+
+    use super::{CorpusConfig, dump_with};
+    use crate::serve::handlers::sessions::{
+        create_session, delete_session, get_pane, list_sessions, send, send_key,
+    };
+    use crate::testsupport::{EnvVarGuard, lock_env, unique_temp_dir};
+
+    macro_rules! sessions_service {
+        () => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .service(
+                        web::resource("/api/sessions")
+                            .route(web::get().to(list_sessions))
+                            .route(web::post().to(create_session)),
+                    )
+                    .service(
+                        web::resource("/api/sessions/{name}/pane").route(web::get().to(get_pane)),
+                    )
+                    .service(web::resource("/api/sessions/{name}/send").route(web::post().to(send)))
+                    .service(
+                        web::resource("/api/sessions/{name}/key").route(web::post().to(send_key)),
+                    )
+                    .service(
+                        web::resource("/api/sessions/{name}")
+                            .route(web::delete().to(delete_session)),
+                    ),
+            )
+            .await
+        };
+    }
+
+    /// Point `PATH` at a freshly-created, guaranteed-empty temp directory so
+    /// `Command::new("tmux")` cannot resolve the real binary even when the
+    /// host has tmux installed. Returns the guard (drop restores `PATH`) and
+    /// the temp dir (caller removes it after the request completes).
+    fn empty_path(
+        lock: &crate::testsupport::EnvLock,
+        label: &str,
+    ) -> (EnvVarGuard, std::path::PathBuf) {
+        let dir = unique_temp_dir(&format!("bastion-corpus-sessions-{label}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = EnvVarGuard::set(lock, "PATH", dir.to_str().expect("temp path must be UTF-8"));
+        (guard, dir)
+    }
+
+    #[actix_web::test]
+    async fn sessions_corpus_no_tmux() {
+        let env_lock = lock_env();
+        let (_path_guard, dir) = empty_path(&env_lock, "list");
+        let config = CorpusConfig::from_env_locked(&env_lock);
+
+        let app = sessions_service!();
+        let req = actix_web::test::TestRequest::get().uri("/api/sessions");
+        dump_with(&config, "sessions", "no-tmux", req, &app).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn sessions_pane_corpus_no_tmux() {
+        let env_lock = lock_env();
+        let (_path_guard, dir) = empty_path(&env_lock, "pane");
+        let config = CorpusConfig::from_env_locked(&env_lock);
+
+        let app = sessions_service!();
+        let req = actix_web::test::TestRequest::get().uri("/api/sessions/fixture-session/pane");
+        dump_with(&config, "sessions-pane", "no-tmux", req, &app).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn sessions_create_corpus_no_tmux() {
+        let env_lock = lock_env();
+        let (_path_guard, dir) = empty_path(&env_lock, "create");
+        let config = CorpusConfig::from_env_locked(&env_lock);
+
+        let app = sessions_service!();
+        let req = actix_web::test::TestRequest::post()
+            .uri("/api/sessions")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(r#"{"name":"fixture-session"}"#);
+        dump_with(&config, "sessions-create", "no-tmux", req, &app).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn sessions_send_corpus_no_tmux() {
+        let env_lock = lock_env();
+        let (_path_guard, dir) = empty_path(&env_lock, "send");
+        let config = CorpusConfig::from_env_locked(&env_lock);
+
+        let app = sessions_service!();
+        let req = actix_web::test::TestRequest::post()
+            .uri("/api/sessions/fixture-session/send")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(r#"{"keys":"echo hi"}"#);
+        dump_with(&config, "sessions-send", "no-tmux", req, &app).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn sessions_key_corpus_no_tmux() {
+        let env_lock = lock_env();
+        let (_path_guard, dir) = empty_path(&env_lock, "key");
+        let config = CorpusConfig::from_env_locked(&env_lock);
+
+        let app = sessions_service!();
+        let req = actix_web::test::TestRequest::post()
+            .uri("/api/sessions/fixture-session/key")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(r#"{"key":"Enter"}"#);
+        dump_with(&config, "sessions-key", "no-tmux", req, &app).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[actix_web::test]
+    async fn sessions_delete_corpus_no_tmux() {
+        let env_lock = lock_env();
+        let (_path_guard, dir) = empty_path(&env_lock, "delete");
+        let config = CorpusConfig::from_env_locked(&env_lock);
+
+        let app = sessions_service!();
+        let req = actix_web::test::TestRequest::delete().uri("/api/sessions/fixture-session");
+        dump_with(&config, "sessions-delete", "no-tmux", req, &app).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
