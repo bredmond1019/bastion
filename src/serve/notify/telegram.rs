@@ -18,13 +18,13 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use engine_core::operator::{OperatorPayloadLimits, ValidatedOperatorPayload};
+use engine_core::operator::{
+    AckHandle, DeliveredMessage, NotifyError, OperatorPayloadLimits, OperatorResponse,
+    OperatorTransport, ResponseVerdict, UpdateCursor, ValidatedOperatorPayload,
+};
 
 use crate::config::{BotToken, TelegramConfig};
 use crate::serve::notify::telegram_http;
-use crate::serve::notify::{
-    AckHandle, DeliveredMessage, NotifyError, OperatorResponse, OperatorTransport, UpdateCursor,
-};
 
 /// Number of leading hex characters of the payload's SHA-256 digest carried
 /// in a Telegram `callback_data` string. A named const (never a magic
@@ -311,54 +311,6 @@ pub fn parse_updates(
 
     let cursor = max_update_id.map(|id| UpdateCursor((id + 1).to_string()));
     Ok((responses, cursor))
-}
-
-/// The outcome of resolving an [`OperatorResponse`] against the payload the
-/// caller expects it to answer.
-///
-/// `Accepted` and `StaleDigest` both carry the digest prefix the operator's
-/// tap actually presented and when it was observed — `engine_core`'s
-/// `ApproveAndRunVerdict` needs both (`presented_digest` / `decided_at`)
-/// alongside `gate_id` and `option_key` to drive
-/// `ApproveAndRunSeams::resolve_verdict`, and neither value has anywhere
-/// else to live: both already exist on the inbound `OperatorResponse`
-/// (`digest`, `received_at`) and would otherwise be dropped here rather
-/// than threaded through a second channel alongside this enum.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResponseVerdict {
-    /// Both the gate id and the digest prefix match: this response applies.
-    Accepted {
-        /// The gate this response answers.
-        gate_id: String,
-        /// The stable machine key of the option the operator tapped.
-        option_key: String,
-        /// The digest prefix the operator's tap presented (`resp.digest`).
-        digest: String,
-        /// When this response was observed (`resp.received_at`).
-        decided_at: chrono::DateTime<chrono::Utc>,
-    },
-    /// The gate matches but the digest does not — the payload was mutated
-    /// (re-rendered) after this response was shown, so it must re-queue
-    /// rather than execute. Never conflated with `Accepted`. Carries its
-    /// `gate_id` (previously dropped) so a sink can re-queue the right
-    /// item, plus the same digest/option/time fields `Accepted` carries so
-    /// a full `ApproveAndRunVerdict` can be built regardless of which arm
-    /// resolution landed on — `decide()` on the engine side, not this
-    /// match, is what enforces the mismatch stays a re-queue rather than an
-    /// execution.
-    StaleDigest {
-        /// The gate this response answers.
-        gate_id: String,
-        /// The stable machine key of the option the operator tapped.
-        option_key: String,
-        /// The digest prefix the operator's tap presented (`resp.digest`).
-        digest: String,
-        /// When this response was observed (`resp.received_at`).
-        decided_at: chrono::DateTime<chrono::Utc>,
-    },
-    /// The response answers a different gate than `expected` — not this
-    /// payload's response at all.
-    UnknownGate,
 }
 
 /// Resolve `resp` against the payload it is expected to answer.

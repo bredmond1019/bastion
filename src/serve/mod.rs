@@ -185,7 +185,7 @@ fn resolve_pending_lookup(
 
 /// Build the engine-side [`ApproveAndRunVerdict`][engine_core::workflows::approve_and_run::ApproveAndRunVerdict]
 /// `ApproveAndRunSeams::resolve_verdict` needs from a resolved
-/// [`notify::telegram::ResponseVerdict`] (`ticket-approve-and-run-seams` task
+/// [`notify::ResponseVerdict`] (`ticket-approve-and-run-seams` task
 /// 3). `Accepted` and `StaleDigest` both now carry every field a verdict
 /// needs — `gate_id`, `option_key`, `digest`, `decided_at` — so both convert
 /// the same way; this function does **not** decide whether the digest
@@ -197,10 +197,10 @@ fn resolve_pending_lookup(
 /// nothing for `resolve_verdict` to act on.
 #[must_use]
 fn approve_and_run_verdict_for(
-    verdict: &notify::telegram::ResponseVerdict,
+    verdict: &notify::ResponseVerdict,
     who: &str,
 ) -> Option<engine_core::workflows::approve_and_run::ApproveAndRunVerdict> {
-    use notify::telegram::ResponseVerdict;
+    use notify::ResponseVerdict;
     match verdict {
         ResponseVerdict::Accepted {
             gate_id,
@@ -851,7 +851,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                     // payload body, since a rendered summary may quote
                     // arbitrary operator-supplied content.
                     match &verdict {
-                        notify::telegram::ResponseVerdict::Accepted { gate_id, .. } => {
+                        notify::ResponseVerdict::Accepted { gate_id, .. } => {
                             verdict_registry.remove(gate_id);
                             tracing::info!(
                                 target: "bastion::serve",
@@ -860,7 +860,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                                 "operator response resolved"
                             );
                         }
-                        notify::telegram::ResponseVerdict::StaleDigest { gate_id, .. } => {
+                        notify::ResponseVerdict::StaleDigest { gate_id, .. } => {
                             tracing::info!(
                                 target: "bastion::serve",
                                 verdict = "stale_digest",
@@ -868,7 +868,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                                 "operator response resolved"
                             );
                         }
-                        notify::telegram::ResponseVerdict::UnknownGate => {
+                        notify::ResponseVerdict::UnknownGate => {
                             tracing::info!(
                                 target: "bastion::serve",
                                 verdict = "unknown_gate",
@@ -6035,7 +6035,7 @@ mod approve_and_run_seams_wiring_tests {
 
     #[test]
     fn approve_and_run_verdict_for_converts_accepted() {
-        let verdict = notify::telegram::ResponseVerdict::Accepted {
+        let verdict = notify::ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
             digest: "ab12".to_string(),
@@ -6053,7 +6053,7 @@ mod approve_and_run_seams_wiring_tests {
 
     #[test]
     fn approve_and_run_verdict_for_converts_stale_digest_and_keeps_its_gate_id() {
-        let verdict = notify::telegram::ResponseVerdict::StaleDigest {
+        let verdict = notify::ResponseVerdict::StaleDigest {
             gate_id: "gate-2".to_string(),
             option_key: "approve".to_string(),
             digest: "stale-digest".to_string(),
@@ -6070,8 +6070,7 @@ mod approve_and_run_seams_wiring_tests {
     #[test]
     fn approve_and_run_verdict_for_unknown_gate_yields_none() {
         assert!(
-            approve_and_run_verdict_for(&notify::telegram::ResponseVerdict::UnknownGate, "chat-42")
-                .is_none()
+            approve_and_run_verdict_for(&notify::ResponseVerdict::UnknownGate, "chat-42").is_none()
         );
     }
 }
