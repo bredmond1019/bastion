@@ -2,11 +2,43 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-19T17:58:02-03:00
+timestamp: 2026-08-21T00:00:00-03:00
 ---
 # Log — bastion
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
+
+---
+
+## [run: 2026-08-21]
+
+### BA.21.A — Operator transport seam: bastion implements engine-rs's trait and injects it at boot
+
+Re-homed the operator-transport abstraction across the bastion/engine-rs boundary per SQ-31: bastion
+no longer defines `OperatorTransport` — `src/serve/notify/mod.rs` now re-exports the trait (and
+`AckHandle`/`MessageHandle`/`OperatorResponse`/`DeliveredMessage`/`UpdateCursor`/`NotifyError`/
+`ResponseVerdict`) from `engine_core::operator` (EN.12.J), keeping only the genuinely bastion-owned
+`NotifyPollLoop`/`PendingPayloads`/`PendingLookup`/`VerdictSink` types (task 1). `run_server` now
+hoists the transport `Arc` via a new `split_operator_transport()` helper so the engine-mount app_data
+registration and `NotifyPollLoop` share the SAME allocation, proven by an `Arc::ptr_eq` test, and
+degrades to no transport (never panics) when Telegram is unconfigured (task 2). A per-file test-count
+parity table in `planning/BA.21.A/tasks.md` confirms no test was lost in the move (task 3). A new
+`engine_side_app_data_resolves_transport_and_reaches_scripted_send` test proves an engine-side caller
+resolving the app_data-registered `Arc<dyn OperatorTransport>` reaches `ScriptedTransport::send`
+(task 4). `docs/serve-api.md` documents the new ownership split at §26.2, bumped to v0.37 (task 5).
+Full-suite validation (task 6): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`
+(2382 passed / 0 failed), `cargo build --release`, `scripts/check-contract-corpus-drift.sh`, and the
+`engine_core`-references-`bastion` grep all pass — final verdict **PASS**. This is the seam BA.21.B
+(hung-chain alarm), BA.21.C (headless question), and BA.21.D (attention board delivery) all stand on.
+Next: BA.21.B — wire the stale-run alarm through this transport.
+
+```
+bf518e1 feat: implement BA.21.A-task5
+79b517a feat: implement BA.21.A-task4
+7742f68 feat: implement BA.21.A-task2
+5a90c37 feat: implement BA.21.A-task1
+722c3ec chore: init worktree BA.21.A-flow
+```
 
 ---
 
