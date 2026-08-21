@@ -1,0 +1,26 @@
+{
+  "body": {
+    "categories": [
+      {
+        "active_count": 1,
+        "active_repos": [
+          "fixture-holder-browser"
+        ],
+        "cap": 2,
+        "category": "browser-automation",
+        "slots_available": 1
+      },
+      {
+        "active_count": 1,
+        "active_repos": [
+          "fixture-holder-native"
+        ],
+        "cap": 4,
+        "category": "native-build",
+        "slots_available": 3
+      }
+    ],
+    "degraded": false
+  },
+  "status_code": 200
+}

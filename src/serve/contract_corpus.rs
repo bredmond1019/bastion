@@ -3180,3 +3180,150 @@ heading = "Beta"
         dump("lanes", "epic-404", req, &app).await;
     }
 }
+
+/// `GET /api/concurrency` corpus scenarios (`BA.22.A`, task 3) — mev's live
+/// heavy-lane registry projection (`handlers::concurrency::get_concurrency`,
+/// serve-api §29, v0.36, `BA.19.D`).
+///
+/// # The live-state hazard, and how this module avoids it
+/// `get_concurrency` resolves the brain root from the shared registry's
+/// workspace root and reads `<brain-root>/.fleet-locks` — and this very SDLC
+/// lane holds a registered `bastion` slot in the REAL repo's `.fleet-locks`
+/// right now. Dispatching through a registry pointed at the real repo root
+/// would therefore freeze a golden that reflects this process's own live
+/// registration, which is not reproducible on any other machine or run.
+///
+/// Both scenarios below instead point the registry at a **fixture brain
+/// root** — an isolated temp dir with its own `brain.toml`, the same
+/// `FileConfig { workspaces, default_workspace }` shape `lanes_scenarios`
+/// uses — so `find_brain_root` resolves entirely inside the fixture and
+/// never touches the real repo's `.fleet-locks`. `concurrency__populated`
+/// seeds the fixture's own `.fleet-locks` with one live entry per known
+/// category (`native-build`, `browser-automation`), each keyed to *this
+/// test process's own pid* (`std::process::id()`, alive for the whole test,
+/// exactly the pattern `handlers::concurrency`'s own
+/// `categories_to_dtos_over_a_live_fixture_...` test already uses) so
+/// `compute_fleet_slot_view` reports both categories as live and
+/// non-degraded, deterministically. Neither category's cap nor the fixture
+/// repo names it holds depend on anything live-process-specific, so the
+/// wire body is identical across runs — proven by the twice-regenerated
+/// byte-identical check this task's acceptance criteria requires. No golden
+/// below embeds a pid, host path, or any value tied to the real fleet.
+#[cfg(test)]
+mod concurrency_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::concurrency::get_concurrency;
+
+    /// Minimal `brain.toml` — one `[[repos]]` entry (`fixture-repo`), enough
+    /// for `load_brain_config` to succeed; `concurrency__populated` never
+    /// queries `?repo=`, and `concurrency__repo-404` deliberately asks for a
+    /// slug this registry does not contain.
+    fn fixture_root(label: &str) -> TempDir {
+        let tmp = TempDir::new(&format!("concurrency-{label}"));
+        write(
+            &tmp.path().join("brain.toml"),
+            r#"[vocab]
+layer = ["console"]
+status = ["active"]
+
+[crawl]
+skip_dirs = ["target", ".git"]
+
+[[repos]]
+slug = "fixture-repo"
+tier = "core"
+repo_path = "repos/fixture-repo"
+status_file = "repos/fixture-repo/planning/status.md"
+cache_doc = "docs/projects/fixture-repo.md"
+heading = "Fixture Repo"
+"#,
+        );
+        tmp
+    }
+
+    /// Registry pointing `default_workspace` directly at the fixture brain
+    /// root — same shape `lanes_scenarios::registry` uses.
+    fn registry(tmp: &TempDir) -> FileConfig {
+        FileConfig {
+            workspaces: Some(HashMap::from([(
+                "brain-root".to_owned(),
+                tmp.path().to_path_buf(),
+            )])),
+            default_workspace: Some("brain-root".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    /// Write one raw `.fleet-locks/<repo>__<label>.json` entry keyed to
+    /// *this test process's own pid* so `compute_fleet_slot_view` reads it
+    /// as genuinely live — mirrors `handlers::concurrency`'s own
+    /// `write_lock_entry` test helper. No pid value ever reaches the wire
+    /// (`ConcurrencyCategoryDto` carries only `category`/`cap`/
+    /// `active_count`/`active_repos`/`slots_available`), so this is safe to
+    /// freeze even though the pid itself varies between runs.
+    fn write_live_lock_entry(root: &std::path::Path, repo: &str, category: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let dir = root.join(".fleet-locks");
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = serde_json::json!({
+            "repo": repo,
+            "pid": std::process::id(),
+            "category": category,
+            "started_at": now,
+        });
+        std::fs::write(
+            dir.join(format!("{repo}__p.json")),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
+    }
+
+    macro_rules! concurrency_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(
+                        web::resource("/api/concurrency").route(web::get().to(get_concurrency)),
+                    ),
+            )
+            .await
+        };
+    }
+
+    /// No-query form, one row per known heavy category — both `native-build`
+    /// and `browser-automation` carry exactly one live fixture holder, so
+    /// the golden freezes the full non-degraded, non-empty
+    /// `ConcurrencyCategoryDto` shape for both known categories rather than
+    /// an all-zero-hold table.
+    #[actix_web::test]
+    async fn concurrency_corpus_populated() {
+        let tmp = fixture_root("populated");
+        write_live_lock_entry(tmp.path(), "fixture-holder-native", "native-build");
+        write_live_lock_entry(tmp.path(), "fixture-holder-browser", "browser-automation");
+
+        let app = concurrency_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/concurrency");
+        dump("concurrency", "populated", req, &app).await;
+    }
+
+    /// `?repo=<slug>` for a slug absent from the fixture's `[[repos]]`
+    /// registry → 404 + `C005` via `board::epic_error_response`, same
+    /// pattern as `lanes_scenarios::lanes_corpus_epic_404`.
+    #[actix_web::test]
+    async fn concurrency_corpus_repo_404() {
+        let tmp = fixture_root("repo-404");
+        let app = concurrency_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/concurrency?repo=no-such-repo");
+        dump("concurrency", "repo-404", req, &app).await;
+    }
+}
