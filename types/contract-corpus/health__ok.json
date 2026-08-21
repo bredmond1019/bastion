@@ -1,0 +1,7 @@
+{
+  "body": {
+    "service": "bastion",
+    "status": "ok"
+  },
+  "status_code": 200
+}

@@ -2884,3 +2884,109 @@ mod costs_scenarios {
         dump_with(&config, "costs", "db-error", req, &app).await;
     }
 }
+
+/// `GET /health` corpus scenarios (`BA.22.A`, task 1) — the liveness probe.
+///
+/// The handler takes no `app_data` — no fixture/registry is needed, so this
+/// is the simplest scenario module in the corpus. `health()` is widened to
+/// `pub(crate)` in `src/serve/mod.rs` (the one permitted production-adjacent
+/// edit for this block) so this module can dispatch the real handler rather
+/// than a duplicate — the module doc's "real dispatch only" rule.
+#[cfg(test)]
+mod health_scenarios {
+    use actix_web::web;
+
+    use super::dump;
+    use crate::serve::health;
+
+    macro_rules! health_service {
+        () => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .service(web::resource("/health").route(web::get().to(health))),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn health_corpus_ok() {
+        let app = health_service!();
+        let req = actix_web::test::TestRequest::get().uri("/health");
+        dump("health", "ok", req, &app).await;
+    }
+}
+
+/// `GET /api/repos` corpus scenarios (`BA.22.A`, task 1) — the workspace
+/// registry summary (`handlers::status::list_repos`).
+///
+/// `repos__populated` seeds one workspace entry with a `planning/status.md`
+/// so the golden freezes the full `{name, now, has_handoff}` shape rather
+/// than an all-default row; `repos__empty` uses a registry with no
+/// workspaces at all, exercising the route's documented `[]` degrade path.
+///
+/// Neither scenario's response body embeds the fixture's own temp-dir
+/// path — `RepoSummaryDto` only wires `name`/`now`/`has_handoff`, none of
+/// which is derived from the workspace root string itself — so no
+/// [`super::redact_value`] rule applies to this route.
+#[cfg(test)]
+mod repos_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::status::list_repos;
+
+    macro_rules! repos_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(web::resource("/api/repos").route(web::get().to(list_repos))),
+            )
+            .await
+        };
+    }
+
+    const STATUS_MD: &str = r#"---
+type: ProjectStatus
+title: Fixture Status
+description: Contract-corpus fixture status.md for the repos__populated golden.
+now: "BA.22.A in progress — contract-corpus goldens"
+next: "n/a"
+blocked: []
+---
+
+# Status
+"#;
+
+    fn registry_with_one(tmp: &TempDir) -> FileConfig {
+        write(&tmp.path().join("planning/status.md"), STATUS_MD);
+        let mut workspaces = HashMap::new();
+        workspaces.insert("bastion".to_string(), tmp.path().to_path_buf());
+        FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn repos_corpus_populated() {
+        let tmp = TempDir::new("repos-populated");
+        let registry = registry_with_one(&tmp);
+        let app = repos_service!(registry);
+        let req = actix_web::test::TestRequest::get().uri("/api/repos");
+        dump("repos", "populated", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn repos_corpus_empty() {
+        let registry = FileConfig::default();
+        let app = repos_service!(registry);
+        let req = actix_web::test::TestRequest::get().uri("/api/repos");
+        dump("repos", "empty", req, &app).await;
+    }
+}

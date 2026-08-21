@@ -350,7 +350,7 @@ pub fn decide_engine_mount(
 ///
 /// Auth policy: public (no bearer token required). This matches the
 /// [`docs/serve-api.md`](../../docs/serve-api.md) v0 contract (Task 6).
-async fn health() -> HttpResponse {
+pub(crate) async fn health() -> HttpResponse {
     HttpResponse::Ok().json(dto::HealthResponse::ok())
 }
 
