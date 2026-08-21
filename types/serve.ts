@@ -3,6 +3,27 @@
 */
 
 /**
+ * Names the earlier archive row that a `superseded` disposal corrects.
+ * 
+ * A typed `{slug, disposed_at}` pair, not a composite string key, because
+ * the archive it lives in (`planning/carryover-archive.jsonl`) is
+ * append-only: a malformed composite key (wrong delimiter, missing part,
+ * ambiguous separator inside a slug) would itself be a permanent line, and
+ * reading it back would need a parser and a grammar in mev just to recover
+ * two facts that already have their own JSON fields. Two plain, required
+ * fields need neither — the format has no room to be malformed.
+ */
+export interface AmendsRef {
+	/** Stable slug of the row being corrected. */
+	slug: string;
+	/**
+	 * `disposed_at` of the row being corrected, so the pair uniquely
+	 * identifies one line even if the same slug was disposed more than once.
+	 */
+	disposed_at: string;
+}
+
+/**
  * Payload for [`BlockedBy::Approval`] — a gated action awaiting a single
  * operator decision.
  * 
@@ -296,16 +317,23 @@ export interface BlockGraphNodeDto {
 }
 
 /**
- * Mirrors `okf_core::state::StateEdgeKind`'s two variants. Serialises
- * `snake_case` to match upstream (`"blocked_by"`, `"cross_repo"`). Declared
- * locally rather than reusing `okf_core::StateEdgeKind` — see the module note
- * above.
+ * Mirrors `okf_core::state::StateEdgeKind`'s three variants. Serialises
+ * `snake_case` to match upstream (`"blocked_by"`, `"cross_repo"`,
+ * `"carryover_blocks"`). Declared locally rather than reusing
+ * `okf_core::StateEdgeKind` — see the module note above.
  */
 export enum BlockEdgeKindDto {
 	/** A `blocked_by` dependency (a block is waiting on another block). */
 	BlockedBy = "blocked_by",
 	/** An explicit cross-repo dependency declared in a brain file's `cross_repo[]`. */
 	CrossRepo = "cross_repo",
+	/**
+	 * A `carryover[].blocks[]{type:"block"}` gating edge. Its `to_ref` is
+	 * TARGETLESS — it names `"carryover:<repo>/<slug>"` and does not resolve
+	 * to a node, so consumers doing dangling/cycle/topological work must
+	 * skip it (mirrors `okf_core::state::StateEdgeKind::CarryoverBlocks`).
+	 */
+	CarryoverBlocks = "carryover_blocks",
 }
 
 /**
@@ -1233,7 +1261,7 @@ export interface NodeTransitionDto {
 /**
  * `POST /api/notify/test` response body — the `gate_id` and `digest` of the
  * fixed 2-option `ValidatedOperatorPayload` that was just sent over the
- * configured [`crate::serve::notify::OperatorTransport`], so the operator
+ * configured [`engine_core::operator::OperatorTransport`], so the operator
  * smoke test has something to correlate the delivered message against.
  * 
  * Wire format:
@@ -1591,12 +1619,11 @@ export interface RunSummaryDto {
 	/** The run's UUID as a string. */
 	run_id: string;
 	/**
-	 * Workflow identity (e.g. `"sdlc-flow"`). **Always absent today** — no production code
-	 * stamps a workflow-identity key anywhere `bastion` can read it from a live `TaskContext`;
-	 * `engine-serve` only tracks it in a process-local, `pub(crate)`-scoped side table. Tracked
-	 * by the engine-rs follow-up ticket `EN.ticket.expose-live-run-workflow-type`
-	 * (`core/engine-rs/planning/ticket-expose-live-run-workflow-type/`); this DTO does not
-	 * fabricate a value in the meantime.
+	 * Workflow identity (e.g. `"sdlc-flow"`). Populated from `engine-serve`'s live-run
+	 * metadata (`engine_serve::http::live_run_workflow_type`) for runs this process
+	 * dispatched. Absent — never `null` — when the engine has no metadata for the run: this
+	 * covers a run that predates a process restart (the side table is process-local) and a run
+	 * dispatched by an out-of-process engine. Neither case is fabricated a value.
 	 */
 	workflow_type?: string;
 	/**
@@ -1884,5 +1911,29 @@ export interface WsFrame {
 	kind: WsFrameKind;
 	/** Arbitrary JSON payload.  Shape is defined per-kind in the serve-api contract. */
 	payload: any;
+}
+
+/**
+ * Why a carryover entry left `state.json` — the closed vocabulary for
+ * [`CarryoverArchiveRow::reason`].
+ * 
+ * Deliberately the mirror image of [`CarryoverKind`]: `CarryoverKind`
+ * degrades an unrecognized value to `Unknown(String)` because a carryover
+ * with a strange `kind` is a live entry someone can fix in place later.
+ * `DisposalReason` has NO such fallback and NO `#[serde(other)]` — the
+ * archive this feeds is append-only (`planning/carryover-archive.jsonl`),
+ * so a mistyped reason is not a fixable live value, it is a permanent line
+ * in a file nothing ever edits. Rejecting an unknown reason at parse time,
+ * loudly, is cheaper than a wrong row that outlives the mistake.
+ */
+export enum DisposalReason {
+	/** The condition that made this entry matter is gone. */
+	Cleared = "cleared",
+	/** A newer entry replaces this one; see `amends` on the newer row. */
+	Superseded = "superseded",
+	/** The entry graduated into a tracked block, session, or reference. */
+	Promoted = "promoted",
+	/** Retired without being resolved (e.g. reclassified, judged out of scope). */
+	Withdrawn = "withdrawn",
 }
 
