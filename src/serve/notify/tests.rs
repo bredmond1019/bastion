@@ -1,6 +1,14 @@
 //! Unit tests for the transport seam (`BA.18.B` task 1).
 
+use async_trait::async_trait;
+
 use super::*;
+// NOTE: deliberately does NOT `use actix_web::test` at module scope — that
+// shadows the built-in `#[test]` attribute every other test in this file
+// relies on (see `src/serve/mod.rs`'s own comment on this same trap). The
+// one test below that needs `actix_web::test` utilities refers to them via
+// the fully-qualified `actix_web::test::` path instead.
+use actix_web::{App, HttpResponse, web};
 
 /// A token-shaped substring: long enough and specific enough that it would
 /// never appear in any of these error renderings by accident, so its
@@ -207,11 +215,16 @@ struct ScriptedTransport {
     /// Every `acknowledge` call this transport observed, in order —
     /// `(gate_id, verdict)` — so task-4 tests can assert exactly which
     /// responses were acknowledged and with which verdict.
-    ack_calls: std::sync::Mutex<Vec<(String, telegram::ResponseVerdict)>>,
+    ack_calls: std::sync::Mutex<Vec<(String, ResponseVerdict)>>,
     /// Optional shared event log an `acknowledge` call appends `"ack"` to,
     /// so a test can interleave it with the sink's own `"verdict"` pushes
     /// and assert ack-before-dispatch ordering.
     order_log: std::sync::Mutex<Option<Arc<std::sync::Mutex<Vec<String>>>>>,
+    /// Every payload a `send` call was given, in order — task 4 (BA.21.A)
+    /// uses this to prove an engine-side caller resolving this transport
+    /// out of `app_data` actually reaches `send` with a
+    /// `ValidatedOperatorPayload`, rather than merely compiling.
+    send_calls: std::sync::Mutex<Vec<ValidatedOperatorPayload>>,
 }
 
 impl ScriptedTransport {
@@ -223,6 +236,7 @@ impl ScriptedTransport {
             ack_outcomes: std::sync::Mutex::new(std::collections::VecDeque::new()),
             ack_calls: std::sync::Mutex::new(Vec::new()),
             order_log: std::sync::Mutex::new(None),
+            send_calls: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -245,10 +259,18 @@ impl ScriptedTransport {
         self
     }
 
-    fn ack_calls(&self) -> Vec<(String, telegram::ResponseVerdict)> {
+    fn ack_calls(&self) -> Vec<(String, ResponseVerdict)> {
         self.ack_calls
             .lock()
             .expect("ack_calls mutex is never poisoned in these tests")
+            .clone()
+    }
+
+    /// Every payload a `send` call was given, in order.
+    fn send_calls(&self) -> Vec<ValidatedOperatorPayload> {
+        self.send_calls
+            .lock()
+            .expect("send_calls mutex is never poisoned in these tests")
             .clone()
     }
 }
@@ -257,8 +279,12 @@ impl ScriptedTransport {
 impl OperatorTransport for ScriptedTransport {
     async fn send(
         &self,
-        _payload: &ValidatedOperatorPayload,
+        payload: &ValidatedOperatorPayload,
     ) -> Result<DeliveredMessage, NotifyError> {
+        self.send_calls
+            .lock()
+            .expect("send_calls mutex is never poisoned in these tests")
+            .push(payload.clone());
         Ok(DeliveredMessage {
             transport_message_id: String::new(),
         })
@@ -278,7 +304,7 @@ impl OperatorTransport for ScriptedTransport {
     async fn acknowledge(
         &self,
         response: &OperatorResponse,
-        verdict: &telegram::ResponseVerdict,
+        verdict: &ResponseVerdict,
     ) -> Result<(), NotifyError> {
         self.ack_calls
             .lock()
@@ -342,10 +368,7 @@ fn pending_lookup_over(
     Box::new(move |gate_id: &str| payloads.get(gate_id).cloned())
 }
 
-fn collecting_sink() -> (
-    VerdictSink,
-    Arc<std::sync::Mutex<Vec<telegram::ResponseVerdict>>>,
-) {
+fn collecting_sink() -> (VerdictSink, Arc<std::sync::Mutex<Vec<ResponseVerdict>>>) {
     let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_collected = collected.clone();
     let sink: VerdictSink = Box::new(move |verdict| {
@@ -362,10 +385,7 @@ fn collecting_sink() -> (
 /// ack-before-dispatch ordering (task 4).
 fn collecting_sink_with_log(
     log: Arc<std::sync::Mutex<Vec<String>>>,
-) -> (
-    VerdictSink,
-    Arc<std::sync::Mutex<Vec<telegram::ResponseVerdict>>>,
-) {
+) -> (VerdictSink, Arc<std::sync::Mutex<Vec<ResponseVerdict>>>) {
     let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_collected = collected.clone();
     let sink: VerdictSink = Box::new(move |verdict| {
@@ -400,7 +420,7 @@ async fn tick_dispatches_accepted_verdict_for_a_matching_response() {
     let verdicts = collected.lock().unwrap();
     assert_eq!(
         verdicts.as_slice(),
-        [telegram::ResponseVerdict::Accepted {
+        [ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
             digest,
@@ -431,7 +451,7 @@ async fn tick_dispatches_stale_digest_verdict_when_payload_was_mutated() {
     let verdicts = collected.lock().unwrap();
     assert_eq!(
         verdicts.as_slice(),
-        [telegram::ResponseVerdict::StaleDigest {
+        [ResponseVerdict::StaleDigest {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
             digest,
@@ -473,7 +493,7 @@ async fn tick_survives_a_retryable_failure_and_resumes_at_the_correct_cursor() {
     assert_eq!(poll_loop.cursor(), Some(&cursor));
     assert_eq!(
         collected.lock().unwrap().as_slice(),
-        [telegram::ResponseVerdict::Accepted {
+        [ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
             digest,
@@ -522,7 +542,7 @@ async fn tick_dispatches_unknown_gate_verdict_when_pending_lookup_has_nothing() 
 
     assert_eq!(
         collected.lock().unwrap().as_slice(),
-        [telegram::ResponseVerdict::UnknownGate]
+        [ResponseVerdict::UnknownGate]
     );
 }
 
@@ -564,19 +584,19 @@ async fn tick_acknowledges_every_verdict_arm_exactly_once() {
     assert_eq!(
         verdicts.as_slice(),
         [
-            telegram::ResponseVerdict::Accepted {
+            ResponseVerdict::Accepted {
                 gate_id: "gate-1".to_string(),
                 option_key: "approve".to_string(),
                 digest: accepted_digest.clone(),
                 decided_at: accepted_decided_at,
             },
-            telegram::ResponseVerdict::StaleDigest {
+            ResponseVerdict::StaleDigest {
                 gate_id: "gate-2".to_string(),
                 option_key: "approve".to_string(),
                 digest: stale_digest.clone(),
                 decided_at: stale_decided_at,
             },
-            telegram::ResponseVerdict::UnknownGate,
+            ResponseVerdict::UnknownGate,
         ]
     );
 
@@ -587,7 +607,7 @@ async fn tick_acknowledges_every_verdict_arm_exactly_once() {
         vec![
             (
                 "gate-1".to_string(),
-                telegram::ResponseVerdict::Accepted {
+                ResponseVerdict::Accepted {
                     gate_id: "gate-1".to_string(),
                     option_key: "approve".to_string(),
                     digest: accepted_digest,
@@ -596,14 +616,14 @@ async fn tick_acknowledges_every_verdict_arm_exactly_once() {
             ),
             (
                 "gate-2".to_string(),
-                telegram::ResponseVerdict::StaleDigest {
+                ResponseVerdict::StaleDigest {
                     gate_id: "gate-2".to_string(),
                     option_key: "approve".to_string(),
                     digest: stale_digest,
                     decided_at: stale_decided_at,
                 }
             ),
-            ("gate-3".to_string(), telegram::ResponseVerdict::UnknownGate),
+            ("gate-3".to_string(), ResponseVerdict::UnknownGate),
         ]
     );
 }
@@ -666,7 +686,7 @@ async fn tick_still_dispatches_verdict_exactly_once_when_acknowledge_keeps_faili
 
     assert_eq!(
         collected.lock().unwrap().as_slice(),
-        [telegram::ResponseVerdict::Accepted {
+        [ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
             digest,
@@ -841,14 +861,11 @@ async fn pending_payloads_concurrent_insert_and_get_from_two_tasks() {
 /// this closure's job, both in production and here.
 fn removing_sink(
     registry: Arc<PendingPayloads>,
-) -> (
-    VerdictSink,
-    Arc<std::sync::Mutex<Vec<telegram::ResponseVerdict>>>,
-) {
+) -> (VerdictSink, Arc<std::sync::Mutex<Vec<ResponseVerdict>>>) {
     let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_collected = collected.clone();
     let sink: VerdictSink = Box::new(move |verdict| {
-        if let telegram::ResponseVerdict::Accepted { gate_id, .. } = &verdict {
+        if let ResponseVerdict::Accepted { gate_id, .. } = &verdict {
             registry.remove(gate_id);
         }
         sink_collected
@@ -875,7 +892,7 @@ async fn e2e_sent_then_tapped_resolves_accepted() {
 
     assert_eq!(
         collected.lock().unwrap().as_slice(),
-        [telegram::ResponseVerdict::Accepted {
+        [ResponseVerdict::Accepted {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
             digest,
@@ -904,7 +921,7 @@ async fn e2e_sent_then_mutated_then_tapped_resolves_stale_digest() {
 
     assert_eq!(
         collected.lock().unwrap().as_slice(),
-        [telegram::ResponseVerdict::StaleDigest {
+        [ResponseVerdict::StaleDigest {
             gate_id: "gate-1".to_string(),
             option_key: "approve".to_string(),
             digest,
@@ -932,7 +949,7 @@ async fn e2e_never_sent_gate_resolves_unknown_gate() {
 
     assert_eq!(
         collected.lock().unwrap().as_slice(),
-        [telegram::ResponseVerdict::UnknownGate]
+        [ResponseVerdict::UnknownGate]
     );
 }
 
@@ -958,13 +975,13 @@ async fn e2e_replayed_tap_of_an_already_accepted_button_resolves_unknown_gate() 
     assert_eq!(
         verdicts.as_slice(),
         [
-            telegram::ResponseVerdict::Accepted {
+            ResponseVerdict::Accepted {
                 gate_id: "gate-1".to_string(),
                 option_key: "approve".to_string(),
                 digest,
                 decided_at,
             },
-            telegram::ResponseVerdict::UnknownGate,
+            ResponseVerdict::UnknownGate,
         ]
     );
     assert!(
@@ -1061,7 +1078,7 @@ mod resolve_and_execute_tests {
         let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
         let delivered = report.delivered.expect("one item delivered");
 
-        let verdict = telegram::ResponseVerdict::Accepted {
+        let verdict = ResponseVerdict::Accepted {
             gate_id: delivered.item_id.clone(),
             option_key: OPTION_APPROVE.to_string(),
             digest: delivered.payload.digest.clone(),
@@ -1095,7 +1112,7 @@ mod resolve_and_execute_tests {
         let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
         let delivered = report.delivered.expect("one item delivered");
 
-        let verdict = telegram::ResponseVerdict::Accepted {
+        let verdict = ResponseVerdict::Accepted {
             gate_id: delivered.item_id.clone(),
             option_key: OPTION_APPROVE.to_string(),
             digest: "a-different-digest-than-was-delivered".to_string(),
@@ -1141,7 +1158,7 @@ mod resolve_and_execute_tests {
         let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
         let delivered = report.delivered.expect("one item delivered");
 
-        let verdict = telegram::ResponseVerdict::Accepted {
+        let verdict = ResponseVerdict::Accepted {
             gate_id: delivered.item_id.clone(),
             option_key: OPTION_SKIP.to_string(),
             digest: delivered.payload.digest.clone(),
@@ -1169,7 +1186,7 @@ mod resolve_and_execute_tests {
             Arc::new(StubHttpPost::succeeding(serde_json::json!({"ok": true})));
         let (seams, ledger) = seams_with(stub);
 
-        let verdict = telegram::ResponseVerdict::Accepted {
+        let verdict = ResponseVerdict::Accepted {
             gate_id: "never-drained".to_string(),
             option_key: OPTION_APPROVE.to_string(),
             digest: "whatever".to_string(),
@@ -1237,7 +1254,7 @@ mod resolve_and_execute_tests {
         let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
         let delivered = report.delivered.expect("one item delivered");
 
-        let verdict = telegram::ResponseVerdict::Accepted {
+        let verdict = ResponseVerdict::Accepted {
             gate_id: delivered.item_id.clone(),
             option_key: OPTION_APPROVE.to_string(),
             digest: delivered.payload.digest.clone(),
@@ -1245,7 +1262,7 @@ mod resolve_and_execute_tests {
         };
 
         let seams_for_sink = Arc::clone(&seams);
-        let sink = move |verdict: telegram::ResponseVerdict| {
+        let sink = move |verdict: ResponseVerdict| {
             if let Some(engine_verdict) = approve_and_run_verdict_for(&verdict, "operator") {
                 let seams = Arc::clone(&seams_for_sink);
                 tokio::spawn(async move {
@@ -1273,4 +1290,78 @@ mod resolve_and_execute_tests {
             "the spawned resolution should have completed by now"
         );
     }
+}
+
+// ── BA.21.A task 4: engine-side wiring evidence (D64) ───────────────────────
+//
+// The block record carries one acceptance criterion marked `gateable: false`:
+// "An engine node's message arrives on Telegram from the Mini's `bastion
+// serve`". No in-repo check can observe a real Telegram delivery — that is
+// verified by hand on the Mini under `operator-mac-mini-visit` (the operator
+// gate in `planning/blocks/BA.21.A.json`'s `depends_on`).
+//
+// What CAN be proven here, and is: the WIRING. `src/serve/mod.rs` task 2
+// registers the same `Arc<dyn OperatorTransport>` that `NotifyPollLoop` holds
+// as `app_data` on the engine-mount branch, exactly as `ledger_data` is
+// registered one line away (the D15 additive-seam pattern) — so that when
+// `engine-serve` eventually grows an extractor for it (`EN.12.J`'s
+// `out_of_scope`: it shipped the abstraction only, no caller), resolving that
+// `app_data` and calling `send` through the `dyn` trait object is exactly
+// what will happen. This test stands in for that not-yet-built extractor: it
+// builds a minimal actix app registering the transport as `app_data` the
+// same way production does, resolves it inside a handler exactly as an
+// engine-side caller would, and calls `send` through the `dyn` trait object.
+//
+// IMPORTANT — this proves WIRING, not DELIVERY. A green result here means an
+// engine-side holder of the registered `app_data` can reach a real
+// transport's `send` with a `ValidatedOperatorPayload`; it does NOT mean a
+// Telegram message was ever sent over the network (`ScriptedTransport`
+// never touches the network — see `telegram_http.rs`, which isolates the
+// real HTTP surface). A reader must not mistake this test passing for a
+// message having been delivered; that is the Mini hand-check's job.
+#[actix_web::test]
+async fn engine_side_app_data_resolves_transport_and_reaches_scripted_send() {
+    let transport = Arc::new(ScriptedTransport::new(Vec::new()));
+    // Register the SAME shape production uses in `src/serve/mod.rs`'s
+    // engine-mount branch: `app.app_data(web::Data::new(transport))` where
+    // `transport: Arc<dyn OperatorTransport>`.
+    let dyn_transport: Arc<dyn OperatorTransport> = transport.clone();
+
+    async fn engine_side_send_handler(
+        transport: web::Data<Arc<dyn OperatorTransport>>,
+    ) -> HttpResponse {
+        let payload = scripted_payload("gate-wiring-1", "engine-side wiring probe");
+        match transport.send(&payload).await {
+            Ok(_delivered) => HttpResponse::Ok().finish(),
+            Err(_) => HttpResponse::InternalServerError().finish(),
+        }
+    }
+
+    let app = actix_web::test::init_service(
+        App::new()
+            .app_data(web::Data::new(dyn_transport))
+            .route("/probe", web::post().to(engine_side_send_handler)),
+    )
+    .await;
+
+    let req = actix_web::test::TestRequest::post()
+        .uri("/probe")
+        .to_request();
+    let resp = actix_web::test::call_service(&app, req).await;
+    assert!(
+        resp.status().is_success(),
+        "engine-side handler resolving the app_data transport should reach send successfully"
+    );
+
+    let recorded = transport.send_calls();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "ScriptedTransport should have recorded exactly one send call from the engine-side handler"
+    );
+    assert_eq!(
+        recorded[0].payload().gate_id,
+        "gate-wiring-1",
+        "the ValidatedOperatorPayload reaching send must be the one the engine-side caller built"
+    );
 }

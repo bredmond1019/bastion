@@ -2248,7 +2248,7 @@ pub struct CostSummaryDto {
 
 /// `POST /api/notify/test` response body — the `gate_id` and `digest` of the
 /// fixed 2-option `ValidatedOperatorPayload` that was just sent over the
-/// configured [`crate::serve::notify::OperatorTransport`], so the operator
+/// configured [`engine_core::operator::OperatorTransport`], so the operator
 /// smoke test has something to correlate the delivered message against.
 ///
 /// Wire format:

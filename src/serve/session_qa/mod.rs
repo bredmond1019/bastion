@@ -251,8 +251,8 @@ pub fn decode_question_callback(raw: &str) -> Option<QuestionCallback> {
 
 /// The outcome of resolving a decoded [`QuestionCallback`] against the
 /// [`PendingQuestions`] registry — the question-shaped analogue of
-/// `notify::telegram::ResponseVerdict`, reimplemented rather than shared
-/// (see this module's top-level docs).
+/// `engine_core::operator::ResponseVerdict`, reimplemented rather than
+/// shared (see this module's top-level docs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuestionVerdict {
     /// The question exists, is unanswered, and `option_number` names one of
