@@ -2987,22 +2987,37 @@ No `serve` runtime behaviour changed as part of adding this section — the dump
 
 ### 25.6 Scenario inventory
 
-As of 2026-08-02 (`ticket-costs-200-contract-golden`) **every route the original A4 corpus left
-uncovered is frozen, and `costs`' populated `200` shape is frozen too.** The corpus holds 37
-goldens across ten routes:
+As of 2026-08-21 (`BA.22.A`) **every route named in the block's binding lane contract is
+frozen.** The corpus holds goldens across seventeen routes — the ten frozen by
+`ticket-costs-200-contract-golden`/`ticket-contract-corpus-uncovered-routes`, plus the seven
+`BA.22.A` adds. This table is verified against the actual filenames in
+`types/contract-corpus/`, not read off the source:
 
-| Route | Scenarios (`<route>__<scenario>.json`) |
-|---|---|
-| `GET /api/runs` | `empty`, `active`, plus one per `RunStatus` variant: `pending`, `running`, `success`, `failed`, `cancelled`, `budget_halted`, `suspended` |
-| `GET /api/board` | `hq`, `tier`, `epic`, `epic-404`, `last_touched`, `dependent_count` |
-| `GET /api/attention` | `populated`, `empty` |
-| `GET /api/pipeline` | `populated`, `keyless` |
-| `GET /api/docs/{repo}/tree` | `dir`, `file`, `unknown` |
-| `GET /api/workflows` (v0.20) | `workflows__empty`, `workflows__populated` |
-| `GET /api/repos/{name}/handoff` (v0.18) | `handoff__populated`, `handoff__missing`, `handoff__unknown-repo` |
-| `GET /api/epics` (v0.21) | `epics__populated`, `epics__empty` |
-| `GET /api/blocks/graph` (v0.13) | `blocks-graph__populated` |
-| `GET /api/costs` (v0.15) | `costs__bad-window`, `costs__no-database-url`, `costs__populated`, `costs__budget-breached`, `costs__empty`, `costs__windowed`, `costs__db-error` |
+| Route | Scenarios (`<route>__<scenario>.json`) | Deliberately-absent success shape, and why |
+|---|---|---|
+| `GET /api/runs` | `empty`, `active`, plus one per `RunStatus` variant: `pending`, `running`, `success`, `failed`, `cancelled`, `budget_halted`, `suspended` | — |
+| `GET /api/board` | `hq`, `tier`, `epic`, `epic-404`, `last_touched`, `dependent_count` | — |
+| `GET /api/attention` | `populated`, `empty` | — |
+| `GET /api/pipeline` | `populated`, `keyless` | — |
+| `GET /api/docs/{repo}/tree` | `dir`, `file`, `unknown` | — |
+| `GET /api/workflows` (v0.20) | `workflows__empty`, `workflows__populated` | — |
+| `GET /api/repos/{name}/handoff` (v0.18) | `handoff__populated`, `handoff__missing`, `handoff__unknown-repo` | — |
+| `GET /api/epics` (v0.21) | `epics__populated`, `epics__empty` | — |
+| `GET /api/blocks/graph` (v0.13) | `blocks-graph__populated` | — |
+| `GET /api/costs` (v0.15) | `costs__bad-window`, `costs__no-database-url`, `costs__populated`, `costs__budget-breached`, `costs__empty`, `costs__windowed`, `costs__db-error` | — |
+| `GET /health` (`BA.22.A`) | `health__ok` | — |
+| `GET /api/repos` (`BA.22.A`) | `repos__populated`, `repos__empty` | — |
+| `GET /api/lanes` (`BA.22.A`) | `lanes__populated`, `lanes__epic-404` | — |
+| `GET /api/concurrency` (`BA.22.A`) | `concurrency__populated`, `concurrency__repo-404` | — (the populated shape is proven deterministic — seeded via the fixture's own `.fleet-locks`, not live fleet state — and regenerating twice is byte-identical) |
+| `/api/sessions*` (`BA.22.A`, 6 routes) | `sessions__no-tmux`, `sessions-pane__no-tmux`, `sessions-create__no-tmux`, `sessions-send__no-tmux`, `sessions-key__no-tmux`, `sessions-delete__no-tmux` | The 2xx shapes (a real session list, pane capture, create/delete) are absent — they require a live tmux server, which a checked-in golden may not depend on. Every route's 503 + `C001` "tmux not installed" shape is frozen instead, reached deterministically on any machine by pointing `PATH` at an empty directory. |
+| `POST /api/actions/command` (`BA.22.A`) | `actions-command__invalid-mode` | The `AskError::UntrustedDir` → 400/`C006` branch is absent: that check lives only in `sessions::ask::ask`'s trust pre-flight, which this route's `Spawn` arm never calls (it calls `ensure_session_with_claude` directly) — no request this route can receive reaches it, so there is no real shape to freeze. |
+| `POST /api/notify/test` (`BA.22.A`) | `notify-test__unconfigured` | The configured-transport 200/202 shape is absent — freezing it would require a real Telegram bot token and sending a real message, which the corpus (run on every `cargo test`) must never do. Only the `BASTION_TELEGRAM_BOT_TOKEN`/`_CHAT_ID`-unset 503/`C005` shape is frozen, mirroring the existing `costs__no-database-url` precedent for an unconfigured-dependency error. |
+
+Per-route notes for the ten pre-`BA.22.A` routes follow; the seven `BA.22.A` routes' full
+rationale (env discipline, redaction, the tmux-absence seam) lives in their module doc comments
+in `src/serve/contract_corpus.rs` (`health_scenarios`, `repos_scenarios`, `lanes_scenarios`,
+`concurrency_scenarios`, `sessions_scenarios`, `actions_notify_scenarios`) rather than being
+duplicated here.
 
 Notes on the five routes added by `ticket-contract-corpus-uncovered-routes`:
 
@@ -3695,6 +3710,18 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-08-21 — no version bump (`BA.22.A`):** Froze the seven previously-uncovered
+  contract-corpus routes — `GET /health`, `GET /api/repos`, `GET /api/lanes`,
+  `GET /api/concurrency`, the six `/api/sessions*` routes, `POST /api/actions/command`, and
+  `POST /api/notify/test` — as goldens under `types/contract-corpus/`, closing the gap Section
+  25.6 itself flagged (five routes had gone silently unfrozen after the last extension; this is
+  a different seven, not a re-run of that fix). Added the `### 25.6 Scenario inventory` table's
+  missing rows for these seven routes (the table previously covered only the ten routes frozen
+  by `ticket-contract-corpus-uncovered-routes`). No DTO or handler response shape changed as
+  part of this block — every new golden freezes an already-existing wire shape, so no version
+  bump applies here, unlike a genuine contract change (Section 25.5). The one
+  production-adjacent edit is widening `health()` (`src/serve/mod.rs`) to `pub(crate)` so the
+  corpus can dispatch the real handler; that is not itself a wire-contract change.
 - **2026-08-20 — v0.36 → v0.37 (`ticket-live-run-workflow-type`, additive):** `RunSummaryDto.workflow_type`
   (Section 14.1) is now populated instead of hardcoded `None`. `list_runs` resolves each tracked run's
   workflow identity via `engine_serve::http::live_run_workflow_type(run_id)`, discarding the tuple's
