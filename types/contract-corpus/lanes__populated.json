@@ -1,0 +1,26 @@
+{
+  "body": {
+    "degraded": true,
+    "derived_at": "<TIMESTAMP>",
+    "segments": [
+      {
+        "availability": "startable",
+        "head": "beta:BE.1.A",
+        "lane": "only",
+        "leverage_lanes_freed": 0,
+        "repo": "beta",
+        "roadmap": "fixture",
+        "segment": 1
+      },
+      {
+        "availability": "done",
+        "lane": "only",
+        "leverage_lanes_freed": 0,
+        "repo": "alpha",
+        "roadmap": "fixture",
+        "segment": 0
+      }
+    ]
+  },
+  "status_code": 200
+}

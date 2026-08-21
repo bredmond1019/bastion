@@ -2990,3 +2990,193 @@ blocked: []
         dump("repos", "empty", req, &app).await;
     }
 }
+
+/// `GET /api/lanes` corpus scenarios (`BA.22.A`, task 2) — the fleet-scoped
+/// lane-segment availability aggregate (`handlers::lanes::get_lanes`,
+/// serve-api §28, v0.35, `BA.19.C`).
+///
+/// The fixture corpus below is the `FileConfig`-registry-wired form of
+/// `../mev/tests/lanes_driver.rs`'s own two-repo, two-segment corpus (proven
+/// there to exercise `mev::lanes_brain`'s full assembly end to end): one HQ
+/// `planning/state.json`, two leaf repos (`alpha`, all closed; `beta`, one
+/// live open head), and a single `planning/roadmaps/fixture/lane-only.json`
+/// record spanning both. `alpha`'s segment freezes `availability: "done"`
+/// with no `head`; `beta`'s freezes `availability: "startable"` with a
+/// `head` — together the golden captures the full `LaneSegmentDto` shape
+/// (every `SegmentAvailability` string this module exercises) rather than a
+/// single-variant slice.
+///
+/// `lanes__epic-404` reuses the same fixture — its HQ `state.json` carries
+/// no `epics[]` key at all, so any `?epic=<slug>` is unknown — with
+/// `?epic=no-such-epic`; the handler 404s via `board::epic_error_response`
+/// before the corpus result is filtered. See `board_scenarios::
+/// board_corpus_epic_404` for the same pattern against a different route.
+///
+/// No query parameter on this route defaults to a value that changes the
+/// response shape: `?epic=` is optional and, when absent, performs no
+/// filtering at all. Unlike `blocks_graph_scenarios`'s `max_nodes`, there is
+/// nothing here that needs pinning.
+///
+/// `derived_at` is an RFC 3339 timestamp stamped at request time and is
+/// neutralized by [`super::redact_value`]'s timestamp rule, same as every
+/// other route that stamps one. `degraded` is deterministically `true` on
+/// both goldens below — the fixture never creates a `.fleet-locks`
+/// directory, so `mev::brain::availability::discover_live_runs` always
+/// reports "could not tell" rather than "has capacity" (see
+/// `lanes_driver.rs`'s own `..._degraded_only_when_the_lock_store_is_unreadable`
+/// test for why that is the honest default).
+#[cfg(test)]
+mod lanes_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::lanes::get_lanes;
+
+    fn fixture_corpus() -> TempDir {
+        let tmp = TempDir::new("lanes");
+        let root = tmp.path();
+
+        write(
+            &root.join("brain.toml"),
+            r#"[vocab]
+layer = ["console"]
+status = ["active"]
+
+[crawl]
+skip_dirs = ["target", ".git"]
+
+[[repos]]
+slug = "alpha"
+tier = "core"
+repo_path = "repos/alpha"
+status_file = "repos/alpha/planning/status.md"
+cache_doc = "docs/projects/alpha.md"
+heading = "Alpha"
+
+[[repos]]
+slug = "beta"
+tier = "core"
+repo_path = "repos/beta"
+status_file = "repos/beta/planning/status.md"
+cache_doc = "docs/projects/beta.md"
+heading = "Beta"
+"#,
+        );
+
+        write(
+            &root.join("planning").join("state.json"),
+            r#"{
+  "repo": "hq",
+  "kind": "brain",
+  "updated": "2026-08-17",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": []
+}"#,
+        );
+
+        write(
+            &root
+                .join("repos")
+                .join("alpha")
+                .join("planning")
+                .join("state.json"),
+            r#"{
+  "repo": "alpha",
+  "kind": "project",
+  "updated": "2026-08-17",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": [{
+    "title": "Phase 1",
+    "blocks": [
+      { "id": "AL.1.A", "title": "First", "status": "closed" },
+      { "id": "AL.1.B", "title": "Second", "status": "closed" }
+    ]
+  }]
+}"#,
+        );
+
+        write(
+            &root
+                .join("repos")
+                .join("beta")
+                .join("planning")
+                .join("state.json"),
+            r#"{
+  "repo": "beta",
+  "kind": "project",
+  "updated": "2026-08-17",
+  "focus": { "now": [], "next": [], "blocked": [] },
+  "tracks": [{
+    "title": "Phase 1",
+    "blocks": [
+      { "id": "BE.1.A", "title": "Live head", "status": "open" }
+    ]
+  }]
+}"#,
+        );
+
+        write(
+            &root
+                .join("planning")
+                .join("roadmaps")
+                .join("fixture")
+                .join("lane-only.json"),
+            r#"{
+  "lane": "only",
+  "roadmap": "fixture",
+  "blocks": [
+    { "id": "AL.1.A", "origin_roadmap": "fixture", "repo": "alpha" },
+    { "id": "AL.1.B", "origin_roadmap": "fixture", "repo": "alpha" },
+    { "id": "BE.1.A", "origin_roadmap": "fixture", "repo": "beta" }
+  ]
+}"#,
+        );
+
+        tmp
+    }
+
+    /// Registry pointing `default_workspace` directly at the fixture brain
+    /// root — same shape `brain_fixture::registry` uses for `get_epics`/
+    /// `get_block_graph`.
+    fn registry(tmp: &TempDir) -> FileConfig {
+        FileConfig {
+            workspaces: Some(HashMap::from([(
+                "brain-root".to_owned(),
+                tmp.path().to_path_buf(),
+            )])),
+            default_workspace: Some("brain-root".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    macro_rules! lanes_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(web::resource("/api/lanes").route(web::get().to(get_lanes))),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn lanes_corpus_populated() {
+        let tmp = fixture_corpus();
+        let app = lanes_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/lanes");
+        dump("lanes", "populated", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn lanes_corpus_epic_404() {
+        let tmp = fixture_corpus();
+        let app = lanes_service!(registry(&tmp));
+        let req = actix_web::test::TestRequest::get().uri("/api/lanes?epic=no-such-epic");
+        dump("lanes", "epic-404", req, &app).await;
+    }
+}
