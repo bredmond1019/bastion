@@ -3501,3 +3501,101 @@ mod sessions_scenarios {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// `POST /api/actions/command` and `POST /api/notify/test` corpus scenarios
+/// (`BA.22.A`, task 5).
+///
+/// # `/api/actions/command`
+///
+/// [`handlers::actions::command`]'s request validation
+/// ([`dto::CommandRequest::validate`]) is synchronous and needs no tmux, so
+/// `actions-command__invalid-mode` freezes the one shape every machine can
+/// reach deterministically: `mode:"inject"` with no `session` fails
+/// validation before any I/O and maps to 400 + `C006` via
+/// `validation_error_response`.
+///
+/// `actions-command__untrusted-dir` (the `AskError::UntrustedDir` → 400/
+/// `C006` branch named in the task spec) is deliberately **not** in this
+/// corpus: that check lives only in `sessions::ask::ask`'s trust pre-flight
+/// (`src/sessions/ask.rs`), which `handlers::actions::command`'s `Spawn` arm
+/// never calls — it calls `ensure_session_with_claude` directly, and that
+/// function has no trust check of its own. There is no request this HTTP
+/// route can receive that reaches `AskError::UntrustedDir`, so freezing a
+/// golden for it would require calling internal test-only plumbing the real
+/// handler never exercises — exactly the "golden dumped from a copy of the
+/// handler proves nothing" trap this corpus exists to avoid.
+///
+/// # `/api/notify/test`
+///
+/// `notify-test__unconfigured` mirrors `notify_test_send_c005`
+/// (`src/serve/mod.rs`) verbatim: both `BASTION_TELEGRAM_BOT_TOKEN` and
+/// `BASTION_TELEGRAM_CHAT_ID` unset → 503 + `C005` via
+/// `handlers::notify::test_send`. The scenario takes
+/// `crate::testsupport::lock_env()` for its whole body, installs a
+/// `DotenvShadow` before unsetting either var (`load_telegram_config` calls
+/// `dotenvy::dotenv()`, which would repopulate them from a developer's real
+/// `.env` the instant they're removed from the process env — the same trap
+/// `costs_scenarios`' `no-database-url` scenario guards against), and
+/// dispatches via `dump_with(&CorpusConfig::from_env_locked(&env_lock), …)`
+/// rather than the plain `dump()` shell, since `dump()` internally acquires
+/// `lock_env()` itself and the mutex is not reentrant.
+///
+/// Neither scenario in this module performs a real side effect: the
+/// `actions-command` scenario never reaches I/O (validation fails first),
+/// and the `notify-test` scenario's unconfigured-transport branch returns
+/// before any Telegram API call is attempted.
+#[cfg(test)]
+mod actions_notify_scenarios {
+    use actix_web::web;
+
+    use super::{CorpusConfig, dump, dump_with};
+    use crate::serve::handlers::actions::command;
+    use crate::serve::handlers::notify::test_send;
+    use crate::serve::notify::PendingPayloads;
+    use crate::testsupport::{DotenvShadow, EnvVarGuard, lock_env};
+
+    macro_rules! actions_command_service {
+        () => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .service(web::resource("/api/actions/command").route(web::post().to(command))),
+            )
+            .await
+        };
+    }
+
+    macro_rules! notify_test_service {
+        () => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new(PendingPayloads::new()))
+                    .service(web::resource("/api/notify/test").route(web::post().to(test_send))),
+            )
+            .await
+        };
+    }
+
+    #[actix_web::test]
+    async fn actions_command_corpus_invalid_mode() {
+        let app = actions_command_service!();
+        let req = actix_web::test::TestRequest::post()
+            .uri("/api/actions/command")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(r#"{"mode":"inject","command":"/status"}"#);
+        dump("actions-command", "invalid-mode", req, &app).await;
+    }
+
+    #[actix_web::test]
+    async fn notify_test_corpus_unconfigured() {
+        let env_lock = lock_env();
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "corpus_notify_test_c005");
+        let _bot_token = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN");
+        let _chat_id = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+
+        let config = CorpusConfig::from_env_locked(&env_lock);
+
+        let app = notify_test_service!();
+        let req = actix_web::test::TestRequest::post().uri("/api/notify/test");
+        dump_with(&config, "notify-test", "unconfigured", req, &app).await;
+    }
+}

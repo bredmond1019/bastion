@@ -1,0 +1,7 @@
+{
+  "body": {
+    "code": "C006",
+    "message": "mode:\"inject\" requires a non-empty \"session\" field"
+  },
+  "status_code": 400
+}

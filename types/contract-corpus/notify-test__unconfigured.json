@@ -1,0 +1,7 @@
+{
+  "body": {
+    "code": "C005",
+    "message": "operator notification transport not configured — set BASTION_TELEGRAM_BOT_TOKEN and BASTION_TELEGRAM_CHAT_ID"
+  },
+  "status_code": 503
+}
