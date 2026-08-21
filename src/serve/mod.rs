@@ -430,6 +430,24 @@ pub fn run(addr: String, token: String) -> Result<()> {
 /// Uses `web::resource` (not `web::route`) for `/health` so that unregistered
 /// HTTP methods return `405 Method Not Allowed` rather than `404 Not Found`.
 ///
+/// Split one constructed operator-transport `Arc` into the two consumers
+/// that need it (BA.21.A task 2): [`notify::NotifyPollLoop`]'s owned
+/// instance, and the engine app_data's `Option`. Pure `Arc::clone`
+/// indirection — factored out of `run_server` so a test can assert
+/// `Arc::ptr_eq` directly on the two values production actually hands to
+/// `NotifyPollLoop::new` and the engine-mount `app_data(web::Data::new(..))`
+/// call, rather than merely asserting both are non-`None` (the exact
+/// shortcut the block's acceptance criteria rule out).
+fn split_operator_transport(
+    transport: std::sync::Arc<dyn notify::OperatorTransport>,
+) -> (
+    std::sync::Arc<dyn notify::OperatorTransport>,
+    Option<std::sync::Arc<dyn notify::OperatorTransport>>,
+) {
+    let for_app_data = std::sync::Arc::clone(&transport);
+    (transport, Some(for_app_data))
+}
+
 /// `poll_secs` is passed to the [`Hub`] to set its poll cadence.
 async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // Load the workspace registry once at startup (BA.11.D) — malformed or
@@ -821,6 +839,17 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // resolves to `UnknownGate`, not a second `Accepted`; the engine-side
     // queue's own equivalent eviction is `ApproveAndRunSeams::resolve_verdict`'s
     // job (task 3), not this lookup's.
+    // Hoisted so the SAME `Arc` can be registered as engine-serve app_data
+    // below (BA.21.A task 2) as well as handed to `NotifyPollLoop` here —
+    // mirroring the `approval_ledger` hoist immediately above. An engine
+    // node's caller and the poll loop MUST share one `Arc`, or
+    // `Arc::ptr_eq` (asserted in the tests below) would fail and a second,
+    // independently-constructed `TelegramTransport` would silently exist
+    // alongside the real one. `None` when Telegram is unconfigured — the
+    // engine side then registers no transport app_data at all rather than
+    // a placeholder that would swallow sends.
+    let operator_transport: Option<std::sync::Arc<dyn notify::OperatorTransport>>;
+
     match crate::config::load_telegram_config() {
         Ok(Some(telegram_config)) => {
             tracing::info!(
@@ -836,6 +865,8 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             let who = telegram_config.chat_id.clone();
             let transport: std::sync::Arc<dyn notify::OperatorTransport> =
                 std::sync::Arc::new(notify::telegram::TelegramTransport::new(telegram_config));
+            let (transport, for_app_data) = split_operator_transport(transport);
+            operator_transport = for_app_data;
             let verdict_registry = std::sync::Arc::clone(&pending_payloads);
             let verdict_seams = std::sync::Arc::clone(&approve_and_run_seams);
             let lookup_seams = std::sync::Arc::clone(&approve_and_run_seams);
@@ -950,12 +981,14 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             actix_web::rt::spawn(poll_loop.run());
         }
         Ok(None) => {
+            operator_transport = None;
             tracing::info!(
                 target: "bastion::serve",
                 "operator notification transport not configured (BASTION_TELEGRAM_BOT_TOKEN / BASTION_TELEGRAM_CHAT_ID unset)"
             );
         }
         Err(e) => {
+            operator_transport = None;
             tracing::warn!(
                 target: "bastion::serve",
                 error = %e,
@@ -979,6 +1012,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         let live_data = live_data.clone();
         let pending_payloads = pending_payloads.clone();
         let approval_ledger = approval_ledger.clone();
+        let operator_transport = operator_transport.clone();
 
         // Protected scope — bearer auth enforced on all children.
         //
@@ -1168,7 +1202,30 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // registered only on this branch so an unmounted engine
             // registers no ledger app_data and boot stays unchanged.
             let ledger_data = web::Data::new(approval_ledger.clone());
-            app = app.app_data(engine_data).app_data(ledger_data).service(
+            app = app.app_data(engine_data).app_data(ledger_data);
+
+            // BA.21.A task 2 — hand an engine node the SAME operator
+            // transport `Arc` that `NotifyPollLoop` holds (hoisted above as
+            // `operator_transport`), registered only inside this
+            // engine-mount branch (mirrors `ledger_data` immediately
+            // above). Absent Telegram config `operator_transport` is
+            // `None` and no transport app_data is registered at all — an
+            // engine-side extractor must degrade to "no transport
+            // configured", never panic on a missing app_data.
+            //
+            // NOTE: `engine-serve` has no extractor for this yet — a grep
+            // of `crates/engine-serve/src/` for `OperatorTransport` returns
+            // nothing, and `EN.12.J`'s own `out_of_scope` says it shipped
+            // only the trait + type abstraction, no caller. Registering the
+            // app_data now is the additive half of the seam (D15 pattern):
+            // a later engine-serve change can add an extractor against this
+            // without bastion changing again. This is deliberate, not dead
+            // code.
+            if let Some(transport) = operator_transport.clone() {
+                app = app.app_data(web::Data::new(transport));
+            }
+
+            app = app.service(
                 web::scope("")
                     .wrap(ApiKeyAuthMiddleware::new(engine_api_key))
                     .configure(engine_serve::http::configure),
@@ -1326,6 +1383,58 @@ mod engine_mount_tests {
         assert_eq!(
             outcome,
             OrphanSweepOutcome::Failed("connection refused".to_string())
+        );
+    }
+
+    // ── operator-transport hoist (BA.21.A task 2) ───────────────────────────
+    //
+    // A minimal local test double — deliberately NOT engine-core's own
+    // `#[cfg(test)] NoopTransport` (BA.21.A task 1's Notes: that type is
+    // gated to engine-core's own test build and is not reachable from
+    // here).
+
+    struct StubTransport;
+
+    #[async_trait::async_trait]
+    impl notify::OperatorTransport for StubTransport {
+        async fn send(
+            &self,
+            _payload: &engine_core::operator::ValidatedOperatorPayload,
+        ) -> Result<notify::DeliveredMessage, notify::NotifyError> {
+            Ok(notify::DeliveredMessage {
+                transport_message_id: String::new(),
+            })
+        }
+
+        async fn poll_responses(
+            &self,
+            since: Option<notify::UpdateCursor>,
+        ) -> Result<
+            (Vec<notify::OperatorResponse>, Option<notify::UpdateCursor>),
+            notify::NotifyError,
+        > {
+            Ok((Vec::new(), since))
+        }
+    }
+
+    /// Pins the exact failure mode the acceptance criterion names: asserting
+    /// both consumers are merely non-`None` would also pass for two
+    /// independently constructed transports (a second, silently-wrong
+    /// `TelegramTransport::new(..)`), which is precisely the bug this
+    /// hoist exists to rule out. `Arc::ptr_eq` is the only check that
+    /// actually proves `NotifyPollLoop` and the engine app_data share one
+    /// allocation.
+    #[test]
+    fn split_operator_transport_shares_one_allocation_not_merely_two_some_values() {
+        let transport: std::sync::Arc<dyn notify::OperatorTransport> =
+            std::sync::Arc::new(StubTransport);
+        let (poll_loop_transport, app_data_transport) = split_operator_transport(transport);
+        let app_data_transport = app_data_transport
+            .expect("split_operator_transport must return Some when given a transport");
+
+        assert!(
+            std::sync::Arc::ptr_eq(&poll_loop_transport, &app_data_transport),
+            "NotifyPollLoop's transport and the engine app_data transport must be the same allocation"
         );
     }
 }
@@ -5391,6 +5500,74 @@ heading = "bastion"
         assert!(
             !logs.contains("session-QA bridge enabled"),
             "no bridge should have been spawned with CodeSessionsBot config absent; got logs:\n{logs}"
+        );
+    }
+
+    /// BA.21.A task 2 — a real `run_server` boot with no Telegram config
+    /// must still complete its setup path (including the
+    /// `operator_transport` hoist and the engine-mount branch that would
+    /// register it as app_data) and reach `.bind(..).run().await` without
+    /// panicking. Same shape as
+    /// `run_server_with_no_codesessions_config_spawns_no_bridge` immediately
+    /// above: ephemeral port, abort after a short grace period, assert on
+    /// captured logs rather than a natural return (`run_server` serves
+    /// forever).
+    #[actix_web::test]
+    async fn run_server_with_no_telegram_config_boots_without_panicking() {
+        let env_lock = lock_env();
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "run_server_no_telegram_transport");
+        let _tg_token = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN");
+        let _tg_chat = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+        // No real Postgres in this test process — degrade the engine mount
+        // the same deterministic way `decide_engine_mount`'s own tests
+        // exercise, so this test stays fast and DB-free regardless of the
+        // caller's shell env.
+        let _db = EnvVarGuard::unset(&env_lock, "DATABASE_URL");
+        let _engine_key = EnvVarGuard::unset(&env_lock, "BASTION_ENGINE_API_KEY");
+        let _t1 = EnvVarGuard::unset(&env_lock, "BASTION_CODESESSIONS_BOT_TOKEN");
+        let _t2 = EnvVarGuard::unset(&env_lock, "BASTION_CODESESSIONS_CHAT_ID");
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = SharedLogBuf(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer)
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .finish();
+        let _tracing_guard = tracing::subscriber::set_default(subscriber);
+
+        let handle = actix_web::rt::spawn(run_server(
+            "127.0.0.1:0".to_string(),
+            "boot-test-token".to_string(),
+            2,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let aborted_cleanly = !handle.is_finished();
+        handle.abort();
+        let join_result = handle.await;
+
+        drop(_tracing_guard);
+        let logs =
+            String::from_utf8_lossy(&buf.lock().unwrap_or_else(|e| e.into_inner())).to_string();
+
+        assert!(
+            aborted_cleanly,
+            "run_server should still be serving (not panicked/returned early) at abort time; got logs:\n{logs}"
+        );
+        assert!(
+            join_result.is_err() && join_result.unwrap_err().is_cancelled(),
+            "run_server must have been running (cancelled by abort), not panicked"
+        );
+        assert!(
+            logs.contains(
+                "operator notification transport not configured (BASTION_TELEGRAM_BOT_TOKEN / BASTION_TELEGRAM_CHAT_ID unset)"
+            ),
+            "expected the not-configured transport log line; got logs:\n{logs}"
+        );
+        assert!(
+            !logs.contains("operator notification transport configured (Telegram)"),
+            "no transport should have been constructed with Telegram config absent; got logs:\n{logs}"
         );
     }
 

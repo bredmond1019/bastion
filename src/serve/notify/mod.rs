@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use engine_core::operator::ValidatedOperatorPayload;
+#[allow(unused_imports)]
 pub use engine_core::operator::{
     AckHandle, DeliveredMessage, MessageHandle, NotifyError, OperatorResponse, OperatorTransport,
     ResponseVerdict, UpdateCursor,
