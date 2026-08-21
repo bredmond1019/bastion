@@ -2419,8 +2419,12 @@ committed `types/serve.ts`:
   when the `typeshare` binary is absent from `PATH`, rather than a confusing tool error.
 
 CI and BastionWeb rely on this script to guarantee `types/serve.ts` never silently drifts from
-either source tree. It is a standalone script — it is **not** wired into `planning/harness.json`
-(out of scope for this block; see `planning/11.L-typeshare-ts-generation/tasks.md`).
+either source tree. It **is** wired into `planning/harness.json`'s `validation.checks[]` as a
+gating check (`typeshare-drift`, added `BA.ticket.typeshare-regen-after-okf-flatten-fix` task 2)
+— a stale `types/serve.ts` now fails the SDLC pipeline and CI, not just a human's memory. A
+minimal-PATH probe (`env PATH=/usr/bin:/bin scripts/check-typeshare-drift.sh`) confirmed the
+`~/.cargo/bin` fallback degrades gracefully rather than hard-failing, which is what made gating
+safe.
 
 No `serve` runtime behaviour changed as part of this section — `#[typeshare]` annotations are
 compile-time no-ops, and generation/drift-check are build-time-only tooling. Every DTO shape
@@ -2966,9 +2970,10 @@ against the committed `types/contract-corpus/`, mirroring `scripts/check-typesha
 - Exits **non-zero** and prints the unified diff when the corpus is stale relative to the real
   handlers.
 
-Unlike the typeshare drift check, this one **is** wired into `planning/harness.json`'s
-`validation.checks[]` as a gating check, so a stale corpus fails the SDLC pipeline and CI, not
-just a human's memory.
+Like the typeshare drift check (Section 19.3, also wired in as of
+`BA.ticket.typeshare-regen-after-okf-flatten-fix` task 2), this one **is** wired into
+`planning/harness.json`'s `validation.checks[]` as a gating check, so a stale corpus fails the
+SDLC pipeline and CI, not just a human's memory.
 
 ### 25.5 Standing rule — a changed golden IS a contract change
 
