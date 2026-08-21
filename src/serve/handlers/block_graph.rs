@@ -129,6 +129,7 @@ fn edge_kind_dto(kind: StateEdgeKind) -> BlockEdgeKindDto {
     match kind {
         StateEdgeKind::BlockedBy => BlockEdgeKindDto::BlockedBy,
         StateEdgeKind::CrossRepo => BlockEdgeKindDto::CrossRepo,
+        StateEdgeKind::CarryoverBlocks => BlockEdgeKindDto::CarryoverBlocks,
     }
 }
 
@@ -516,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn block_graph_dto_edge_kind_mapping_covers_both_variants() {
+    fn block_graph_dto_edge_kind_mapping_covers_all_variants() {
         assert_eq!(
             edge_kind_dto(StateEdgeKind::BlockedBy),
             BlockEdgeKindDto::BlockedBy
@@ -525,6 +526,21 @@ mod tests {
             edge_kind_dto(StateEdgeKind::CrossRepo),
             BlockEdgeKindDto::CrossRepo
         );
+        assert_eq!(
+            edge_kind_dto(StateEdgeKind::CarryoverBlocks),
+            BlockEdgeKindDto::CarryoverBlocks
+        );
+    }
+
+    #[test]
+    fn block_edge_kind_dto_carryover_blocks_serializes_to_carryover_blocks_string() {
+        let value = serde_json::to_value(BlockEdgeKindDto::CarryoverBlocks)
+            .expect("serialize BlockEdgeKindDto::CarryoverBlocks");
+        assert_eq!(value, serde_json::json!("carryover_blocks"));
+
+        let decoded: BlockEdgeKindDto =
+            serde_json::from_value(value).expect("deserialize carryover_blocks");
+        assert_eq!(decoded, BlockEdgeKindDto::CarryoverBlocks);
     }
 
     #[test]

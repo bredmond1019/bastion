@@ -1989,10 +1989,10 @@ pub enum BlockLaneDto {
     Other,
 }
 
-/// Mirrors `okf_core::state::StateEdgeKind`'s two variants. Serialises
-/// `snake_case` to match upstream (`"blocked_by"`, `"cross_repo"`). Declared
-/// locally rather than reusing `okf_core::StateEdgeKind` — see the module note
-/// above.
+/// Mirrors `okf_core::state::StateEdgeKind`'s three variants. Serialises
+/// `snake_case` to match upstream (`"blocked_by"`, `"cross_repo"`,
+/// `"carryover_blocks"`). Declared locally rather than reusing
+/// `okf_core::StateEdgeKind` — see the module note above.
 #[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2001,6 +2001,11 @@ pub enum BlockEdgeKindDto {
     BlockedBy,
     /// An explicit cross-repo dependency declared in a brain file's `cross_repo[]`.
     CrossRepo,
+    /// A `carryover[].blocks[]{type:"block"}` gating edge. Its `to_ref` is
+    /// TARGETLESS — it names `"carryover:<repo>/<slug>"` and does not resolve
+    /// to a node, so consumers doing dangling/cycle/topological work must
+    /// skip it (mirrors `okf_core::state::StateEdgeKind::CarryoverBlocks`).
+    CarryoverBlocks,
 }
 
 /// Mirrors `mev::brain::block_graph::BlockGraphNode` field-for-field.
