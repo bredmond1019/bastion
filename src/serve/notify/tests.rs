@@ -1365,3 +1365,265 @@ async fn engine_side_app_data_resolves_transport_and_reaches_scripted_send() {
         "the ValidatedOperatorPayload reaching send must be the one the engine-side caller built"
     );
 }
+
+// ── Stale-run alarm delivery loop (`BA.21.B` task 2) ────────────────────
+
+/// A transport double whose `send` outcomes are scripted one per call, in
+/// order — the same shape `ScriptedTransport::poll_outcomes` uses for
+/// `poll_responses`, adapted to `send` — so a test can prove `deliver_once`
+/// skips a failed item without panicking or aborting delivery of the rest
+/// of the batch. `poll_responses`/`acknowledge` are never exercised by
+/// these tests and always succeed trivially.
+struct FailingSendTransport {
+    send_outcomes:
+        std::sync::Mutex<std::collections::VecDeque<Result<DeliveredMessage, NotifyError>>>,
+    send_calls: std::sync::Mutex<Vec<ValidatedOperatorPayload>>,
+}
+
+impl FailingSendTransport {
+    fn new(outcomes: Vec<Result<DeliveredMessage, NotifyError>>) -> Self {
+        Self {
+            send_outcomes: std::sync::Mutex::new(outcomes.into()),
+            send_calls: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn send_calls(&self) -> Vec<ValidatedOperatorPayload> {
+        self.send_calls
+            .lock()
+            .expect("send_calls mutex is never poisoned in these tests")
+            .clone()
+    }
+}
+
+#[async_trait]
+impl OperatorTransport for FailingSendTransport {
+    async fn send(
+        &self,
+        payload: &ValidatedOperatorPayload,
+    ) -> Result<DeliveredMessage, NotifyError> {
+        self.send_calls
+            .lock()
+            .expect("send_calls mutex is never poisoned in these tests")
+            .push(payload.clone());
+        self.send_outcomes
+            .lock()
+            .expect("send_outcomes mutex is never poisoned in these tests")
+            .pop_front()
+            .expect("test provided an outcome for every send call it drives")
+    }
+
+    async fn poll_responses(
+        &self,
+        since: Option<UpdateCursor>,
+    ) -> Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError> {
+        Ok((Vec::new(), since))
+    }
+}
+
+/// A minimal `TaskContext` with one node in `Running` status — the same
+/// shape `engine_serve::orphan`'s own `running_context()` test helper
+/// builds — sufficient for `alarm_stale_runs`/`sweep_stale_runs_once` to
+/// treat a record as a live, non-terminal run.
+fn running_task_context() -> engine_contract::task_context::TaskContext {
+    let mut node_runs = std::collections::HashMap::new();
+    node_runs.insert(
+        "SomeNode".to_string(),
+        engine_contract::task_context::NodeRun {
+            status: engine_contract::task_context::NodeRunStatus::Running,
+            started_at: Some(chrono::Utc::now()),
+            completed_at: None,
+            error: None,
+            input: None,
+            usage: None,
+        },
+    );
+    engine_contract::task_context::TaskContext {
+        event: serde_json::json!({}),
+        nodes: std::collections::HashMap::new(),
+        metadata: serde_json::json!({}),
+        node_runs,
+    }
+}
+
+fn default_limits() -> engine_core::operator::OperatorPayloadLimits {
+    engine_core::operator::OperatorPayloadLimits::default()
+}
+
+#[tokio::test]
+async fn deliver_once_sends_exactly_one_payload_naming_the_stalled_run_for_a_real_stale_record() {
+    let live = engine_serve::live_state::LiveStateStore::new();
+    let run_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    live.record(run_id, &running_task_context());
+
+    let far_future = now + chrono::Duration::hours(2);
+    let policy = engine_core::operator::orphan::OrphanPolicy::default();
+    let enqueued = engine_serve::orphan::sweep_stale_runs_once(&live, &policy, far_future);
+    assert_eq!(enqueued, 1, "the run must have been alarmed and enqueued");
+
+    let scripted = Arc::new(ScriptedTransport::new(Vec::new()));
+    let transport: Arc<dyn OperatorTransport> = scripted.clone();
+    let pending = Arc::new(PendingPayloads::new());
+    let limits = default_limits();
+
+    let delivered =
+        stale_run_alarm::deliver_once(&live, &transport, &pending, &limits, far_future, 10).await;
+    assert_eq!(delivered, 1, "exactly one item must be delivered");
+
+    let sent = scripted.send_calls();
+    assert_eq!(sent.len(), 1, "exactly one send call");
+    assert!(
+        sent[0]
+            .payload()
+            .rendered_summary
+            .contains(&run_id.to_string()),
+        "the delivered payload must name the stalled run id"
+    );
+}
+
+#[tokio::test]
+async fn a_second_delivery_tick_over_the_same_still_stale_run_sends_nothing_further() {
+    let live = engine_serve::live_state::LiveStateStore::new();
+    let run_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    live.record(run_id, &running_task_context());
+
+    let far_future = now + chrono::Duration::hours(2);
+    let policy = engine_core::operator::orphan::OrphanPolicy::default();
+    let first_enqueued = engine_serve::orphan::sweep_stale_runs_once(&live, &policy, far_future);
+    assert_eq!(first_enqueued, 1);
+
+    let scripted = Arc::new(ScriptedTransport::new(Vec::new()));
+    let transport: Arc<dyn OperatorTransport> = scripted.clone();
+    let pending = Arc::new(PendingPayloads::new());
+    let limits = default_limits();
+
+    let first =
+        stale_run_alarm::deliver_once(&live, &transport, &pending, &limits, far_future, 10).await;
+    assert_eq!(first, 1);
+
+    // A later sweep tick over the same still-stale run enqueues nothing
+    // further (`LiveStateStore::mark_alarmed` dedups on the engine side),
+    // so a second delivery tick — well inside the default
+    // `answer_timeout_secs` (900s) so the already-delivered item is not
+    // released back to `pending` — has nothing new to drain either.
+    let second_tick = far_future + chrono::Duration::seconds(5);
+    let second_enqueued = engine_serve::orphan::sweep_stale_runs_once(&live, &policy, second_tick);
+    assert_eq!(second_enqueued, 0, "the once-per-run dedup must hold");
+    let second =
+        stale_run_alarm::deliver_once(&live, &transport, &pending, &limits, second_tick, 10).await;
+    assert_eq!(
+        second, 0,
+        "one stall must produce one message, not one per tick"
+    );
+
+    let sent = scripted.send_calls();
+    assert_eq!(sent.len(), 1, "exactly one send call across both ticks");
+    assert!(
+        sent[0]
+            .payload()
+            .rendered_summary
+            .contains(&run_id.to_string()),
+        "the delivered payload must name the stalled run id"
+    );
+}
+
+#[tokio::test]
+async fn a_run_below_the_threshold_produces_no_delivery() {
+    let live = engine_serve::live_state::LiveStateStore::new();
+    let run_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    live.record(run_id, &running_task_context());
+
+    // Fresh run: `now` is the same instant as the record, far below any
+    // policy threshold, so the engine-side sweep enqueues nothing.
+    let policy = engine_core::operator::orphan::OrphanPolicy::default();
+    let enqueued = engine_serve::orphan::sweep_stale_runs_once(&live, &policy, now);
+    assert_eq!(enqueued, 0, "a fresh run must not be alarmed");
+
+    let scripted = Arc::new(ScriptedTransport::new(Vec::new()));
+    let transport: Arc<dyn OperatorTransport> = scripted.clone();
+    let pending = Arc::new(PendingPayloads::new());
+    let limits = default_limits();
+
+    let delivered =
+        stale_run_alarm::deliver_once(&live, &transport, &pending, &limits, now, 10).await;
+    assert_eq!(delivered, 0);
+    assert!(scripted.send_calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_failing_send_is_skipped_without_panicking_and_the_queue_keeps_working() {
+    // The default `OperatorQueuePolicy` (`LiveStateStore::new()` always
+    // constructs its queue under it — see `take_deliverable_batch_bounded_
+    // by_queue_depth_not_only_max` in `stale_run_alarm.rs`) caps
+    // `operator_queue_depth` at 1: only one item can be OPEN at a time, so
+    // a single `deliver_once` batch here pops at most one item regardless
+    // of `max`. This test proves the two halves of the criterion the depth
+    // cap still lets it prove: (a) a failing `send` is skipped rather than
+    // panicking or propagating, and (b) the queue is not left wedged by
+    // that failure — once the failed item is answered, a later item is
+    // still deliverable.
+    let live = engine_serve::live_state::LiveStateStore::new();
+    let run_a = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    live.record(run_a, &running_task_context());
+
+    let far_future = now + chrono::Duration::hours(2);
+    let policy = engine_core::operator::orphan::OrphanPolicy::default();
+    let enqueued = engine_serve::orphan::sweep_stale_runs_once(&live, &policy, far_future);
+    assert_eq!(enqueued, 1, "run_a must have been alarmed and enqueued");
+
+    let transport: Arc<dyn OperatorTransport> = Arc::new(FailingSendTransport::new(vec![
+        Err(NotifyError::Transport {
+            reason: "connect timeout".to_string(),
+        }),
+        Ok(DeliveredMessage {
+            transport_message_id: "42".to_string(),
+        }),
+    ]));
+    let pending = Arc::new(PendingPayloads::new());
+    let limits = default_limits();
+
+    let delivered =
+        stale_run_alarm::deliver_once(&live, &transport, &pending, &limits, far_future, 10).await;
+    assert_eq!(
+        delivered, 0,
+        "a failing send must not count as delivered, and must not panic"
+    );
+
+    // The failed item is still OPEN (never answered) — release it, the way
+    // an eventual answer/timeout would, so the queue is not wedged.
+    {
+        let mut queue = live
+            .operator_queue()
+            .write()
+            .expect("operator queue lock poisoned");
+        assert_eq!(queue.open_count(), 1, "the failed item stays open");
+        assert!(queue.answer(&format!("stale-run:{run_a}")));
+    }
+
+    // A second stale run alarms and enqueues normally, and delivers via the
+    // scripted `Ok` outcome — proving the earlier failure did not abort or
+    // permanently break delivery.
+    let run_b = uuid::Uuid::new_v4();
+    live.record(run_b, &running_task_context());
+    let enqueued_b = engine_serve::orphan::sweep_stale_runs_once(
+        &live,
+        &policy,
+        far_future + chrono::Duration::hours(1),
+    );
+    assert_eq!(enqueued_b, 1);
+
+    let delivered_b = stale_run_alarm::deliver_once(
+        &live,
+        &transport,
+        &pending,
+        &limits,
+        far_future + chrono::Duration::hours(1),
+        10,
+    )
+    .await;
+    assert_eq!(delivered_b, 1, "delivery keeps working after the failure");
+}

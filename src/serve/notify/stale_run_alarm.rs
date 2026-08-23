@@ -18,6 +18,7 @@
 //! (task 3) build on top of these functions without duplicating their
 //! logic.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -25,8 +26,11 @@ use chrono::{DateTime, Utc};
 use engine_core::operator::orphan::OrphanPolicy;
 use engine_core::operator::queue::{OperatorQueue, OperatorQueueItem};
 use engine_core::operator::{
-    OperatorPayloadLimits, OperatorValidationError, ValidatedOperatorPayload,
+    OperatorPayloadLimits, OperatorTransport, OperatorValidationError, ValidatedOperatorPayload,
 };
+use engine_serve::live_state::LiveStateStore;
+
+use super::PendingPayloads;
 
 /// Lower bound on the derived sweep interval, so a pathologically small
 /// `stale_run_alarm_secs` (e.g. from a test fixture or a misconfigured
@@ -96,6 +100,141 @@ pub fn take_deliverable_batch(
         }
     }
     batch
+}
+
+// ── Delivery loop (task 2): drain the queue over the injected transport ──
+
+/// A handle to the background alarm-delivery loop
+/// [`spawn_alarm_delivery_loop`] spawned. Mirrors
+/// `engine_serve::orphan::StaleRunSweepHandle` and
+/// `engine_serve::schedule::ScheduleLoopHandle`'s "hold or drop" shape
+/// exactly — the same boot-wiring convention `run_server` already knows how
+/// to call: the caller may hold this to [`abort`](Self::abort) the loop
+/// (e.g. on shutdown) or drop it — dropping does **not** stop the loop (a
+/// `tokio::task::JoinHandle` detaches on drop), matching how both of those
+/// handles behave.
+pub struct AlarmDeliveryHandle {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl AlarmDeliveryHandle {
+    /// Stop the background delivery loop.
+    pub fn abort(&self) {
+        self.task.abort();
+    }
+}
+
+/// One delivery tick: drain at most `max` deliverable items from `live`'s
+/// operator queue as of `now`, re-validate each against `limits`, register
+/// it in `pending` (so a later operator tap resolves through the existing
+/// [`super::PendingLookup`] fallback registry), and hand it to `transport`.
+///
+/// The queue's write lock is a `std::sync::RwLock` — released BEFORE any
+/// `await` (a lock held across an await is a deadlock risk on a
+/// single-threaded actix worker), so the lock is taken, the batch is
+/// popped, and the guard is dropped before any item is validated or sent.
+///
+/// A validation error or a `send` error for one item is logged at `warn!`
+/// and SKIPPED, never propagated — the same skip-on-render-failure contract
+/// [`engine_serve::orphan::alarm_stale_runs`] itself follows: one bad item
+/// never blocks delivery of the rest of the batch.
+///
+/// Returns the number of items actually delivered (a successful `send`),
+/// which may be less than the number popped from the queue.
+pub async fn deliver_once(
+    live: &LiveStateStore,
+    transport: &Arc<dyn OperatorTransport>,
+    pending: &Arc<PendingPayloads>,
+    limits: &OperatorPayloadLimits,
+    now: DateTime<Utc>,
+    max: usize,
+) -> usize {
+    let batch = {
+        let mut queue = live
+            .operator_queue()
+            .write()
+            .expect("operator queue lock poisoned on write");
+        take_deliverable_batch(&mut queue, now, max)
+        // `queue` (the write guard) is dropped here, at the end of this
+        // block — before any `await` below.
+    };
+
+    let mut delivered = 0;
+    for item in batch {
+        let item_id = item.item_id.clone();
+        let validated = match validated_from_item(&item, limits) {
+            Ok(validated) => validated,
+            Err(err) => {
+                tracing::warn!(
+                    target: "bastion::serve",
+                    error = %err,
+                    item_id = %item_id,
+                    "stale-run alarm payload failed re-validation; skipping"
+                );
+                continue;
+            }
+        };
+
+        pending.insert(validated.clone());
+
+        match transport.send(&validated).await {
+            Ok(_) => delivered += 1,
+            Err(err) => {
+                tracing::warn!(
+                    target: "bastion::serve",
+                    error = %err,
+                    item_id = %item_id,
+                    "stale-run alarm delivery failed; skipping"
+                );
+            }
+        }
+    }
+
+    delivered
+}
+
+/// Upper bound on items drained from the operator queue in a single
+/// [`spawn_alarm_delivery_loop`] tick. Generous relative to any plausible
+/// number of runs alarmed between two ticks of a several-second interval —
+/// this exists only so a pathological backlog cannot monopolise a single
+/// tick, matching [`take_deliverable_batch`]'s own `max`-bounds-one-tick
+/// contract.
+const DELIVERY_BATCH_MAX: usize = 32;
+
+/// Spawn the background delivery loop: a `tokio::spawn`ed
+/// `tokio::time::interval(interval)` loop whose body is one
+/// [`deliver_once`] call per tick, evaluated at `chrono::Utc::now()`.
+///
+/// `live` is cheap to clone (an `Arc` around each guarded map, per
+/// `LiveStateStore`'s own doc comment), so it and `transport`/`pending` are
+/// captured by value/clone into the spawned task with no extra
+/// synchronization needed by the caller.
+#[must_use]
+pub fn spawn_alarm_delivery_loop(
+    live: LiveStateStore,
+    transport: Arc<dyn OperatorTransport>,
+    pending: Arc<PendingPayloads>,
+    interval: Duration,
+) -> AlarmDeliveryHandle {
+    let task = tokio::spawn(async move {
+        let limits = OperatorPayloadLimits::default();
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            let now = Utc::now();
+            let _ = deliver_once(
+                &live,
+                &transport,
+                &pending,
+                &limits,
+                now,
+                DELIVERY_BATCH_MAX,
+            )
+            .await;
+        }
+    });
+
+    AlarmDeliveryHandle { task }
 }
 
 #[cfg(test)]
