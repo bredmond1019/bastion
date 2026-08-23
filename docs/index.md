@@ -34,6 +34,7 @@ and `Bastion/docs/ownership.md`.
 | [detect.md](detect.md) | Pure agent-state detection engine — TOML manifest schema, gate types, `detect()` API |
 | [claude-code-workflow.md](claude-code-workflow.md) | Hands-on walkthrough: spin up a tmux session, launch Claude Code, drive it |
 | [assess.md](assess.md) | `bastion assess` — read-only repo diagnostic: OKF coverage, graph readiness, state readiness |
+| [notify.md](notify.md) | `bastion notify send\|ask` — CLI entrypoint to the shared operator transport, routed to any configured bot by `--bot` |
 
 ## Knowledge graph
 
