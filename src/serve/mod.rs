@@ -51,7 +51,6 @@ use actix_web_actors::ws as actix_ws;
 use anyhow::Result;
 use auth::{ApiKeyAuthMiddleware, BearerAuthMiddleware};
 use dto::ErrorPayload;
-use engine_serve::abort::{CampaignRegistry, RunRegistry};
 use engine_serve::dispatch::Dispatcher;
 use engine_serve::durable::spawn_durable_writer;
 use engine_serve::http::AppState as EngineAppState;
@@ -568,24 +567,20 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         notify::stale_run_alarm::sweep_interval(&stale_run_policy),
                     );
 
-                    let state = EngineAppState {
-                        dispatcher: Arc::new(build_engine_dispatcher()),
-                        live: live_store.clone(),
-                        durable: spawn_durable_writer(Some(pool)),
-                        runs: RunRegistry::new(),
-                        // Stopgap for E0063 after engine-rs EN.11.F-task2
-                        // (da0ccc3) added this field: `EngineAppState` is an
-                        // exhaustive struct literal here, so a new upstream
-                        // field breaks bastion's build outright. Empty at boot
-                        // is the correct semantics -- campaign tokens are
-                        // registered when a campaign id is minted, not at
-                        // startup -- matching `runs` directly above.
-                        // engine-rs `EN.ticket.appstate-additions-must-not-break-consumers`
-                        // replaces this site with `AppState::builder(..)`, after
-                        // which adding a registry field stops breaking consumers.
-                        campaigns: CampaignRegistry::new(),
-                        api_key: engine_api_key,
-                    };
+                    // Built through `AppState::builder(..)` rather than an
+                    // exhaustive struct literal: the registry fields (`runs`,
+                    // `campaigns`) default to empty, so a new upstream registry
+                    // field lands as one more optional setter instead of an
+                    // E0063 compile error here. Empty at boot is also the
+                    // correct semantics -- run and campaign cancellation tokens
+                    // are registered when their ids are minted, not at startup.
+                    let state = EngineAppState::builder(
+                        Arc::new(build_engine_dispatcher()),
+                        live_store.clone(),
+                        spawn_durable_writer(Some(pool)),
+                        engine_api_key,
+                    )
+                    .build();
                     let engine_data = web::Data::new(state);
 
                     // ticket-spawn-schedule-loop task 2: spawn the schedule
@@ -5111,14 +5106,13 @@ heading = "bastion"
         Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
         Error = actix_web::Error,
     > {
-        let state = EngineAppState {
-            dispatcher: Arc::new(build_engine_dispatcher()),
-            live: LiveStateStore::new(),
-            durable: spawn_durable_writer(None),
-            runs: RunRegistry::new(),
-            campaigns: CampaignRegistry::new(),
-            api_key: api_key.to_string(),
-        };
+        let state = EngineAppState::builder(
+            Arc::new(build_engine_dispatcher()),
+            LiveStateStore::new(),
+            spawn_durable_writer(None),
+            api_key.to_string(),
+        )
+        .build();
         let engine_data = web::Data::new(state);
 
         let app = App::new()
@@ -5322,14 +5316,13 @@ heading = "bastion"
         Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
         Error = actix_web::Error,
     > {
-        let state = EngineAppState {
-            dispatcher: Arc::new(build_engine_dispatcher()),
-            live: LiveStateStore::new(),
-            durable: spawn_durable_writer(None),
-            runs: RunRegistry::new(),
-            campaigns: CampaignRegistry::new(),
-            api_key: api_key.to_string(),
-        };
+        let state = EngineAppState::builder(
+            Arc::new(build_engine_dispatcher()),
+            LiveStateStore::new(),
+            spawn_durable_writer(None),
+            api_key.to_string(),
+        )
+        .build();
         let engine_data = web::Data::new(state);
 
         let mut app = App::new()
@@ -6441,14 +6434,15 @@ mod schedule_loop_wiring_tests {
     /// DB-free (`spawn_durable_writer(None)`) since these tests never touch
     /// Postgres.
     fn schedule_test_state() -> Arc<EngineAppState> {
-        web::Data::new(EngineAppState {
-            dispatcher: Arc::new(build_engine_dispatcher()),
-            live: LiveStateStore::new(),
-            durable: spawn_durable_writer(None),
-            runs: RunRegistry::new(),
-            campaigns: CampaignRegistry::new(),
-            api_key: "schedule-loop-test-key".to_string(),
-        })
+        web::Data::new(
+            EngineAppState::builder(
+                Arc::new(build_engine_dispatcher()),
+                LiveStateStore::new(),
+                spawn_durable_writer(None),
+                "schedule-loop-test-key".to_string(),
+            )
+            .build(),
+        )
         .into_inner()
     }
 
