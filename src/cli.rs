@@ -400,6 +400,61 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Send a message or ask an operator a gated question over the shared
+    /// Telegram operator transport (`BA.ticket.notify-operator-cli`)
+    ///
+    /// Routed to a named bot credential pair via `--bot <slug>` (default `lane`) so this
+    /// CLI infrastructure is shared across bots (`lane`, `telegram`, `codesessions`, ...)
+    /// rather than hardcoded to one. An unconfigured or unknown `--bot` slug is a hard
+    /// error naming both derived env vars — never a silent fallback to another bot.
+    Notify {
+        #[command(subcommand)]
+        mode: NotifyMode,
+    },
+}
+
+/// `bastion notify` subcommands — see [`Commands::Notify`].
+#[derive(Debug, Subcommand)]
+pub enum NotifyMode {
+    /// Fire-and-forget: send a plain text message. No buttons, no digest, no poll, no lock.
+    Send {
+        /// Message text, or `-` to read it from stdin.
+        #[arg(long)]
+        text: String,
+        /// Bot credential pair to send through (env: BASTION_<SLUG>_BOT_TOKEN / _CHAT_ID)
+        #[arg(long, default_value = "lane")]
+        bot: String,
+    },
+
+    /// Ask the operator a gated question with response buttons and wait for a resolving tap
+    ///
+    /// Validates the payload through `engine_core::operator::validate` and
+    /// `check_whatsapp_portability` BEFORE sending — an over-limit payload is rejected with
+    /// no partial send. Exits 0 on an answering tap, 2 on timeout, 3 if the tap resolved to
+    /// a stale (already re-rendered) digest, 4 if a sibling `ask` on the same `--bot` already
+    /// holds the per-bot lock; any config/validation/permanent-transport failure exits 1.
+    Ask {
+        /// Stable id of the gate this question answers
+        #[arg(long = "gate-id")]
+        gate_id: String,
+        /// Rendered question text, or `-` to read it from stdin
+        #[arg(long)]
+        summary: String,
+        /// One response option as `key:Label`. Repeat for multiple options (max 3)
+        #[arg(long = "option")]
+        option: Vec<String>,
+        /// Seconds to wait for a resolving tap before giving up
+        #[arg(long = "timeout-secs", default_value_t = 300)]
+        timeout_secs: u64,
+        /// Bot credential pair to ask through (env: BASTION_<SLUG>_BOT_TOKEN / _CHAT_ID)
+        #[arg(long, default_value = "lane")]
+        bot: String,
+        /// Override the ask lock directory (default: the discovered `brain.toml`'s
+        /// directory joined with `.fleet-locks`, or `FLEET_LOCK_DIR` if set)
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

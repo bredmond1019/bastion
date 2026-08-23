@@ -14,15 +14,25 @@
 //! existing [`resolve_response`](crate::serve::notify::telegram::resolve_response)
 //! rather than re-deriving its verdict.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use engine_core::operator::{OperatorResponse, OperatorResponseOption, ValidatedOperatorPayload};
+use engine_core::operator::{
+    NotifyError, OperatorPayload, OperatorPayloadLimits, OperatorResponse, OperatorResponseOption,
+    OperatorTransport, ResponseVerdict, UpdateCursor, ValidatedOperatorPayload, validate,
+};
 use fs4::{FileExt, TryLockError};
 
-use crate::serve::notify::telegram::resolve_response;
+use crate::config::{BotCredentials, ConfigError, bot_env_var_names, configured_bot_slugs};
+use crate::serve::notify::telegram::{
+    TelegramTransport, check_whatsapp_portability, resolve_response,
+};
+// `telegram_http`'s reqwest-error/retry-after helpers are `pub(crate)` —
+// reachable from here, not re-derived.
+use crate::serve::notify::telegram_http::{classify_reqwest_error, retry_after_from_response};
 
 // ── Option parsing (`--option key:Label`) ───────────────────────────────
 
@@ -406,6 +416,364 @@ impl AskLock {
                 }
                 Err(TryLockError::Error(e)) => return Err(AskLockError::Io(e)),
             }
+        }
+    }
+}
+
+// ── The I/O shell: `bastion notify send|ask` (task 5) ───────────────────
+//
+// Everything above this point is pure logic (option parsing, the outcome
+// contract, the per-batch decision, the lock). Everything below is the
+// thin shell wiring it to real env vars, a real `TelegramTransport`, and
+// real stdin/stdout/stderr — per `CLAUDE.md` standing rule 6 this is the
+// I/O boundary and is manually smoke-tested, not unit-tested, except for
+// the small pure helpers factored out below it.
+
+/// Bot slugs `bastion serve` polls in the background
+/// (`NotifyPollLoop::run` for `telegram`, `SessionQaBridge::run_outbound`
+/// for `codesessions`). `ask` against one of these warns on stderr that it
+/// competes with that loop for the same `getUpdates` stream; `send` never
+/// warns (it never reads updates and so cannot steal anything).
+pub const POLLED_BOT_SLUGS: &[&str] = &["telegram", "codesessions"];
+
+/// The `-` stdin marker `--text`/`--summary` accept.
+const STDIN_MARKER: &str = "-";
+
+/// Resolve a `--text`/`--summary` CLI argument: [`STDIN_MARKER`] means
+/// "read from stdin" (via the injected `stdin` closure, so this is
+/// unit-testable without a real stdin); anything else is returned as-is.
+///
+/// Pure w.r.t. the injected closure — exhaustively unit-tested below.
+pub fn resolve_text_arg(
+    arg: &str,
+    stdin: impl FnOnce() -> io::Result<String>,
+) -> io::Result<String> {
+    if arg == STDIN_MARKER {
+        stdin()
+    } else {
+        Ok(arg.to_string())
+    }
+}
+
+/// Read all of stdin to a `String`, trimming a single trailing `\n` (or
+/// `\r\n`) — not all trailing whitespace — so `echo "text" | bastion notify
+/// send --text -` doesn't carry an extra blank line onto the sent message.
+fn read_stdin_text() -> io::Result<String> {
+    use std::io::Read;
+    let mut buf = String::new();
+    io::stdin().read_to_string(&mut buf)?;
+    if buf.ends_with('\n') {
+        buf.pop();
+        if buf.ends_with('\r') {
+            buf.pop();
+        }
+    }
+    Ok(buf)
+}
+
+/// Build the plain `sendMessage` request body for `bastion notify send`:
+/// text only, no `reply_markup`, no buttons — deliberately NOT
+/// [`crate::serve::notify::telegram::sendmessage_body`], which always
+/// attaches an inline keyboard built from a payload's options.
+///
+/// Pure — unit-tested below.
+#[must_use]
+pub fn build_send_body(text: &str, chat_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "chat_id": chat_id,
+        "text": text,
+    })
+}
+
+/// The error message for an unconfigured (or unknown/typo'd) `--bot`
+/// slug: names BOTH derived env vars for `slug` and lists the slugs that
+/// DO have a complete pair — never a token or chat id value. An unknown
+/// slug and a genuinely-unconfigured known slug are indistinguishable at
+/// this layer (both resolve to "no env pair set"), so they share this one
+/// message.
+///
+/// Pure — unit-tested below.
+#[must_use]
+pub fn unconfigured_bot_message(slug: &str, configured: &[String]) -> String {
+    let (token_var, chat_var) = bot_env_var_names(slug);
+    if configured.is_empty() {
+        format!(
+            "bot '{slug}' is not configured — set both {token_var} and {chat_var} \
+             (no bots are currently configured)"
+        )
+    } else {
+        format!(
+            "bot '{slug}' is not configured — set both {token_var} and {chat_var} \
+             (configured bots: {})",
+            configured.join(", ")
+        )
+    }
+}
+
+/// Whether `--bot <slug>` warrants [`competing_poller_warning`].
+///
+/// Pure — unit-tested below.
+#[must_use]
+pub fn is_polled_bot_slug(slug: &str) -> bool {
+    POLLED_BOT_SLUGS.contains(&slug)
+}
+
+/// The stderr warning printed when `ask --bot <slug>` targets a bot
+/// `bastion serve` also polls in the background. `None` when `slug` is not
+/// one of [`POLLED_BOT_SLUGS`].
+///
+/// Pure — unit-tested below.
+#[must_use]
+pub fn competing_poller_warning(slug: &str) -> Option<String> {
+    if is_polled_bot_slug(slug) {
+        Some(format!(
+            "warning: --bot {slug} is also polled by `bastion serve`'s background loop \
+             (NotifyPollLoop/SessionQaBridge) — this `ask` and that loop will compete for \
+             the same Telegram update stream while both run"
+        ))
+    } else {
+        None
+    }
+}
+
+/// Snapshot the process environment into a `HashMap`, for
+/// [`configured_bot_slugs`] — real I/O, not unit-tested (Rule 6); the pure
+/// logic it feeds is.
+fn env_snapshot() -> HashMap<String, String> {
+    std::env::vars().collect()
+}
+
+/// Resolve `--bot <slug>` credentials or fail with
+/// [`unconfigured_bot_message`]. UNCONFIGURED (or unknown) IS A HARD
+/// ERROR — never a silent fallback to another bot (operator amendment,
+/// 2026-08-23) and never a value in the error text.
+fn load_bot_or_error(slug: &str) -> anyhow::Result<BotCredentials> {
+    match crate::config::load_named_bot_config(slug) {
+        Ok(Some(creds)) => Ok(creds),
+        Ok(None) => {
+            let configured = configured_bot_slugs(&env_snapshot());
+            anyhow::bail!(unconfigured_bot_message(slug, &configured))
+        }
+        Err(ConfigError::IncompleteNamedBotConfig(missing)) => {
+            anyhow::bail!(
+                "bot '{slug}' config is incomplete: {missing} must also be set (both \
+                 BOT_TOKEN and CHAT_ID or neither)"
+            )
+        }
+        Err(other) => anyhow::bail!("failed to load bot '{slug}' config: {other}"),
+    }
+}
+
+/// How long to sleep before retrying a retryable [`NotifyError`] — the
+/// transport's own `retry_after_secs` hint for `RateLimited`, a short
+/// fixed backoff otherwise. Never called for a permanent error;
+/// `NotifyError::is_retryable()` draws that line, not this function.
+async fn sleep_before_retry(err: &NotifyError) {
+    let dur = match err {
+        NotifyError::RateLimited { retry_after_secs } => Duration::from_secs(*retry_after_secs),
+        _ => Duration::from_millis(500),
+    };
+    tokio::time::sleep(dur).await;
+}
+
+/// Scan `responses` for the one this outstanding ask should acknowledge,
+/// alongside its resolved [`ResponseVerdict`] — same "first `Accepted`,
+/// else first `StaleDigest`" precedence as [`decide_batch`], and built on
+/// the exact same [`resolve_response`] primitive, so the two never
+/// disagree about which response (if any) answers this batch. Kept
+/// separate from `decide_batch` only because `acknowledge` needs the
+/// original [`OperatorResponse`] (its `ack`/`message` handles), which
+/// `BatchDecision` does not carry.
+fn find_ack_target<'a>(
+    responses: &'a [OperatorResponse],
+    expected: &ValidatedOperatorPayload,
+) -> Option<(&'a OperatorResponse, ResponseVerdict)> {
+    let mut stale: Option<(&OperatorResponse, ResponseVerdict)> = None;
+    for resp in responses {
+        let verdict = resolve_response(resp, expected);
+        match &verdict {
+            ResponseVerdict::Accepted { .. } => return Some((resp, verdict)),
+            ResponseVerdict::StaleDigest { .. } => {
+                if stale.is_none() {
+                    stale = Some((resp, verdict));
+                }
+            }
+            ResponseVerdict::UnknownGate => {}
+        }
+    }
+    stale
+}
+
+/// Print `outcome`'s JSON contract to stdout and terminate the process
+/// with its exit code — never returns. This is the one place `notify ask`
+/// exits with anything other than 1 (config/validation/transport errors
+/// bubble up through `anyhow::Result` instead, per `main.rs`'s existing
+/// error-to-exit-1 handling), so every terminal `AskOutcome` funnels
+/// through here.
+fn print_outcome_and_exit(outcome: &AskOutcome) -> ! {
+    println!("{}", outcome.to_json());
+    std::process::exit(outcome.exit_code());
+}
+
+/// `bastion notify send --text <msg|-> [--bot <slug>]` — fire-and-forget
+/// `sendMessage`: no buttons, no digest, no poll, no lock. Prints nothing
+/// on success and returns `Ok(())` (main.rs exits 0); any failure —
+/// unconfigured bot, transport error — is an `Err` (main.rs exits 1).
+pub async fn run_send(bot_slug: &str, text_arg: &str) -> anyhow::Result<()> {
+    let text = resolve_text_arg(text_arg, read_stdin_text)?;
+    let creds = load_bot_or_error(bot_slug)?;
+
+    let body = build_send_body(&text, &creds.chat_id);
+    let method = "sendMessage";
+    tracing::debug!(method, "calling Telegram Bot API");
+
+    let url = crate::serve::notify::telegram_http::api_url(&creds.bot_token, method);
+    let client = reqwest::Client::new();
+    let resp =
+        client.post(url).json(&body).send().await.map_err(|e| {
+            anyhow::anyhow!("{method} request failed: {}", classify_reqwest_error(&e))
+        })?;
+
+    let status = resp.status().as_u16();
+    if let Some(err) = crate::serve::notify::telegram_http::classify_http_status(
+        status,
+        retry_after_from_response(&resp),
+    ) {
+        anyhow::bail!("{method} failed: {err}");
+    }
+
+    Ok(())
+}
+
+/// `bastion notify ask --gate-id <id> --summary <text|-> --option
+/// <key:Label> [...] [--timeout-secs N] [--bot <slug>] [--lock-dir <dir>]`
+/// — builds and validates an `OperatorPayload`, holds the per-bot ask
+/// lock, sends it, and long-polls until a resolving tap arrives or the
+/// timeout elapses. Terminates the process directly via
+/// [`print_outcome_and_exit`] for every `AskOutcome` (exit 0/2/3/4);
+/// returns `Err` (main.rs exits 1) for config/validation/permanent-
+/// transport failures.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_ask(
+    bot_slug: &str,
+    gate_id: String,
+    summary_arg: &str,
+    options_raw: &[String],
+    timeout_secs: u64,
+    lock_dir_arg: Option<&Path>,
+) -> anyhow::Result<()> {
+    let summary = resolve_text_arg(summary_arg, read_stdin_text)?;
+    let options = parse_options(options_raw).map_err(|e| anyhow::anyhow!(e))?;
+
+    // Both validation gates run BEFORE any HTTP request or lock acquisition,
+    // so an over-limit payload is rejected with no partial send.
+    let payload = OperatorPayload::new(gate_id, summary, options);
+    let limits = OperatorPayloadLimits::default();
+    let validated = validate(payload, &limits).map_err(|e| anyhow::anyhow!("{e}"))?;
+    check_whatsapp_portability(&validated, &limits).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let creds = load_bot_or_error(bot_slug)?;
+
+    if let Some(warning) = competing_poller_warning(bot_slug) {
+        eprintln!("{warning}");
+    }
+
+    let cwd = std::env::current_dir()?;
+    let lock_dir = resolve_lock_dir(
+        lock_dir_arg.and_then(Path::to_str),
+        std::env::var(FLEET_LOCK_DIR_ENV).ok().as_deref(),
+        &cwd,
+    );
+    let lock_path = lock_path_for(&lock_dir, bot_slug).map_err(|e| anyhow::anyhow!(e))?;
+    let timeout_dur = Duration::from_secs(timeout_secs);
+
+    let _lock = match AskLock::acquire(&lock_path, timeout_dur) {
+        Ok(lock) => lock,
+        Err(AskLockError::Busy) => print_outcome_and_exit(&AskOutcome::Busy),
+        Err(AskLockError::Io(e)) => anyhow::bail!("failed to acquire ask lock: {e}"),
+    };
+
+    let transport = TelegramTransport::with_credentials(creds.bot_token, creds.chat_id);
+    let deadline = Instant::now() + timeout_dur;
+
+    // Initial send: retry on a retryable NotifyError within the deadline,
+    // stop (exit 1, reason on stderr) on a permanent one.
+    loop {
+        match transport.send(&validated).await {
+            Ok(_) => break,
+            Err(e) if e.is_retryable() => {
+                if Instant::now() >= deadline {
+                    print_outcome_and_exit(&AskOutcome::Timeout);
+                }
+                sleep_before_retry(&e).await;
+            }
+            Err(e) => anyhow::bail!("send failed: {e}"),
+        }
+    }
+
+    // Poll loop: the cursor is carried forward across every batch,
+    // including one that yields BatchDecision::KeepPolling because it held
+    // only foreign-gate updates — never reset, never skipped.
+    let mut cursor: Option<UpdateCursor> = None;
+    loop {
+        if Instant::now() >= deadline {
+            print_outcome_and_exit(&AskOutcome::Timeout);
+        }
+
+        match transport.poll_responses(cursor.clone()).await {
+            Ok((responses, next_cursor)) => {
+                if next_cursor.is_some() {
+                    cursor = next_cursor;
+                }
+
+                match decide_batch(&responses, &validated) {
+                    BatchDecision::KeepPolling => {}
+                    BatchDecision::Answered { .. } | BatchDecision::Stale { .. } => {
+                        if let Some((resp, verdict)) = find_ack_target(&responses, &validated) {
+                            // Acknowledgement is what answers the callback query
+                            // and strips the inline keyboard; a failure here is
+                            // logged, never fatal — the decision itself already
+                            // resolved.
+                            if let Err(e) = transport.acknowledge(resp, &verdict).await {
+                                tracing::warn!(error = %e, "failed to acknowledge operator response");
+                            }
+                            match verdict {
+                                ResponseVerdict::Accepted {
+                                    gate_id,
+                                    option_key,
+                                    decided_at,
+                                    ..
+                                } => print_outcome_and_exit(&AskOutcome::Answered {
+                                    gate_id,
+                                    option_key,
+                                    decided_at,
+                                }),
+                                ResponseVerdict::StaleDigest {
+                                    gate_id,
+                                    option_key,
+                                    digest,
+                                    decided_at,
+                                } => print_outcome_and_exit(&AskOutcome::StaleDigest {
+                                    gate_id,
+                                    option_key,
+                                    digest,
+                                    decided_at,
+                                }),
+                                ResponseVerdict::UnknownGate => unreachable!(
+                                    "find_ack_target never returns an UnknownGate verdict"
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) if e.is_retryable() => {
+                if Instant::now() >= deadline {
+                    print_outcome_and_exit(&AskOutcome::Timeout);
+                }
+                sleep_before_retry(&e).await;
+            }
+            Err(e) => anyhow::bail!("poll failed: {e}"),
         }
     }
 }
@@ -874,6 +1242,163 @@ mod tests {
             second.is_ok(),
             "expected the second acquire to succeed after the holder dropped"
         );
+    }
+
+    // ── resolve_text_arg / read_stdin_text ────────────────────────────
+
+    #[test]
+    fn resolve_text_arg_non_dash_is_returned_as_is() {
+        let result = resolve_text_arg("hello", || panic!("stdin must not be called"));
+        assert_eq!(result.unwrap(), "hello");
+    }
+
+    #[test]
+    fn resolve_text_arg_dash_reads_from_injected_stdin() {
+        let result = resolve_text_arg("-", || Ok("from stdin".to_string()));
+        assert_eq!(result.unwrap(), "from stdin");
+    }
+
+    #[test]
+    fn resolve_text_arg_dash_propagates_stdin_error() {
+        let result = resolve_text_arg("-", || Err(io::Error::other("stdin broke")));
+        assert!(result.is_err());
+    }
+
+    // ── build_send_body ─────────────────────────────────────────────
+
+    #[test]
+    fn build_send_body_has_no_reply_markup() {
+        let body = build_send_body("hello", "chat-1");
+        assert_eq!(body["chat_id"], "chat-1");
+        assert_eq!(body["text"], "hello");
+        assert!(
+            body.get("reply_markup").is_none(),
+            "send must never attach an inline keyboard"
+        );
+    }
+
+    // ── unconfigured_bot_message ────────────────────────────────────
+
+    #[test]
+    fn unconfigured_bot_message_names_both_derived_vars() {
+        let msg = unconfigured_bot_message("lane", &[]);
+        assert!(msg.contains("BASTION_LANE_BOT_TOKEN"));
+        assert!(msg.contains("BASTION_LANE_CHAT_ID"));
+    }
+
+    #[test]
+    fn unconfigured_bot_message_lists_configured_slugs() {
+        let msg = unconfigured_bot_message("typo", &["lane".to_string(), "telegram".to_string()]);
+        assert!(msg.contains("BASTION_TYPO_BOT_TOKEN"));
+        assert!(msg.contains("BASTION_TYPO_CHAT_ID"));
+        assert!(msg.contains("lane"));
+        assert!(msg.contains("telegram"));
+    }
+
+    #[test]
+    fn unconfigured_bot_message_never_contains_a_credential_shaped_value() {
+        // Regression guard: the message must be built only from slug/env-var
+        // names, never from a token or chat id value.
+        let msg = unconfigured_bot_message("lane", &["codesessions".to_string()]);
+        assert!(!msg.to_lowercase().contains("secret"));
+        assert!(!msg.contains("123:ABC"));
+    }
+
+    #[test]
+    fn unconfigured_bot_message_empty_configured_list_says_none_configured() {
+        let msg = unconfigured_bot_message("lane", &[]);
+        assert!(msg.contains("no bots are currently configured"));
+    }
+
+    // ── is_polled_bot_slug / competing_poller_warning ───────────────
+
+    #[test]
+    fn is_polled_bot_slug_true_for_telegram_and_codesessions() {
+        assert!(is_polled_bot_slug("telegram"));
+        assert!(is_polled_bot_slug("codesessions"));
+    }
+
+    #[test]
+    fn is_polled_bot_slug_false_for_lane_and_unknown() {
+        assert!(!is_polled_bot_slug("lane"));
+        assert!(!is_polled_bot_slug("some-other-bot"));
+    }
+
+    #[test]
+    fn competing_poller_warning_present_for_polled_slugs() {
+        assert!(competing_poller_warning("telegram").is_some());
+        assert!(competing_poller_warning("codesessions").is_some());
+    }
+
+    #[test]
+    fn competing_poller_warning_none_for_lane() {
+        assert!(competing_poller_warning("lane").is_none());
+    }
+
+    // ── find_ack_target ──────────────────────────────────────────────
+
+    fn make_response(gate_id: &str, digest_prefix: &str, option_key: &str) -> OperatorResponse {
+        OperatorResponse {
+            gate_id: gate_id.to_string(),
+            digest: digest_prefix.to_string(),
+            option_key: option_key.to_string(),
+            received_at: chrono::Utc::now(),
+            ack: Some(AckHandle("ack-1".to_string())),
+            message: Some(MessageHandle {
+                chat_id: "chat-1".to_string(),
+                message_id: 42,
+            }),
+        }
+    }
+
+    fn make_expected() -> ValidatedOperatorPayload {
+        let payload = OperatorPayload::new(
+            "gate-1",
+            "diff summary",
+            vec![
+                OperatorResponseOption::new("approve", "Approve"),
+                OperatorResponseOption::new("reject", "Reject"),
+            ],
+        );
+        validate(payload, &OperatorPayloadLimits::default()).unwrap()
+    }
+
+    #[test]
+    fn find_ack_target_returns_accepted_match() {
+        let expected = make_expected();
+        let digest_prefix = &expected.payload().digest
+            [..crate::serve::notify::telegram::CALLBACK_DIGEST_PREFIX_LEN];
+        let responses = vec![make_response("gate-1", digest_prefix, "approve")];
+
+        let (resp, verdict) =
+            find_ack_target(&responses, &expected).expect("should find a matching response");
+        assert_eq!(resp.gate_id, "gate-1");
+        assert!(matches!(verdict, ResponseVerdict::Accepted { .. }));
+    }
+
+    #[test]
+    fn find_ack_target_skips_foreign_gate_and_returns_none() {
+        let expected = make_expected();
+        let responses = vec![make_response("some-other-gate", "deadbeef0000", "approve")];
+
+        assert!(find_ack_target(&responses, &expected).is_none());
+    }
+
+    #[test]
+    fn find_ack_target_prefers_accepted_over_earlier_stale() {
+        let expected = make_expected();
+        let digest_prefix = &expected.payload().digest
+            [..crate::serve::notify::telegram::CALLBACK_DIGEST_PREFIX_LEN];
+        let responses = vec![
+            make_response("gate-1", "0000deadbeef", "approve"), // stale digest
+            make_response("gate-1", digest_prefix, "reject"),   // accepted
+        ];
+
+        let (_, verdict) = find_ack_target(&responses, &expected).unwrap();
+        match verdict {
+            ResponseVerdict::Accepted { option_key, .. } => assert_eq!(option_key, "reject"),
+            other => panic!("expected Accepted, got {other:?}"),
+        }
     }
 }
 

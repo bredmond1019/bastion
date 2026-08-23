@@ -36,7 +36,7 @@ pub use term_core::detect;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, NotifyMode};
 use observ::errors::{ConsoleError, ErrorCode};
 
 // ── Pure helpers (unit-tested below) ─────────────────────────────────────────
@@ -75,6 +75,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::View { .. } => "view",
         Commands::Edit { .. } => "edit",
         Commands::Assess { .. } => "assess",
+        Commands::Notify { .. } => "notify",
     }
 }
 
@@ -305,6 +306,32 @@ async fn dispatch(cli: Cli) -> Result<()> {
             // Assess is DB-free and synchronous (D5-style) and performs zero filesystem
             // writes end to end — a read-only repo diagnostic (Phase 15, Block BA.15.9).
             Commands::Assess { path, json } => assess::run::run(path, json),
+            // Notify is DB-free (D4) — a thin I/O shell over the operator transport
+            // (`BA.ticket.notify-operator-cli` task 5). `ask` terminates the process
+            // directly for its own outcome contract (exit 0/2/3/4); `send` and any
+            // config/validation/permanent-transport failure flow through this `Result`
+            // as usual (exit 1 on `Err`).
+            Commands::Notify { mode } => match mode {
+                NotifyMode::Send { text, bot } => notify_cli::run_send(&bot, &text).await,
+                NotifyMode::Ask {
+                    gate_id,
+                    summary,
+                    option,
+                    timeout_secs,
+                    bot,
+                    lock_dir,
+                } => {
+                    notify_cli::run_ask(
+                        &bot,
+                        gate_id,
+                        &summary,
+                        &option,
+                        timeout_secs,
+                        lock_dir.as_deref(),
+                    )
+                    .await
+                }
+            },
         },
     }
 }
@@ -639,6 +666,19 @@ mod tests {
                 json: false,
             }),
             "assess"
+        );
+    }
+
+    #[test]
+    fn command_name_notify() {
+        assert_eq!(
+            command_name(&Commands::Notify {
+                mode: NotifyMode::Send {
+                    text: "hi".to_string(),
+                    bot: "lane".to_string(),
+                },
+            }),
+            "notify"
         );
     }
 
