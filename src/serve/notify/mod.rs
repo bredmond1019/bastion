@@ -36,6 +36,7 @@ pub use engine_core::operator::{
     ResponseVerdict, UpdateCursor,
 };
 
+pub mod stale_run_alarm;
 pub mod telegram;
 pub mod telegram_http;
 
