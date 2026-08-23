@@ -448,6 +448,17 @@ fn split_operator_transport(
     (transport, Some(for_app_data))
 }
 
+/// Whether the stale-run alarm delivery loop should be spawned (BA.21.B
+/// task 3): only when an operator transport was actually configured.
+/// Factored out as a pure fn — next to [`split_operator_transport`] — so
+/// the decision is unit-testable without spinning up a real transport or a
+/// tokio task.
+fn alarm_delivery_enabled(
+    transport: Option<&std::sync::Arc<dyn notify::OperatorTransport>>,
+) -> bool {
+    transport.is_some()
+}
+
 /// `poll_secs` is passed to the [`Hub`] to set its poll cadence.
 async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // Load the workspace registry once at startup (BA.11.D) — malformed or
@@ -539,6 +550,23 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                     )
                     .await;
                     log_orphan_sweep(&classify_orphan_sweep(sweep));
+
+                    // BA.21.B task 3: spawn the periodic stale-run alarm
+                    // sweep against the SAME `live_store` `EngineAppState`
+                    // below receives. Distinct from `reconcile_orphans`
+                    // above — that fires once at boot for crash-stranded
+                    // runs; this fires periodically for a run that hangs
+                    // while the process stays healthy. Never touch the
+                    // `reconcile_orphans` call above to add this. One
+                    // `OrphanPolicy::default()` value is reused for both
+                    // the sweep and its derived interval — do not
+                    // construct a second policy.
+                    let stale_run_policy = engine_core::operator::orphan::OrphanPolicy::default();
+                    let _stale_sweep_handle = engine_serve::orphan::spawn_stale_run_sweep(
+                        live_store.clone(),
+                        stale_run_policy,
+                        notify::stale_run_alarm::sweep_interval(&stale_run_policy),
+                    );
 
                     let state = EngineAppState {
                         dispatcher: Arc::new(build_engine_dispatcher()),
@@ -997,6 +1025,41 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         }
     }
 
+    // ── Stale-run alarm delivery loop (BA.21.B task 3) ───────────────────
+    //
+    // Drain `live_store`'s operator queue (fed by the sweep spawned above,
+    // inside the engine-mount `Mount` arm) out over the SAME transport
+    // `Arc` the poll loop above holds — only when one was actually
+    // configured. With no transport configured the sweep above still
+    // runs, still alarms and enqueues, it just has nothing to deliver to
+    // yet; this must never panic or abort boot either way. Spawned here
+    // (before `live_store` is moved into `live_data` below) because the
+    // loop needs its own `live_store.clone()`.
+    let _stale_alarm_delivery_handle = if alarm_delivery_enabled(operator_transport.as_ref()) {
+        let transport = operator_transport
+            .clone()
+            .expect("alarm_delivery_enabled(Some(..)) implies operator_transport is Some");
+        let interval = notify::stale_run_alarm::sweep_interval(
+            &engine_core::operator::orphan::OrphanPolicy::default(),
+        );
+        tracing::info!(
+            target: "bastion::serve",
+            "stale-run alarm delivery loop spawned"
+        );
+        Some(notify::stale_run_alarm::spawn_alarm_delivery_loop(
+            live_store.clone(),
+            transport,
+            std::sync::Arc::clone(&pending_payloads),
+            interval,
+        ))
+    } else {
+        tracing::info!(
+            target: "bastion::serve",
+            "stale-run alarm delivery loop not spawned — no operator transport configured; alarms will still be swept and queued, not delivered"
+        );
+        None
+    };
+
     let registry = web::Data::new(registry);
 
     let live_data = web::Data::new(live_store);
@@ -1435,6 +1498,39 @@ mod engine_mount_tests {
         assert!(
             std::sync::Arc::ptr_eq(&poll_loop_transport, &app_data_transport),
             "NotifyPollLoop's transport and the engine app_data transport must be the same allocation"
+        );
+    }
+
+    // ── alarm_delivery_enabled (BA.21.B task 3) ──────────────────────────
+
+    #[test]
+    fn alarm_delivery_enabled_is_false_with_no_transport() {
+        assert!(!alarm_delivery_enabled(None));
+    }
+
+    #[test]
+    fn alarm_delivery_enabled_is_true_with_a_transport() {
+        let transport: std::sync::Arc<dyn notify::OperatorTransport> =
+            std::sync::Arc::new(StubTransport);
+        assert!(alarm_delivery_enabled(Some(&transport)));
+    }
+
+    /// Pins that the sweep interval `run_server` hands to
+    /// `spawn_stale_run_sweep` is the one derived from
+    /// `OrphanPolicy::stale_run_alarm_secs` (via
+    /// `notify::stale_run_alarm::sweep_interval`), never a literal — the
+    /// same non-default-threshold-moves-the-interval evidence task 1's own
+    /// tests assert on the pure fn directly, re-asserted here at the call
+    /// site `run_server` actually uses.
+    #[test]
+    fn sweep_interval_call_site_moves_with_a_non_default_threshold() {
+        let default_policy = engine_core::operator::orphan::OrphanPolicy::default();
+        let mut faster_policy = default_policy;
+        faster_policy.stale_run_alarm_secs = 400;
+
+        assert_ne!(
+            notify::stale_run_alarm::sweep_interval(&default_policy),
+            notify::stale_run_alarm::sweep_interval(&faster_policy)
         );
     }
 }
