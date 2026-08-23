@@ -62,6 +62,7 @@ async-trait = "0.1"
 # (tmux/model/claude_state/detect).
 term-core = { path = "../engine-rs/crates/term-core" }
 term-attach = { path = "../engine-rs/crates/term-attach" }
+fs4 = { version = "1.1.0", features = ["sync"] }
 
 [lib]
 name = "bastion"
