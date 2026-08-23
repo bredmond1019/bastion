@@ -51,7 +51,7 @@ use actix_web_actors::ws as actix_ws;
 use anyhow::Result;
 use auth::{ApiKeyAuthMiddleware, BearerAuthMiddleware};
 use dto::ErrorPayload;
-use engine_serve::abort::RunRegistry;
+use engine_serve::abort::{CampaignRegistry, RunRegistry};
 use engine_serve::dispatch::Dispatcher;
 use engine_serve::durable::spawn_durable_writer;
 use engine_serve::http::AppState as EngineAppState;
@@ -573,6 +573,17 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         live: live_store.clone(),
                         durable: spawn_durable_writer(Some(pool)),
                         runs: RunRegistry::new(),
+                        // Stopgap for E0063 after engine-rs EN.11.F-task2
+                        // (da0ccc3) added this field: `EngineAppState` is an
+                        // exhaustive struct literal here, so a new upstream
+                        // field breaks bastion's build outright. Empty at boot
+                        // is the correct semantics -- campaign tokens are
+                        // registered when a campaign id is minted, not at
+                        // startup -- matching `runs` directly above.
+                        // engine-rs `EN.ticket.appstate-additions-must-not-break-consumers`
+                        // replaces this site with `AppState::builder(..)`, after
+                        // which adding a registry field stops breaking consumers.
+                        campaigns: CampaignRegistry::new(),
                         api_key: engine_api_key,
                     };
                     let engine_data = web::Data::new(state);
@@ -5105,6 +5116,7 @@ heading = "bastion"
             live: LiveStateStore::new(),
             durable: spawn_durable_writer(None),
             runs: RunRegistry::new(),
+            campaigns: CampaignRegistry::new(),
             api_key: api_key.to_string(),
         };
         let engine_data = web::Data::new(state);
@@ -5315,6 +5327,7 @@ heading = "bastion"
             live: LiveStateStore::new(),
             durable: spawn_durable_writer(None),
             runs: RunRegistry::new(),
+            campaigns: CampaignRegistry::new(),
             api_key: api_key.to_string(),
         };
         let engine_data = web::Data::new(state);
@@ -6433,6 +6446,7 @@ mod schedule_loop_wiring_tests {
             live: LiveStateStore::new(),
             durable: spawn_durable_writer(None),
             runs: RunRegistry::new(),
+            campaigns: CampaignRegistry::new(),
             api_key: "schedule-loop-test-key".to_string(),
         })
         .into_inner()

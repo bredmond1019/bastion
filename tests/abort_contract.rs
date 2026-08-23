@@ -26,7 +26,7 @@ use bastion::api::client::AbortOutcome;
 use bastion::api::client::ApiClient;
 use engine_contract::TaskContext;
 use engine_core::{Node, NodeConfig, NodeError, NodeRegistry, Workflow, WorkflowSchema};
-use engine_serve::abort::RunRegistry;
+use engine_serve::abort::{CampaignRegistry, RunRegistry};
 use engine_serve::dispatch::Dispatcher;
 use engine_serve::durable::spawn_durable_writer;
 use engine_serve::http::{AppState, configure};
@@ -107,6 +107,10 @@ fn test_app_state(release: Arc<Notify>) -> AppState {
         live: LiveStateStore::new(),
         durable: spawn_durable_writer(None),
         runs: RunRegistry::new(),
+        // Stopgap, same as `src/serve/mod.rs` -- see the comment there.
+        // engine-rs EN.11.F-task2 (da0ccc3) added this field to an
+        // exhaustive literal; empty at boot matches `runs` above.
+        campaigns: CampaignRegistry::new(),
         api_key: API_KEY.to_string(),
     }
 }
