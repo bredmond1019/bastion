@@ -24,6 +24,19 @@ pub enum ConfigError {
         "{0} must also be set — Telegram transport needs both BOT_TOKEN and CHAT_ID or neither"
     )]
     IncompleteTelegramConfig(&'static str),
+    /// The [`named_bot_config`] generalization of [`ConfigError::IncompleteTelegramConfig`]
+    /// for an arbitrary `--bot <slug>`. Kept as a **sibling variant, not a
+    /// widening of `IncompleteTelegramConfig`** — a per-slug var name is
+    /// built at runtime, so it cannot be `&'static str`, but widening the
+    /// existing variant would ripple past this task's file into every fixed
+    /// (`telegram_config`, `code_sessions_bot_config`, `lane_bot_config`)
+    /// construction site and their already-committed tests, plus
+    /// `src/serve/handlers/notify.rs`'s match arm — well beyond
+    /// `src/config.rs`. `lane_bot_config` still returns
+    /// `IncompleteTelegramConfig` unchanged; it translates this variant back
+    /// at its own boundary so 8a3ac96's tests pass unedited.
+    #[error("{0} must also be set — bot transport needs both BOT_TOKEN and CHAT_ID or neither")]
+    IncompleteNamedBotConfig(String),
 }
 
 // ── ServeConfig ───────────────────────────────────────────────────────────────
@@ -585,25 +598,33 @@ pub struct LaneBotConfig {
 ///
 /// Pure function — no I/O, no env access. Call from `load_lane_bot_config`
 /// or tests directly.
+///
+/// **Thin alias over [`named_bot_config`]** (BA.ticket.notify-operator-cli
+/// task 1's generalization) — `lane_bot_config("lane", ..)` in every way
+/// except that its `Err` is translated back to the pre-existing
+/// `IncompleteTelegramConfig(&'static str)` shape so this function's
+/// original signature and 8a3ac96's already-committed tests keep working
+/// byte-for-byte unedited. The truth table itself lives in
+/// `named_bot_config` — this function does not re-derive it.
 pub fn lane_bot_config(
     bot_token_env: Option<String>,
     chat_id_env: Option<String>,
 ) -> Result<Option<LaneBotConfig>, ConfigError> {
-    let bot_token = bot_token_env.filter(|s| !s.is_empty());
-    let chat_id = chat_id_env.filter(|s| !s.is_empty());
-
-    match (bot_token, chat_id) {
-        (None, None) => Ok(None),
-        (Some(token), Some(chat_id)) => Ok(Some(LaneBotConfig {
-            bot_token: BotToken::new(token),
-            chat_id,
+    match named_bot_config("lane", bot_token_env, chat_id_env) {
+        Ok(None) => Ok(None),
+        Ok(Some(creds)) => Ok(Some(LaneBotConfig {
+            bot_token: creds.bot_token,
+            chat_id: creds.chat_id,
         })),
-        (Some(_), None) => Err(ConfigError::IncompleteTelegramConfig(
-            "BASTION_LANE_CHAT_ID",
-        )),
-        (None, Some(_)) => Err(ConfigError::IncompleteTelegramConfig(
-            "BASTION_LANE_BOT_TOKEN",
-        )),
+        Err(ConfigError::IncompleteNamedBotConfig(missing)) => {
+            let static_name = if missing == "BASTION_LANE_BOT_TOKEN" {
+                "BASTION_LANE_BOT_TOKEN"
+            } else {
+                "BASTION_LANE_CHAT_ID"
+            };
+            Err(ConfigError::IncompleteTelegramConfig(static_name))
+        }
+        Err(other) => Err(other),
     }
 }
 
@@ -615,6 +636,117 @@ pub fn load_lane_bot_config() -> Result<Option<LaneBotConfig>, ConfigError> {
         std::env::var("BASTION_LANE_BOT_TOKEN").ok(),
         std::env::var("BASTION_LANE_CHAT_ID").ok(),
     )
+}
+
+// ── named_bot_config (BA.ticket.notify-operator-cli task 1) ────────────────
+//
+// `--bot <slug>` exists so the CLI infrastructure introduced by
+// `bastion notify` is shared across bot credential pairs instead of
+// hardcoded to one. Every bot in this repo already follows one env-name
+// pattern — `BASTION_TELEGRAM_*` (BastionBot), `BASTION_CODESESSIONS_*`
+// (CodeSessionsBot), `BASTION_LANE_*` (LaneBot) — so a fourth bot needs only
+// a new env pair, never a code change. The third-bot/steal-hazard rationale
+// documented on [`LaneBotConfig`] above still holds and is still invisible
+// from this code: Telegram delivers each update to exactly one `getUpdates`
+// consumer per bot token, so distinct slugs exist to give each concurrent
+// poller (BastionBot's `NotifyPollLoop`, CodeSessionsBot's
+// `SessionQaBridge`, and now an arbitrary `--bot` target) its own stream.
+
+/// Resolved credentials for an arbitrary named bot slug.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BotCredentials {
+    /// The slug this pair was resolved for (e.g. `"lane"`, `"codesessions"`).
+    pub slug: String,
+    pub bot_token: BotToken,
+    pub chat_id: String,
+}
+
+/// Derive the two env var names a bot slug's credentials live under:
+/// `BASTION_<SLUG_UPPER>_BOT_TOKEN` / `BASTION_<SLUG_UPPER>_CHAT_ID`.
+///
+/// Pure — no I/O. `slug` is upper-cased verbatim (a hyphen in the slug
+/// produces a hyphen in the derived name; this function only performs the
+/// substitution, it does not validate that the result is a shell-legal env
+/// var name).
+pub fn bot_env_var_names(slug: &str) -> (String, String) {
+    let upper = slug.to_uppercase();
+    (
+        format!("BASTION_{upper}_BOT_TOKEN"),
+        format!("BASTION_{upper}_CHAT_ID"),
+    )
+}
+
+/// Resolve the optional bot config for an arbitrary `slug` from the two env
+/// values already read for it.
+///
+/// Carries the identical both-or-neither truth table as [`lane_bot_config`]
+/// / [`code_sessions_bot_config`] / [`telegram_config`], generalized over
+/// the slug: both absent → `Ok(None)`; both present → resolved; exactly one
+/// present → `Err(ConfigError::IncompleteNamedBotConfig(missing))` naming
+/// the missing var *for this slug* (built at runtime, per-slug — this is
+/// why the error is a sibling variant rather than a widened
+/// `IncompleteTelegramConfig`, see that variant's doc comment); a
+/// present-but-empty-string value counts as absent.
+///
+/// Pure function — no I/O, no env access. Call from
+/// `load_named_bot_config` or tests directly.
+pub fn named_bot_config(
+    slug: &str,
+    bot_token_env: Option<String>,
+    chat_id_env: Option<String>,
+) -> Result<Option<BotCredentials>, ConfigError> {
+    let bot_token = bot_token_env.filter(|s| !s.is_empty());
+    let chat_id = chat_id_env.filter(|s| !s.is_empty());
+    let (token_var, chat_var) = bot_env_var_names(slug);
+
+    match (bot_token, chat_id) {
+        (None, None) => Ok(None),
+        (Some(token), Some(chat_id)) => Ok(Some(BotCredentials {
+            slug: slug.to_string(),
+            bot_token: BotToken::new(token),
+            chat_id,
+        })),
+        (Some(_), None) => Err(ConfigError::IncompleteNamedBotConfig(chat_var)),
+        (None, Some(_)) => Err(ConfigError::IncompleteNamedBotConfig(token_var)),
+    }
+}
+
+/// Load [`BotCredentials`] for `slug` from its two derived env vars +
+/// `.env` file. DB-free. Mirrors [`load_code_sessions_bot_config`] /
+/// [`load_lane_bot_config`]'s shape.
+pub fn load_named_bot_config(slug: &str) -> Result<Option<BotCredentials>, ConfigError> {
+    dotenvy::dotenv().ok();
+    let (token_var, chat_var) = bot_env_var_names(slug);
+    named_bot_config(
+        slug,
+        std::env::var(&token_var).ok(),
+        std::env::var(&chat_var).ok(),
+    )
+}
+
+/// The bot slugs this repo knows the env-var pattern for. Adding a bot to
+/// this list is the only code change a new bot ever needs beyond its env
+/// pair — everything else in `named_bot_config` is already generic.
+pub const KNOWN_BOT_SLUGS: &[&str] = &["telegram", "codesessions", "lane"];
+
+/// Which of [`KNOWN_BOT_SLUGS`] have a COMPLETE credential pair present in
+/// `env_snapshot`, in `KNOWN_BOT_SLUGS` order.
+///
+/// Takes the environment as an argument (rather than reading
+/// `std::env::var` itself) so it is testable without touching real process
+/// env. Feeds the unknown-slug error message that names "the slugs that DO
+/// have a complete pair" (BA.ticket.notify-operator-cli task 5).
+pub fn configured_bot_slugs(env_snapshot: &HashMap<String, String>) -> Vec<String> {
+    KNOWN_BOT_SLUGS
+        .iter()
+        .filter(|slug| {
+            let (token_var, chat_var) = bot_env_var_names(slug);
+            let token = env_snapshot.get(&token_var).map(String::as_str);
+            let chat = env_snapshot.get(&chat_var).map(String::as_str);
+            token.is_some_and(|s| !s.is_empty()) && chat.is_some_and(|s| !s.is_empty())
+        })
+        .map(|slug| slug.to_string())
+        .collect()
 }
 
 /// Walk from `start` upward toward the filesystem root, returning the first
@@ -1423,6 +1555,163 @@ brain = "/Users/alice/brain"
             !rendered.contains("super-secret-lane-token-13579"),
             "LaneBotConfig Debug must never contain the raw token; got: {rendered}"
         );
+    }
+
+    // ─── named_bot_config (BA.ticket.notify-operator-cli task 1) ──────────────
+
+    #[test]
+    fn named_bot_config_both_absent_is_none() {
+        let cfg = named_bot_config("codesessions", None, None).expect("absent is not an error");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn named_bot_config_both_present_resolves() {
+        let cfg = named_bot_config(
+            "codesessions",
+            Some("cs-bot-token-value".into()),
+            Some("cs-chat-7".into()),
+        )
+        .expect("both present should resolve")
+        .expect("expected Some");
+        assert_eq!(cfg.slug, "codesessions");
+        assert_eq!(cfg.bot_token.expose(), "cs-bot-token-value");
+        assert_eq!(cfg.chat_id, "cs-chat-7");
+    }
+
+    #[test]
+    fn named_bot_config_token_only_is_typed_error_naming_chat_id() {
+        let err =
+            named_bot_config("codesessions", Some("cs-bot-token-value".into()), None).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteNamedBotConfig("BASTION_CODESESSIONS_CHAT_ID".to_string())
+        );
+    }
+
+    #[test]
+    fn named_bot_config_chat_id_only_is_typed_error_naming_bot_token() {
+        let err = named_bot_config("codesessions", None, Some("cs-chat-7".into())).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteNamedBotConfig("BASTION_CODESESSIONS_BOT_TOKEN".to_string())
+        );
+    }
+
+    #[test]
+    fn named_bot_config_empty_strings_treated_as_absent() {
+        let cfg = named_bot_config("codesessions", Some(String::new()), Some(String::new()))
+            .expect("both empty is treated as both absent");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn named_bot_config_is_not_lane_specific() {
+        // A slug other than "lane" or one of the two pre-existing bots
+        // proves the truth table lives in named_bot_config, not baked into
+        // any one caller.
+        let cfg = named_bot_config("carrierpigeon", Some("pigeon-token".into()), None).unwrap_err();
+        assert_eq!(
+            cfg,
+            ConfigError::IncompleteNamedBotConfig("BASTION_CARRIERPIGEON_CHAT_ID".to_string())
+        );
+    }
+
+    #[test]
+    fn bot_env_var_names_uppercases_a_lowercase_slug() {
+        let (token_var, chat_var) = bot_env_var_names("lane");
+        assert_eq!(token_var, "BASTION_LANE_BOT_TOKEN");
+        assert_eq!(chat_var, "BASTION_LANE_CHAT_ID");
+    }
+
+    #[test]
+    fn bot_env_var_names_preserves_a_hyphen_in_the_slug() {
+        let (token_var, chat_var) = bot_env_var_names("code-sessions");
+        assert_eq!(token_var, "BASTION_CODE-SESSIONS_BOT_TOKEN");
+        assert_eq!(chat_var, "BASTION_CODE-SESSIONS_CHAT_ID");
+    }
+
+    #[test]
+    fn lane_bot_config_is_byte_identical_to_named_bot_config_lane_both_absent() {
+        assert_eq!(lane_bot_config(None, None), Ok(None));
+    }
+
+    #[test]
+    fn lane_bot_config_is_byte_identical_to_named_bot_config_lane_both_present() {
+        let via_lane = lane_bot_config(
+            Some("lane-bot-token-value".into()),
+            Some("lane-chat-9".into()),
+        )
+        .expect("both present should resolve")
+        .expect("expected Some");
+        let via_named = named_bot_config(
+            "lane",
+            Some("lane-bot-token-value".into()),
+            Some("lane-chat-9".into()),
+        )
+        .expect("both present should resolve")
+        .expect("expected Some");
+        assert_eq!(via_lane.bot_token.expose(), via_named.bot_token.expose());
+        assert_eq!(via_lane.chat_id, via_named.chat_id);
+    }
+
+    #[test]
+    fn lane_bot_config_is_byte_identical_to_named_bot_config_lane_token_only() {
+        let via_lane = lane_bot_config(Some("lane-bot-token-value".into()), None).unwrap_err();
+        assert_eq!(
+            via_lane,
+            ConfigError::IncompleteTelegramConfig("BASTION_LANE_CHAT_ID")
+        );
+    }
+
+    #[test]
+    fn lane_bot_config_is_byte_identical_to_named_bot_config_lane_chat_id_only() {
+        let via_lane = lane_bot_config(None, Some("lane-chat-9".into())).unwrap_err();
+        assert_eq!(
+            via_lane,
+            ConfigError::IncompleteTelegramConfig("BASTION_LANE_BOT_TOKEN")
+        );
+    }
+
+    #[test]
+    fn configured_bot_slugs_reports_only_complete_pairs() {
+        let mut env = HashMap::new();
+        env.insert(
+            "BASTION_TELEGRAM_BOT_TOKEN".to_string(),
+            "tg-token".to_string(),
+        );
+        env.insert(
+            "BASTION_TELEGRAM_CHAT_ID".to_string(),
+            "tg-chat".to_string(),
+        );
+        // codesessions: half-configured (token only) — must not count.
+        env.insert(
+            "BASTION_CODESESSIONS_BOT_TOKEN".to_string(),
+            "cs-token".to_string(),
+        );
+        // lane: entirely absent.
+
+        let configured = configured_bot_slugs(&env);
+        assert_eq!(configured, vec!["telegram".to_string()]);
+    }
+
+    #[test]
+    fn configured_bot_slugs_treats_empty_string_value_as_absent() {
+        let mut env = HashMap::new();
+        env.insert(
+            "BASTION_LANE_BOT_TOKEN".to_string(),
+            "lane-token".to_string(),
+        );
+        env.insert("BASTION_LANE_CHAT_ID".to_string(), String::new());
+
+        let configured = configured_bot_slugs(&env);
+        assert!(configured.is_empty());
+    }
+
+    #[test]
+    fn configured_bot_slugs_empty_env_is_empty() {
+        let env = HashMap::new();
+        assert!(configured_bot_slugs(&env).is_empty());
     }
 
     // ─── planning_root ────────────────────────────────────────────────────────
