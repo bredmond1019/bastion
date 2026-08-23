@@ -456,9 +456,19 @@ impl TelegramTransport {
 
     #[must_use]
     pub fn new(config: TelegramConfig) -> Self {
+        Self::with_credentials(config.bot_token, config.chat_id)
+    }
+
+    /// Build a transport directly from a bot token + chat id, without
+    /// requiring a `TelegramConfig` (BastionBot's gate-transport pair,
+    /// `src/config.rs:443`). A non-BastionBot caller — e.g. LaneBot or
+    /// CodeSessionsBot via `--bot <slug>` — has its own credential pair and
+    /// must not have to fabricate a `TelegramConfig` it is not.
+    #[must_use]
+    pub fn with_credentials(bot_token: BotToken, chat_id: String) -> Self {
         Self {
-            bot_token: config.bot_token,
-            chat_id: config.chat_id,
+            bot_token,
+            chat_id,
             client: reqwest::Client::new(),
         }
     }
@@ -683,6 +693,23 @@ mod tests {
     ) -> ValidatedOperatorPayload {
         let payload = OperatorPayload::new(gate_id, summary, options);
         validate(payload, &OperatorPayloadLimits::default()).expect("payload should validate")
+    }
+
+    // -- with_credentials vs new ---------------------------------------
+
+    #[test]
+    fn with_credentials_matches_new_for_same_config() {
+        let bot_token = BotToken::new("test-token");
+        let chat_id = "12345".to_string();
+
+        let via_new = TelegramTransport::new(TelegramConfig {
+            bot_token: bot_token.clone(),
+            chat_id: chat_id.clone(),
+        });
+        let via_with_credentials = TelegramTransport::with_credentials(bot_token, chat_id);
+
+        assert_eq!(via_new.bot_token, via_with_credentials.bot_token);
+        assert_eq!(via_new.chat_id, via_with_credentials.chat_id);
     }
 
     // -- callback_data round-trip -------------------------------------
