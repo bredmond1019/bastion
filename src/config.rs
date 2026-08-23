@@ -554,6 +554,69 @@ pub fn load_code_sessions_bot_config() -> Result<Option<CodeSessionsBotConfig>, 
     )
 }
 
+// ── LaneBotConfig (BA.ticket.notify-operator-cli task 1) ───────────────────
+
+/// Resolved LaneBot config: present only when both `BASTION_LANE_BOT_TOKEN`
+/// and `BASTION_LANE_CHAT_ID` are set.
+///
+/// **A third bot, not a reuse of either existing pair.** `bastion serve`
+/// already runs one `getUpdates` long-poll per bot token —
+/// `NotifyPollLoop::run` for BastionBot and `SessionQaBridge::run_outbound`
+/// for CodeSessionsBot. Telegram delivers each update to exactly ONE
+/// `getUpdates` consumer per bot token, so a CLI polling either of those
+/// tokens would steal the taps those loops exist to receive. LaneBot gives
+/// `bastion notify` a stream nothing else consumes. Unlike CodeSessionsBot
+/// (where absence disables a background bridge, not an error), absence of
+/// this pair IS a hard error for `bastion notify send`/`ask` — those verbs
+/// are invoked deliberately and must never silently no-op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneBotConfig {
+    pub bot_token: BotToken,
+    pub chat_id: String,
+}
+
+/// Resolve the optional LaneBot config from the two env values.
+///
+/// Mirrors [`code_sessions_bot_config`]'s both-or-neither rule exactly (same
+/// semantics, same typed error, different env var names): both absent is
+/// `Ok(None)`; both present resolves; exactly one present is
+/// `Err(ConfigError::IncompleteTelegramConfig(missing))` naming the missing
+/// var; a present-but-empty-string value counts as absent.
+///
+/// Pure function — no I/O, no env access. Call from `load_lane_bot_config`
+/// or tests directly.
+pub fn lane_bot_config(
+    bot_token_env: Option<String>,
+    chat_id_env: Option<String>,
+) -> Result<Option<LaneBotConfig>, ConfigError> {
+    let bot_token = bot_token_env.filter(|s| !s.is_empty());
+    let chat_id = chat_id_env.filter(|s| !s.is_empty());
+
+    match (bot_token, chat_id) {
+        (None, None) => Ok(None),
+        (Some(token), Some(chat_id)) => Ok(Some(LaneBotConfig {
+            bot_token: BotToken::new(token),
+            chat_id,
+        })),
+        (Some(_), None) => Err(ConfigError::IncompleteTelegramConfig(
+            "BASTION_LANE_CHAT_ID",
+        )),
+        (None, Some(_)) => Err(ConfigError::IncompleteTelegramConfig(
+            "BASTION_LANE_BOT_TOKEN",
+        )),
+    }
+}
+
+/// Load [`LaneBotConfig`] from `BASTION_LANE_BOT_TOKEN` /
+/// `BASTION_LANE_CHAT_ID` + `.env` file. DB-free.
+pub fn load_lane_bot_config() -> Result<Option<LaneBotConfig>, ConfigError> {
+    dotenvy::dotenv().ok();
+    lane_bot_config(
+        std::env::var("BASTION_LANE_BOT_TOKEN").ok(),
+        std::env::var("BASTION_LANE_CHAT_ID").ok(),
+    )
+}
+
 /// Walk from `start` upward toward the filesystem root, returning the first
 /// existing `dir.join(target)` encountered, or `None` if never found.
 ///
@@ -1288,6 +1351,77 @@ brain = "/Users/alice/brain"
         assert!(
             !rendered.contains("super-secret-cs-token-98765"),
             "CodeSessionsBotConfig Debug must never contain the raw token; got: {rendered}"
+        );
+    }
+
+    // ─── lane_bot_config (BA.ticket.notify-operator-cli task 1) ───────────────
+
+    #[test]
+    fn lane_bot_config_both_absent_is_none() {
+        let cfg = lane_bot_config(None, None).expect("absent is not an error");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn lane_bot_config_both_present_resolves() {
+        let cfg = lane_bot_config(
+            Some("lane-bot-token-value".into()),
+            Some("lane-chat-9".into()),
+        )
+        .expect("both present should resolve")
+        .expect("expected Some");
+        assert_eq!(cfg.bot_token.expose(), "lane-bot-token-value");
+        assert_eq!(cfg.chat_id, "lane-chat-9");
+    }
+
+    #[test]
+    fn lane_bot_config_token_only_is_typed_error_naming_chat_id() {
+        let err = lane_bot_config(Some("lane-bot-token-value".into()), None).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_LANE_CHAT_ID")
+        );
+    }
+
+    #[test]
+    fn lane_bot_config_chat_id_only_is_typed_error_naming_bot_token() {
+        let err = lane_bot_config(None, Some("lane-chat-9".into())).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_LANE_BOT_TOKEN")
+        );
+    }
+
+    #[test]
+    fn lane_bot_config_empty_strings_treated_as_absent() {
+        let cfg = lane_bot_config(Some(String::new()), Some(String::new()))
+            .expect("both empty is treated as both absent");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn lane_bot_config_empty_token_with_present_chat_id_is_typed_error() {
+        // Empty-string token is treated as absent, so this is the "token
+        // missing, chat id present" case, not the reverse.
+        let err = lane_bot_config(Some(String::new()), Some("lane-chat-9".into())).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteTelegramConfig("BASTION_LANE_BOT_TOKEN")
+        );
+    }
+
+    #[test]
+    fn lane_bot_config_debug_never_contains_the_token_value() {
+        let cfg = lane_bot_config(
+            Some("super-secret-lane-token-13579".into()),
+            Some("lane-chat-9".into()),
+        )
+        .expect("both present should resolve")
+        .expect("expected Some");
+        let rendered = format!("{cfg:?}");
+        assert!(
+            !rendered.contains("super-secret-lane-token-13579"),
+            "LaneBotConfig Debug must never contain the raw token; got: {rendered}"
         );
     }
 
