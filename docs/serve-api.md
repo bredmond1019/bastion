@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.37"
+title: "serve-api contract v0.38"
 description: "HTTP + WebSocket API contract for `bastion serve` — base URL, bearer-auth scheme, GET /health, /ws hub (topic subscriptions, live pane, needs-input event, workflow_done event), the v0.2 frame envelope, the v0.1 session REST surface (list/pane/send/key/create/delete), the v0.3 repo/workflow status REST surface (GET /repos, GET /repos/{name}/status, GET /repos/{name}/handoff, GET /repos/{name}/workflows), the v0.4 quick-action command endpoint (POST /actions/command, inject/spawn modes), the v0.6 cross-brain board endpoint (GET /api/board) that bastion-ui pins against, the v0.7 generated-TypeScript-types artifact (types/serve.ts, typeshare) for BastionWeb, the v0.8 live run read API (GET /api/runs, GET /api/runs/{id}) projecting the embedded engine's in-memory LiveStateStore for bastion-web's node drill-in (BA.11.M, D42 read half), the v0.9 Attention / carryover API (GET /api/attention) projecting the stale-carryover / aging-backlog / orphaned-capture board for bastion-ui, the TUI, and bastion-web BW.1.C (BA.11.P), the v0.10 Docs read API (GET /api/docs/{repo}/tree, GET /api/docs/{repo}/file) — an allowlisted, traversal-rejecting markdown tree + raw-file read across repos for bastion-web's reader (BW.2.A, BA.11.Q), and the v0.11 epic + ranking enrichment (epics/wave/priority/due/track on `BoardBlockDto`, `blocked_by` on all four lanes, GET /api/epics, and GET /api/board?scope=epic) for cutting work by cross-repo initiative (BA.11.R), the v0.12 pipeline / opportunities read API (GET /api/pipeline, GET /api/pipeline/{slug}) projecting the business sub-brain's opportunity markdown (researched companies + prospecting sweeps + job postings, with contacts, actions, and the body's ```json research brief) for bastion-web's pipeline board (BW.3.A), the v0.13 block-graph read API (GET /api/blocks/graph) — a mechanical projection of mev's enriched block-graph export (nodes/edges/cycles/lanes/topo-order, reusing the same board brain-walk) with zero derivation performed by bastion, for bastion-web's node-graph view (BW.9.B), the v0.14 `last_touched` field on `BoardBlockDto` — mev's derived per-block SDLC recency (`MV.10.D`) carried verbatim, with zero derivation by bastion, absent (not `null`) when a block has never been worked (BA.11.S), the v0.15 read-only Cost read API (GET /api/costs) — a projection of the existing `src/costs/` aggregation (BA.7.B) and budget-gate evaluation (BA.7.C) over HTTP, with `?window=` only (no `?repo=`, since the events contract carries no repo dimension) for bastion-ui and any web dashboard to render spend/budget without shelling to the CLI (BA.11.J), and the v0.16 `GET /api/runs` summary widening — from bare run-id strings to `RunSummaryDto` (run_id, workflow_type, status, spec_slug, started_at, updated_at), scoped strictly to `list_active()` live runs, reusing the existing `db::workflows::derive_run_status` for status, `workflow_type` populated as of v0.37 from `engine_serve::http::live_run_workflow_type` for runs this process dispatched and absent (never fabricated) otherwise (BA.11.T), and the v0.17 `suspended` run status — `db::workflows::derive_run_status` now reads `metadata.suspension.suspended` (engine-rs's `suspend.rs` marker) and reports it on `RunSummaryDto.status` wherever `cancelled`/`budget_halted` already were; `RunStateDto` (Section 14.2) has no aggregate status field to begin with (only per-node `NodeTransitionDto.status`, unaffected, and the raw `metadata` blob, which already carried `suspension` verbatim), so it needed no change; and the v0.18 `run_id` on `WorkflowStateDto` — the engine's `events.id` run UUID that engine-rs `EN.6.J` already stamps into `sdlc-flow-state.json`, carried through Section 11.4's response with `run_id` absent (not `null`) when the state predates that stamp or was written by base-template's JS `sdlc-flow.js` engine — plus a typeshared `HandoffInfoDto` mirroring Section 11.3's `HandoffInfo` domain type, unblocking bastion-web's `BW.3.F` band-merge and `BW.8.K3` briefing handoff feed; and the v0.19 `dependent_count`/`ready`/`unmet_count` enrichment on `BoardBlockDto` (A5) — mev's corpus-wide `build_block_graph_export` output carried verbatim onto every board lane entry behind an opt-in `?graph=1` query param (task 1 measured the unconditional call as roughly doubling `/api/board`'s wall-clock on the live HQ corpus), with `dependent_count`/`ready` populated for all five lanes and `unmet_count` populated only for `blocked`-lane entries — `ready`, not `unmet_count == 0`, is the readiness signal, since mev defines `unmet_count` as `0` for every non-blocked lane, and the v0.20 cross-repo workflows aggregate (GET /api/workflows, A2) — Section 11.6's new route returns every registered workspace's Section 11.4 flow states in one response, each entry tagged with a new typeshared `RepoWorkflowStateDto.repo` field, reusing `collect_flow_states` verbatim per workspace with no second flow-state walk, ordered deterministically by (repo, spec_slug), retiring the residual N+1 bastion-web's `/engine` on-disk band and briefing diff had left after A1/A5; the existing per-repo `GET /api/repos/{name}/workflows` route is unchanged; and the v0.21 `weight` field on `EpicDto` (GET /api/epics, `BA.ticket.epic-weight-dto`) — the authored `okf_core::Epic.weight` carried verbatim onto the wire with zero derivation by bastion (mev's `check_epics` owns the `0..=100` range policy via `E_STATE_EPIC_BAD_WEIGHT`, so an out-of-policy authored value passes through unclamped), `null` when unauthored — unblocking bastion-web's ranking of initiatives by authored weight, and
 the v0.22 `repo` field on `RunSummaryDto` (`GET /api/runs`, A7) — an exact `run_id` join against
 every registered workspace's flow state (`RepoWorkflowStateDto` from `collect_all_workflows`, A2),
@@ -49,7 +49,7 @@ in-memory `PendingPayloads` registry so the `NotifyPollLoop`'s `PendingLookup` c
 clears the live buttons and shows the chosen option) before the `VerdictSink` runs, fixing the
 defect where Telegram silently timed out a tapped button because `answerCallbackQuery` was never
 called; the ack handle and message handle are opaque, transport-agnostic, and `None`-safe for any
-transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced; and the v0.34 `effective_priority` field on `BoardBlockDto` (`BA.19.B`) — mev's min-propagated ranking (`mev::brain::block_graph::BlockGraphNode::effective_priority`) carried verbatim onto every board lane entry behind the same opt-in `?graph=1` gate as `dependent_count`/`ready`/`unmet_count`, absent when the block was absent from the graph export, `?graph=1` was not requested, or mev's own min-propagation never landed a value in the real `0..=3` range; bastion-web's `board-view.ts` already duck-types a read of this field, so no client-side change is required, and the v0.35 fleet-scoped lane API (GET /api/lanes, `BA.19.C`) — one aggregate row per lane SEGMENT across every registered roadmap in a single call, with an optional `?epic=<slug>` filter that never fans out to a per-roadmap call, a pure pass-through over `mev::lanes_brain` with zero availability derivation performed by bastion, unblocking the engine-orchestration roadmap's input contract (D74), and the v0.36 fleet-scoped concurrency-slot API (GET /api/concurrency[?repo=<slug>], `BA.19.D`) — one row per known heavy-lane category (native-build, browser-automation) with cap/active_count/active_repos/slots_available, plus an optional per-repo `allowed`/`degraded`/`reason` answer, a pure pass-through over `mev::brain::availability::compute_fleet_slot_view`/`heavy_category` with zero heavy-lane classification performed by bastion, mirroring `fleet_concurrency_check.py`'s degrade-to-advisory contract (a degraded fleet-lock read is always `{allowed: true, degraded: true}`, never a hard failure or `allowed: false`) and read-only unlike the Python `status` action's sweep-on-read behavior; and the v0.37 operator-transport re-homing (Section 26.2, `BA.21.A`) — `OperatorTransport` and its supporting types (`AckHandle`, `MessageHandle`, `OperatorResponse`, `DeliveredMessage`, `UpdateCursor`, `NotifyError`, `ResponseVerdict`) are now DEFINED by `engine-rs` in `engine_core::operator` (`EN.12.J`), re-exported (not redefined) from `src/serve/notify/mod.rs`; bastion owns only `TelegramTransport` and the boot injection, which hands the engine app state the same `Arc<dyn OperatorTransport>` as the Telegram long-poll loop (`Arc::ptr_eq`-verified) so an engine node has a way to reach the operator without inverting the dependency (bastion depends on engine-rs, never the reverse); `engine-serve` has no extractor for it yet, so this is the additive half of the seam only — no new DTO or route is introduced"
+transport with no such concept, and no new DTO or route is introduced; and the v0.30 approve-and-run resolution (Section 26.9, `ticket-approve-and-run-seams`) — `PendingLookup` is now composed over the engine's `ApproveAndRunSeams::lookup_pending` first and the `/api/notify/test` registry as fallback, and the `VerdictSink` no longer merely logs: it records an approval-ledger row and, on an authorized matched-digest verdict, executes via `resolve_verdict` spawned onto the same actix local set rather than blocking the worker that serves HTTP and WS; no new DTO or route is introduced; and the v0.34 `effective_priority` field on `BoardBlockDto` (`BA.19.B`) — mev's min-propagated ranking (`mev::brain::block_graph::BlockGraphNode::effective_priority`) carried verbatim onto every board lane entry behind the same opt-in `?graph=1` gate as `dependent_count`/`ready`/`unmet_count`, absent when the block was absent from the graph export, `?graph=1` was not requested, or mev's own min-propagation never landed a value in the real `0..=3` range; bastion-web's `board-view.ts` already duck-types a read of this field, so no client-side change is required, and the v0.35 fleet-scoped lane API (GET /api/lanes, `BA.19.C`) — one aggregate row per lane SEGMENT across every registered roadmap in a single call, with an optional `?epic=<slug>` filter that never fans out to a per-roadmap call, a pure pass-through over `mev::lanes_brain` with zero availability derivation performed by bastion, unblocking the engine-orchestration roadmap's input contract (D74), and the v0.36 fleet-scoped concurrency-slot API (GET /api/concurrency[?repo=<slug>], `BA.19.D`) — one row per known heavy-lane category (native-build, browser-automation) with cap/active_count/active_repos/slots_available, plus an optional per-repo `allowed`/`degraded`/`reason` answer, a pure pass-through over `mev::brain::availability::compute_fleet_slot_view`/`heavy_category` with zero heavy-lane classification performed by bastion, mirroring `fleet_concurrency_check.py`'s degrade-to-advisory contract (a degraded fleet-lock read is always `{allowed: true, degraded: true}`, never a hard failure or `allowed: false`) and read-only unlike the Python `status` action's sweep-on-read behavior; and the v0.37 operator-transport re-homing (Section 26.2, `BA.21.A`) — `OperatorTransport` and its supporting types (`AckHandle`, `MessageHandle`, `OperatorResponse`, `DeliveredMessage`, `UpdateCursor`, `NotifyError`, `ResponseVerdict`) are now DEFINED by `engine-rs` in `engine_core::operator` (`EN.12.J`), re-exported (not redefined) from `src/serve/notify/mod.rs`; bastion owns only `TelegramTransport` and the boot injection, which hands the engine app state the same `Arc<dyn OperatorTransport>` as the Telegram long-poll loop (`Arc::ptr_eq`-verified) so an engine node has a way to reach the operator without inverting the dependency (bastion depends on engine-rs, never the reverse); `engine-serve` has no extractor for it yet, so this is the additive half of the seam only — no new DTO or route is introduced, and the v0.38 stale-run alarm delivery (Section 26.10, `BA.21.B`) — `bastion serve` now spawns a periodic sweep (`engine_serve::orphan::spawn_stale_run_sweep`, `EN.12.A`) against the same `LiveStateStore` `reconcile_orphans` already sweeps once at boot, and drains any alarmed run outward over the same injected `Arc<dyn OperatorTransport>` `BA.21.A` wired, once per stalled run rather than once per tick; no new DTO or route is introduced"
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
@@ -58,9 +58,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.36 Contract
+# serve-api — v0.38 Contract
 
-**Version:** v0.36  
+**Version:** v0.38  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26, 28–29 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -3080,7 +3080,7 @@ a real Postgres being up or down cannot change any golden.
 
 ---
 
-## 26. Operator-notification transport (v0.27, `BA.18.B`; acknowledgement contract v0.29, `ticket-telegram-answer-callback`; trait re-homed to `engine_core::operator` v0.37, `BA.21.A`)
+## 26. Operator-notification transport (v0.27, `BA.18.B`; acknowledgement contract v0.29, `ticket-telegram-answer-callback`; trait re-homed to `engine_core::operator` v0.37, `BA.21.A`; stale-run alarm delivery v0.38, `BA.21.B`)
 
 An **outbound-only** background capability, not a REST/WS route — `bastion serve` delivers an
 already-validated operator gate payload to a human over Telegram and long-polls for the tap that
@@ -3361,6 +3361,76 @@ variable is set.
 operator identity to read. This is honest about *which channel* approved something, but it means the
 ledger **cannot distinguish two people with access to that chat**. If this surface ever serves more
 than one operator, that is an audit gap requiring a real identity source, not a renamed field.
+
+### 26.10 Stale-run alarm delivery (v0.38, `BA.21.B`)
+
+A hung chain now alarms outward instead of waiting to be found by hand. This section wires two
+things that had existed separately until this block: `engine-serve`'s stale-run sweep
+(`EN.12.A`) and the operator transport seam Section 26.2 (`BA.21.A`) injected. Neither half is
+useful alone — the sweep could mark a run alarmed with nothing to carry that outward, and the
+transport had no caller for this failure mode.
+
+**Two sweeps, two disjoint failures — both run in `run_server`, side by side, and neither
+replaces the other:**
+
+| Sweep | Fires | Failure it catches |
+|---|---|---|
+| `reconcile_orphans` (Section 26's neighbor, unchanged by this block) | Once, at process boot, before the HTTP listener binds | A run stranded by a **process crash** — its last write predates this restart |
+| Stale-run alarm sweep (this section) | Periodically, on an interval derived below, for the life of the process | A run that **hangs while the server stays healthy** — no crash, no restart, just no progress |
+
+`reconcile_orphans` cannot see the second case (the process never restarted, so there is nothing
+for it to reconcile), and the periodic sweep cannot substitute for the first (a crashed process
+runs no periodic anything). This block does not touch `reconcile_orphans`, `log_orphan_sweep`, or
+`classify_orphan_sweep` in any way.
+
+**Where the threshold comes from.** The sweep is driven by
+`engine_core::operator::orphan::OrphanPolicy::stale_run_alarm_secs` — a value derived engine-side
+by `EN.12.A` from `SQ-13`'s measured per-block cost/duration range times chain length. Bastion
+**reads this field and never chooses it**: there is no `bastion`-side default, override, or
+hardcoded seconds value for the alarm threshold itself (`src/serve/notify/stale_run_alarm.rs`
+contains no literal threshold — `grep -n '3600'` against that file returns nothing).
+
+**The sweep interval is derived from the same field**, not configured separately —
+`notify::stale_run_alarm::sweep_interval(&policy)` returns `stale_run_alarm_secs / 4`, clamped to
+a `[5s, 300s]` floor/ceiling so neither a pathologically small nor a very large threshold produces
+a pathological poll rate. A non-default `stale_run_alarm_secs` therefore visibly moves both the
+alarm boundary and how often the sweep checks for it.
+
+**What an alarm message looks like.** `engine-serve`'s `render_stale_run_alarm_payload` renders a
+fixed three-line header —
+
+```
+Run stuck: <status>
+Run: <run_id>
+No progress for <age_secs>s, past the alarm threshold
+```
+
+— with two acknowledgement-only response options, `Acknowledge` and `View run` (neither executes
+anything on tap, matching the existing failure-notification convention this shares with Section
+26's other payload kinds). The message is queued into `live.operator_queue()` by the engine side;
+`bastion`'s delivery loop (`notify::stale_run_alarm::deliver_once`, spawned by
+`spawn_alarm_delivery_loop`) drains that queue, re-validates each item against this process's
+`OperatorPayloadLimits`, registers it with the same `PendingPayloads` registry Section 26.7's
+test-send route uses, and hands it to the injected `Arc<dyn OperatorTransport>`.
+
+**Delivery is once-per-run, not once-per-tick.** The engine side dedups via
+`LiveStateStore::mark_alarmed` before a run's payload is ever enqueued, so a run that stays stale
+across many sweep ticks produces exactly one queued item, and therefore exactly one `send`. A
+validation failure or transport error for one item is logged at `warn!` and skipped — it never
+aborts the rest of that tick's batch, and it never panics or aborts server boot.
+
+**With no operator transport configured** (no Telegram config resolved at boot), the sweep still
+runs, still alarms, and still enqueues — `run_server` logs at `info!` that the delivery loop was
+not spawned, and delivery simply has nothing to drain to yet. Boot never panics or aborts either
+way.
+
+**Threshold and end-to-end delivery are not gateable from a laptop.** Both currently stand in with
+in-repo test coverage rather than a real Telegram send: a `ScriptedTransport` test in
+`src/serve/notify/tests.rs` asserts one queued alarm produces exactly one `send` naming the
+stalled run id, and a fixture `OrphanPolicy` with a non-default `stale_run_alarm_secs` in
+`src/serve/notify/stale_run_alarm.rs`'s own tests asserts the sweep interval moves accordingly.
+Stalling a real chain on the Mini past the threshold and confirming a real Telegram message
+arrives belongs to the `operator-mac-mini-visit` operator session.
 
 ---
 
@@ -3715,6 +3785,15 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-08-22 — v0.37 → v0.38 (`BA.21.B`, additive):** Added Section 26.10 (Stale-run alarm
+  delivery) — `bastion serve` now spawns `engine-serve`'s periodic stale-run sweep
+  (`EN.12.A`'s `spawn_stale_run_sweep`) against the same `LiveStateStore` the boot-time
+  `reconcile_orphans` sweep already covers a disjoint failure for, and drains any run the sweep
+  marks alarmed outward over the same `Arc<dyn OperatorTransport>` `BA.21.A` injected, once per
+  stalled run rather than once per sweep tick. The alarm threshold
+  (`OrphanPolicy::stale_run_alarm_secs`) and the sweep interval derived from it are both read from
+  the engine-side policy, never hardcoded in bastion. No new DTO or route is introduced; no
+  existing wire shape changed.
 - **2026-08-21 — no version bump (`BA.22.A`):** Froze the seven previously-uncovered
   contract-corpus routes — `GET /health`, `GET /api/repos`, `GET /api/lanes`,
   `GET /api/concurrency`, the six `/api/sessions*` routes, `POST /api/actions/command`, and
