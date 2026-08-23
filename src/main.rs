@@ -17,6 +17,7 @@ mod man;
 mod momentum;
 mod monitor;
 mod notify;
+mod notify_cli;
 mod observ;
 mod overview;
 mod run;
