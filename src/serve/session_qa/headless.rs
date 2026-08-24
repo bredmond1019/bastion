@@ -12,11 +12,17 @@
 //! instead of a captured pane, and a resolver that maps an operator's tap
 //! back to the run it was asked for instead of to a `send_keys` target.
 //!
-//! Everything here is pure logic: no HTTP call, no tmux call, no task
-//! spawn, mirroring the discipline at the top of the parent module. The I/O
-//! shell (scanning suspended runs, sending over the injected
-//! `OperatorTransport`, issuing the resume call) is added in a later task
-//! of this same block.
+//! The registry / builder / resolver above are pure logic: no HTTP call, no
+//! tmux call, no task spawn, mirroring the discipline at the top of the
+//! parent module. Below that (`BA.21.C` task 3) is the thin async delivery
+//! shell over that pure core — scanning suspended runs, sending over the
+//! injected `OperatorTransport`, and deciding (never issuing) the resume —
+//! modelled on `super::super::notify::stale_run_alarm`'s
+//! `deliver_once` / `spawn_alarm_delivery_loop` / `AlarmDeliveryHandle`
+//! shape, this repo's established drain-over-an-injected-transport pattern.
+//! The actual `ApiClient::resume_run` call and the boot wiring that decides
+//! *when* to spawn the loop are task 4's job (`src/serve/mod.rs`), not
+//! this module's.
 //!
 //! This module deliberately does **not** reuse or wrap
 //! [`PendingQuestion`](super::PendingQuestion) /
@@ -27,9 +33,15 @@
 //! engine run's question is exactly that shape.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use engine_core::operator::{OperatorPayload, OperatorResponseOption};
+use engine_core::operator::{
+    OperatorPayload, OperatorPayloadLimits, OperatorResponseOption, OperatorTransport,
+};
+
+use crate::serve::notify::{PendingPayloads, ResponseVerdict};
 
 /// Key under which a suspended run's `TaskContext::metadata` may carry a
 /// pre-built structured question (an `engine_core::operator::OperatorPayload`
@@ -319,4 +331,172 @@ pub fn resolve_headless_tap(
         run_id: question.run_id,
         option_key: option.key.clone(),
     }
+}
+
+// ── Delivery shell (task 3): scan suspended runs, send once, decide resume ──
+
+/// Injectable seam over `engine_serve::suspend::list_suspended`, so every
+/// test in this module runs with no real engine process — mirrors
+/// `BlockedEdgePoller`'s `CaptureFn` seam and
+/// `stale_run_alarm::deliver_once`'s own injected `LiveStateStore` handle.
+pub type SuspendedLister =
+    Box<dyn Fn() -> Vec<(uuid::Uuid, engine_serve::suspend::SuspendedEntry)> + Send + Sync>;
+
+/// One delivery tick: for each currently suspended run, build its question,
+/// register it (skipping any run whose question is already pending — this
+/// is what makes one question produce one message), validate the payload
+/// against `limits`, insert it into `pending` so the existing
+/// [`crate::serve::notify::PendingLookup`] chain can resolve a later tap,
+/// and hand it to `transport`.
+///
+/// A validation error or a `send` error for one run is `warn!`-logged and
+/// SKIPPED, never propagated — same skip-on-render-failure contract
+/// [`super::super::notify::stale_run_alarm::deliver_once`] follows: one bad
+/// run never blocks delivery for the rest of the scan.
+///
+/// Returns the number of questions actually sent (a successful `send`),
+/// which may be less than the number of suspended runs scanned.
+pub async fn deliver_once(
+    lister: &SuspendedLister,
+    registry: &PendingHeadlessQuestions,
+    transport: &Arc<dyn OperatorTransport>,
+    pending: &PendingPayloads,
+    limits: &OperatorPayloadLimits,
+    now: DateTime<Utc>,
+) -> usize {
+    let mut delivered = 0;
+
+    for (run_id, entry) in lister() {
+        let payload = question_from_suspended(run_id, &entry);
+
+        let outcome = registry.register(run_id, payload.clone(), now);
+        let gate_id = match outcome {
+            HeadlessRegisterOutcome::AlreadyPending { .. } => {
+                // A question is already outstanding for this run — sending
+                // again would violate one-question-one-message.
+                continue;
+            }
+            HeadlessRegisterOutcome::Created { gate_id } => gate_id,
+        };
+
+        let validated = match engine_core::operator::validate(payload, limits) {
+            Ok(validated) => validated,
+            Err(err) => {
+                tracing::warn!(
+                    target: "bastion::serve",
+                    error = %err,
+                    run_id = %run_id,
+                    gate_id = %gate_id,
+                    "headless question payload failed re-validation; skipping"
+                );
+                continue;
+            }
+        };
+
+        pending.insert(validated.clone());
+
+        match transport.send(&validated).await {
+            Ok(_) => delivered += 1,
+            Err(err) => {
+                tracing::warn!(
+                    target: "bastion::serve",
+                    error = %err,
+                    run_id = %run_id,
+                    gate_id = %gate_id,
+                    "headless question delivery failed; skipping"
+                );
+            }
+        }
+    }
+
+    delivered
+}
+
+/// A handle to the background headless-question delivery loop
+/// [`spawn_headless_question_loop`] spawned. Mirrors
+/// `stale_run_alarm::AlarmDeliveryHandle`'s "hold or drop" shape exactly:
+/// the caller may hold this to [`abort`](Self::abort) the loop, or drop it
+/// — dropping does **not** stop the loop.
+pub struct HeadlessQuestionHandle {
+    task: actix_web::rt::task::JoinHandle<()>,
+}
+
+impl HeadlessQuestionHandle {
+    /// Stop the background delivery loop.
+    pub fn abort(&self) {
+        self.task.abort();
+    }
+}
+
+/// Spawn the background delivery loop: an `actix_web::rt::spawn`ed
+/// `tokio::time::interval(interval)` loop whose body is one
+/// [`deliver_once`] call per tick, evaluated at `chrono::Utc::now()`.
+///
+/// `transport` is captured by clone; `registry`/`pending` are captured by
+/// `Arc` clone, so this and any other caller can keep sharing the same
+/// underlying registries.
+#[must_use]
+pub fn spawn_headless_question_loop(
+    lister: SuspendedLister,
+    registry: Arc<PendingHeadlessQuestions>,
+    transport: Arc<dyn OperatorTransport>,
+    pending: Arc<PendingPayloads>,
+    interval: Duration,
+) -> HeadlessQuestionHandle {
+    let task = actix_web::rt::spawn(async move {
+        let limits = OperatorPayloadLimits::default();
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            let now = Utc::now();
+            let _ = deliver_once(&lister, &registry, &transport, &pending, &limits, now).await;
+        }
+    });
+
+    HeadlessQuestionHandle { task }
+}
+
+/// Given an already-resolved [`ResponseVerdict`], decide whether it maps to
+/// a headless run that should now be resumed. PURE: does not itself mark
+/// the entry answered (callers call [`mark_headless_answered`] only after
+/// the resume call has actually been issued) and never resumes anything
+/// itself.
+///
+/// Returns `Some(run_id)` only for an `Accepted` verdict whose `gate_id`
+/// falls in this module's `hq-` id space AND resolves to an unanswered
+/// headless entry via [`resolve_headless_tap`]. Every other case —
+/// `StaleDigest`, `UnknownGate`, a gate id outside the `hq-` space, an
+/// already-answered entry, or an option key the payload does not offer —
+/// returns `None`.
+#[must_use]
+pub fn headless_resume_for(
+    verdict: &ResponseVerdict,
+    registry: &PendingHeadlessQuestions,
+) -> Option<uuid::Uuid> {
+    let ResponseVerdict::Accepted {
+        gate_id,
+        option_key,
+        ..
+    } = verdict
+    else {
+        return None;
+    };
+
+    if !is_headless_gate_id(gate_id) {
+        return None;
+    }
+
+    match resolve_headless_tap(gate_id, option_key, registry) {
+        HeadlessVerdict::Accepted { run_id, .. } => Some(run_id),
+        HeadlessVerdict::AlreadyAnswered | HeadlessVerdict::UnknownQuestion => None,
+    }
+}
+
+/// Mark the headless question at `gate_id` answered. Thin wrapper over
+/// [`PendingHeadlessQuestions::mark_answered`] so the boot sink (task 4)
+/// marks a question answered only AFTER the resume call has actually been
+/// issued — never before, and never as a side effect of
+/// [`headless_resume_for`] itself.
+pub fn mark_headless_answered(registry: &PendingHeadlessQuestions, gate_id: &str) {
+    registry.mark_answered(gate_id);
 }

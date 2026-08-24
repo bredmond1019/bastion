@@ -874,6 +874,341 @@ mod headless_tests {
         let sample: Option<PendingQuestion> = pane_bound.get(pane_outcome.question_id());
         assert!(sample.is_some());
     }
+
+    // ── Delivery shell (BA.21.C task 3) ─────────────────────────────────
+    //
+    // `deliver_once` / `headless_resume_for` / `mark_headless_answered`
+    // coverage, driven entirely through injected fakes: a `SuspendedLister`
+    // closure over a fixture `Vec`, and a local `HeadlessScriptedTransport`
+    // recording `send` calls. No tmux, no HTTP, no real engine process.
+    mod delivery {
+        use std::sync::Arc;
+        use std::sync::Mutex as StdMutex;
+
+        use async_trait::async_trait;
+        use chrono::Utc;
+        use engine_core::operator::{
+            DeliveredMessage, NotifyError, OperatorPayloadLimits, OperatorResponse,
+            OperatorTransport, ResponseVerdict, UpdateCursor, ValidatedOperatorPayload,
+        };
+        use engine_serve::suspend::SuspendedEntry;
+        use uuid::Uuid;
+
+        use super::super::super::headless::{
+            HEADLESS_QUESTION_METADATA_KEY, HeadlessRegisterOutcome, PendingHeadlessQuestions,
+            SuspendedLister, deliver_once, gate_id_for_run, headless_resume_for,
+            question_from_suspended,
+        };
+        use super::{plain_entry, suspended_entry};
+        use crate::serve::notify::PendingPayloads;
+
+        /// A suspended-run fixture whose question carries TWO response
+        /// options, unlike [`plain_entry`]'s single-option synthesized
+        /// fallback. `OperatorPayloadLimits::default()` requires at least
+        /// [`engine_core::operator::OPERATOR_MIN_RESPONSE_OPTIONS`] (2)
+        /// options, so a real delivery test must exercise a question shape
+        /// that can actually pass validation — the synthesized
+        /// single-`resume`-option fallback [`plain_entry`] builds is
+        /// exactly the shape `question_from_suspended`'s own doc comment
+        /// says a workflow may override via structured metadata, and this
+        /// fixture does exactly that.
+        fn deliverable_entry() -> SuspendedEntry {
+            let structured = engine_core::operator::OperatorPayload::new(
+                "source-gate-id-overwritten-by-question-builder",
+                "Ship to prod now?",
+                vec![
+                    engine_core::operator::OperatorResponseOption::new("yes", "Yes"),
+                    engine_core::operator::OperatorResponseOption::new("no", "No"),
+                ],
+            );
+            suspended_entry(serde_json::json!({
+                HEADLESS_QUESTION_METADATA_KEY: structured,
+            }))
+        }
+
+        /// A local scripted `OperatorTransport` recording every `send`
+        /// call. Deliberately NOT `notify::tests::ScriptedTransport` — that
+        /// fake is hard-wired to `notify`'s own test fixtures, and pulling
+        /// it in here would blur the "these two registries/paths are
+        /// provably separate" property this block exists to guarantee.
+        #[derive(Default)]
+        struct HeadlessScriptedTransport {
+            send_calls: StdMutex<Vec<ValidatedOperatorPayload>>,
+            /// `send` fails for every payload whose `gate_id` is in this
+            /// set — used to prove one failing run does not suppress
+            /// delivery to the others.
+            fail_gate_ids: StdMutex<Vec<String>>,
+        }
+
+        impl HeadlessScriptedTransport {
+            fn failing_for(gate_ids: &[String]) -> Self {
+                Self {
+                    send_calls: StdMutex::new(Vec::new()),
+                    fail_gate_ids: StdMutex::new(gate_ids.to_vec()),
+                }
+            }
+
+            fn sent_gate_ids(&self) -> Vec<String> {
+                self.send_calls
+                    .lock()
+                    .expect("mutex poisoned")
+                    .iter()
+                    .map(|p| p.payload().gate_id.clone())
+                    .collect()
+            }
+        }
+
+        #[async_trait]
+        impl OperatorTransport for HeadlessScriptedTransport {
+            async fn send(
+                &self,
+                payload: &ValidatedOperatorPayload,
+            ) -> Result<DeliveredMessage, NotifyError> {
+                let gate_id = payload.payload().gate_id.clone();
+                if self
+                    .fail_gate_ids
+                    .lock()
+                    .expect("mutex poisoned")
+                    .contains(&gate_id)
+                {
+                    return Err(NotifyError::Transport {
+                        reason: "scripted failure".to_string(),
+                    });
+                }
+                self.send_calls
+                    .lock()
+                    .expect("mutex poisoned")
+                    .push(payload.clone());
+                Ok(DeliveredMessage {
+                    transport_message_id: gate_id,
+                })
+            }
+
+            async fn poll_responses(
+                &self,
+                _since: Option<UpdateCursor>,
+            ) -> Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError> {
+                Ok((Vec::new(), None))
+            }
+
+            async fn acknowledge(
+                &self,
+                _response: &OperatorResponse,
+                _verdict: &ResponseVerdict,
+            ) -> Result<(), NotifyError> {
+                Ok(())
+            }
+        }
+
+        fn lister_for(runs: Vec<(Uuid, SuspendedEntry)>) -> SuspendedLister {
+            Box::new(move || runs.clone())
+        }
+
+        #[tokio::test]
+        async fn a_suspended_run_produces_exactly_one_outbound_send_with_no_tmux_in_the_path() {
+            let run_id = Uuid::new_v4();
+            let lister = lister_for(vec![(run_id, deliverable_entry())]);
+            let registry = PendingHeadlessQuestions::new();
+            let scripted = Arc::new(HeadlessScriptedTransport::default());
+            let transport: Arc<dyn OperatorTransport> = scripted.clone();
+            let pending = PendingPayloads::new();
+            let limits = OperatorPayloadLimits::default();
+
+            let delivered = deliver_once(
+                &lister,
+                &registry,
+                &transport,
+                &pending,
+                &limits,
+                Utc::now(),
+            )
+            .await;
+
+            assert_eq!(delivered, 1);
+            assert_eq!(scripted.sent_gate_ids(), vec![gate_id_for_run(run_id)]);
+            // No tmux session anywhere in the path: the fixture entry
+            // carries no tmux session name, `deliver_once` never
+            // references one, and the payload sent is built purely from
+            // the suspended run's own fields.
+        }
+
+        #[tokio::test]
+        async fn second_tick_for_the_same_still_pending_run_sends_nothing_further() {
+            let run_id = Uuid::new_v4();
+            let lister = lister_for(vec![(run_id, deliverable_entry())]);
+            let registry = PendingHeadlessQuestions::new();
+            let scripted = Arc::new(HeadlessScriptedTransport::default());
+            let transport: Arc<dyn OperatorTransport> = scripted.clone();
+            let pending = PendingPayloads::new();
+            let limits = OperatorPayloadLimits::default();
+
+            let first = deliver_once(
+                &lister,
+                &registry,
+                &transport,
+                &pending,
+                &limits,
+                Utc::now(),
+            )
+            .await;
+            let second = deliver_once(
+                &lister,
+                &registry,
+                &transport,
+                &pending,
+                &limits,
+                Utc::now(),
+            )
+            .await;
+
+            assert_eq!(first, 1);
+            assert_eq!(
+                second, 0,
+                "a repeated delivery tick for the same still-pending question must send nothing"
+            );
+            assert_eq!(
+                scripted.sent_gate_ids().len(),
+                1,
+                "exactly one message must ever have been sent for this run"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_send_failure_for_one_run_does_not_suppress_delivery_to_the_others() {
+            let failing_run = Uuid::new_v4();
+            let ok_run = Uuid::new_v4();
+            let lister = lister_for(vec![
+                (failing_run, deliverable_entry()),
+                (ok_run, deliverable_entry()),
+            ]);
+            let registry = PendingHeadlessQuestions::new();
+            let scripted = Arc::new(HeadlessScriptedTransport::failing_for(&[gate_id_for_run(
+                failing_run,
+            )]));
+            let transport: Arc<dyn OperatorTransport> = scripted.clone();
+            let pending = PendingPayloads::new();
+            let limits = OperatorPayloadLimits::default();
+
+            let delivered = deliver_once(
+                &lister,
+                &registry,
+                &transport,
+                &pending,
+                &limits,
+                Utc::now(),
+            )
+            .await;
+
+            assert_eq!(
+                delivered, 1,
+                "the failing run must be skipped, not abort the whole batch"
+            );
+            assert_eq!(scripted.sent_gate_ids(), vec![gate_id_for_run(ok_run)]);
+        }
+
+        // ── headless_resume_for ──────────────────────────────────────────
+
+        fn accepted_verdict(gate_id: &str, option_key: &str) -> ResponseVerdict {
+            ResponseVerdict::Accepted {
+                gate_id: gate_id.to_string(),
+                option_key: option_key.to_string(),
+                digest: "irrelevant-to-this-resolver".to_string(),
+                decided_at: Utc::now(),
+            }
+        }
+
+        #[test]
+        fn headless_resume_for_returns_the_run_id_for_a_matching_accepted_tap() {
+            let registry = PendingHeadlessQuestions::new();
+            let run_id = Uuid::new_v4();
+            let outcome = registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+            let gate_id = outcome.gate_id().to_string();
+
+            let verdict = accepted_verdict(&gate_id, "resume");
+            assert_eq!(headless_resume_for(&verdict, &registry), Some(run_id));
+        }
+
+        #[test]
+        fn headless_resume_for_is_none_for_a_stale_gate_id() {
+            let registry = PendingHeadlessQuestions::new();
+            let verdict = accepted_verdict(&gate_id_for_run(Uuid::new_v4()), "resume");
+            assert_eq!(headless_resume_for(&verdict, &registry), None);
+        }
+
+        #[test]
+        fn headless_resume_for_is_none_for_an_already_answered_entry() {
+            let registry = PendingHeadlessQuestions::new();
+            let run_id = Uuid::new_v4();
+            let outcome = registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+            let gate_id = outcome.gate_id().to_string();
+            registry.mark_answered(&gate_id);
+
+            let verdict = accepted_verdict(&gate_id, "resume");
+            assert_eq!(
+                headless_resume_for(&verdict, &registry),
+                None,
+                "an already-answered entry must never resume a second time"
+            );
+        }
+
+        #[test]
+        fn headless_resume_for_is_none_for_a_foreign_non_hq_gate_id() {
+            let registry = PendingHeadlessQuestions::new();
+            let verdict = accepted_verdict("approve-and-run:artifact-1", "approve");
+            assert_eq!(
+                headless_resume_for(&verdict, &registry),
+                None,
+                "a gate id outside the hq- space must never be resolved as a headless tap"
+            );
+        }
+
+        #[test]
+        fn headless_resume_for_is_none_for_stale_digest_and_unknown_gate_verdicts() {
+            let registry = PendingHeadlessQuestions::new();
+            assert_eq!(
+                headless_resume_for(&ResponseVerdict::UnknownGate, &registry),
+                None
+            );
+            let stale = ResponseVerdict::StaleDigest {
+                gate_id: "hq-whatever".to_string(),
+                option_key: "resume".to_string(),
+                digest: "stale".to_string(),
+                decided_at: Utc::now(),
+            };
+            assert_eq!(headless_resume_for(&stale, &registry), None);
+        }
+
+        // ── register skip on AlreadyPending ─────────────────────────────
+
+        #[test]
+        fn register_outcome_variants_still_distinguish_created_from_already_pending() {
+            let registry = PendingHeadlessQuestions::new();
+            let run_id = Uuid::new_v4();
+            let first = registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+            let second = registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+            assert!(matches!(first, HeadlessRegisterOutcome::Created { .. }));
+            assert!(matches!(
+                second,
+                HeadlessRegisterOutcome::AlreadyPending { .. }
+            ));
+        }
+    }
 }
 
 // ── End-to-end hermetic coverage (BA.20.C task 7) ───────────────────────────
