@@ -165,21 +165,33 @@ fn log_orphan_sweep(outcome: &OrphanSweepOutcome) {
 /// path — a relative fallback filename in the process's current directory
 /// is a safe, always-constructible default for the case neither var is set.
 /// Resolve `gate_id` against the composed `PendingLookup` source
-/// (`ticket-approve-and-run-seams` task 2): the real engine queue
-/// (`seams.lookup_pending`) tried first, falling back to the process-local
-/// `/api/notify/test` registry (`test_registry.get`). Pulled out of the
-/// closure `run()` builds so the composition itself — precedence, and that
-/// neither source is ever skipped — is unit-testable without standing up
-/// actix or a Telegram config.
+/// (`ticket-approve-and-run-seams` task 2, extended by `BA.21.C` task 4): the
+/// real engine queue (`seams.lookup_pending`) tried first, falling back to
+/// the process-local `/api/notify/test` registry (`test_registry.get`), and
+/// finally the pane-free headless question registry
+/// (`headless_registry.get` — `BA.21.C`). Pulled out of the closure `run()`
+/// builds so the composition itself — precedence, and that no source is
+/// ever skipped — is unit-testable without standing up actix or a Telegram
+/// config.
+///
+/// The third source is composed AFTER the other two, never replacing them,
+/// and can never shadow a real gate from either: `seams`' gate ids come from
+/// `engine_core::workflows::approve_and_run::gate_id_for`'s
+/// `"approve-and-run:"` space, `test_registry`'s from the test route's
+/// per-request uuid space, and `headless_registry`'s exclusively from
+/// [`session_qa::headless::gate_id_for_run`]'s `hq-` prefix — three
+/// disjoint-by-construction generators.
 #[must_use]
 fn resolve_pending_lookup(
     seams: &engine_core::workflows::approve_and_run::ApproveAndRunSeams,
     test_registry: &notify::PendingPayloads,
+    headless_registry: &notify::PendingPayloads,
     gate_id: &str,
 ) -> Option<engine_core::operator::ValidatedOperatorPayload> {
     seams
         .lookup_pending(gate_id)
         .or_else(|| test_registry.get(gate_id))
+        .or_else(|| headless_registry.get(gate_id))
 }
 
 /// Build the engine-side [`ApproveAndRunVerdict`][engine_core::workflows::approve_and_run::ApproveAndRunVerdict]
@@ -790,6 +802,33 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // a response can be resolved against a payload this same process sent.
     let pending_payloads = std::sync::Arc::new(notify::PendingPayloads::new());
 
+    // ── Headless question registries (BA.21.C task 4) ───────────────────────
+    //
+    // Hoisted here, next to `pending_payloads` above, for the same reason:
+    // the boot delivery loop spawned below and the verdict sink inside the
+    // Telegram match arm below that both need to share ONE allocation of
+    // each, not two independently-constructed instances.
+    //
+    // `headless_registry` is task 1's pane-free dedup registry
+    // (`PendingHeadlessQuestions`, keyed on `gate_id`) — never reused or
+    // wrapped by anything pane-bound. `headless_pending_payloads` is a
+    // SEPARATE `notify::PendingPayloads` instance (task 3's `deliver_once`
+    // `pending` param) that the delivery loop inserts validated headless
+    // questions into; it is kept apart from `pending_payloads` above (the
+    // `/api/notify/test` route's registry) so a headless-sourced payload and
+    // a test-route-sourced payload can never be confused for each other,
+    // and is wired in below as a third, disjoint `resolve_pending_lookup`
+    // source (the `hq-` gate-id prefix makes it disjoint by construction
+    // from the other two).
+    let headless_registry =
+        std::sync::Arc::new(session_qa::headless::PendingHeadlessQuestions::new());
+    let headless_pending_payloads = std::sync::Arc::new(notify::PendingPayloads::new());
+    // Known before the Telegram/engine matches below consume `engine_data`
+    // by clone — whether the embedded engine actually mounted this boot,
+    // which gates the headless delivery loop below (nothing to scan for
+    // suspended runs on an unmounted engine).
+    let engine_mounted = engine_data.is_some();
+
     // ── ApproveAndRunSeams (ticket-approve-and-run-seams task 2) ────────────
     //
     // `engine_core::workflows::approve_and_run::ApproveAndRunSeams` is
@@ -905,9 +944,21 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             let verdict_seams = std::sync::Arc::clone(&approve_and_run_seams);
             let lookup_seams = std::sync::Arc::clone(&approve_and_run_seams);
             let lookup_test_registry = std::sync::Arc::clone(&pending_payloads);
+            let lookup_headless_registry = std::sync::Arc::clone(&headless_pending_payloads);
             let pending_lookup: notify::PendingLookup = Box::new(move |gate_id: &str| {
-                resolve_pending_lookup(&lookup_seams, &lookup_test_registry, gate_id)
+                resolve_pending_lookup(
+                    &lookup_seams,
+                    &lookup_test_registry,
+                    &lookup_headless_registry,
+                    gate_id,
+                )
             });
+            // BA.21.C task 4: this process's own bind address and the
+            // headless dedup registry, cloned in for the resume branch the
+            // sink adds below — the SAME `Arc` the delivery loop spawned
+            // further down holds, never a second allocation.
+            let headless_registry_for_sink = std::sync::Arc::clone(&headless_registry);
+            let addr_for_headless_resume = addr.clone();
             let poll_loop = notify::NotifyPollLoop::new(
                 transport,
                 pending_lookup,
@@ -1010,6 +1061,79 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                             }
                         });
                     }
+
+                    // ── Headless resume branch (BA.21.C task 4) ─────────────
+                    //
+                    // `headless_resume_for` only ever returns `Some` for an
+                    // `Accepted` verdict whose gate id falls in the `hq-`
+                    // space and resolves to an unanswered headless entry —
+                    // a real engine-drained `approve-and-run` gate or a
+                    // `/api/notify/test` gate both fall straight through
+                    // this as `None`, so the branch above and this one can
+                    // never both fire for the same tap. Spawned onto the
+                    // same local set as the branch above, for the identical
+                    // reason: `ApiClient::resume_run` is an HTTP POST and
+                    // must never block this sink or the poll loop's next
+                    // tick.
+                    if let Some(run_id) = session_qa::headless::headless_resume_for(
+                        &verdict,
+                        &headless_registry_for_sink,
+                    ) {
+                        let notify::ResponseVerdict::Accepted { gate_id, .. } = &verdict else {
+                            unreachable!(
+                                "headless_resume_for only returns Some(..) for an Accepted verdict"
+                            );
+                        };
+                        let gate_id = gate_id.clone();
+                        let base_url = format!("http://{addr_for_headless_resume}");
+                        let engine_api_key = std::env::var("BASTION_ENGINE_API_KEY").ok();
+                        let mark_registry = std::sync::Arc::clone(&headless_registry_for_sink);
+                        actix_web::rt::spawn(async move {
+                            let client = crate::api::client::ApiClient::new(&base_url)
+                                .with_engine_api_key(engine_api_key);
+                            match client.resume_run(&run_id.to_string()).await {
+                                Ok(crate::api::client::ResumeOutcome::Accepted { .. }) => {
+                                    session_qa::headless::mark_headless_answered(
+                                        &mark_registry,
+                                        &gate_id,
+                                    );
+                                    tracing::info!(
+                                        target: "bastion::serve",
+                                        run_id = %run_id,
+                                        "headless resume accepted"
+                                    );
+                                }
+                                Ok(other) => {
+                                    // Never marked answered — a `NotFound`,
+                                    // `Unauthorized`, `AlreadyResuming`, or
+                                    // `Unresolvable` resume leaves the
+                                    // question outstanding rather than
+                                    // silently swallowing a tap that did not
+                                    // actually resume anything.
+                                    tracing::warn!(
+                                        target: "bastion::serve",
+                                        run_id = %run_id,
+                                        outcome = ?other,
+                                        "headless resume call did not accept"
+                                    );
+                                }
+                                Err(err) => {
+                                    // Must stay visible for the same reason
+                                    // the approve-and-run execution error
+                                    // above is: an operator tap that fails
+                                    // to resume its run is exactly the
+                                    // failure mode this sink must never
+                                    // swallow.
+                                    tracing::error!(
+                                        target: "bastion::serve",
+                                        error = %err,
+                                        run_id = %run_id,
+                                        "headless resume call failed"
+                                    );
+                                }
+                            }
+                        });
+                    }
                 }),
             );
             actix_web::rt::spawn(poll_loop.run());
@@ -1065,6 +1189,48 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         );
         None
     };
+
+    // ── Headless question delivery loop (BA.21.C task 4) ─────────────────
+    //
+    // Same `alarm_delivery_enabled` gate as the stale-run alarm loop just
+    // above, AND `engine_mounted` — an unmounted engine has no
+    // `engine_serve::suspend::list_suspended()` state worth scanning.
+    // Unconfigured (no Telegram transport) or unmounted (no `DATABASE_URL` /
+    // engine API key) boots byte-identically to before this block, as an
+    // `info!` line, never a warning and never a failure. This block
+    // introduces no process spawn of its own — the resume call above is an
+    // HTTP POST issued by this same `bastion serve` process against its own
+    // embedded engine routes, not a spawned child process, so there is no
+    // `claude --permission-mode bypassPermissions` inheritance risk here.
+    let _headless_question_delivery_handle =
+        if alarm_delivery_enabled(operator_transport.as_ref()) && engine_mounted {
+            let transport = operator_transport
+                .clone()
+                .expect("alarm_delivery_enabled(Some(..)) implies operator_transport is Some");
+            let interval = notify::stale_run_alarm::sweep_interval(
+                &engine_core::operator::orphan::OrphanPolicy::default(),
+            );
+            tracing::info!(
+                target: "bastion::serve",
+                "headless question delivery loop spawned"
+            );
+            let lister: session_qa::headless::SuspendedLister =
+                Box::new(engine_serve::suspend::list_suspended);
+            Some(session_qa::headless::spawn_headless_question_loop(
+                lister,
+                std::sync::Arc::clone(&headless_registry),
+                transport,
+                std::sync::Arc::clone(&headless_pending_payloads),
+                interval,
+            ))
+        } else {
+            tracing::info!(
+                target: "bastion::serve",
+                "headless question delivery loop not spawned — operator transport not \
+                 configured or engine not mounted this boot"
+            );
+            None
+        };
 
     let registry = web::Data::new(registry);
 
@@ -1519,6 +1685,87 @@ mod engine_mount_tests {
         let transport: std::sync::Arc<dyn notify::OperatorTransport> =
             std::sync::Arc::new(StubTransport);
         assert!(alarm_delivery_enabled(Some(&transport)));
+    }
+
+    // ── headless registry hoist (BA.21.C task 4) ────────────────────────
+
+    /// `run_server` hoists ONE `Arc<PendingHeadlessQuestions>` and clones it
+    /// into both the boot delivery loop and the verdict sink's resume
+    /// branch — never two independently-constructed registries. Mirrors
+    /// `split_operator_transport_shares_one_allocation_not_merely_two_some_values`
+    /// above: constructed the same way `run_server` constructs it (one
+    /// `Arc::new`, cloned per consumer), so a regression that swapped either
+    /// clone for a fresh `PendingHeadlessQuestions::new()` would fail this.
+    #[test]
+    fn headless_registry_hoist_shares_one_allocation_not_merely_two_instances() {
+        let headless_registry =
+            std::sync::Arc::new(session_qa::headless::PendingHeadlessQuestions::new());
+        let delivery_loop_registry = std::sync::Arc::clone(&headless_registry);
+        let verdict_sink_registry = std::sync::Arc::clone(&headless_registry);
+
+        assert!(
+            std::sync::Arc::ptr_eq(&delivery_loop_registry, &verdict_sink_registry),
+            "the boot delivery loop and the verdict sink must share the SAME \
+             PendingHeadlessQuestions allocation, not two independently-constructed ones"
+        );
+    }
+
+    /// HQ D73: Telegram `getUpdates` is exclusive per bot token, and this
+    /// process must never start a second poller for the same token.
+    /// `BA.21.C` reuses the SAME `NotifyPollLoop` this file already
+    /// constructs — it adds a resume branch to that loop's verdict sink and
+    /// a separate scan-and-send loop over suspended runs, neither of which
+    /// is a `getUpdates` consumer. This is a textual regression pin over
+    /// `run_server`'s own source: exactly one `NotifyPollLoop` is
+    /// constructed (the Telegram bot token's sole `getUpdates` consumer),
+    /// exactly one `SessionQaBridge::run_outbound` loop is spawned (the
+    /// distinct CodeSessionsBot token's own poller), and
+    /// `spawn_headless_question_loop` is called exactly once — the boot
+    /// call site this task adds, not a second `getUpdates`-shaped poller.
+    #[test]
+    fn run_server_mounts_exactly_one_poller_per_bot_token_plus_the_headless_delivery_loop() {
+        let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/serve/mod.rs"));
+
+        // Every needle below is assembled from split fragments rather than
+        // written as one literal — this test's own source is part of
+        // `source` (self-inclusion via `include_str!`), so a needle typed
+        // out whole would match itself inside this very `matches(..)` call,
+        // inflating every count by one regardless of the real code.
+        let notify_poll_loop_needle = ["notify::NotifyPollLoop", "::new("].concat();
+        let notify_poll_loop_constructions =
+            source.matches(notify_poll_loop_needle.as_str()).count();
+        assert_eq!(
+            notify_poll_loop_constructions, 1,
+            "exactly one NotifyPollLoop (the Telegram getUpdates consumer) may be constructed \
+             in run_server — HQ D73"
+        );
+
+        let notify_poll_loop_spawn_needle = ["actix_web::rt::spawn(poll_loop", ".run())"].concat();
+        let notify_poll_loop_spawns = source
+            .matches(notify_poll_loop_spawn_needle.as_str())
+            .count();
+        assert_eq!(
+            notify_poll_loop_spawns, 1,
+            "exactly one NotifyPollLoop must be spawned to run"
+        );
+
+        let session_qa_outbound_needle = ["outbound_bridge.run_out", "bound()"].concat();
+        let session_qa_outbound_spawns =
+            source.matches(session_qa_outbound_needle.as_str()).count();
+        assert_eq!(
+            session_qa_outbound_spawns, 1,
+            "exactly one SessionQaBridge outbound loop (the CodeSessionsBot token's own \
+             getUpdates consumer) may be spawned"
+        );
+
+        let headless_loop_needle = ["headless::spawn_headless_quest", "ion_loop("].concat();
+        let headless_loop_call_sites = source.matches(headless_loop_needle.as_str()).count();
+        assert_eq!(
+            headless_loop_call_sites, 1,
+            "spawn_headless_question_loop must be called exactly once — it drives the \
+             delivery scan over the SAME NotifyPollLoop poller's transport, not a second \
+             getUpdates poller"
+        );
     }
 
     /// Pins that the sweep interval `run_server` hands to
@@ -6261,12 +6508,18 @@ mod approve_and_run_seams_wiring_tests {
     fn resolves_a_gate_the_engine_seams_drained() {
         let seams = seams();
         let test_registry = notify::PendingPayloads::new();
+        let headless_registry = notify::PendingPayloads::new();
 
         let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
         let delivered = report.delivered.expect("one item delivered");
 
-        let found = resolve_pending_lookup(&seams, &test_registry, &delivered.item_id)
-            .expect("gate drained into the engine seams should resolve");
+        let found = resolve_pending_lookup(
+            &seams,
+            &test_registry,
+            &headless_registry,
+            &delivered.item_id,
+        )
+        .expect("gate drained into the engine seams should resolve");
         assert_eq!(found.payload().gate_id, delivered.item_id);
     }
 
@@ -6274,14 +6527,19 @@ mod approve_and_run_seams_wiring_tests {
     fn a_gate_never_drained_resolves_to_none() {
         let seams = seams();
         let test_registry = notify::PendingPayloads::new();
+        let headless_registry = notify::PendingPayloads::new();
 
-        assert!(resolve_pending_lookup(&seams, &test_registry, "never-drained").is_none());
+        assert!(
+            resolve_pending_lookup(&seams, &test_registry, &headless_registry, "never-drained")
+                .is_none()
+        );
     }
 
     #[test]
     fn a_payload_sent_via_notify_test_still_resolves() {
         let seams = seams();
         let test_registry = notify::PendingPayloads::new();
+        let headless_registry = notify::PendingPayloads::new();
 
         let payload = OperatorPayload::new(
             "test-gate-1",
@@ -6295,9 +6553,77 @@ mod approve_and_run_seams_wiring_tests {
             .expect("fixed 2-option test payload always validates");
         test_registry.insert(validated);
 
-        let found = resolve_pending_lookup(&seams, &test_registry, "test-gate-1")
-            .expect("a payload sent via /api/notify/test should still resolve");
+        let found =
+            resolve_pending_lookup(&seams, &test_registry, &headless_registry, "test-gate-1")
+                .expect("a payload sent via /api/notify/test should still resolve");
         assert_eq!(found.payload().gate_id, "test-gate-1");
+    }
+
+    /// `BA.21.C` task 4: the third, headless source resolves a `hq-`
+    /// gate id while the other two keep resolving their own gates
+    /// unchanged — proving the third source is genuinely composed, not
+    /// substituted for either existing one.
+    #[test]
+    fn a_headless_question_resolves_through_the_third_source_alongside_the_other_two() {
+        let seams = seams();
+        let test_registry = notify::PendingPayloads::new();
+        let headless_registry = notify::PendingPayloads::new();
+
+        let report = seams.drain(&[harvest_record("artifact-1")], chrono::Utc::now());
+        let delivered = report.delivered.expect("one item delivered");
+
+        let test_payload = OperatorPayload::new(
+            "test-gate-1",
+            "a test summary",
+            vec![
+                OperatorResponseOption::new("approve", "Approve"),
+                OperatorResponseOption::new("reject", "Reject"),
+            ],
+        );
+        test_registry.insert(
+            validate(test_payload, &OperatorPayloadLimits::default())
+                .expect("fixed 2-option test payload always validates"),
+        );
+
+        let run_id = uuid::Uuid::new_v4();
+        let gate_id = session_qa::headless::gate_id_for_run(run_id);
+        let headless_payload = OperatorPayload::new(
+            gate_id.clone(),
+            "a suspended run's question",
+            vec![
+                OperatorResponseOption::new("resume", "Resume"),
+                OperatorResponseOption::new("cancel", "Cancel"),
+            ],
+        );
+        headless_registry.insert(
+            validate(headless_payload, &OperatorPayloadLimits::default())
+                .expect("fixed 2-option headless payload always validates"),
+        );
+
+        let found = resolve_pending_lookup(&seams, &test_registry, &headless_registry, &gate_id)
+            .expect("a headless-sourced gate id should resolve through the third source");
+        assert_eq!(found.payload().gate_id, gate_id);
+
+        // The other two sources still resolve their own gates unchanged.
+        assert_eq!(
+            resolve_pending_lookup(
+                &seams,
+                &test_registry,
+                &headless_registry,
+                &delivered.item_id
+            )
+            .expect("engine-seams gate must still resolve")
+            .payload()
+            .gate_id,
+            delivered.item_id
+        );
+        assert_eq!(
+            resolve_pending_lookup(&seams, &test_registry, &headless_registry, "test-gate-1")
+                .expect("test-route gate must still resolve")
+                .payload()
+                .gate_id,
+            "test-gate-1"
+        );
     }
 
     // ── approve_and_run_verdict_for ──────────────────────────────────────
