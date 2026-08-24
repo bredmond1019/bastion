@@ -466,6 +466,416 @@ fn default_state_is_idle() {
     assert_eq!(ChatFollowUpState::default(), ChatFollowUpState::Idle);
 }
 
+// ── Pane-free question path (BA.21.C task 1) ────────────────────────────────
+//
+// Pure-core coverage of `headless.rs`: deliver-once dedup, unknown/stale/
+// already-answered taps, unknown option key, concurrent questions on
+// different runs, FIFO eviction, structured-metadata vs synthesized
+// question shape, `gate_id_for_run` determinism, and a regression pin that
+// the pane-bound `PendingQuestions` registry is untouched by anything here.
+mod headless_tests {
+    use chrono::Utc;
+    use engine_contract::TaskContext;
+    use engine_core::operator::{OperatorPayload, OperatorResponseOption};
+    use engine_serve::suspend::SuspendedEntry;
+    use uuid::Uuid;
+
+    use super::super::headless::{
+        HEADLESS_QUESTION_METADATA_KEY, HeadlessRegisterOutcome, HeadlessVerdict,
+        PendingHeadlessQuestions, gate_id_for_run, is_headless_gate_id, question_from_suspended,
+        resolve_headless_tap,
+    };
+    use super::super::{PendingQuestion, PendingQuestions};
+    use crate::sessions::ask_question::AskQuestionPrompt;
+
+    fn suspended_entry(metadata: serde_json::Value) -> SuspendedEntry {
+        SuspendedEntry {
+            workflow_type: "nightly-deploy".to_string(),
+            data: serde_json::json!({}),
+            snapshot: TaskContext {
+                event: serde_json::json!({}),
+                nodes: std::collections::HashMap::new(),
+                metadata,
+                node_runs: std::collections::HashMap::new(),
+            },
+            created_at: Utc::now(),
+            suspended_at: Utc::now(),
+            resume_at: "2026-08-25T00:00:00Z".to_string(),
+            reason: "awaiting operator decision".to_string(),
+            resuming: false,
+        }
+    }
+
+    fn plain_entry() -> SuspendedEntry {
+        suspended_entry(serde_json::json!({}))
+    }
+
+    // ── gate_id_for_run / is_headless_gate_id ───────────────────────────
+
+    #[test]
+    fn gate_id_for_run_is_deterministic_and_hq_prefixed() {
+        let run_id = Uuid::new_v4();
+        let a = gate_id_for_run(run_id);
+        let b = gate_id_for_run(run_id);
+        assert_eq!(a, b, "same run id must always produce the same gate id");
+        assert!(
+            a.starts_with("hq-"),
+            "gate id must carry the hq- prefix so its id space is disjoint by construction: {a}"
+        );
+        assert!(is_headless_gate_id(&a));
+    }
+
+    #[test]
+    fn gate_id_for_run_differs_across_runs() {
+        let a = gate_id_for_run(Uuid::new_v4());
+        let b = gate_id_for_run(Uuid::new_v4());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn foreign_gate_id_is_not_headless() {
+        assert!(!is_headless_gate_id("approve-and-run:artifact-1"));
+        assert!(!is_headless_gate_id("test-route-uuid"));
+    }
+
+    // ── question_from_suspended ──────────────────────────────────────────
+
+    #[test]
+    fn synthesizes_question_from_workflow_fields_when_no_metadata_present() {
+        let run_id = Uuid::new_v4();
+        let entry = plain_entry();
+        let payload = question_from_suspended(run_id, &entry);
+
+        assert_eq!(payload.gate_id, gate_id_for_run(run_id));
+        assert!(payload.rendered_summary.contains("nightly-deploy"));
+        assert!(
+            payload
+                .rendered_summary
+                .contains("awaiting operator decision")
+        );
+        assert!(payload.rendered_summary.contains("2026-08-25T00:00:00Z"));
+        assert_eq!(payload.options.len(), 1);
+        assert_eq!(payload.options[0].key, "resume");
+        assert!(payload.digest_matches());
+    }
+
+    #[test]
+    fn prefers_structured_metadata_question_over_synthesized_fallback() {
+        let run_id = Uuid::new_v4();
+        let structured = OperatorPayload::new(
+            "whatever-source-gate-id",
+            "Ship to prod now?",
+            vec![
+                OperatorResponseOption::new("yes", "Yes"),
+                OperatorResponseOption::new("no", "No"),
+            ],
+        );
+        let entry = suspended_entry(serde_json::json!({
+            HEADLESS_QUESTION_METADATA_KEY: structured,
+        }));
+
+        let payload = question_from_suspended(run_id, &entry);
+
+        assert_eq!(payload.rendered_summary, "Ship to prod now?");
+        assert_eq!(payload.options.len(), 2);
+        // gate_id and digest are always overwritten, even for a structured
+        // question whose source gate id was something else entirely.
+        assert_eq!(payload.gate_id, gate_id_for_run(run_id));
+        assert!(payload.digest_matches());
+    }
+
+    #[test]
+    fn undecodable_metadata_falls_back_to_synthesized_question() {
+        let run_id = Uuid::new_v4();
+        let entry = suspended_entry(serde_json::json!({
+            HEADLESS_QUESTION_METADATA_KEY: "not an OperatorPayload",
+        }));
+
+        let payload = question_from_suspended(run_id, &entry);
+
+        assert_eq!(payload.options.len(), 1);
+        assert_eq!(payload.options[0].key, "resume");
+    }
+
+    // ── PendingHeadlessQuestions::register — deliver-once dedup ─────────
+
+    #[test]
+    fn register_new_question_creates_entry() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let payload = question_from_suspended(run_id, &plain_entry());
+
+        let outcome = registry.register(run_id, payload, Utc::now());
+
+        assert!(matches!(outcome, HeadlessRegisterOutcome::Created { .. }));
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn repeated_delivery_tick_for_still_pending_question_sends_nothing_further() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+
+        let first = registry.register(
+            run_id,
+            question_from_suspended(run_id, &plain_entry()),
+            Utc::now(),
+        );
+        let second = registry.register(
+            run_id,
+            question_from_suspended(run_id, &plain_entry()),
+            Utc::now(),
+        );
+
+        assert_eq!(first.gate_id(), second.gate_id());
+        assert!(matches!(
+            second,
+            HeadlessRegisterOutcome::AlreadyPending { .. }
+        ));
+        assert_eq!(registry.len(), 1, "dedup must not create a second entry");
+    }
+
+    #[test]
+    fn answered_question_can_be_re_registered_as_a_fresh_cycle() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+        registry.mark_answered(&gate_id);
+
+        let outcome = registry.register(
+            run_id,
+            question_from_suspended(run_id, &plain_entry()),
+            Utc::now(),
+        );
+
+        assert!(matches!(outcome, HeadlessRegisterOutcome::Created { .. }));
+        assert_eq!(
+            registry.len(),
+            1,
+            "re-registering must not grow the registry"
+        );
+    }
+
+    #[test]
+    fn two_concurrent_questions_on_different_runs_resolve_independently() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_a = Uuid::new_v4();
+        let run_b = Uuid::new_v4();
+
+        let gate_a = registry
+            .register(
+                run_a,
+                question_from_suspended(run_a, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+        let gate_b = registry
+            .register(
+                run_b,
+                question_from_suspended(run_b, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+
+        assert_ne!(gate_a, gate_b);
+        assert_eq!(registry.len(), 2);
+
+        registry.mark_answered(&gate_a);
+        assert!(matches!(
+            resolve_headless_tap(&gate_a, "resume", &registry),
+            HeadlessVerdict::AlreadyAnswered
+        ));
+        assert!(matches!(
+            resolve_headless_tap(&gate_b, "resume", &registry),
+            HeadlessVerdict::Accepted { run_id, .. } if run_id == run_b
+        ));
+    }
+
+    #[test]
+    fn fifo_eviction_at_capacity_drops_the_oldest_entry() {
+        let registry = PendingHeadlessQuestions::new();
+        let mut run_ids = Vec::with_capacity(PendingHeadlessQuestions::CAPACITY + 1);
+        for _ in 0..PendingHeadlessQuestions::CAPACITY {
+            let run_id = Uuid::new_v4();
+            run_ids.push(run_id);
+            registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+        }
+        assert_eq!(registry.len(), PendingHeadlessQuestions::CAPACITY);
+
+        let oldest_gate_id = gate_id_for_run(run_ids[0]);
+        let extra_run = Uuid::new_v4();
+        registry.register(
+            extra_run,
+            question_from_suspended(extra_run, &plain_entry()),
+            Utc::now(),
+        );
+
+        assert_eq!(
+            registry.len(),
+            PendingHeadlessQuestions::CAPACITY,
+            "insertion past capacity must evict, not grow unbounded"
+        );
+        assert!(
+            registry.get(&oldest_gate_id).is_none(),
+            "the oldest entry must be the one evicted (FIFO)"
+        );
+    }
+
+    // ── resolve_headless_tap ──────────────────────────────────────────────
+
+    #[test]
+    fn resolve_unknown_gate_id_is_unknown_question() {
+        let registry = PendingHeadlessQuestions::new();
+        assert!(matches!(
+            resolve_headless_tap("hq-does-not-exist", "resume", &registry),
+            HeadlessVerdict::UnknownQuestion
+        ));
+    }
+
+    #[test]
+    fn resolve_stale_or_evicted_gate_id_is_unknown_question() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+
+        // Simulate eviction: a fresh registry never saw this gate id at all.
+        let other_registry = PendingHeadlessQuestions::new();
+        assert!(matches!(
+            resolve_headless_tap(&gate_id, "resume", &other_registry),
+            HeadlessVerdict::UnknownQuestion
+        ));
+    }
+
+    #[test]
+    fn resolve_unknown_option_key_is_unknown_question() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+
+        assert!(matches!(
+            resolve_headless_tap(&gate_id, "not-a-real-option", &registry),
+            HeadlessVerdict::UnknownQuestion
+        ));
+    }
+
+    #[test]
+    fn resolve_already_answered_is_already_answered() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+        registry.mark_answered(&gate_id);
+
+        assert!(matches!(
+            resolve_headless_tap(&gate_id, "resume", &registry),
+            HeadlessVerdict::AlreadyAnswered
+        ));
+    }
+
+    #[test]
+    fn resolve_accepted_does_not_itself_mark_answered() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+
+        let verdict = resolve_headless_tap(&gate_id, "resume", &registry);
+        assert!(matches!(verdict, HeadlessVerdict::Accepted { run_id: r, .. } if r == run_id));
+
+        // Resolving again before the caller calls `mark_answered` must
+        // still yield `Accepted`, not `AlreadyAnswered`.
+        let verdict_again = resolve_headless_tap(&gate_id, "resume", &registry);
+        assert!(matches!(verdict_again, HeadlessVerdict::Accepted { .. }));
+    }
+
+    // ── Regression: the pane-bound registry is untouched ────────────────
+
+    #[test]
+    fn pane_bound_registry_is_a_separate_allocation_unaffected_by_headless() {
+        let pane_bound = PendingQuestions::new();
+        let headless = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+
+        headless.register(
+            run_id,
+            question_from_suspended(run_id, &plain_entry()),
+            Utc::now(),
+        );
+
+        assert_eq!(
+            headless.len(),
+            1,
+            "headless registration must have registered exactly one entry"
+        );
+        assert!(
+            pane_bound.is_empty(),
+            "registering a headless question must not create any entry in the \
+             pane-bound PendingQuestions registry"
+        );
+
+        // The pane-bound registry still works entirely independently, keyed
+        // on a tmux session name, never on a run id.
+        let prompt = AskQuestionPrompt {
+            header: None,
+            question: "Which database?".to_string(),
+            options: vec![],
+        };
+        let pane_outcome = pane_bound.register("tmux-session-a", prompt, Utc::now());
+        assert!(matches!(
+            pane_outcome,
+            super::super::RegisterOutcome::Created { .. }
+        ));
+        assert_eq!(pane_bound.len(), 1);
+        assert_eq!(
+            headless.len(),
+            1,
+            "pane-bound registration must not touch headless"
+        );
+
+        let sample: Option<PendingQuestion> = pane_bound.get(pane_outcome.question_id());
+        assert!(sample.is_some());
+    }
+}
+
 // ── End-to-end hermetic coverage (BA.20.C task 7) ───────────────────────────
 //
 // Everything below drives the whole bridge — inbound crossing-to-message and
