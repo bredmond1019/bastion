@@ -466,6 +466,883 @@ fn default_state_is_idle() {
     assert_eq!(ChatFollowUpState::default(), ChatFollowUpState::Idle);
 }
 
+// ── Pane-free question path (BA.21.C task 1) ────────────────────────────────
+//
+// Pure-core coverage of `headless.rs`: deliver-once dedup, unknown/stale/
+// already-answered taps, unknown option key, concurrent questions on
+// different runs, FIFO eviction, structured-metadata vs synthesized
+// question shape, `gate_id_for_run` determinism, and a regression pin that
+// the pane-bound `PendingQuestions` registry is untouched by anything here.
+mod headless_tests {
+    use chrono::Utc;
+    use engine_contract::TaskContext;
+    use engine_core::operator::{OperatorPayload, OperatorResponseOption};
+    use engine_serve::suspend::SuspendedEntry;
+    use uuid::Uuid;
+
+    use super::super::headless::{
+        HEADLESS_QUESTION_METADATA_KEY, HeadlessRegisterOutcome, HeadlessVerdict,
+        PendingHeadlessQuestions, gate_id_for_run, is_headless_gate_id, question_from_suspended,
+        resolve_headless_tap,
+    };
+    use super::super::{PendingQuestion, PendingQuestions};
+    use crate::sessions::ask_question::AskQuestionPrompt;
+
+    fn suspended_entry(metadata: serde_json::Value) -> SuspendedEntry {
+        SuspendedEntry {
+            workflow_type: "nightly-deploy".to_string(),
+            data: serde_json::json!({}),
+            snapshot: TaskContext {
+                event: serde_json::json!({}),
+                nodes: std::collections::HashMap::new(),
+                metadata,
+                node_runs: std::collections::HashMap::new(),
+            },
+            created_at: Utc::now(),
+            suspended_at: Utc::now(),
+            resume_at: "2026-08-25T00:00:00Z".to_string(),
+            reason: "awaiting operator decision".to_string(),
+            resuming: false,
+        }
+    }
+
+    fn plain_entry() -> SuspendedEntry {
+        suspended_entry(serde_json::json!({}))
+    }
+
+    // ── gate_id_for_run / is_headless_gate_id ───────────────────────────
+
+    #[test]
+    fn gate_id_for_run_is_deterministic_and_hq_prefixed() {
+        let run_id = Uuid::new_v4();
+        let a = gate_id_for_run(run_id);
+        let b = gate_id_for_run(run_id);
+        assert_eq!(a, b, "same run id must always produce the same gate id");
+        assert!(
+            a.starts_with("hq-"),
+            "gate id must carry the hq- prefix so its id space is disjoint by construction: {a}"
+        );
+        assert!(is_headless_gate_id(&a));
+    }
+
+    #[test]
+    fn gate_id_for_run_differs_across_runs() {
+        let a = gate_id_for_run(Uuid::new_v4());
+        let b = gate_id_for_run(Uuid::new_v4());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn foreign_gate_id_is_not_headless() {
+        assert!(!is_headless_gate_id("approve-and-run:artifact-1"));
+        assert!(!is_headless_gate_id("test-route-uuid"));
+    }
+
+    // ── question_from_suspended ──────────────────────────────────────────
+
+    #[test]
+    fn synthesizes_question_from_workflow_fields_when_no_metadata_present() {
+        let run_id = Uuid::new_v4();
+        let entry = plain_entry();
+        let payload = question_from_suspended(run_id, &entry);
+
+        assert_eq!(payload.gate_id, gate_id_for_run(run_id));
+        assert!(payload.rendered_summary.contains("nightly-deploy"));
+        assert!(
+            payload
+                .rendered_summary
+                .contains("awaiting operator decision")
+        );
+        assert!(payload.rendered_summary.contains("2026-08-25T00:00:00Z"));
+        assert_eq!(payload.options.len(), 1);
+        assert_eq!(payload.options[0].key, "resume");
+        assert!(payload.digest_matches());
+    }
+
+    #[test]
+    fn prefers_structured_metadata_question_over_synthesized_fallback() {
+        let run_id = Uuid::new_v4();
+        let structured = OperatorPayload::new(
+            "whatever-source-gate-id",
+            "Ship to prod now?",
+            vec![
+                OperatorResponseOption::new("yes", "Yes"),
+                OperatorResponseOption::new("no", "No"),
+            ],
+        );
+        let entry = suspended_entry(serde_json::json!({
+            HEADLESS_QUESTION_METADATA_KEY: structured,
+        }));
+
+        let payload = question_from_suspended(run_id, &entry);
+
+        assert_eq!(payload.rendered_summary, "Ship to prod now?");
+        assert_eq!(payload.options.len(), 2);
+        // gate_id and digest are always overwritten, even for a structured
+        // question whose source gate id was something else entirely.
+        assert_eq!(payload.gate_id, gate_id_for_run(run_id));
+        assert!(payload.digest_matches());
+    }
+
+    #[test]
+    fn undecodable_metadata_falls_back_to_synthesized_question() {
+        let run_id = Uuid::new_v4();
+        let entry = suspended_entry(serde_json::json!({
+            HEADLESS_QUESTION_METADATA_KEY: "not an OperatorPayload",
+        }));
+
+        let payload = question_from_suspended(run_id, &entry);
+
+        assert_eq!(payload.options.len(), 1);
+        assert_eq!(payload.options[0].key, "resume");
+    }
+
+    // ── PendingHeadlessQuestions::register — deliver-once dedup ─────────
+
+    #[test]
+    fn register_new_question_creates_entry() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let payload = question_from_suspended(run_id, &plain_entry());
+
+        let outcome = registry.register(run_id, payload, Utc::now());
+
+        assert!(matches!(outcome, HeadlessRegisterOutcome::Created { .. }));
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn repeated_delivery_tick_for_still_pending_question_sends_nothing_further() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+
+        let first = registry.register(
+            run_id,
+            question_from_suspended(run_id, &plain_entry()),
+            Utc::now(),
+        );
+        let second = registry.register(
+            run_id,
+            question_from_suspended(run_id, &plain_entry()),
+            Utc::now(),
+        );
+
+        assert_eq!(first.gate_id(), second.gate_id());
+        assert!(matches!(
+            second,
+            HeadlessRegisterOutcome::AlreadyPending { .. }
+        ));
+        assert_eq!(registry.len(), 1, "dedup must not create a second entry");
+    }
+
+    #[test]
+    fn answered_question_can_be_re_registered_as_a_fresh_cycle() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+        registry.mark_answered(&gate_id);
+
+        let outcome = registry.register(
+            run_id,
+            question_from_suspended(run_id, &plain_entry()),
+            Utc::now(),
+        );
+
+        assert!(matches!(outcome, HeadlessRegisterOutcome::Created { .. }));
+        assert_eq!(
+            registry.len(),
+            1,
+            "re-registering must not grow the registry"
+        );
+    }
+
+    #[test]
+    fn two_concurrent_questions_on_different_runs_resolve_independently() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_a = Uuid::new_v4();
+        let run_b = Uuid::new_v4();
+
+        let gate_a = registry
+            .register(
+                run_a,
+                question_from_suspended(run_a, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+        let gate_b = registry
+            .register(
+                run_b,
+                question_from_suspended(run_b, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+
+        assert_ne!(gate_a, gate_b);
+        assert_eq!(registry.len(), 2);
+
+        registry.mark_answered(&gate_a);
+        assert!(matches!(
+            resolve_headless_tap(&gate_a, "resume", &registry),
+            HeadlessVerdict::AlreadyAnswered
+        ));
+        assert!(matches!(
+            resolve_headless_tap(&gate_b, "resume", &registry),
+            HeadlessVerdict::Accepted { run_id, .. } if run_id == run_b
+        ));
+    }
+
+    #[test]
+    fn fifo_eviction_at_capacity_drops_the_oldest_entry() {
+        let registry = PendingHeadlessQuestions::new();
+        let mut run_ids = Vec::with_capacity(PendingHeadlessQuestions::CAPACITY + 1);
+        for _ in 0..PendingHeadlessQuestions::CAPACITY {
+            let run_id = Uuid::new_v4();
+            run_ids.push(run_id);
+            registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+        }
+        assert_eq!(registry.len(), PendingHeadlessQuestions::CAPACITY);
+
+        let oldest_gate_id = gate_id_for_run(run_ids[0]);
+        let extra_run = Uuid::new_v4();
+        registry.register(
+            extra_run,
+            question_from_suspended(extra_run, &plain_entry()),
+            Utc::now(),
+        );
+
+        assert_eq!(
+            registry.len(),
+            PendingHeadlessQuestions::CAPACITY,
+            "insertion past capacity must evict, not grow unbounded"
+        );
+        assert!(
+            registry.get(&oldest_gate_id).is_none(),
+            "the oldest entry must be the one evicted (FIFO)"
+        );
+    }
+
+    // ── resolve_headless_tap ──────────────────────────────────────────────
+
+    #[test]
+    fn resolve_unknown_gate_id_is_unknown_question() {
+        let registry = PendingHeadlessQuestions::new();
+        assert!(matches!(
+            resolve_headless_tap("hq-does-not-exist", "resume", &registry),
+            HeadlessVerdict::UnknownQuestion
+        ));
+    }
+
+    #[test]
+    fn resolve_stale_or_evicted_gate_id_is_unknown_question() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+
+        // Simulate eviction: a fresh registry never saw this gate id at all.
+        let other_registry = PendingHeadlessQuestions::new();
+        assert!(matches!(
+            resolve_headless_tap(&gate_id, "resume", &other_registry),
+            HeadlessVerdict::UnknownQuestion
+        ));
+    }
+
+    #[test]
+    fn resolve_unknown_option_key_is_unknown_question() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+
+        assert!(matches!(
+            resolve_headless_tap(&gate_id, "not-a-real-option", &registry),
+            HeadlessVerdict::UnknownQuestion
+        ));
+    }
+
+    #[test]
+    fn resolve_already_answered_is_already_answered() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+        registry.mark_answered(&gate_id);
+
+        assert!(matches!(
+            resolve_headless_tap(&gate_id, "resume", &registry),
+            HeadlessVerdict::AlreadyAnswered
+        ));
+    }
+
+    #[test]
+    fn resolve_accepted_does_not_itself_mark_answered() {
+        let registry = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+        let gate_id = registry
+            .register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            )
+            .gate_id()
+            .to_string();
+
+        let verdict = resolve_headless_tap(&gate_id, "resume", &registry);
+        assert!(matches!(verdict, HeadlessVerdict::Accepted { run_id: r, .. } if r == run_id));
+
+        // Resolving again before the caller calls `mark_answered` must
+        // still yield `Accepted`, not `AlreadyAnswered`.
+        let verdict_again = resolve_headless_tap(&gate_id, "resume", &registry);
+        assert!(matches!(verdict_again, HeadlessVerdict::Accepted { .. }));
+    }
+
+    // ── Regression: the pane-bound registry is untouched ────────────────
+
+    #[test]
+    fn pane_bound_registry_is_a_separate_allocation_unaffected_by_headless() {
+        let pane_bound = PendingQuestions::new();
+        let headless = PendingHeadlessQuestions::new();
+        let run_id = Uuid::new_v4();
+
+        headless.register(
+            run_id,
+            question_from_suspended(run_id, &plain_entry()),
+            Utc::now(),
+        );
+
+        assert_eq!(
+            headless.len(),
+            1,
+            "headless registration must have registered exactly one entry"
+        );
+        assert!(
+            pane_bound.is_empty(),
+            "registering a headless question must not create any entry in the \
+             pane-bound PendingQuestions registry"
+        );
+
+        // The pane-bound registry still works entirely independently, keyed
+        // on a tmux session name, never on a run id.
+        let prompt = AskQuestionPrompt {
+            header: None,
+            question: "Which database?".to_string(),
+            options: vec![],
+        };
+        let pane_outcome = pane_bound.register("tmux-session-a", prompt, Utc::now());
+        assert!(matches!(
+            pane_outcome,
+            super::super::RegisterOutcome::Created { .. }
+        ));
+        assert_eq!(pane_bound.len(), 1);
+        assert_eq!(
+            headless.len(),
+            1,
+            "pane-bound registration must not touch headless"
+        );
+
+        let sample: Option<PendingQuestion> = pane_bound.get(pane_outcome.question_id());
+        assert!(sample.is_some());
+    }
+
+    // ── Delivery shell (BA.21.C task 3) ─────────────────────────────────
+    //
+    // `deliver_once` / `headless_resume_for` / `mark_headless_answered`
+    // coverage, driven entirely through injected fakes: a `SuspendedLister`
+    // closure over a fixture `Vec`, and a local `HeadlessScriptedTransport`
+    // recording `send` calls. No tmux, no HTTP, no real engine process.
+    mod delivery {
+        use std::sync::Arc;
+        use std::sync::Mutex as StdMutex;
+
+        use async_trait::async_trait;
+        use chrono::Utc;
+        use engine_core::operator::{
+            DeliveredMessage, NotifyError, OperatorPayloadLimits, OperatorResponse,
+            OperatorTransport, ResponseVerdict, UpdateCursor, ValidatedOperatorPayload,
+        };
+        use engine_serve::suspend::SuspendedEntry;
+        use uuid::Uuid;
+
+        use super::super::super::headless::{
+            HEADLESS_QUESTION_METADATA_KEY, HeadlessRegisterOutcome, PendingHeadlessQuestions,
+            SuspendedLister, deliver_once, gate_id_for_run, headless_resume_for,
+            question_from_suspended,
+        };
+        use super::{plain_entry, suspended_entry};
+        use crate::serve::notify::PendingPayloads;
+
+        /// A suspended-run fixture whose question carries TWO response
+        /// options, unlike [`plain_entry`]'s single-option synthesized
+        /// fallback. `OperatorPayloadLimits::default()` requires at least
+        /// [`engine_core::operator::OPERATOR_MIN_RESPONSE_OPTIONS`] (2)
+        /// options, so a real delivery test must exercise a question shape
+        /// that can actually pass validation — the synthesized
+        /// single-`resume`-option fallback [`plain_entry`] builds is
+        /// exactly the shape `question_from_suspended`'s own doc comment
+        /// says a workflow may override via structured metadata, and this
+        /// fixture does exactly that.
+        fn deliverable_entry() -> SuspendedEntry {
+            let structured = engine_core::operator::OperatorPayload::new(
+                "source-gate-id-overwritten-by-question-builder",
+                "Ship to prod now?",
+                vec![
+                    engine_core::operator::OperatorResponseOption::new("yes", "Yes"),
+                    engine_core::operator::OperatorResponseOption::new("no", "No"),
+                ],
+            );
+            suspended_entry(serde_json::json!({
+                HEADLESS_QUESTION_METADATA_KEY: structured,
+            }))
+        }
+
+        /// A local scripted `OperatorTransport` recording every `send`
+        /// call. Deliberately NOT `notify::tests::ScriptedTransport` — that
+        /// fake is hard-wired to `notify`'s own test fixtures, and pulling
+        /// it in here would blur the "these two registries/paths are
+        /// provably separate" property this block exists to guarantee.
+        #[derive(Default)]
+        struct HeadlessScriptedTransport {
+            send_calls: StdMutex<Vec<ValidatedOperatorPayload>>,
+            /// `send` fails for every payload whose `gate_id` is in this
+            /// set — used to prove one failing run does not suppress
+            /// delivery to the others.
+            fail_gate_ids: StdMutex<Vec<String>>,
+        }
+
+        impl HeadlessScriptedTransport {
+            fn failing_for(gate_ids: &[String]) -> Self {
+                Self {
+                    send_calls: StdMutex::new(Vec::new()),
+                    fail_gate_ids: StdMutex::new(gate_ids.to_vec()),
+                }
+            }
+
+            fn sent_gate_ids(&self) -> Vec<String> {
+                self.send_calls
+                    .lock()
+                    .expect("mutex poisoned")
+                    .iter()
+                    .map(|p| p.payload().gate_id.clone())
+                    .collect()
+            }
+        }
+
+        #[async_trait]
+        impl OperatorTransport for HeadlessScriptedTransport {
+            async fn send(
+                &self,
+                payload: &ValidatedOperatorPayload,
+            ) -> Result<DeliveredMessage, NotifyError> {
+                let gate_id = payload.payload().gate_id.clone();
+                if self
+                    .fail_gate_ids
+                    .lock()
+                    .expect("mutex poisoned")
+                    .contains(&gate_id)
+                {
+                    return Err(NotifyError::Transport {
+                        reason: "scripted failure".to_string(),
+                    });
+                }
+                self.send_calls
+                    .lock()
+                    .expect("mutex poisoned")
+                    .push(payload.clone());
+                Ok(DeliveredMessage {
+                    transport_message_id: gate_id,
+                })
+            }
+
+            async fn poll_responses(
+                &self,
+                _since: Option<UpdateCursor>,
+            ) -> Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError> {
+                Ok((Vec::new(), None))
+            }
+
+            async fn acknowledge(
+                &self,
+                _response: &OperatorResponse,
+                _verdict: &ResponseVerdict,
+            ) -> Result<(), NotifyError> {
+                Ok(())
+            }
+        }
+
+        fn lister_for(runs: Vec<(Uuid, SuspendedEntry)>) -> SuspendedLister {
+            Box::new(move || runs.clone())
+        }
+
+        #[tokio::test]
+        async fn a_suspended_run_produces_exactly_one_outbound_send_with_no_tmux_in_the_path() {
+            let run_id = Uuid::new_v4();
+            let lister = lister_for(vec![(run_id, deliverable_entry())]);
+            let registry = PendingHeadlessQuestions::new();
+            let scripted = Arc::new(HeadlessScriptedTransport::default());
+            let transport: Arc<dyn OperatorTransport> = scripted.clone();
+            let pending = PendingPayloads::new();
+            let limits = OperatorPayloadLimits::default();
+
+            let delivered = deliver_once(
+                &lister,
+                &registry,
+                &transport,
+                &pending,
+                &limits,
+                Utc::now(),
+            )
+            .await;
+
+            assert_eq!(delivered, 1);
+            assert_eq!(scripted.sent_gate_ids(), vec![gate_id_for_run(run_id)]);
+            // No tmux session anywhere in the path: the fixture entry
+            // carries no tmux session name, `deliver_once` never
+            // references one, and the payload sent is built purely from
+            // the suspended run's own fields.
+        }
+
+        #[tokio::test]
+        async fn second_tick_for_the_same_still_pending_run_sends_nothing_further() {
+            let run_id = Uuid::new_v4();
+            let lister = lister_for(vec![(run_id, deliverable_entry())]);
+            let registry = PendingHeadlessQuestions::new();
+            let scripted = Arc::new(HeadlessScriptedTransport::default());
+            let transport: Arc<dyn OperatorTransport> = scripted.clone();
+            let pending = PendingPayloads::new();
+            let limits = OperatorPayloadLimits::default();
+
+            let first = deliver_once(
+                &lister,
+                &registry,
+                &transport,
+                &pending,
+                &limits,
+                Utc::now(),
+            )
+            .await;
+            let second = deliver_once(
+                &lister,
+                &registry,
+                &transport,
+                &pending,
+                &limits,
+                Utc::now(),
+            )
+            .await;
+
+            assert_eq!(first, 1);
+            assert_eq!(
+                second, 0,
+                "a repeated delivery tick for the same still-pending question must send nothing"
+            );
+            assert_eq!(
+                scripted.sent_gate_ids().len(),
+                1,
+                "exactly one message must ever have been sent for this run"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_send_failure_for_one_run_does_not_suppress_delivery_to_the_others() {
+            let failing_run = Uuid::new_v4();
+            let ok_run = Uuid::new_v4();
+            let lister = lister_for(vec![
+                (failing_run, deliverable_entry()),
+                (ok_run, deliverable_entry()),
+            ]);
+            let registry = PendingHeadlessQuestions::new();
+            let scripted = Arc::new(HeadlessScriptedTransport::failing_for(&[gate_id_for_run(
+                failing_run,
+            )]));
+            let transport: Arc<dyn OperatorTransport> = scripted.clone();
+            let pending = PendingPayloads::new();
+            let limits = OperatorPayloadLimits::default();
+
+            let delivered = deliver_once(
+                &lister,
+                &registry,
+                &transport,
+                &pending,
+                &limits,
+                Utc::now(),
+            )
+            .await;
+
+            assert_eq!(
+                delivered, 1,
+                "the failing run must be skipped, not abort the whole batch"
+            );
+            assert_eq!(scripted.sent_gate_ids(), vec![gate_id_for_run(ok_run)]);
+        }
+
+        // ── headless_resume_for ──────────────────────────────────────────
+
+        fn accepted_verdict(gate_id: &str, option_key: &str) -> ResponseVerdict {
+            ResponseVerdict::Accepted {
+                gate_id: gate_id.to_string(),
+                option_key: option_key.to_string(),
+                digest: "irrelevant-to-this-resolver".to_string(),
+                decided_at: Utc::now(),
+            }
+        }
+
+        #[test]
+        fn headless_resume_for_returns_the_run_id_for_a_matching_accepted_tap() {
+            let registry = PendingHeadlessQuestions::new();
+            let run_id = Uuid::new_v4();
+            let outcome = registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+            let gate_id = outcome.gate_id().to_string();
+
+            let verdict = accepted_verdict(&gate_id, "resume");
+            assert_eq!(headless_resume_for(&verdict, &registry), Some(run_id));
+        }
+
+        #[test]
+        fn headless_resume_for_is_none_for_a_stale_gate_id() {
+            let registry = PendingHeadlessQuestions::new();
+            let verdict = accepted_verdict(&gate_id_for_run(Uuid::new_v4()), "resume");
+            assert_eq!(headless_resume_for(&verdict, &registry), None);
+        }
+
+        #[test]
+        fn headless_resume_for_is_none_for_an_already_answered_entry() {
+            let registry = PendingHeadlessQuestions::new();
+            let run_id = Uuid::new_v4();
+            let outcome = registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+            let gate_id = outcome.gate_id().to_string();
+            registry.mark_answered(&gate_id);
+
+            let verdict = accepted_verdict(&gate_id, "resume");
+            assert_eq!(
+                headless_resume_for(&verdict, &registry),
+                None,
+                "an already-answered entry must never resume a second time"
+            );
+        }
+
+        #[test]
+        fn headless_resume_for_is_none_for_a_foreign_non_hq_gate_id() {
+            let registry = PendingHeadlessQuestions::new();
+            let verdict = accepted_verdict("approve-and-run:artifact-1", "approve");
+            assert_eq!(
+                headless_resume_for(&verdict, &registry),
+                None,
+                "a gate id outside the hq- space must never be resolved as a headless tap"
+            );
+        }
+
+        #[test]
+        fn headless_resume_for_is_none_for_stale_digest_and_unknown_gate_verdicts() {
+            let registry = PendingHeadlessQuestions::new();
+            assert_eq!(
+                headless_resume_for(&ResponseVerdict::UnknownGate, &registry),
+                None
+            );
+            let stale = ResponseVerdict::StaleDigest {
+                gate_id: "hq-whatever".to_string(),
+                option_key: "resume".to_string(),
+                digest: "stale".to_string(),
+                decided_at: Utc::now(),
+            };
+            assert_eq!(headless_resume_for(&stale, &registry), None);
+        }
+
+        // ── register skip on AlreadyPending ─────────────────────────────
+
+        #[test]
+        fn register_outcome_variants_still_distinguish_created_from_already_pending() {
+            let registry = PendingHeadlessQuestions::new();
+            let run_id = Uuid::new_v4();
+            let first = registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+            let second = registry.register(
+                run_id,
+                question_from_suspended(run_id, &plain_entry()),
+                Utc::now(),
+            );
+            assert!(matches!(first, HeadlessRegisterOutcome::Created { .. }));
+            assert!(matches!(
+                second,
+                HeadlessRegisterOutcome::AlreadyPending { .. }
+            ));
+        }
+
+        // ── Fixture round-trip stand-in for the un-gateable Mini criterion
+        // (BA.21.C task 5) ───────────────────────────────────────────────
+        //
+        // The block record's acceptance criteria include one marked
+        // `gateable: false`: `curl -s $ENGINE/events/$ID | jq -r .status`
+        // reading `suspended` then `running` after a tap. That transition
+        // happens inside `engine-rs`'s own process, observed over HTTP on
+        // the Mac Mini — this repo's test suite structurally cannot see
+        // it. `deliver_once_then_tap_resolves_to_a_resume_call_bastion_
+        // would_issue` below is the declared in-repo STAND-IN: it drives
+        // every step bastion is actually responsible for
+        // (fixture `SuspendedEntry` -> outbound question -> tap ->
+        // resume-classification), with no network, no engine process, and
+        // no tmux anywhere in the path. It does NOT assert, and cannot
+        // assert, that the engine's own run status actually flips from
+        // `suspended` to `running` — that observation belongs to the
+        // `operator-mac-mini-visit` operator session named in this block's
+        // `depends_on`. See `planning/BA.21.C/notes.md` for the plain-words
+        // version of this same declaration.
+        mod fixture_round_trip {
+            use std::sync::Arc;
+
+            use chrono::Utc;
+            use engine_core::operator::{
+                OperatorPayloadLimits, OperatorTransport, ResponseVerdict,
+            };
+            use uuid::Uuid;
+
+            use super::{HeadlessScriptedTransport, deliverable_entry, lister_for};
+            use crate::api::client::{ResumeOutcome, classify_resume_response};
+            use crate::serve::notify::PendingPayloads;
+            use crate::serve::session_qa::headless::{
+                PendingHeadlessQuestions, gate_id_for_run, headless_resume_for,
+            };
+
+            /// The pinned `202` success body for `POST /events/{run_id}/resume`
+            /// per `../engine-rs/crates/engine-serve/src/resume.rs::resume_run`
+            /// (same shape `src/api/client.rs`'s own classifier tests pin) —
+            /// used here only to prove `classify_resume_response` turns it
+            /// into `ResumeOutcome::Accepted` for the SAME run id the tap
+            /// resolved to.
+            fn pinned_202_resume_body(run_id: &str) -> String {
+                format!(
+                    r#"{{"run_id":"{run_id}","event_id":"evt-1","status":"resuming","resume_at":"2026-08-25T00:00:00Z"}}"#
+                )
+            }
+
+            #[tokio::test]
+            async fn deliver_once_then_tap_resolves_to_a_resume_call_bastion_would_issue() {
+                // STAND-IN for the un-gateable Mini criterion: proves the
+                // bastion-owned half of the round trip end to end. Does
+                // NOT assert engine-rs's own suspended->running transition
+                // (that is out of this repo's reach; see module doc above
+                // and planning/BA.21.C/notes.md).
+                let run_id = Uuid::new_v4();
+                let lister = lister_for(vec![(run_id, deliverable_entry())]);
+                let registry = PendingHeadlessQuestions::new();
+                let scripted = Arc::new(HeadlessScriptedTransport::default());
+                let transport: Arc<dyn OperatorTransport> = scripted.clone();
+                let pending = PendingPayloads::new();
+                let limits = OperatorPayloadLimits::default();
+
+                // 1. Fixture SuspendedEntry -> outbound question.
+                let delivered = super::deliver_once(
+                    &lister,
+                    &registry,
+                    &transport,
+                    &pending,
+                    &limits,
+                    Utc::now(),
+                )
+                .await;
+                assert_eq!(delivered, 1, "exactly one question must be sent");
+                let expected_gate_id = gate_id_for_run(run_id);
+                assert_eq!(
+                    scripted.sent_gate_ids(),
+                    vec![expected_gate_id.clone()],
+                    "the outbound question must carry this run's gate id"
+                );
+
+                // 2. Tap -> resume decision (headless_resume_for).
+                let verdict = ResponseVerdict::Accepted {
+                    gate_id: expected_gate_id.clone(),
+                    option_key: "yes".to_string(),
+                    digest: "irrelevant-to-this-resolver".to_string(),
+                    decided_at: Utc::now(),
+                };
+                let resolved_run_id = headless_resume_for(&verdict, &registry);
+                assert_eq!(
+                    resolved_run_id,
+                    Some(run_id),
+                    "the tap must resolve to exactly the run it was asked for, and only that run"
+                );
+
+                // 3. Resume-classification: the pinned engine 202 body for
+                // this exact run id decodes to Accepted. This is the call
+                // bastion is responsible for making; the engine's own
+                // suspended->running flip is NOT observed here.
+                let run_id_str = resolved_run_id.expect("checked above").to_string();
+                let outcome = classify_resume_response(202, &pinned_202_resume_body(&run_id_str))
+                    .expect("pinned 202 body must classify");
+                match outcome {
+                    ResumeOutcome::Accepted { run_id: got, .. } => {
+                        assert_eq!(got, run_id_str, "resume outcome must name the resolved run");
+                    }
+                    other => panic!("expected ResumeOutcome::Accepted, got {other:?}"),
+                }
+            }
+
+            /// Negative control: a tap carrying a stale/unknown run id (a
+            /// gate id in this module's `hq-` space, but never registered)
+            /// must resolve to no run at all — no resume call is even
+            /// considered, let alone issued.
+            #[test]
+            fn stale_or_unknown_run_id_tap_yields_no_resume_call() {
+                let registry = PendingHeadlessQuestions::new();
+                let never_registered_run = Uuid::new_v4();
+                let verdict = ResponseVerdict::Accepted {
+                    gate_id: gate_id_for_run(never_registered_run),
+                    option_key: "yes".to_string(),
+                    digest: "irrelevant-to-this-resolver".to_string(),
+                    decided_at: Utc::now(),
+                };
+
+                assert_eq!(
+                    headless_resume_for(&verdict, &registry),
+                    None,
+                    "a stale/unknown run id must never produce a resume call"
+                );
+            }
+        }
+    }
+}
+
 // ── End-to-end hermetic coverage (BA.20.C task 7) ───────────────────────────
 //
 // Everything below drives the whole bridge — inbound crossing-to-message and

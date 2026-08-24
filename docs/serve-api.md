@@ -3434,7 +3434,7 @@ arrives belongs to the `operator-mac-mini-visit` operator session.
 
 ---
 
-## 27. Session-QA bridge (background bot, no new HTTP surface; `BA.20.C`)
+## 27. Session-QA bridge (background bot, no new HTTP surface; `BA.20.C`; headless question path v0.39, `BA.21.C`)
 
 The session-QA bridge lets an agent stuck on a yes/no-shaped question ping the operator over
 Telegram and get an answer injected back into its tmux pane, without the operator opening a
@@ -3516,6 +3516,69 @@ against a fake `QaTelegramClient` and injected capture/inject closures — no re
 calls. `src/serve/mod.rs`'s `run_server_with_no_codesessions_config_spawns_no_bridge` pins the
 disabled-by-default boot decision against a real `run_server` call (bound to an ephemeral port,
 aborted after boot) by asserting on captured tracing output.
+
+### 27.1 Headless question path — no tmux pane (`BA.21.C`)
+
+Everything above this subsection is the pane-bound bridge: a question is captured from a live tmux
+pane, keyed on a tmux **session name**, and answered by re-injecting keystrokes into that same
+pane with `send_keys`. That loop requires a pane to exist. A headless engine chain — a run driven
+straight through the embedded engine, with no tmux session anywhere in its path — has no pane to
+capture from or inject into. `BA.21.C` adds a second, pane-free path in
+`src/serve/session_qa/headless.rs` that sits *beside* the pane-bound bridge rather than replacing
+or generalizing it; the two registries are deliberately kept separate (`PendingQuestions.session`
+above is still a tmux session name, untouched by this section) because collapsing them was called
+out as the failure this path is most likely to cause.
+
+**What's different from the pane-bound bridge:**
+
+| | Pane-bound (§27 above) | Headless (this section) |
+|---|---|---|
+| Keyed by | tmux session name | engine run id (`uuid::Uuid`) |
+| Question source | parsed from a captured pane | read directly from a suspended run's `engine_serve::suspend::SuspendedEntry` (`question_from_suspended`) — from `entry.snapshot.metadata[\"operator_question\"]` when present, else synthesized from `workflow_type`/`reason`/`resume_at` with a single `resume` option |
+| Answer delivery | `sessions::tmux::send_keys` into the pane | `ApiClient::resume_run` — a `POST {engine}/events/{run_id}/resume` call, mirroring the existing `abort_run` seam |
+| Registry | `PendingQuestions` (`src/serve/session_qa/mod.rs`) | `PendingHeadlessQuestions` (`src/serve/session_qa/headless.rs`) — separate allocation, separate type, never wraps or shares the pane-bound one |
+
+**Gate-id space.** `gate_id_for_run` produces ids prefixed `hq-`, disjoint by construction from
+Section 26's `ApproveAndRunSeams::gate_id_for` space and the test route's per-request uuid space —
+the same disjointness argument `resolve_pending_lookup`'s doc comment already makes for those two.
+`resolve_pending_lookup` (`src/serve/mod.rs`) checks the headless registry as a **third** source,
+composed after the existing two, never replacing or shadowing them; because the `hq-` prefix is
+unique to this path, ordering cannot cause a real gate id to resolve against the wrong registry.
+
+**One question, one message.** `PendingHeadlessQuestions::register` dedups on an existing
+unanswered entry for the same run id — a repeated delivery tick for a still-pending question sends
+nothing further. `deliver_once` (the thin async shell that scans suspended runs, builds each
+question, registers it, and sends over the injected `Arc<dyn OperatorTransport>`) skips a run on
+`AlreadyPending` rather than re-sending, and a validation or transport failure for one run is
+logged and skipped without suppressing delivery to the others — the same contract as
+`stale_run_alarm::deliver_once` (§26).
+
+**No new HTTP route, no second poller.** This path adds zero HTTP routes. It reuses the SAME
+single Telegram `getUpdates` poller `run_server` already mounts for Section 26's
+`NotifyPollLoop` — HQ D73 makes `getUpdates` exclusive per bot token, so a second poller on the
+same token is not an option, and the engine chain being asked about runs in-process, so
+exclusivity was never the actual blocker. The verdict sink on that existing poller gets one added
+branch: when `headless_resume_for` resolves an `Accepted` verdict's gate id to an unanswered
+headless entry, it spawns the `resume_run` call and then marks the entry answered
+(`mark_headless_answered`) — everything else still routes through the pane-bound lookup
+unchanged. A boot-path test pins the poller count: one `NotifyPollLoop` on the BastionBot token,
+one `SessionQaBridge::run_outbound` on the distinct CodeSessionsBot token (§27 above), and zero new
+pollers added by this section.
+
+**No new process spawn.** This block introduces no `claude`/subprocess spawn path at all, so there
+is nothing here that could default to `claude --permission-mode bypassPermissions` — the outbound
+side is an HTTP POST (`resume_run`), not a spawned process.
+
+**Testing.** `src/serve/session_qa/tests.rs` covers `headless.rs` as pure core (clock threaded in):
+deliver-once dedup, unknown/stale/evicted gate id, already-answered, unknown option key, concurrent
+questions on independent run ids, FIFO eviction, structured-metadata question vs. synthesized
+fallback, and `gate_id_for_run` determinism. A fixture round-trip test drives the whole
+bastion-owned half — suspended entry → outbound question → tap → resume decision — with no
+network, no engine process, and no tmux; it is named and documented as a stand-in for the
+un-gateable Mini criterion (`curl .../events/$ID | jq .status` reading `suspended` then `running`),
+which is engine-rs's transition and not assertable in this repo (see `planning/BA.21.C/notes.md`).
+A regression test asserts the pane-bound `PendingQuestions` registry is a distinct allocation,
+unaffected by headless registration.
 
 ---
 
@@ -3785,6 +3848,14 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-08-24 — v0.38 → v0.39 (`BA.21.C`, additive; doc-target deviation):** Added Section 27.1
+  (Headless question path). The block record named `docs/cli.md` as the file to modify; that file
+  does not exist in this repo (the same stale-record drift `BA.21.B` hit and recorded), so this
+  block documents in `docs/serve-api.md` §27 instead, alongside the pane-bound session-QA bridge
+  it sits beside. No DTO or route changed — the headless path adds zero new HTTP routes and reuses
+  the single existing `getUpdates` poller (HQ D73); it only adds a pane-free question source keyed
+  on engine run id, a `hq-`-prefixed gate-id space checked as a third source by
+  `resolve_pending_lookup`, and a resume call (`ApiClient::resume_run`) on the verdict sink.
 - **2026-08-22 — v0.37 → v0.38 (`BA.21.B`, additive):** Added Section 26.10 (Stale-run alarm
   delivery) — `bastion serve` now spawns `engine-serve`'s periodic stale-run sweep
   (`EN.12.A`'s `spawn_stale_run_sweep`) against the same `LiveStateStore` the boot-time

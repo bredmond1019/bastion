@@ -10,6 +10,45 @@ timestamp: 2026-08-21T00:00:00-03:00
 
 ---
 
+## [run: 2026-08-24]
+
+### BA.21.C — Headless question path: bastion half, a chain asks without a tmux pane and resumes on your tap
+
+Added the pane-free question-and-resume path that sits beside the existing tmux-pane-shaped
+`session_qa` loop, unchanged. `src/serve/session_qa/headless.rs` (task 1) is a new pure-core module —
+`PendingHeadlessQuestions` keyed on run id (deterministic `hq-` gate ids via `gate_id_for_run`,
+`is_headless_gate_id` for later routing), a metadata-aware question builder, and
+`resolve_headless_tap`. `ApiClient::resume_run` (task 2) adds `POST /events/{run_id}/resume` with
+full 202/404/409/401/422 classification via `classify_resume_response` and `body_error_message`.
+Task 3 built the async delivery shell — `SuspendedLister` seam, `deliver_once`,
+`spawn_headless_question_loop`/`HeadlessQuestionHandle`, `headless_resume_for`,
+`mark_headless_answered` — draining suspended runs once per question over the injected
+`OperatorTransport`, deciding but never itself issuing the resume. Task 4 wired boot in
+`src/serve/mod.rs`: a dedicated `PendingHeadlessQuestions` registry and its own `PendingPayloads`
+store hoisted alongside the existing ones, `headless` as a disjoint third source in
+`resolve_pending_lookup`, the `NotifyPollLoop` verdict sink spawning `resume_run` against this
+process's own engine address on a headless tap, and the delivery loop started only when a transport
+is configured and the engine is mounted — reusing the single existing Telegram poller (HQ D73), no
+new poller or route. Task 5 added a hermetic fixture round-trip (`deliver_once` → tap →
+`classify_resume_response`) standing in for the un-gateable Mini status-transition acceptance
+criterion, with `classify_resume_response` made `pub(crate)` for the test to reach it, and recorded
+what the fixture does/does not prove in `planning/BA.21.C/notes.md`. Task 6 documented the path in
+`docs/serve-api.md` §27 (bumped v0.38→v0.39), including the deviation from the spec's stated
+`docs/cli.md` target (that file does not exist in this repo — same drift BA.21.B recorded). Task 7
+ran the full validation suite: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`
+(2532 passed, 5 ignored, 0 failed), `cargo build --release`, contract-corpus drift, and typeshare
+drift — all green. End-review verdict **PASS**, no findings. This is the seam BA.21.D (the attention
+board reaches you) stands on next.
+
+```
+a55199a feat: implement BA.21.C-task6
+13449b8 feat: implement BA.21.C-task5
+b84f521 feat: implement BA.21.C-task4
+251ba3b feat: implement BA.21.C-task3
+00020e9 feat: implement BA.21.C-task2
+024dd25 feat: implement BA.21.C-task1
+```
+
 ## [run: 2026-08-21]
 
 ### BA.21.A — Operator transport seam: bastion implements engine-rs's trait and injects it at boot

@@ -24,6 +24,15 @@ use chrono::{DateTime, Utc};
 
 use crate::sessions::ask_question::{AskQuestionPrompt, OptionKind};
 
+/// The pane-free question path (`BA.21.C`): a suspended engine run has no
+/// tmux pane, so it cannot use [`PendingQuestion`] / [`PendingQuestions`]
+/// above, which are keyed on a tmux session name and injected via
+/// `send_keys`. `headless` is a sibling registry keyed on run id instead —
+/// deliberately NOT a wrapper over this module's pane-bound types, per the
+/// block record's warning that collapsing the two is the failure this block
+/// is most likely to cause.
+pub mod headless;
+
 // ── PendingQuestion / PendingQuestions registry ─────────────────────────────
 
 /// One question this process has sent (or is about to send) to Telegram,

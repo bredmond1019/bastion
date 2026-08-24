@@ -146,6 +146,106 @@ fn classify_abort_response(status: u16, body: &str) -> Result<AbortOutcome, Cons
     }
 }
 
+/// `202 { "run_id": "...", "event_id": "...", "status": "resuming", "resume_at": "..." }`
+/// — the pinned success body for `POST /events/{run_id}/resume`, per
+/// `../engine-rs/crates/engine-serve/src/resume.rs::resume_run`.
+#[derive(Debug, Deserialize)]
+struct ResumeAccepted {
+    run_id: String,
+    status: String,
+    resume_at: String,
+}
+
+/// Outcome of a `POST /events/{run_id}/resume` call — one variant per shape
+/// the pinned engine contract defines for that endpoint, mirroring
+/// [`AbortOutcome`]'s construction. A connection/transport failure is not a
+/// member of this enum — [`ApiClient::resume_run`] returns that as `Err`
+/// instead, since the call never produced a pinned response to classify.
+#[derive(Debug)]
+pub enum ResumeOutcome {
+    /// `202` — the run has been told to resume.
+    Accepted {
+        run_id: String,
+        status: String,
+        resume_at: String,
+    },
+    /// `404 {"error": "unknown or non-resumable run"}`.
+    NotFound(ConsoleError),
+    /// `401` — missing or bad `X-API-Key` (empty body).
+    Unauthorized(ConsoleError),
+    /// `409 {"error": "resume already in flight"}`.
+    AlreadyResuming(ConsoleError),
+    /// `422 {"error": ...}` — the tap could not be resolved to a resumable
+    /// state (e.g. malformed payload / stale snapshot).
+    Unresolvable(ConsoleError),
+}
+
+/// Pinned `{"error": "..."}` shape shared by the engine's `404`/`409`/`422`
+/// resume responses.
+#[derive(Debug, Deserialize)]
+struct ResumeErrorBody {
+    error: String,
+}
+
+/// Classify a `POST /events/{run_id}/resume` HTTP response into a typed
+/// [`ResumeOutcome`], per the pinned engine contract (`resume.rs::resume_run`):
+/// `202` → accepted (body decoded), `404` → unknown/non-resumable run,
+/// `409` → resume already in flight, `401` → bad/missing key (empty body),
+/// `422` → unresolvable. A `202` whose body doesn't match the pinned shape,
+/// or any other status, is a decode/contract-mismatch failure
+/// (`ConsoleError::SerializationError` / `ConsoleError::Io`) rather than a
+/// normal outcome.
+///
+/// Pure — no I/O — so it is unit-testable against fixtures without a live
+/// server (Rule 6); the `reqwest` send/receive in [`ApiClient::resume_run`]
+/// is the thin shell over this, mirroring [`classify_abort_response`].
+///
+/// `pub(crate)` (rather than module-private) so `BA.21.C` task 5's
+/// round-trip fixture test in `src/serve/session_qa/tests.rs` can classify
+/// a pinned `202` body directly, without standing up an `ApiClient`.
+pub(crate) fn classify_resume_response(
+    status: u16,
+    body: &str,
+) -> Result<ResumeOutcome, ConsoleError> {
+    match status {
+        202 => serde_json::from_str::<ResumeAccepted>(body)
+            .map(|accepted| ResumeOutcome::Accepted {
+                run_id: accepted.run_id,
+                status: accepted.status,
+                resume_at: accepted.resume_at,
+            })
+            .map_err(|e| {
+                ConsoleError::SerializationError(format!(
+                    "decoding 202 resume response body: {e} (body: {body})"
+                ))
+            }),
+        404 => Ok(ResumeOutcome::NotFound(ConsoleError::SessionNotFound(
+            body_error_message(body).unwrap_or_else(|| "unknown or non-resumable run".to_string()),
+        ))),
+        409 => Ok(ResumeOutcome::AlreadyResuming(ConsoleError::InvalidInput(
+            body_error_message(body).unwrap_or_else(|| "resume already in flight".to_string()),
+        ))),
+        401 => Ok(ResumeOutcome::Unauthorized(ConsoleError::NotAuthenticated)),
+        422 => Ok(ResumeOutcome::Unresolvable(ConsoleError::InvalidInput(
+            body_error_message(body).unwrap_or_else(|| "unresolvable resume request".to_string()),
+        ))),
+        other => Err(ConsoleError::Io(format!(
+            "unexpected resume response status {other} (body: {body})"
+        ))),
+    }
+}
+
+/// Best-effort decode of the pinned `{"error": "..."}` body shared by the
+/// engine's `404`/`409`/`422` resume responses. Returns `None` (rather than
+/// erroring) when the body doesn't match — the caller falls back to a fixed
+/// message so a body-shape drift on an already-typed error status degrades
+/// gracefully instead of blocking classification.
+fn body_error_message(body: &str) -> Option<String> {
+    serde_json::from_str::<ResumeErrorBody>(body)
+        .ok()
+        .map(|b| b.error)
+}
+
 pub struct ApiClient {
     base_url: String,
     client: reqwest::Client,
@@ -221,6 +321,58 @@ impl ApiClient {
             .map_err(|e| ConsoleError::Io(format!("reading abort response body: {e}")))?;
 
         classify_abort_response(status, &body)
+    }
+
+    /// Returns the resume URL for `run_id` — `POST /events/{run_id}/resume`,
+    /// served by `engine-serve`'s route table (embedded in `bastion serve`),
+    /// mirroring [`ApiClient::abort_url`].
+    fn resume_url(&self, run_id: &str) -> String {
+        format!(
+            "{}/events/{run_id}/resume",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
+    /// Call `POST /events/{run_id}/resume` with no body and the `X-API-Key`
+    /// header, per the pinned wire shape — the headless question path's
+    /// resume call (BA.21.C), issued after an operator tap resolves via
+    /// `session_qa::headless::headless_resume_for`.
+    ///
+    /// A missing `engine_api_key` is a typed `ConfigError`, not an
+    /// unauthenticated request. A connection/transport failure is an `Io`
+    /// error. `202`/`404`/`409`/`401`/`422` classify via
+    /// [`classify_resume_response`]. Thin shell over that pure classifier,
+    /// exactly like [`ApiClient::abort_run`].
+    pub async fn resume_run(&self, run_id: &str) -> Result<ResumeOutcome, ConsoleError> {
+        let key = self.engine_api_key.as_deref().ok_or_else(|| {
+            ConsoleError::ConfigError(
+                "engine_api_key not configured — set BASTION_ENGINE_API_KEY or config.toml's \
+                 engine_api_key"
+                    .to_string(),
+            )
+        })?;
+
+        let url = self.resume_url(run_id);
+        let resp = self
+            .client
+            .post(&url)
+            .header("X-API-Key", key)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| {
+                ConsoleError::Io(format!(
+                    "connecting to engine resume endpoint at {url}: {e}"
+                ))
+            })?;
+
+        let status = resp.status().as_u16();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| ConsoleError::Io(format!("reading resume response body: {e}")))?;
+
+        classify_resume_response(status, &body)
     }
 
     /// Returns the full health URL for the configured base URL.
@@ -548,6 +700,126 @@ mod tests {
             ApiClient::new("http://127.0.0.1:1").with_engine_api_key(Some("key".to_string()));
         let err = client
             .abort_run("run-123")
+            .await
+            .expect_err("connection failure should be a typed error");
+        assert_eq!(err.code(), ErrorCode::IoError);
+    }
+
+    // ── resume_url ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn resume_url_trailing_slash_stripped() {
+        let client = ApiClient::new("http://localhost:8080/");
+        assert_eq!(
+            client.resume_url("run-123"),
+            "http://localhost:8080/events/run-123/resume"
+        );
+    }
+
+    #[test]
+    fn resume_url_no_trailing_slash() {
+        let client = ApiClient::new("http://localhost:8080");
+        assert_eq!(
+            client.resume_url("run-123"),
+            "http://localhost:8080/events/run-123/resume"
+        );
+    }
+
+    // ── classify_resume_response ─────────────────────────────────────────────────
+
+    #[test]
+    fn classify_202_resume_accepted_decodes_fields() {
+        let body = r#"{"run_id": "abc-123", "event_id": "ev-1", "status": "resuming", "resume_at": "2026-08-24T00:00:00Z"}"#;
+        let outcome = classify_resume_response(202, body).expect("202 should classify");
+        match outcome {
+            ResumeOutcome::Accepted {
+                run_id,
+                status,
+                resume_at,
+            } => {
+                assert_eq!(run_id, "abc-123");
+                assert_eq!(status, "resuming");
+                assert_eq!(resume_at, "2026-08-24T00:00:00Z");
+            }
+            other => panic!("expected Accepted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_202_resume_malformed_body_is_serialization_error() {
+        let body = r#"{"not_run_id": "abc-123"}"#;
+        let err = classify_resume_response(202, body).expect_err("malformed 202 should error");
+        assert_eq!(err.code(), ErrorCode::SerializationError);
+    }
+
+    #[test]
+    fn classify_resume_404_is_not_found() {
+        let body = r#"{"error": "unknown or non-resumable run"}"#;
+        let outcome = classify_resume_response(404, body).expect("404 should classify");
+        match outcome {
+            ResumeOutcome::NotFound(err) => assert_eq!(err.code(), ErrorCode::SessionNotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_resume_409_is_already_resuming() {
+        let body = r#"{"error": "resume already in flight"}"#;
+        let outcome = classify_resume_response(409, body).expect("409 should classify");
+        match outcome {
+            ResumeOutcome::AlreadyResuming(err) => {
+                assert_eq!(err.code(), ErrorCode::InvalidInput)
+            }
+            other => panic!("expected AlreadyResuming, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_resume_401_is_unauthorized() {
+        let outcome = classify_resume_response(401, "").expect("401 should classify");
+        match outcome {
+            ResumeOutcome::Unauthorized(err) => {
+                assert_eq!(err.code(), ErrorCode::NotAuthenticated)
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_resume_422_is_unresolvable() {
+        let body = r#"{"error": "cannot resolve snapshot"}"#;
+        let outcome = classify_resume_response(422, body).expect("422 should classify");
+        match outcome {
+            ResumeOutcome::Unresolvable(err) => assert_eq!(err.code(), ErrorCode::InvalidInput),
+            other => panic!("expected Unresolvable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_resume_unexpected_status_is_io_error() {
+        let err = classify_resume_response(500, "boom").expect_err("500 should error");
+        assert_eq!(err.code(), ErrorCode::IoError);
+    }
+
+    // ── resume_run — missing engine_api_key ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn resume_run_without_engine_api_key_is_config_error() {
+        let client = ApiClient::new("http://localhost:1");
+        let err = client.resume_run("run-123").await.expect_err(
+            "missing engine_api_key should be a typed error, not an unauthenticated call",
+        );
+        assert_eq!(err.code(), ErrorCode::ConfigError);
+    }
+
+    #[tokio::test]
+    async fn resume_run_connection_failure_is_io_error() {
+        // Port 1 refuses connections on any dev/CI machine (no listener) —
+        // a deterministic transport failure without a live server.
+        let client =
+            ApiClient::new("http://127.0.0.1:1").with_engine_api_key(Some("key".to_string()));
+        let err = client
+            .resume_run("run-123")
             .await
             .expect_err("connection failure should be a typed error");
         assert_eq!(err.code(), ErrorCode::IoError);
