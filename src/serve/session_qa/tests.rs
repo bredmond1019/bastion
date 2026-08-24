@@ -1208,6 +1208,138 @@ mod headless_tests {
                 HeadlessRegisterOutcome::AlreadyPending { .. }
             ));
         }
+
+        // ── Fixture round-trip stand-in for the un-gateable Mini criterion
+        // (BA.21.C task 5) ───────────────────────────────────────────────
+        //
+        // The block record's acceptance criteria include one marked
+        // `gateable: false`: `curl -s $ENGINE/events/$ID | jq -r .status`
+        // reading `suspended` then `running` after a tap. That transition
+        // happens inside `engine-rs`'s own process, observed over HTTP on
+        // the Mac Mini — this repo's test suite structurally cannot see
+        // it. `deliver_once_then_tap_resolves_to_a_resume_call_bastion_
+        // would_issue` below is the declared in-repo STAND-IN: it drives
+        // every step bastion is actually responsible for
+        // (fixture `SuspendedEntry` -> outbound question -> tap ->
+        // resume-classification), with no network, no engine process, and
+        // no tmux anywhere in the path. It does NOT assert, and cannot
+        // assert, that the engine's own run status actually flips from
+        // `suspended` to `running` — that observation belongs to the
+        // `operator-mac-mini-visit` operator session named in this block's
+        // `depends_on`. See `planning/BA.21.C/notes.md` for the plain-words
+        // version of this same declaration.
+        mod fixture_round_trip {
+            use std::sync::Arc;
+
+            use chrono::Utc;
+            use engine_core::operator::{
+                OperatorPayloadLimits, OperatorTransport, ResponseVerdict,
+            };
+            use uuid::Uuid;
+
+            use super::{HeadlessScriptedTransport, deliverable_entry, lister_for};
+            use crate::api::client::{ResumeOutcome, classify_resume_response};
+            use crate::serve::notify::PendingPayloads;
+            use crate::serve::session_qa::headless::{
+                PendingHeadlessQuestions, gate_id_for_run, headless_resume_for,
+            };
+
+            /// The pinned `202` success body for `POST /events/{run_id}/resume`
+            /// per `../engine-rs/crates/engine-serve/src/resume.rs::resume_run`
+            /// (same shape `src/api/client.rs`'s own classifier tests pin) —
+            /// used here only to prove `classify_resume_response` turns it
+            /// into `ResumeOutcome::Accepted` for the SAME run id the tap
+            /// resolved to.
+            fn pinned_202_resume_body(run_id: &str) -> String {
+                format!(
+                    r#"{{"run_id":"{run_id}","event_id":"evt-1","status":"resuming","resume_at":"2026-08-25T00:00:00Z"}}"#
+                )
+            }
+
+            #[tokio::test]
+            async fn deliver_once_then_tap_resolves_to_a_resume_call_bastion_would_issue() {
+                // STAND-IN for the un-gateable Mini criterion: proves the
+                // bastion-owned half of the round trip end to end. Does
+                // NOT assert engine-rs's own suspended->running transition
+                // (that is out of this repo's reach; see module doc above
+                // and planning/BA.21.C/notes.md).
+                let run_id = Uuid::new_v4();
+                let lister = lister_for(vec![(run_id, deliverable_entry())]);
+                let registry = PendingHeadlessQuestions::new();
+                let scripted = Arc::new(HeadlessScriptedTransport::default());
+                let transport: Arc<dyn OperatorTransport> = scripted.clone();
+                let pending = PendingPayloads::new();
+                let limits = OperatorPayloadLimits::default();
+
+                // 1. Fixture SuspendedEntry -> outbound question.
+                let delivered = super::deliver_once(
+                    &lister,
+                    &registry,
+                    &transport,
+                    &pending,
+                    &limits,
+                    Utc::now(),
+                )
+                .await;
+                assert_eq!(delivered, 1, "exactly one question must be sent");
+                let expected_gate_id = gate_id_for_run(run_id);
+                assert_eq!(
+                    scripted.sent_gate_ids(),
+                    vec![expected_gate_id.clone()],
+                    "the outbound question must carry this run's gate id"
+                );
+
+                // 2. Tap -> resume decision (headless_resume_for).
+                let verdict = ResponseVerdict::Accepted {
+                    gate_id: expected_gate_id.clone(),
+                    option_key: "yes".to_string(),
+                    digest: "irrelevant-to-this-resolver".to_string(),
+                    decided_at: Utc::now(),
+                };
+                let resolved_run_id = headless_resume_for(&verdict, &registry);
+                assert_eq!(
+                    resolved_run_id,
+                    Some(run_id),
+                    "the tap must resolve to exactly the run it was asked for, and only that run"
+                );
+
+                // 3. Resume-classification: the pinned engine 202 body for
+                // this exact run id decodes to Accepted. This is the call
+                // bastion is responsible for making; the engine's own
+                // suspended->running flip is NOT observed here.
+                let run_id_str = resolved_run_id.expect("checked above").to_string();
+                let outcome = classify_resume_response(202, &pinned_202_resume_body(&run_id_str))
+                    .expect("pinned 202 body must classify");
+                match outcome {
+                    ResumeOutcome::Accepted { run_id: got, .. } => {
+                        assert_eq!(got, run_id_str, "resume outcome must name the resolved run");
+                    }
+                    other => panic!("expected ResumeOutcome::Accepted, got {other:?}"),
+                }
+            }
+
+            /// Negative control: a tap carrying a stale/unknown run id (a
+            /// gate id in this module's `hq-` space, but never registered)
+            /// must resolve to no run at all — no resume call is even
+            /// considered, let alone issued.
+            #[test]
+            fn stale_or_unknown_run_id_tap_yields_no_resume_call() {
+                let registry = PendingHeadlessQuestions::new();
+                let never_registered_run = Uuid::new_v4();
+                let verdict = ResponseVerdict::Accepted {
+                    gate_id: gate_id_for_run(never_registered_run),
+                    option_key: "yes".to_string(),
+                    digest: "irrelevant-to-this-resolver".to_string(),
+                    decided_at: Utc::now(),
+                };
+
+                assert_eq!(
+                    headless_resume_for(&verdict, &registry),
+                    None,
+                    "a stale/unknown run id must never produce a resume call"
+                );
+            }
+        }
     }
 }
 

@@ -199,7 +199,14 @@ struct ResumeErrorBody {
 /// Pure — no I/O — so it is unit-testable against fixtures without a live
 /// server (Rule 6); the `reqwest` send/receive in [`ApiClient::resume_run`]
 /// is the thin shell over this, mirroring [`classify_abort_response`].
-fn classify_resume_response(status: u16, body: &str) -> Result<ResumeOutcome, ConsoleError> {
+///
+/// `pub(crate)` (rather than module-private) so `BA.21.C` task 5's
+/// round-trip fixture test in `src/serve/session_qa/tests.rs` can classify
+/// a pinned `202` body directly, without standing up an `ApiClient`.
+pub(crate) fn classify_resume_response(
+    status: u16,
+    body: &str,
+) -> Result<ResumeOutcome, ConsoleError> {
     match status {
         202 => serde_json::from_str::<ResumeAccepted>(body)
             .map(|accepted| ResumeOutcome::Accepted {
