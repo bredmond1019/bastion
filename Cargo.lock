@@ -743,8 +743,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "claude-code-rs"
-version = "0.1.0"
+name = "claude-sdk-rs"
+version = "2.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1216,7 +1216,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
- "claude-code-rs",
+ "claude-sdk-rs",
  "cron",
  "engine-contract",
  "futures",
