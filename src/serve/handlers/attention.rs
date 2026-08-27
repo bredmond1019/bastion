@@ -404,8 +404,10 @@ mod tests {
                 knowledge_days: 45,
                 memory_days: 30,
                 operator_days: 7,
+                ..Default::default()
             },
             history: Default::default(),
+            carryover: Default::default(),
             repos,
         }
     }
