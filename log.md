@@ -10,6 +10,26 @@ timestamp: 2026-08-21T00:00:00-03:00
 
 ---
 
+## [run: 2026-08-27]
+
+### Build/security cleanup — no feature work
+
+Removed the dead `rustc-wrapper = "sccache"` from `.cargo/config.toml` (0 cache hits measured —
+sccache refuses to cache incremental builds); added `[profile.dev]` (`line-tables-only` + unpacked
+split-debuginfo). `target/` had never been cleaned: 58G, 303K files. `cargo clean` reclaimed
+132.6GiB; cold rebuild after was 1m07s. Then applied four RustSec fixes via plain `cargo update -p`
+(no `Cargo.toml` edit): `event-listener` (`RUSTSEC-2026-0221`, unsound Send/Sync), `crossbeam-epoch`
+(`RUSTSEC-2026-0204`), `lru` (`RUSTSEC-2026-0253`, use-after-free in `pop()`), and `h2` 0.4.15->0.4.19
+(`RUSTSEC-2026-0258`, the reqwest/hyper path). `cargo audit` is down to one vulnerability (`h2` 0.3.x,
+pinned by `actix-http`'s `h2 = "^0.3"` — no compatible upgrade exists yet) plus three unmaintained/
+yanked warnings via `syntect`/`flume`, all tracked in HQ's `docs/rust-dependency-audit.md`. Full gate
+chain green throughout (fmt, clippy, nextest 2586 passed, full `cargo test`, release build).
+
+```
+c2bd9ee perf(build): remove dead sccache wrapper, add profile.dev link-time fix
+d0159cf security(deps): bump event-listener, crossbeam-epoch, lru, h2 for RustSec fixes
+```
+
 ## [run: 2026-08-24]
 
 ### BA.21.C — Headless question path: bastion half, a chain asks without a tmux pane and resumes on your tap
