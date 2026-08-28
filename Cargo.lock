@@ -2339,6 +2339,7 @@ dependencies = [
  "clap",
  "colored",
  "okf-core",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",

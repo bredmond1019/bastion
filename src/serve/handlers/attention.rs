@@ -236,6 +236,13 @@ pub fn build_attention(
         // corpus) purely wasted on this hot path. See
         // `evaluate_carryover_with_dedup`'s doc comment in mev.
         false,
+        // `exec_timeout` — added by mev's `MV.16.G`, which made the
+        // `command_exits_zero` watchdog configurable so a timeout could be
+        // reported distinctly from a failed predicate. It is INERT on this
+        // route: it bounds command execution, and `allow_exec` is `false`
+        // directly above, so no command is ever spawned. Passing mev's own
+        // default keeps this call site from inventing a number it does not use.
+        mev::COMMAND_EXEC_TIMEOUT,
     );
 
     let ranked = rank_carryover(&report.entries, &block_priorities, &status_map);
