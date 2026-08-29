@@ -17,7 +17,7 @@ related: [config, serve-api]
 `send` (fire-and-forget) and `ask` (gated question, block until answered). Both are thin I/O
 shells: all protocol logic (`sendMessage` bodies, `getUpdates` long-poll, digest resolution,
 callback acknowledgement) is reused verbatim from `src/serve/notify/telegram.rs` and
-`engine_core::operator`. This file documents the verb; see [config.md](config.md) for the
+`engine_core::operator`. This file documents the verb; see [config.md](../operations/config.md) for the
 underlying env vars.
 
 ## Quickstart
@@ -178,7 +178,7 @@ code `4`) rather than polling without holding it.
 
 With a `--bot` slug's credential pair not fully set (or unknown), both verbs exit `1`, naming
 **both** derived env vars by name and printing neither value — never a silent no-op. See
-[config.md](config.md) for the full env-var reference and the underlying
+[config.md](../operations/config.md) for the full env-var reference and the underlying
 `ConfigError::IncompleteTelegramConfig` shape.
 
 ## engine-rs cutover

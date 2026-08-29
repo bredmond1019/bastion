@@ -83,7 +83,7 @@ on whichever spine row is selected:
   browser on the left and a scrollable content pane on the right. By default, it opens the
   space's `planning/status.md`. You can browse the space's directories or preview markdown files
   in the content pane (using the `bella-engine` parser with the console's active theme, selectable
-  via the `[theme]` config section — see [config.md](config.md#theme-section)). Pressing `t` opens the
+  via the `[theme]` config section — see [config.md](../operations/config.md#theme-section)). Pressing `t` opens the
   selected markdown file as a transient full-screen overlay instead of a new tab (overlay polish
   is deferred; tab machinery has been removed).
 - **Tier overview (selecting a tier header — `HQ`/`core`/`side`/`client`/`portfolio`):** Routes
@@ -332,7 +332,7 @@ and a clear stderr message — no session is created. An `unknown` directory (no
 A pure, I/O-free parser turning a captured pane into structured data. It is the bridge between
 [`detect`](detect.md)'s `BlockedReason::AwaitingQuestion` signal and any consumer that needs the
 actual question — today that is the session-QA Telegram bridge
-([serve-api.md](serve-api.md) §27), which builds one button per option from it.
+([serve-api.md](../serve/serve-api.md) §27), which builds one button per option from it.
 
 ```rust
 pub const ASK_QUESTION_MARKER: &str = "Enter to select";
@@ -348,7 +348,7 @@ captured separately and never folded into `question`), the `question` text, and 
 bool`, which conflated two genuinely different behaviours: the widget's trailing options are not
 one escape hatch but two, an inline free-text reply and a widget-closing "chat about this" —
 verified live 2026-08-14. `OptionKind` is documented in full, including the per-kind injected
-keystroke sequence the session-QA bridge sends on selection, in [serve-api.md](serve-api.md) §27.
+keystroke sequence the session-QA bridge sends on selection, in [serve-api.md](../serve/serve-api.md) §27.
 
 Behaviours worth knowing before you call it:
 
@@ -445,7 +445,7 @@ The `POST /api/sessions/{name}/key` endpoint uses `tmux send-keys` without the `
 flag, enabling named-key dispatch (e.g. `Escape`, `Up`, `C-c`) that is not possible via the
 CLI `send` verb. All REST routes require bearer-token authentication.
 
-Full contract: [serve-api.md](serve-api.md).
+Full contract: [serve-api.md](../serve/serve-api.md).
 
 ---
 

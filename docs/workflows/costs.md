@@ -108,7 +108,7 @@ fork the one-shot aggregation path; it reuses it.
 ### Budget thresholds and alerts
 
 When a budget cap is configured (`BASTION_MAX_TOTAL_TOKENS` / `BASTION_MAX_COST_USD`, or the
-config file's `max_total_tokens` / `max_cost_usd` — see [config.md](config.md)), each tick's
+config file's `max_total_tokens` / `max_cost_usd` — see [config.md](../operations/config.md)), each tick's
 totals are evaluated against the cap by the pure `costs::budget::evaluate`. Crossing a cap prints
 a structured alert to stderr and emits a `tracing::warn!` `observ` event
 (`event = "budget_alert"`) carrying the cap name, the spent value, and the limit:
@@ -156,4 +156,4 @@ core, checked once before a workflow is triggered rather than on a poll loop) an
 - [inspect.md](inspect.md) — static post-mortem graph view of a single run.
 - [run.md](run.md) — the pre-dispatch budget gate that shares this surface's `costs::budget` core.
 - [abort.md](abort.md) — the run-abort switch for stopping a run once a budget alert fires.
-- [data-contract.md](data-contract.md) — the orchestrator field mappings this surface reads.
+- [data-contract.md](../data-contract.md) — the orchestrator field mappings this surface reads.

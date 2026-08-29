@@ -53,11 +53,11 @@ curl -s -H "Authorization: Bearer $BASTION_SERVE_TOKEN" localhost:4317/api/board
 |---|---|
 | `BASTION_SERVE_TOKEN` | Startup fails. There is deliberately no unauthenticated mode. |
 | `DATABASE_URL` **and** `BASTION_ENGINE_API_KEY` | The embedded `engine-serve` routes (Section 18) are not mounted, so `bastion abort` has nothing to call. Everything else still serves. |
-| A `[workspaces]` registry | The cross-repo routes (`/api/board`, `/api/workflows`) report no repos. See [config.md](config.md#workspace-registry). |
+| A `[workspaces]` registry | The cross-repo routes (`/api/board`, `/api/workflows`) report no repos. See [config.md](../operations/config.md#workspace-registry). |
 
 **Two different secrets.** `BASTION_SERVE_TOKEN` is the bearer token on bastion's own routes;
 `BASTION_ENGINE_API_KEY` is the `X-API-Key` on the embedded engine's routes. Never reuse one for
-the other — see [Section 2](#2-authentication) and [config.md](config.md#environment-variables).
+the other — see [Section 2](#2-authentication) and [config.md](../operations/config.md#environment-variables).
 
 ## How to read this document
 
@@ -501,7 +501,7 @@ and the latter only pushes pane-content diffs.
 
 ### 8.2 `event{workflow_done}` (v0.3)
 
-[`FlowWatcher`](../src/serve/poll.rs) tracks the last-known `status` for every
+[`FlowWatcher`](../../src/serve/poll.rs) tracks the last-known `status` for every
 `(repo, spec_slug)` pair it has observed from parsed `sdlc-flow-state.json`
 files (Section 11.4).  `FlowWatcher::observe()` emits a `workflow_done` payload
 when:
@@ -529,7 +529,7 @@ client, regardless of topic subscription.
 Unlike `workflow_done` (Section 8.2), which is completion-only and broadcast to every connection,
 this push is **run-level aggregate status**, transition-by-transition (not only on completion), and
 **subscription-gated** — only connections subscribed to the `"runs"` topic (Section 6) receive it.
-[`RunWatcher`](../src/serve/poll.rs) tracks the last-known aggregate `status` for every run id it has
+[`RunWatcher`](../../src/serve/poll.rs) tracks the last-known aggregate `status` for every run id it has
 observed from `LiveStateStore` (`../engine-rs/crates/engine-serve/src/live_state.rs`), derived via
 `db::workflows::derive_run_status` — the same function `GET /api/runs` uses (Section 14.1), so the
 stream and the poll fallback can never disagree.
@@ -1153,7 +1153,7 @@ whatever parses.
 ### 11.5 `event{workflow_done}` — pushed over `/ws`
 
 Not a REST response — pushed asynchronously over the `/ws` hub connection (an
-`"event"` frame per Section 7.7) when [`FlowWatcher::observe()`](../src/serve/poll.rs)
+`"event"` frame per Section 7.7) when [`FlowWatcher::observe()`](../../src/serve/poll.rs)
 detects a `running`→terminal transition while polling the same
 `sdlc-flow-state.json` files this section's routes read. See Section 8.2 for
 the full transition semantics.
@@ -2302,7 +2302,7 @@ boot) also leaves the engine routes unmounted, logged the same way.
 | `/workflows` | `GET` | `X-API-Key` | Registered workflow types (sorted). |
 | `/workflows/{workflow_type}/graph` | `GET` | `X-API-Key` | The DAG schema for a registered type; `404` for an unknown one. |
 | `/events/` | `POST` | `X-API-Key` | Trigger dispatch — resolves `workflow_type`, runs the workflow, mints a `run_id` and a `CancellationToken`. |
-| `/events/{run_id}/abort` | `POST` | `X-API-Key` | The abort endpoint this block's `bastion abort <run>` calls — see [abort.md](abort.md) and [data-contract.md](data-contract.md)'s Abort section for the full 401/404/202 contract. |
+| `/events/{run_id}/abort` | `POST` | `X-API-Key` | The abort endpoint this block's `bastion abort <run>` calls — see [abort.md](../workflows/abort.md) and [data-contract.md](../data-contract.md)'s Abort section for the full 401/404/202 contract. |
 | `/approvals/ledger` | `GET` | `X-API-Key` | Paginated approval-decision rows. `limit` query param (default 100, clamped to a max of 1000); `offset` for paging. See `BA.ticket.approval-ledger-read-wiring` below for the mount/instance contract. |
 | `/approvals/ledger/stats` | `GET` | `X-API-Key` | Decisions-per-day and time-to-approval stats derived from the same ledger. |
 | every other route in `engine_serve::http::configure` (`/events/suspended`, `/events/{event_id}`, `/events/{event_id}/resume`, `/events/{event_id}/stream`, `/webhooks/email/inbound`, `/webhooks/email/events`) | — | `X-API-Key` | Same gate, applied uniformly across the whole mount (Section 18.2.1). |
@@ -3176,7 +3176,7 @@ accident.
 
 **The token never lands in a tracked file.** `.env.example` carries empty placeholders for both
 vars with a comment pointing at the Mini's `com.brandon.engine-serve.plist` as the only place the
-real values live (see [config.md](config.md)). Neither var is read, echoed, or interpolated by any
+real values live (see [config.md](../operations/config.md)). Neither var is read, echoed, or interpolated by any
 task, test, fixture, or doc in this repo — the live-transport smoke test is an operator-run step,
 not an agent-run one (`planning/BA.18.B/tasks.md`'s Notes).
 
@@ -3462,7 +3462,7 @@ handful of plausible bridge-shaped paths — `/api/session-qa`, `/api/session-qa
 poller, entirely separate from Section 26's `OperatorTransport`/approve-reject gate machinery.
 
 **Deliberately a second bot, not a reuse of Section 26's transport.** CodeSessionsBot
-(`BASTION_CODESESSIONS_BOT_TOKEN` / `BASTION_CODESESSIONS_CHAT_ID`, [config.md](config.md)) is
+(`BASTION_CODESESSIONS_BOT_TOKEN` / `BASTION_CODESESSIONS_CHAT_ID`, [config.md](../operations/config.md)) is
 distinct from BastionBot (`BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID`) — two bots,
 two token pairs, never conflated. `code_sessions_bot_config` (`src/config.rs`) mirrors
 `telegram_config`'s both-or-neither rule exactly (same typed `ConfigError::IncompleteTelegramConfig`
@@ -4002,7 +4002,7 @@ deliberately not duplicated in this repo.
   escape-hatch button (distinguished by a leading emoji glyph)" — the real widget has **two**
   trailing option kinds with different semantics, `OptionKind::FreeText` and `OptionKind::ChatAbout`,
   classified structurally by `sessions::ask_question::parse_ask_question` (see
-  [sessions.md](sessions.md)). The outbound paragraph previously described injection as a single
+  [sessions.md](../terminal/sessions.md)). The outbound paragraph previously described injection as a single
   `sessions::tmux::send_keys` call carrying "the operator's answer" — the shipped behaviour is a
   **per-`OptionKind` keystroke sequence** (`BA.ticket.session-qa-freetext-injection`): `Choice` is
   digit+Enter; `FreeText` is digit with no Enter, then the operator's text, then Enter; `ChatAbout`
@@ -4106,7 +4106,7 @@ deliberately not duplicated in this repo.
   `brain:HQ.ticket.tailscale-bind-and-token-rotation`). A response whose digest no longer matches
   the payload it answers is rejected as stale, never applied. Configured by two new optional env
   vars, `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` (Section 26.4; also
-  [config.md](config.md)) — both absent leaves `bastion serve` byte-identical to before this
+  [config.md](../operations/config.md)) — both absent leaves `bastion serve` byte-identical to before this
   block; exactly one present is a typed startup error. Neither var, nor the bot token itself,
   appears anywhere in this document, `.env.example`, a test fixture, or a log line. This section
   adds no route, no DTO, and no typeshared type — `types/serve.ts` is unaffected and

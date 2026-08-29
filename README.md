@@ -56,7 +56,7 @@ cargo run -- kill demo         # remove it
 
 Nothing above needs a database. The workflow-observability commands (`monitor`, `costs`, `run`,
 `abort`) need a running companion orchestrator service — see
-[Prerequisites](#prerequisites) and [docs/setup.md](docs/setup.md).
+[Prerequisites](#prerequisites) and [docs/operations/setup.md](docs/operations/setup.md).
 
 ### Installing
 
@@ -78,8 +78,8 @@ private workspace it lives in.
 | The orchestrator's FastAPI service | `run`, `abort`, `monitor --workflow-id` triggers | `bastion run` cannot POST a new workflow; `status` reports the API as unreachable |
 | `DATABASE_URL` in the environment (or `.env`) | Same as PostgreSQL row above | Same failure as "PostgreSQL missing" |
 
-See [docs/setup.md](docs/setup.md) for the full end-to-end guide to standing up the companion
-database and API service, and [docs/config.md](docs/config.md) for every environment variable and
+See [docs/operations/setup.md](docs/operations/setup.md) for the full end-to-end guide to standing up the companion
+database and API service, and [docs/operations/config.md](docs/operations/config.md) for every environment variable and
 the config-file format.
 
 ## How the pieces fit together
@@ -129,11 +129,11 @@ from source). None of them are Claude Code slash commands — this binary is a p
 | Command | What it does |
 |---|---|
 | `status` | Quick health check — orchestrator API + database reachability, no TUI |
-| `monitor [--workflow-id ID] [--watch]` | Live two-pane TUI graph of active workflow runs (or a headless text loop with `--watch`); see [docs/monitor.md](docs/monitor.md) |
-| `inspect <run_id>` | Static post-mortem graph view of one completed run; see [docs/inspect.md](docs/inspect.md) |
-| `costs [--last 7d\|30d\|all] [--watch]` | LLM token/spend summary; see [docs/costs.md](docs/costs.md) |
-| `run <workflow> [--args '{}'] [--monitor] [--force]` | Trigger a workflow via the orchestrator's API; `--force` skips the pre-dispatch budget gate; see [docs/run.md](docs/run.md) |
-| `abort <run> [--yes]` | **Destructive** — stop a running workflow via the engine's abort endpoint; prompts for confirmation unless `--yes`; see [docs/abort.md](docs/abort.md) |
+| `monitor [--workflow-id ID] [--watch]` | Live two-pane TUI graph of active workflow runs (or a headless text loop with `--watch`); see [docs/workflows/monitor.md](docs/workflows/monitor.md) |
+| `inspect <run_id>` | Static post-mortem graph view of one completed run; see [docs/workflows/inspect.md](docs/workflows/inspect.md) |
+| `costs [--last 7d\|30d\|all] [--watch]` | LLM token/spend summary; see [docs/workflows/costs.md](docs/workflows/costs.md) |
+| `run <workflow> [--args '{}'] [--monitor] [--force]` | Trigger a workflow via the orchestrator's API; `--force` skips the pre-dispatch budget gate; see [docs/workflows/run.md](docs/workflows/run.md) |
+| `abort <run> [--yes]` | **Destructive** — stop a running workflow via the engine's abort endpoint; prompts for confirmation unless `--yes`; see [docs/workflows/abort.md](docs/workflows/abort.md) |
 
 ### Local/offline
 
@@ -141,18 +141,18 @@ from source). None of them are Claude Code slash commands — this binary is a p
 |---|---|
 | `overview` | Workspace overview board (Kanban-style), reading local `state.json` files |
 | `momentum` | Cross-repo rollup of each registered project's now/next/blocked queues and metrics, read from `status.md` files |
-| `validate <path>` | Recursively validate Markdown/MDX front-matter and links under `path` (default: current directory); greppable report, non-zero exit on errors; see [docs/validate.md](docs/validate.md) |
-| `assess [path] [--json]` | Read-only diagnostic over a repo: frontmatter coverage, link-graph readiness, `state.json` readiness; see [docs/assess.md](docs/assess.md) |
-| `brain (--dependents\|--blast-radius\|--lineage) <NODE_ID> [--root DIR] [--workspace NAME]` | Structural queries over a Markdown documentation corpus's cross-link graph; see [docs/brain.md](docs/brain.md) |
-| `code (--def\|--refs\|--dependents) <SYMBOL> [--root DIR] [--workspace NAME]` | Symbol-level queries (definitions, references, callers) over Rust source, via [tree-sitter](https://tree-sitter.github.io/tree-sitter/); coverage is `.rs` files only; see [docs/code.md](docs/code.md) |
-| `view <path>` / `edit <path>` | Open a Markdown file in the companion `bella` terminal viewer/editor (both currently launch the same viewer; see [docs/docview.md](docs/docview.md)) |
+| `validate <path>` | Recursively validate Markdown/MDX front-matter and links under `path` (default: current directory); greppable report, non-zero exit on errors; see [docs/knowledge/validate.md](docs/knowledge/validate.md) |
+| `assess [path] [--json]` | Read-only diagnostic over a repo: frontmatter coverage, link-graph readiness, `state.json` readiness; see [docs/knowledge/assess.md](docs/knowledge/assess.md) |
+| `brain (--dependents\|--blast-radius\|--lineage) <NODE_ID> [--root DIR] [--workspace NAME]` | Structural queries over a Markdown documentation corpus's cross-link graph; see [docs/knowledge/brain.md](docs/knowledge/brain.md) |
+| `code (--def\|--refs\|--dependents) <SYMBOL> [--root DIR] [--workspace NAME]` | Symbol-level queries (definitions, references, callers) over Rust source, via [tree-sitter](https://tree-sitter.github.io/tree-sitter/); coverage is `.rs` files only; see [docs/knowledge/code.md](docs/knowledge/code.md) |
+| `view <path>` / `edit <path>` | Open a Markdown file in the companion `bella` terminal viewer/editor (both currently launch the same viewer; see [docs/knowledge/docview.md](docs/knowledge/docview.md)) |
 | `man [--out DIR]` | Print (or write to `DIR`) a roff man page for `bastion` and every subcommand |
 
 ### Brain-ops pass-throughs (thin wrappers over a sibling tool, `mev`)
 
 | Command | What it does |
 |---|---|
-| `validate-brain [path] [--links\|--structure\|--state\|--graph\|--sync] [--json]` | Validate a documentation corpus for structural/link/state consistency; flags do not compose — first one wins in this precedence order; see [docs/brainval.md](docs/brainval.md) |
+| `validate-brain [path] [--links\|--structure\|--state\|--graph\|--sync] [--json]` | Validate a documentation corpus for structural/link/state consistency; flags do not compose — first one wins in this precedence order; see [docs/knowledge/brainval.md](docs/knowledge/brainval.md) |
 | `manifest [path] [--pretty]` | Emit a JSON manifest of every file in the corpus |
 | `graph [path]` | Emit the corpus's cross-reference graph as a JSON artifact |
 | `emit-state [path] [--write] [--fail-on-drift]` | Derive generated state artifacts from every `state.json` found under `path`; dry-run by default — **`--write` applies the changes** |
@@ -161,8 +161,8 @@ from source). None of them are Claude Code slash commands — this binary is a p
 
 | Command | What it does |
 |---|---|
-| `serve [--addr ADDR] [--token TOKEN]` | Start an HTTP+WebSocket server (default `0.0.0.0:4317`); every protected route requires a bearer token via `BASTION_SERVE_TOKEN` or `--token`; exposes a public `GET /health` and an authenticated `GET /ws`; see [docs/serve-api.md](docs/serve-api.md) |
-| `notify send --text TEXT [--bot SLUG]` | Fire-and-forget plain-text Telegram message; see [docs/notify.md](docs/notify.md) |
+| `serve [--addr ADDR] [--token TOKEN]` | Start an HTTP+WebSocket server (default `0.0.0.0:4317`); every protected route requires a bearer token via `BASTION_SERVE_TOKEN` or `--token`; exposes a public `GET /health` and an authenticated `GET /ws`; see [docs/serve/serve-api.md](docs/serve/serve-api.md) |
+| `notify send --text TEXT [--bot SLUG]` | Fire-and-forget plain-text Telegram message; see [docs/serve/notify.md](docs/serve/notify.md) |
 | `notify ask --gate-id ID --summary TEXT --option key:Label [--option key:Label ...] [--timeout-secs N] [--bot SLUG]` | Ask the operator a gated question over Telegram with up to 3 response buttons, and wait for a resolving tap |
 
 ### Global flags
@@ -182,7 +182,7 @@ from source). None of them are Claude Code slash commands — this binary is a p
 3. Built-in defaults
 
 A missing or unreadable config file is silently ignored. Full variable list, the config-file
-format, and an example `config.toml`: [docs/config.md](docs/config.md).
+format, and an example `config.toml`: [docs/operations/config.md](docs/operations/config.md).
 
 ## Tests
 
@@ -203,12 +203,12 @@ cargo build --release           # build gate
 
 | Symptom | Likely cause | What to check |
 |---|---|---|
-| `monitor`/`costs`/`inspect`/`run`/`abort` fail to connect | `DATABASE_URL` unset or the orchestrator's Postgres isn't running | `bastion status`; [docs/setup.md](docs/setup.md) |
+| `monitor`/`costs`/`inspect`/`run`/`abort` fail to connect | `DATABASE_URL` unset or the orchestrator's Postgres isn't running | `bastion status`; [docs/operations/setup.md](docs/operations/setup.md) |
 | `run`/`abort` say the API is unreachable | The orchestrator's FastAPI service isn't running | Confirm `BASTION_API_URL` and that the service process is up |
 | Any of `sessions`/`attach`/`new`/`kill`/`send`/`capture`/`ask` error immediately | `tmux` is not installed or not on `PATH` | `which tmux` |
 | `serve` refuses requests | Missing/incorrect bearer token | Set `BASTION_SERVE_TOKEN` or pass `--token`; only `GET /health` is unauthenticated |
-| `notify send`/`notify ask` error on an unconfigured bot | The named `--bot` slug has no matching `BASTION_<SLUG>_BOT_TOKEN`/`_CHAT_ID` pair set | [docs/config.md](docs/config.md) |
-| `emit-state` reports build-provenance drift | The running binary was built from an older source tree than what's on disk | Rebuild (`cargo build --release`), or see [docs/brainval.md](docs/brainval.md) |
+| `notify send`/`notify ask` error on an unconfigured bot | The named `--bot` slug has no matching `BASTION_<SLUG>_BOT_TOKEN`/`_CHAT_ID` pair set | [docs/operations/config.md](docs/operations/config.md) |
+| `emit-state` reports build-provenance drift | The running binary was built from an older source tree than what's on disk | Rebuild (`cargo build --release`), or see [docs/knowledge/brainval.md](docs/knowledge/brainval.md) |
 
 ## Documentation
 
@@ -218,13 +218,13 @@ knowledge-graph queries, infrastructure).
 
 | Doc | Contents |
 |---|---|
-| [docs/setup.md](docs/setup.md) | End-to-end setup: connecting bastion to the orchestrator's database |
-| [docs/sessions.md](docs/sessions.md) | Session-control surface — verb reference + operator workflow |
-| [docs/monitor.md](docs/monitor.md) | Live monitor — keybindings, layout, flags, degrade paths |
-| [docs/config.md](docs/config.md) | Full configuration reference — every environment variable, config-file format |
-| [docs/brain.md](docs/brain.md) | Documentation-corpus knowledge-graph queries |
-| [docs/code.md](docs/code.md) | Rust symbol-graph queries |
-| [docs/serve-api.md](docs/serve-api.md) | HTTP + WebSocket API contract for `bastion serve` |
+| [docs/operations/setup.md](docs/operations/setup.md) | End-to-end setup: connecting bastion to the orchestrator's database |
+| [docs/terminal/sessions.md](docs/terminal/sessions.md) | Session-control surface — verb reference + operator workflow |
+| [docs/workflows/monitor.md](docs/workflows/monitor.md) | Live monitor — keybindings, layout, flags, degrade paths |
+| [docs/operations/config.md](docs/operations/config.md) | Full configuration reference — every environment variable, config-file format |
+| [docs/knowledge/brain.md](docs/knowledge/brain.md) | Documentation-corpus knowledge-graph queries |
+| [docs/knowledge/code.md](docs/knowledge/code.md) | Rust symbol-graph queries |
+| [docs/serve/serve-api.md](docs/serve/serve-api.md) | HTTP + WebSocket API contract for `bastion serve` |
 
 ## License
 

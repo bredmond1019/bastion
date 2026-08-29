@@ -42,7 +42,7 @@ bastion run <workflow> --force             # bypass the pre-dispatch budget gate
 ## Budget gate
 
 When a budget cap is configured (`BASTION_MAX_TOTAL_TOKENS` / `BASTION_MAX_COST_USD`, or the
-config file's `max_total_tokens` / `max_cost_usd` — see [config.md](config.md)) and `--force` is
+config file's `max_total_tokens` / `max_cost_usd` — see [config.md](../operations/config.md)) and `--force` is
 not passed, `run` fetches current spend (`db::costs::fetch_all_runs` + `costs::aggregate` over the
 full-time window) and evaluates it against the cap with the same pure `costs::budget::evaluate`
 core [costs.md](costs.md)'s `--watch` uses, via `run::evaluate_gate`:
@@ -111,4 +111,4 @@ On error, prints a human-readable message and exits non-zero. Examples:
 - [monitor.md](monitor.md) — live polling view of active workflow runs (the `--monitor` hand-off target).
 - [costs.md](costs.md) — `--watch` and its budget alerts, sharing this surface's `costs::budget` core.
 - [abort.md](abort.md) — the run-abort switch for stopping a run already in flight.
-- [data-contract.md](data-contract.md) — the orchestrator field mappings including the trigger endpoint contract.
+- [data-contract.md](../data-contract.md) — the orchestrator field mappings including the trigger endpoint contract.

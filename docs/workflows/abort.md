@@ -23,7 +23,7 @@ writes the `events` row, or touches Celery/Redis. The Engine (`engine-serve`, em
 > so this block ships it as **`bastion abort <run>`** instead. `kill` remains tmux-only.
 
 > **Needs `bastion serve` running.** The abort endpoint is served by `engine-serve`'s route table,
-> which `bastion serve` mounts (see [serve-api.md](serve-api.md) §15) when both `DATABASE_URL` and
+> which `bastion serve` mounts (see [serve-api.md](../serve/serve-api.md) §15) when both `DATABASE_URL` and
 > `BASTION_ENGINE_API_KEY` are configured. It is never served by the Python orchestrator.
 
 ## Quickstart
@@ -90,7 +90,7 @@ against the actual engine (no orchestrator, no external stack, no manual step).
 - [run.md](run.md) — the pre-dispatch budget gate that can prevent a run from starting in the
   first place; `abort` is the switch for a run already in flight.
 - [costs.md](costs.md) — `--watch`'s budget alerts, the usual trigger for reaching for `abort`.
-- [serve-api.md](serve-api.md) — how `bastion serve` mounts the engine route table this surface
+- [serve-api.md](../serve/serve-api.md) — how `bastion serve` mounts the engine route table this surface
   calls.
-- [data-contract.md](data-contract.md) — the pinned abort endpoint wire shape and its
+- [data-contract.md](../data-contract.md) — the pinned abort endpoint wire shape and its
   `api::client::abort_run` mapping.

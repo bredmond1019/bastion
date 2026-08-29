@@ -30,11 +30,11 @@ bastion overview     # opens the board; press q to quit
 | `state.json` inside it, with `repo`, `updated`, and a `focus` object | The command exits with `Failed to parse state.json`. The file is generated — regenerate it with `bastion emit-state --write` rather than hand-editing. |
 
 `BASTION_PLANNING_ROOT` overrides the walk-up search and points at a planning directory
-directly. See [config.md](config.md#environment-variables).
+directly. See [config.md](../operations/config.md#environment-variables).
 
 ## What it reads
 
-Exactly four fields of [`state.json`](brainval.md). Everything else in the file is ignored.
+Exactly four fields of [`state.json`](../knowledge/brainval.md). Everything else in the file is ignored.
 
 | Field | Used for |
 |---|---|
@@ -66,5 +66,5 @@ Do not treat this board as a place to change state.
 ## See also
 
 - [momentum.md](momentum.md) — the same queues across every registered workspace.
-- [brainval.md](brainval.md) — `bastion emit-state`, which generates `state.json`'s derived fields.
-- [commands.md](commands.md) — every bastion subcommand in one table.
+- [brainval.md](../knowledge/brainval.md) — `bastion emit-state`, which generates `state.json`'s derived fields.
+- [commands.md](../commands.md) — every bastion subcommand in one table.

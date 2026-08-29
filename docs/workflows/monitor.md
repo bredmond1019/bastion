@@ -16,7 +16,7 @@ related: [inspect, data-contract, sessions, costs]
 navigable graph that updates in place as each node executes. It reads the Python orchestrator's
 PostgreSQL directly as a read-only observer (it never writes — bastion **D2**) and overlays the
 DAG shape fetched from the orchestrator's graph endpoint. This is the workflow-observability
-surface; for tmux/session control see [sessions.md](sessions.md).
+surface; for tmux/session control see [sessions.md](../terminal/sessions.md).
 
 > **Needs the orchestrator stack up.** `monitor` reads live execution state, so the orchestrator's
 > Postgres must be reachable at `DATABASE_URL` and there must be a workflow running. Bring the
@@ -50,7 +50,7 @@ A two-pane TUI:
   - **red** `$` — budget-halted (run-level only, derived from `metadata.budget` — v1.1.0)
   The status symbol accompanies each node so state is legible without color; the selected node is
   highlighted.
-- **Right — detail pane.** For the selected node, per the [data contract](data-contract.md) §6:
+- **Right — detail pane.** For the selected node, per the [data contract](../data-contract.md) §6:
   status, timing (`started_at` / `elapsed_secs`), `error` (if any), `model`, token counts
   (`tokens_in` / `tokens_out`), and truncated `input` / `output`. When no node is selected, the
   run input is shown.
@@ -132,12 +132,12 @@ A transition alerts once — including the very first tick a run/node is already
 is sustained across subsequent polls.
 
 Set `BASTION_NOTIFY=false` to disable notifications entirely (default: enabled — see
-[config.md](config.md)). Notifications are **macOS-only**: on any other platform the
+[config.md](../operations/config.md)). Notifications are **macOS-only**: on any other platform the
 notification call is a compile-time no-op, and monitor otherwise behaves identically.
 
 ## Related
 
 - [inspect.md](inspect.md) — static post-mortem view of a completed run (no polling); use this
   after a run finishes.
-- [data-contract.md](data-contract.md) — the orchestrator field mappings the monitor reads.
-- [sessions.md](sessions.md) — the unified operator console, where the monitor is embedded within the **Mission Control** tab.
+- [data-contract.md](../data-contract.md) — the orchestrator field mappings the monitor reads.
+- [sessions.md](../terminal/sessions.md) — the unified operator console, where the monitor is embedded within the **Mission Control** tab.

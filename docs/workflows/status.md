@@ -40,14 +40,14 @@ is the point of it. Missing configuration is reported as a result, not as a cras
 | `API` | `GET /health` on the orchestrator's FastAPI. | `BASTION_API_URL`, defaulting to `http://localhost:8080` |
 
 Both values come from the normal precedence chain — env var, then
-`~/.config/bastion/config.toml`, then the built-in default. See [config.md](config.md).
+`~/.config/bastion/config.toml`, then the built-in default. See [config.md](../operations/config.md).
 
 ## Reading the output
 
 | Line | Meaning | What to do |
 |---|---|---|
 | `DB    reachable` | Postgres answered. | — |
-| `DB    unreachable (DATABASE_URL not set)` | No database URL configured anywhere. **Not an error** — `status` treats `DATABASE_URL` as optional so it can still tell you about the API. | Set `DATABASE_URL`; see [setup.md](setup.md). |
+| `DB    unreachable (DATABASE_URL not set)` | No database URL configured anywhere. **Not an error** — `status` treats `DATABASE_URL` as optional so it can still tell you about the API. | Set `DATABASE_URL`; see [setup.md](../operations/setup.md). |
 | `DB    unreachable (<connection error>)` | Configured, but the connection failed. | Check the Postgres is up and the URL is right. |
 | `API   reachable (status=…, version=…)` | The orchestrator answered its health route, and reported these. | — |
 | `API   unreachable (<error>)` | Nothing answering at `BASTION_API_URL`. | Start the orchestrator stack; see [run.md](run.md). |
@@ -57,7 +57,7 @@ non-zero with the message, rather than being rendered as a row.
 
 ## See also
 
-- [setup.md](setup.md) — provisioning the database and configuring bastion for the first time.
+- [setup.md](../operations/setup.md) — provisioning the database and configuring bastion for the first time.
 - [run.md](run.md) — triggering a workflow once the stack is healthy.
 - [monitor.md](monitor.md) — watching one run live.
-- [commands.md](commands.md) — every bastion subcommand in one table.
+- [commands.md](../commands.md) — every bastion subcommand in one table.

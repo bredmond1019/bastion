@@ -28,7 +28,7 @@ bastion momentum | less   # if you have many repos
 
 | Must exist first | If it is missing |
 |---|---|
-| A `[workspaces]` table in `~/.config/bastion/config.toml` (or `$XDG_CONFIG_HOME/bastion/config.toml`) | You get the header row and `(no repos in workspace registry)`. Add entries — see [config.md § Workspace registry](config.md#workspace-registry). |
+| A `[workspaces]` table in `~/.config/bastion/config.toml` (or `$XDG_CONFIG_HOME/bastion/config.toml`) | You get the header row and `(no repos in workspace registry)`. Add entries — see [config.md § Workspace registry](../operations/config.md#workspace-registry). |
 | `<workspace-root>/planning/status.md` in each registered repo, with well-formed YAML frontmatter | That repo is **silently skipped**, not an error. See [When a repo is missing from the table](#when-a-repo-is-missing-from-the-table). |
 
 ## What the output looks like
@@ -81,5 +81,5 @@ generators; bastion only reads them via the `[workspaces]` registry (brain decis
 ## See also
 
 - [overview.md](overview.md) — one repo's queues, as a Kanban TUI.
-- [config.md § Workspace registry](config.md#workspace-registry) — how to register a workspace.
-- [commands.md](commands.md) — every bastion subcommand in one table.
+- [config.md § Workspace registry](../operations/config.md#workspace-registry) — how to register a workspace.
+- [commands.md](../commands.md) — every bastion subcommand in one table.

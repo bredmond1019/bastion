@@ -36,7 +36,7 @@ bastion status                                    # 4. confirm both rows say "re
 | Homebrew, and a checkout of the `orchestrator` repo beside this one | Step 1's script cannot run — it is what installs Postgres, Redis and `pgvector`. |
 | `bastion` on your PATH | See [Developer tooling](#developer-tooling-cargobin-must-be-on-path) below. |
 
-If step 4 shows anything unreachable, [status.md](status.md) maps each line to a fix, and
+If step 4 shows anything unreachable, [status.md](../workflows/status.md) maps each line to a fix, and
 [Troubleshooting](#troubleshooting) covers the known failures.
 
 ## Step 1: Provision the Database (via Orchestrator)

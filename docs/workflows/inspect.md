@@ -80,5 +80,5 @@ no-ops in inspect mode since only one run is loaded.
 ## Related
 
 - [monitor.md](monitor.md) — live polling view of an active workflow run.
-- [data-contract.md](data-contract.md) — the orchestrator field mappings both surfaces read.
-- [sessions.md](sessions.md) — tmux session control surface.
+- [data-contract.md](../data-contract.md) — the orchestrator field mappings both surfaces read.
+- [sessions.md](../terminal/sessions.md) — tmux session control surface.
