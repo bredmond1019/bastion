@@ -416,6 +416,7 @@ mod tests {
             history: Default::default(),
             carryover: Default::default(),
             repos,
+            ..Default::default()
         }
     }
 
