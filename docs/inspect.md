@@ -23,7 +23,7 @@ finished. For live observation of an active run, see [monitor.md](monitor.md).
 > must be reachable. Bring the stack up from the `python-orchestration-system/` repo:
 > `./scripts/dev.sh` (START) / `./scripts/dev.sh stop` (STOP).
 
-## Usage
+## Quickstart
 
 ```bash
 bastion inspect <run-id>   # render a specific run (its events.id) as a static graph

@@ -22,7 +22,7 @@ a pre-dispatch budget gate (BA.7.C) — see [Budget gate](#budget-gate) below.
 > up from the `python-orchestration-system/` repo:
 > `./scripts/dev.sh` (START) / `./scripts/dev.sh stop` (STOP).
 
-## Usage
+## Quickstart
 
 ```bash
 bastion run <workflow>                      # trigger with empty data payload

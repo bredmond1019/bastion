@@ -26,7 +26,7 @@ writes the `events` row, or touches Celery/Redis. The Engine (`engine-serve`, em
 > which `bastion serve` mounts (see [serve-api.md](serve-api.md) §15) when both `DATABASE_URL` and
 > `BASTION_ENGINE_API_KEY` are configured. It is never served by the Python orchestrator.
 
-## Usage
+## Quickstart
 
 ```bash
 bastion abort <run>          # prompts for confirmation before sending

@@ -19,12 +19,29 @@ The **canonical, authoritative** contract is owned by `mev`:
 version bastion is built against and maps `mev::CarryoverRanking` (the type mev's
 `rank_carryover` returns) to bastion's `AttentionCarryoverDto` (the wire shape `GET
 /api/attention` serves). This is a **different contract from a different producer** than
-`docs/data-contract.md` (which pins the orchestrator's contract, currently v1.6.0) — the two
+`docs/data-contract.md` (which pins the orchestrator's contract, on its own independent version line) — the two
 version lines are independent and must never be conflated. See the D20 pattern
 (`docs/data-contract.md`'s header carries the model this file follows).
 
 `BA.ticket.carryover-triage-dto` is this contract's **first pin** — no prior bastion version
 existed against it.
+
+## Quickstart
+
+This page is a **pin**, not a tutorial — there is nothing here to run. Use it for one of two
+things:
+
+| You are… | Go to |
+|---|---|
+| checking which version of the canonical contract this repo is built against | the **Pinned Contract Version** line at the top of this page |
+| reacting to the canonical contract bumping | [Re-pin checklist](#re-pin-checklist-when-the-canonical-contract-bumps) |
+
+The canonical document is owned by another repo (named just above). **Never edit the mappings
+here to describe new upstream behaviour without bumping the pinned version** — a mapping that
+silently describes a newer contract than the pin claims is the failure this file exists to
+prevent.
+
+---
 
 ---
 

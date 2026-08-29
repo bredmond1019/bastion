@@ -24,7 +24,7 @@ surface; for tmux/session control see [sessions.md](sessions.md).
 > `./scripts/dev.sh stop` (STOP) — starts Postgres + Redis + FastAPI `:8080` + Celery. Then
 > trigger a workflow so there is an active run to observe.
 
-## Usage
+## Quickstart
 
 ```bash
 bastion monitor                      # auto-pick the active run and watch it live

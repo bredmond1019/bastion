@@ -17,7 +17,7 @@ the OKF markdown corpus rooted at `<path>` and prints either a human summary or 
 `--json` envelope. It performs **zero filesystem writes** — no file under the assessed path is ever
 created, modified, or deleted.
 
-## Usage
+## Quickstart
 
 ```
 bastion assess [PATH] [--json]

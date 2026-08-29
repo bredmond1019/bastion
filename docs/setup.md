@@ -18,6 +18,27 @@ Because `bastion` acts as a pure read/write client over the database and does **
 
 Here is the end-to-end setup guide to get `bastion` connected and working.
 
+## Quickstart
+
+The whole setup, if nothing goes wrong. Each line is a shell command; the numbered step below
+carries the detail.
+
+```bash
+cd ../orchestrator && ./scripts/dev-setup.sh      # 1. provision Postgres + Redis + migrations
+export DATABASE_URL="postgres://orchestration:orchestration@localhost:5432/orchestration_dev"
+export BASTION_API_URL="http://localhost:8080"    # 2. point bastion at them
+cd ../orchestrator && ./scripts/dev.sh            # 3. start the API + Celery (needed for `run`)
+bastion status                                    # 4. confirm both rows say "reachable"
+```
+
+| Must exist first | If it is missing |
+|---|---|
+| Homebrew, and a checkout of the `orchestrator` repo beside this one | Step 1's script cannot run — it is what installs Postgres, Redis and `pgvector`. |
+| `bastion` on your PATH | See [Developer tooling](#developer-tooling-cargobin-must-be-on-path) below. |
+
+If step 4 shows anything unreachable, [status.md](status.md) maps each line to a fix, and
+[Troubleshooting](#troubleshooting) covers the known failures.
+
 ## Step 1: Provision the Database (via Orchestrator)
 
 The `orchestrator` repo contains an idempotent setup script that installs Postgres and Redis via Homebrew, creates the database/user, enables `pgvector`, and runs the Alembic schema migrations.

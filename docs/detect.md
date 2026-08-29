@@ -18,6 +18,20 @@ evaluating a priority-ordered rule list loaded from a per-agent TOML manifest. T
 evaluation path is pure (no I/O, no process spawns). `src/main.rs` re-exports it verbatim
 (`pub use term_core::detect;`), so every `crate::detect::*` call site in this repo is unchanged.
 
+## Quickstart
+
+`detect` is a **library surface, not a subcommand** — there is no `bastion detect`. You reach it
+through the session surface, which classifies each pane for you:
+
+```bash
+bastion sessions       # the state shown per session is this engine's verdict
+bastion                # the TUI's Working / Idle / Blocked labels, same engine
+```
+
+To change how a pane is classified, edit that agent's TOML manifest — the schema is
+[Manifest schema (TOML)](#manifest-schema-toml) below — and add a golden fixture, per
+[Golden test fixtures](#golden-test-fixtures).
+
 ## Core types
 
 ### `AgentState`

@@ -10,7 +10,7 @@ keywords: [observability, tracing, errors, ErrorCode, ConsoleError, CommandEvent
 related: [config]
 ---
 
-# Observability (`crates/bastion/src/observ/`)
+# Observability (`src/observ/`)
 
 The `observ` module is the structured observability spine for bastion. It provides:
 
@@ -21,9 +21,26 @@ The `observ` module is the structured observability spine for bastion. It provid
 
 All pure logic (record construction, JSON serialization, error Display) is tested exhaustively without I/O. The only thin I/O shells are `emit_start`, `emit_outcome` (call `tracing` macros), and `init_tracing` (installs the global subscriber).
 
+## Quickstart
+
+`observ` is a **library surface, not a subcommand**. You interact with it through two global
+flags, which every command accepts:
+
+```bash
+bastion -v status            # DEBUG-level logs to stderr instead of INFO
+bastion --json-logs status   # structured JSON log lines, one per event
+bastion --json-logs status 2>&1 >/dev/null | jq .   # logs go to stderr, results to stdout
+RUST_LOG=bastion::db=trace bastion status            # RUST_LOG overrides -v when both are set
+```
+
+Every subcommand emits a start event and an outcome event around dispatch, so a JSON log of any
+run tells you which command ran, whether it succeeded, and which `C001`–`C014` code it failed
+with. See [Command events](#command-events-srcobservmodrs) and
+[Dispatch instrumentation](#dispatch-instrumentation-srcmainrs).
+
 ---
 
-## Error taxonomy (`crates/bastion/src/observ/errors.rs`)
+## Error taxonomy (`src/observ/errors.rs`)
 
 ### `ErrorCode`
 
@@ -67,7 +84,7 @@ pub struct ErrorContext {
 
 ---
 
-## Command events (`crates/bastion/src/observ/mod.rs`)
+## Command events (`src/observ/mod.rs`)
 
 ### `EventPhase`
 
@@ -118,7 +135,7 @@ Installs the process-global `tracing-subscriber`. Call exactly once at startup (
 
 ---
 
-## Dispatch instrumentation (`crates/bastion/src/main.rs`)
+## Dispatch instrumentation (`src/main.rs`)
 
 Every subcommand dispatch is wrapped with start/outcome events:
 

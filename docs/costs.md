@@ -24,7 +24,7 @@ into a live-updating view with budget-threshold alerts — see [Watch mode](#wat
 > writer as of `BA.7.C` — runs triggered through the embedded `engine-serve` write via
 > `engine-store` instead).
 
-## Usage
+## Quickstart
 
 ```bash
 bastion costs --last 7d    # last 7 days (default)

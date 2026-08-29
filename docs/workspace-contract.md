@@ -23,6 +23,23 @@ version bastion is built against and maps each contract rule to bastion's Rust s
 > the Python half (`OR.C`) must match. When the canonical contract bumps, re-pin the version here
 > and update the mappings.
 
+## Quickstart
+
+This page is a **pin**, not a tutorial — there is nothing here to run. Use it for one of two
+things:
+
+| You are… | Go to |
+|---|---|
+| checking which version of the canonical contract this repo is built against | the **Pinned Contract Version** line at the top of this page |
+| reacting to the canonical contract bumping | [Re-pin checklist](#re-pin-checklist-when-the-canonical-contract-bumps) |
+
+The canonical document is owned by another repo (named just above). **Never edit the mappings
+here to describe new upstream behaviour without bumping the pinned version** — a mapping that
+silently describes a newer contract than the pin claims is the failure this file exists to
+prevent.
+
+---
+
 ---
 
 ## Rule mappings

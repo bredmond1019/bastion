@@ -16,6 +16,25 @@ bastion's session-control surface manages the long-running tmux sessions on the 
 Claude Code and other persistent work. It shells out to the `tmux` CLI via `std::process::Command` —
 bastion **manages** these sessions; it does not run Claude Code itself.
 
+## Quickstart
+
+```bash
+bastion sessions                     # what is running right now
+bastion new work --dir ~/Dev/repo    # create a detached session
+bastion send work cargo nextest run  # run something in it without attaching
+bastion capture work --lines 40      # read the last 40 lines of its output
+bastion attach work                  # take the terminal over (Ctrl-b d to detach)
+bastion kill work                    # destroy it — no confirmation prompt
+bastion                              # or drive all of the above from the TUI
+```
+
+| Must exist first | If it is missing |
+|---|---|
+| `tmux` installed and on `PATH` | Every verb prints a clear message and exits — see [Error behavior](#error-behavior). |
+| A running tmux server (any session) | `bastion sessions` reports no server rather than failing. |
+
+No database, no orchestrator, no network. This surface works with the whole stack down.
+
 ## Guarantees
 
 - **Database-free (D4).** This surface never opens a Postgres pool or loads `DATABASE_URL`. Every
@@ -50,7 +69,7 @@ tab bar — a single left sidebar (the **spine**) is the primary navigator, and 
 on whichever spine row is selected:
 
 - **Sidebar (the spine):** A flat, selectable list built by `spine_rows()`
-  (`crates/bastion/src/brain/spaces.rs`) over the `brain.toml` workspace tree: `◆ Mission Control` is pinned
+  (`src/brain/spaces.rs`) over the `brain.toml` workspace tree: `◆ Mission Control` is pinned
   first, followed by the `HQ` header and its children (`learn-ai`, `base-template` — the old
   standalone `brain` leaf is collapsed into `HQ`), then the `core`/`side`/`client`/`portfolio`
   tier headers and their spaces. Tier headers and `HQ` are selectable rows, not just section

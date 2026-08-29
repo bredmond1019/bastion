@@ -20,6 +20,30 @@ callback acknowledgement) is reused verbatim from `src/serve/notify/telegram.rs`
 `engine_core::operator`. This file documents the verb; see [config.md](config.md) for the
 underlying env vars.
 
+## Quickstart
+
+Both verbs are shell commands.
+
+```bash
+# fire-and-forget: tell the operator something, do not wait
+bastion notify send --text "lane BA.21 finished, 3 docs rewritten"
+
+# gated question: post buttons and BLOCK until the operator taps one
+bastion notify ask \
+  --gate-id ba21-merge \
+  --summary "Merge BA.21 docs pass to main?" \
+  --option yes:Merge --option no:Hold \
+  --timeout-secs 300
+echo $?     # 0 answered · 2 timed out · 3 stale digest · 4 another ask holds the lock
+```
+
+| Must exist first | If it is missing |
+|---|---|
+| `BASTION_LANE_BOT_TOKEN` + `BASTION_LANE_CHAT_ID` (for the default `--bot lane`) | Hard error naming **both** env vars. There is no silent fallback to another bot. |
+
+`ask` blocks the calling shell for up to `--timeout-secs`. Do not put it in a path that must
+return promptly, and read the exit code — a timeout is not a "no".
+
 ## `--bot <slug>` routing
 
 Both verbs take `--bot <slug>`, defaulting to `lane`. The slug selects which bot's credentials

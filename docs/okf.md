@@ -12,19 +12,41 @@ related: [validate, brain, bastion-product-plan]
 
 # okf-core — OKF Frontmatter Model, Parser & Serializer
 
-`crates/okf-core` is the single-sourced OKF frontmatter contract: the parser (`extract_frontmatter`,
+`core/okf-core` is the single-sourced OKF frontmatter contract: the parser (`extract_frontmatter`,
 `parse_frontmatter`, `Frontmatter`, `ParseResult`) and the write-direction model + serializer
 (`OkfFrontmatter`, `serialize_frontmatter`) now live together in one dependency-light workspace crate.
-`crates/bastion/src/validate/frontmatter.rs` re-exports the parser and layers `validate_frontmatter` on
-top of it; `crates/bastion/src/brain/okf.rs` calls `okf_core::parse_frontmatter` directly to extract
+`src/validate/frontmatter.rs` re-exports the parser and layers `validate_frontmatter` on
+top of it; `src/brain/okf.rs` calls `okf_core::parse_frontmatter` directly to extract
 `doc_id`/`title` for the graph; `mev` validates a whole corpus against the same contract.
 
-> **Why it exists:** the [Bastion Product plan](../planning/bastion-product/plan.md) turns `bastion` into
+> **Why it exists:** the Bastion Product plan (`planning/bastion-product/plan.md`, HQ vault) turns `bastion` into
 > an adoptable "agent OS." Standing up a brain in someone else's repo (`bastion init`) and backfilling
 > frontmatter onto existing docs (`bastion adopt`, later) both require *producing* correct frontmatter, not
 > just checking it. `okf-core` (plan block **BA.15.1**, after the workspace consolidation in **BA.15.0**) is
-> that single source of truth — extracted from the in-repo `crates/bastion/src/okf` prototype (model +
-> serializer) and the parser that previously lived embedded in `crates/bastion/src/validate/frontmatter.rs`.
+> that single source of truth — extracted from the in-repo `src/okf` prototype (model +
+> serializer) and the parser that previously lived embedded in `src/validate/frontmatter.rs`.
+
+## Quickstart
+
+`okf-core` is a **library crate, not a subcommand**. Two ways to reach it:
+
+```bash
+# as a user — the commands that consume it
+bastion validate ./docs          # frontmatter + link checks over a tree
+bastion validate-brain .         # the whole corpus, via mev
+bastion assess . --json          # coverage numbers without validating
+```
+
+```rust
+// as a caller — the crate itself (core/okf-core, a sibling repo)
+use okf_core::{parse_frontmatter, serialize_frontmatter, OkfFrontmatter};
+
+let parsed = parse_frontmatter(file_contents);          // read direction
+let text   = serialize_frontmatter(&OkfFrontmatter { /* … */ });  // write direction
+```
+
+The point of the crate is that both directions share one model, so anything `bastion` writes
+is something `bastion validate-brain` will accept — see [Round-trip guarantee](#round-trip-guarantee).
 
 ## What OKF frontmatter is
 
@@ -36,7 +58,7 @@ frontmatter is what makes the corpus queryable as a graph (see [brain.md](brain.
 
 ## The parser — `extract_frontmatter` / `parse_frontmatter`
 
-`crates/okf-core/src/parse.rs` owns the hand-rolled `---`-fence parser:
+`core/okf-core/src/parse.rs` owns the hand-rolled `---`-fence parser:
 
 ```rust
 pub fn extract_frontmatter(content: &str) -> ParseResult
@@ -45,14 +67,14 @@ pub fn parse_frontmatter(content: &str) -> Option<Frontmatter>   // Ok(fm) varia
 
 `ParseResult` is `Ok(Frontmatter) | UnterminatedFence { open_line } | MalformedLine { source_line } |
 NoFrontmatter`. `Frontmatter` holds `fields: HashMap<String, (String, usize)>` (value + 1-based source
-line, for error reporting) plus `open_line`/`close_line`. `crates/bastion/src/validate/frontmatter.rs`
+line, for error reporting) plus `open_line`/`close_line`. `src/validate/frontmatter.rs`
 re-exports all four items (`pub use okf_core::{Frontmatter, ParseResult, extract_frontmatter,
 parse_frontmatter}`) and builds `validate_frontmatter`'s required/empty-field checks on top; `brain/okf.rs`
 calls `okf_core::parse_frontmatter` directly to pull `doc_id`/`title` for the graph.
 
 ## The model — `OkfFrontmatter`
 
-`crates/okf-core/src/frontmatter.rs` defines `OkfFrontmatter`, a `serde`-derived struct mirroring the OKF contract:
+`core/okf-core/src/frontmatter.rs` defines `OkfFrontmatter`, a `serde`-derived struct mirroring the OKF contract:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -90,7 +112,7 @@ Emits a canonical `---`-fenced block (opening + closing fence + trailing newline
 ### Quoting
 
 The serializer is **hand-rolled** (no `serde_yaml` dependency) to match the house-style hand-rolled parser
-that lives alongside it in `crates/okf-core/src/parse.rs`. A scalar is left bare unless it would be misparsed by YAML, in which case
+that lives alongside it in `core/okf-core/src/parse.rs`. A scalar is left bare unless it would be misparsed by YAML, in which case
 it is double-quoted with `\` and `"` escaped. `needs_quote` quotes when the value:
 
 - has significant leading/trailing whitespace,
@@ -114,7 +136,7 @@ value ever serialized in a form the parser couldn't recover, these tests would f
 
 ## The state schema — `state.rs`
 
-`crates/okf-core/src/state.rs` ports (pure model + primitives only, verbatim in shape) mev's
+`core/okf-core/src/state.rs` ports (pure model + primitives only, verbatim in shape) mev's
 `brain/state.rs`: the `serde` structs mirroring `planning/state-schema.md` — `StateFile`, `Block`,
 `Track`, `TrackBlock`, `Carryover`, `CarryoverScope`, `Backlog`, `Focus`, `Origin`, `Endpoint`,
 `BlockedBy`, `RepoRollup`, `TierEntry`, `CrossRepoEdge` — plus `load_state(&Path) ->
@@ -125,7 +147,7 @@ types and stays in mev — it consumes these shared types rather than duplicatin
 
 ## The graph model — `graph.rs` / `graph_emit.rs`
 
-`crates/okf-core/src/graph.rs` and `graph_emit.rs` port the pure graph/edge-resolution model shared
+`core/okf-core/src/graph.rs` and `graph_emit.rs` port the pure graph/edge-resolution model shared
 with mev's `brain::graph` and `brain::graph_emit` (Phase 3 / 3B, Blocks J and R): `Node`, `Edge`,
 `EdgeKind`, `Graph`, `GraphArtifact`, `EdgeResolution`, `resolve_edge`, and the `GraphExport` v2
 emitter (`ExportedEdge`, `build_graph_export`). Only the pure model + `resolve_edge`/
@@ -152,10 +174,10 @@ diagnostic-producing `check_graph` stay in mev, since they depend on mev-only ty
 
 ## Status & roadmap
 
-Extraction complete (**BA.15.1**, after the workspace consolidation in **BA.15.0**): `crates/okf-core/`
+Extraction complete (**BA.15.1**, after the workspace consolidation in **BA.15.0**): `core/okf-core/`
 is now the single-sourced contract that `bastion` depends on as a workspace crate. `mev` and the
 scaffolder are expected to depend on it next, so `bastion init` can never write frontmatter that
-`bastion validate-brain` would reject. See the [Bastion Product plan](../planning/bastion-product/plan.md).
+`bastion validate-brain` would reject. See the Bastion Product plan (`planning/bastion-product/plan.md`, HQ vault).
 
 **BA.15.12 (mev/okf-core convergence, this pass):** `okf-core` now also carries the `state.json`
 schema/graph model (`state.rs`) and the shared knowledge-graph model + v2 export emitter

@@ -24,15 +24,39 @@ phone over SSH.
 
 For the full verb/key reference, see [sessions.md](sessions.md). This guide is the workflow.
 
+## Quickstart
+
+Four shell commands get a Claude Code session running and answering.
+
+```bash
+bastion new agent --dir ~/Dev/agentic-portfolio/core/bastion   # 1. durable container
+bastion send agent claude --permission-mode bypassPermissions  # 2. launch Claude inside it
+bastion send agent 'summarise docs/index.md'                   # 3. prompt it
+bastion capture agent --lines 60                               # 4. read what it said
+```
+
+| Must exist first | If it is missing |
+|---|---|
+| `tmux` on `PATH` | Every verb fails with a clear message. |
+| The `claude` CLI on `PATH`, and the target directory already Claude-trusted | Step 2 silently does nothing useful — `capture` shows the shell error. |
+
+For a scripted one-shot turn that waits for a file instead of you polling `capture`, use
+`bastion ask` — see [4. Clean up](#4-clean-up) and [sessions.md](sessions.md#verb-reference).
+
 ## The mental model
 
+```mermaid
+flowchart LR
+    YOU["You<br/>(terminal or phone over SSH)"] --> B["bastion<br/>new · send · capture · attach · kill"]
+    B -->|shells out to| T["tmux session<br/>(durable container)"]
+    T -->|holds| C["a long-running<br/>`claude` process"]
+    C -->|pane output| B
 ```
-bastion  ──shells out to──▶  tmux  ──holds──▶  a long-running `claude` process
-   │                                                   ▲
-   │  new / send / capture / attach / kill             │
-   └───────────────────────────────────────────────────┘
-            you drive it from a terminal or phone
-```
+
+In sentences: you run a `bastion` verb; `bastion` shells out to `tmux`; the tmux session holds a
+`claude` process that keeps running after you disconnect; `capture` and `attach` read that
+session's pane back out. **You personally do only the first step** — everything else is bastion
+and tmux.
 
 A tmux session is a durable container. Claude Code runs *inside* it and keeps running after
 you detach — so you can kick off a task, disconnect, and reconnect later to the same live

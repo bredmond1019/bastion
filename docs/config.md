@@ -18,6 +18,29 @@ bastion resolves configuration from three layers, in descending precedence:
 2. **`~/.config/bastion/config.toml`** (or `$XDG_CONFIG_HOME/bastion/config.toml`)
 3. **Built-in defaults** (lowest precedence)
 
+## Quickstart
+
+```bash
+# the minimum for the observability commands
+export DATABASE_URL="postgres://user:pass@localhost:5432/db"
+export BASTION_API_URL="http://localhost:8080"
+bastion status            # confirms both are reachable
+
+# optional: named corpus roots for `brain`, `code` and `momentum`
+mkdir -p ~/.config/bastion
+cat > ~/.config/bastion/config.toml <<'TOML'
+default_workspace = "brain"
+
+[workspaces]
+brain = "/Users/you/Dev/agentic-portfolio"
+TOML
+```
+
+Nothing here is required to run `bastion sessions`, `bastion view` or the brain-ops
+pass-throughs — those read no configuration at all. Full variable table:
+[Environment variables](#environment-variables). Which command needs what:
+[commands.md § Quickstart](commands.md#quickstart).
+
 ## Global CLI flags
 
 These flags appear before the subcommand and apply to every invocation:
@@ -47,9 +70,9 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `BASTION_MAX_COST_USD` | No | — (no cap) | Budget cap (BA.7.C): total USD-cost ceiling. Same absent-tolerant / malformed-is-fatal contract as `BASTION_MAX_TOTAL_TOKENS`. |
 | `BASTION_ENGINE_API_KEY` | No (required to use `bastion abort` / engine routes) | — | `X-API-Key` secret for the engine's abort endpoint. **Distinct from `BASTION_SERVE_TOKEN`** — two different secrets, two different schemes, two different route groups: this key is sent by `api::client` and checked by the embedded engine's `AppState.api_key`; `BASTION_SERVE_TOKEN` gates bastion serve's own session/status routes. Never reuse one for the other. |
 | `BASTION_ENGINE_HARNESS_PATH` | No | — (no schedule loop spawned) | Path to the `harness.json` whose `schedule` block configures the embedded engine's scheduled entries (`engine_serve::schedule::spawn_schedule_loop`). Absent, empty, or pointing at a path that does not exist/is not readable all resolve to `None` — the ordinary case today — and `bastion serve` starts with no schedule loop, logged at info, not error. A path that resolves but whose `schedule` block fails to parse is a distinct, louder `tracing::error!` outcome, but still does not abort startup. Env-var only — no `config.toml` key. |
-| `BASTION_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token for the operator-notification transport (`BA.18.B`, [serve-api.md](serve-api.md#26-operator-notification-transport-v027-ba18b)). **Mini-plist-only** — the real value lives in `com.brandon.engine-serve.plist` on the Mac Mini and is never written to any tracked file, `.env`, test, or fixture in this repo. Both this and `BASTION_TELEGRAM_CHAT_ID` absent leaves the transport unconfigured (`bastion serve` boots unchanged); exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
+| `BASTION_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token for the operator-notification transport (`BA.18.B`, [serve-api.md](serve-api.md#26-operator-notification-transport)). **Mini-plist-only** — the real value lives in `com.brandon.engine-serve.plist` on the Mac Mini and is never written to any tracked file, `.env`, test, or fixture in this repo. Both this and `BASTION_TELEGRAM_CHAT_ID` absent leaves the transport unconfigured (`bastion serve` boots unchanged); exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
 | `BASTION_TELEGRAM_CHAT_ID` | No | — | Operator's Telegram chat id the bot delivers to. Same Mini-plist-only, absent-tolerant, paired-with-the-token contract as `BASTION_TELEGRAM_BOT_TOKEN` above. |
-| `BASTION_CODESESSIONS_BOT_TOKEN` | No | — | Bot token for CodeSessionsBot, the session-QA bridge's bot (`BA.20.C`, [serve-api.md](serve-api.md#27-session-qa-bridge-background-bot-no-new-http-surface-ba20c)). **Deliberately distinct from `BASTION_TELEGRAM_BOT_TOKEN`** — that pair is BastionBot's approve/reject gate transport; this pair is a second bot, shared with the HQ chore's `claude_session_notify.sh`. CodeSessionsBot does not exist yet as of `BA.20.C`, so unset is the expected state today (bridge disabled). Both this and `BASTION_CODESESSIONS_CHAT_ID` absent leaves the bridge disabled; exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
+| `BASTION_CODESESSIONS_BOT_TOKEN` | No | — | Bot token for CodeSessionsBot, the session-QA bridge's bot (`BA.20.C`, [serve-api.md](serve-api.md#27-session-qa-bridge)). **Deliberately distinct from `BASTION_TELEGRAM_BOT_TOKEN`** — that pair is BastionBot's approve/reject gate transport; this pair is a second bot, shared with the HQ chore's `claude_session_notify.sh`. CodeSessionsBot does not exist yet as of `BA.20.C`, so unset is the expected state today (bridge disabled). Both this and `BASTION_CODESESSIONS_CHAT_ID` absent leaves the bridge disabled; exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
 | `BASTION_CODESESSIONS_CHAT_ID` | No | — | The operator's Telegram chat id CodeSessionsBot delivers to. Same absent-tolerant, paired-with-the-token contract as `BASTION_CODESESSIONS_BOT_TOKEN` above. |
 | `BASTION_LANE_BOT_TOKEN` | No | — | Bot token for LaneBot, the third bot `bastion notify send\|ask` (`BA.ticket.notify-operator-cli`, [notify.md](notify.md)) uses by default. **Deliberately distinct from `BASTION_TELEGRAM_BOT_TOKEN` and `BASTION_CODESESSIONS_BOT_TOKEN`** — `bastion serve` already runs one `getUpdates` long-poll per bot token (BastionBot's approve/reject gate, CodeSessionsBot's session-QA bridge), and Telegram hands each update to exactly one consumer, so a CLI polling either of those tokens would steal the taps those loops exist to receive. LaneBot's credentials are not provisioned yet (`operator-lanebot-credential`); both this and `BASTION_LANE_CHAT_ID` absent leaves `--bot lane` unconfigured — exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
 | `BASTION_LANE_CHAT_ID` | No | — | The operator's Telegram chat id LaneBot delivers to. Same absent-tolerant, paired-with-the-token contract as `BASTION_LANE_BOT_TOKEN` above. |
@@ -104,8 +127,16 @@ the only implemented preset.
 
 ## Workspace registry
 
-The `[workspaces]` table and `default_workspace` key support named corpus roots for
-`bastion brain`. They have no effect on the observability track (monitor, costs, inspect).
+The `[workspaces]` table and `default_workspace` key name the repos bastion can look at, so you
+do not have to pass `--root` every time. Three commands read it:
+
+- [`bastion brain`](brain.md) and [`bastion code`](code.md) — to resolve the corpus / source root
+  to scan (both also accept `--root` and `--workspace`, which override it).
+- [`bastion momentum`](momentum.md) — to know which repos to roll up. Unlike the other two, it
+  reads **every** registered workspace and has no `--root` escape hatch, so an unregistered repo
+  simply does not appear.
+
+It has no effect on the observability track (monitor, costs, inspect).
 
 | Key | Type | Description |
 |---|---|---|
@@ -146,7 +177,7 @@ as its numeric type (e.g. `BASTION_MAX_TOTAL_TOKENS=not-a-number`) is a fatal
 ## Operator-notification transport (`BA.18.B`)
 
 Two fully optional env vars configure the Telegram operator-notification transport
-(`src/serve/notify/`); see [serve-api.md §26](serve-api.md#26-operator-notification-transport-v027-ba18b)
+(`src/serve/notify/`); see [serve-api.md §26](serve-api.md#26-operator-notification-transport)
 for the full contract.
 
 | Env var | Type | Description |
@@ -183,7 +214,7 @@ the reader — before relying on the Mini for operator notifications.
 
 A second, fully optional env-var pair configures CodeSessionsBot, the session-QA bridge's bot
 (`src/serve/session_qa/`); see
-[serve-api.md §27](serve-api.md#27-session-qa-bridge-background-bot-no-new-http-surface-ba20c) for
+[serve-api.md §27](serve-api.md#27-session-qa-bridge) for
 the full contract.
 
 | Env var | Type | Description |
@@ -230,7 +261,7 @@ Built-in defaults apply only when both the environment and file omit a value.
 
 `DATABASE_URL` is the only required value — it must appear in at least one source.
 
-## Public API (`crates/bastion/src/config.rs`)
+## Public API (`src/config.rs`)
 
 ### `ConfigError`
 

@@ -6,7 +6,7 @@ doc_id: brainval
 layer: [console, brain]
 project: bastion
 status: active
-keywords: [mev, validate-brain, manifest, graph, emit-state, OKF, pass-through, build-stamp, drift]
+keywords: [mev, validate-brain, manifest, emit-state, pass-through, build-stamp, drift]
 related: [brain, validate, okf]
 ---
 
@@ -19,7 +19,7 @@ BA.15.2 — see `planning/decisions/D15`). All four resolve `brain.toml` by walk
 into the matching `mev::*` function — no bastion-side reimplementation of validation, manifest,
 or graph logic.
 
-## Usage
+## Quickstart
 
 ```
 bastion validate-brain [PATH] [--sync] [--graph] [--state] [--links] [--structure] [--json]
@@ -127,7 +127,7 @@ subcommands. Defaults to a dry run.
 
 ## Module Layout
 
-All four handlers live in `crates/bastion/src/brainval/mod.rs`.
+All four handlers live in `src/brainval/mod.rs`.
 
 | Item | Kind | Description |
 |---|---|---|

@@ -16,7 +16,7 @@ related: [validate, brain]
 markdown viewer (Phase 15, Block BA.15.2 — see `planning/decisions/D14`). No `bella` or
 `bella-engine` source is touched.
 
-## Usage
+## Quickstart
 
 ```
 bastion view <PATH>
@@ -49,7 +49,7 @@ without another CLI-shape change.
 
 ## Module Layout
 
-All logic lives in `crates/bastion/src/docview/mod.rs`.
+All logic lives in `src/docview/mod.rs`.
 
 | Item | Kind | Description |
 |---|---|---|
