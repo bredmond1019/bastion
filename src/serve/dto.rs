@@ -56,10 +56,24 @@ use typeshare::typeshare;
 
 /// JSON body returned by `GET /health`.
 ///
-/// Matches the shape documented in `docs/serve-api.md` v0:
+/// Matches the shape documented in `docs/serve/serve-api.md` §3:
 /// ```json
-/// { "status": "ok", "service": "bastion" }
+/// { "status": "ok", "service": "bastion", "engine_build_sha": "<sha>" }
 /// ```
+///
+/// `engine_build_sha` was added by `ticket-health-reports-engine-build-sha`. It is
+/// **additive**: a pre-existing consumer parsing only `{status, service}` is unaffected,
+/// and the field is `Option` on the *read* side (`#[serde(default)]`) so a body emitted by
+/// an older `bastion serve` still deserializes into this type. It is always populated on
+/// the *write* side by [`HealthResponse::ok`].
+///
+/// Why it lives on **bastion's** health handler rather than engine-serve's: `engine-serve`
+/// registers its own `GET /health` carrying the same field, but `run()` deliberately
+/// registers bastion's `/health` **first** and actix-web resolves duplicate exact-path
+/// resources first-registration-wins (`BA.7.C` task 2 — see the comment above `App::new()`
+/// in `serve/mod.rs`), so engine-serve's handler is unreachable in the deployed process.
+/// The ordering is the thing that keeps bastion's liveness contract stable for existing
+/// consumers, so the field is added to the handler that actually answers instead.
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HealthResponse {
@@ -67,14 +81,31 @@ pub struct HealthResponse {
     pub status: String,
     /// Service identifier; always `"bastion"`.
     pub service: String,
+    /// Build label of the embedded engine (`engine_core::engine_build_sha()`) — the full
+    /// git SHA, `"<sha>-dirty"` for a build from a dirty tree, or `"unknown"` when
+    /// provenance could not be established at build time.
+    ///
+    /// Lets an operator ask a running daemon which build it is without dispatching a run.
+    /// The value is a `build.rs` compile-time constant: no git subprocess, no I/O, so
+    /// `/health` stays a cheap unauthenticated liveness probe.
+    ///
+    /// `None` only when deserializing a body from an older server that predates the field;
+    /// this server always emits it.
+    #[serde(default)]
+    pub engine_build_sha: Option<String>,
 }
 
 impl HealthResponse {
     /// Construct the canonical liveness response.
+    ///
+    /// `engine_build_sha` is read through `engine_core::engine_build_sha()` — the single
+    /// accessor — rather than composed from `GIT_SHA`/`DIRTY` here, so this route and the
+    /// run artifact that stamps the same label can never drift apart.
     pub fn ok() -> Self {
         Self {
             status: "ok".to_owned(),
             service: "bastion".to_owned(),
+            engine_build_sha: Some(engine_core::engine_build_sha()),
         }
     }
 }
@@ -2530,6 +2561,63 @@ mod tests {
         assert!(
             result.is_err(),
             "deserialize must fail when 'status' field is missing"
+        );
+    }
+
+    /// The whole point of the field: an operator must be able to read the build label
+    /// off a running daemon, and it must be the *same* label the engine stamps
+    /// everywhere else — so it is asserted equal to the single accessor, never to a
+    /// literal.
+    #[test]
+    fn health_response_ok_carries_engine_build_sha_matching_accessor() {
+        let h = HealthResponse::ok();
+        assert_eq!(
+            h.engine_build_sha.as_deref(),
+            Some(engine_core::engine_build_sha().as_str()),
+            "HealthResponse::ok() must source engine_build_sha from \
+             engine_core::engine_build_sha(), so the two cannot drift"
+        );
+        assert!(
+            !engine_core::engine_build_sha().is_empty(),
+            "the accessor must never yield an empty label"
+        );
+    }
+
+    #[test]
+    fn health_response_serializes_engine_build_sha() {
+        let h = HealthResponse::ok();
+        let v = serde_json::to_value(&h).expect("serialize HealthResponse");
+        assert_eq!(
+            v["engine_build_sha"],
+            serde_json::Value::String(engine_core::engine_build_sha()),
+            "serialized body must carry engine_build_sha; got {v}"
+        );
+    }
+
+    /// ADDITIVE-ONLY guard: a body emitted by a server predating the field must still
+    /// deserialize, yielding `None` rather than an error.
+    #[test]
+    fn health_response_deserializes_legacy_body_without_engine_build_sha() {
+        let raw = r#"{"status":"ok","service":"bastion"}"#;
+        let h: HealthResponse = serde_json::from_str(raw)
+            .expect("a legacy {status, service} body must still deserialize");
+        assert_eq!(h.status, "ok");
+        assert_eq!(h.service, "bastion");
+        assert_eq!(
+            h.engine_build_sha, None,
+            "a body with no engine_build_sha key must decode to None, not fail"
+        );
+    }
+
+    #[test]
+    fn health_response_round_trip_preserves_engine_build_sha() {
+        let original = HealthResponse::ok();
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: HealthResponse = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, decoded, "round-trip must preserve all fields");
+        assert_eq!(
+            decoded.engine_build_sha,
+            Some(engine_core::engine_build_sha())
         );
     }
 

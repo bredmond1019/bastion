@@ -108,6 +108,19 @@
 //!    deterministic across days — this rule is the backstop for the
 //!    still-live `today` the handler itself computes independently a moment
 //!    later, not a replacement for building deterministic fixtures.
+//! 6. **`engine_build_sha` (key-named, string)** — `HealthResponse.engine_build_sha`
+//!    (`ticket-health-reports-engine-build-sha`) wires
+//!    `engine_core::engine_build_sha()`, a `build.rs` compile-time constant that is a
+//!    different literal on every commit and gains a `-dirty` suffix on any uncommitted
+//!    tree. Freezing the literal would make `check-contract-corpus-drift.sh` fail on
+//!    **every** commit — the exact "trains reviewers to ignore the diff" failure this
+//!    section exists to prevent — while freezing nothing of contractual value: the
+//!    contract is that the *key is present and carries a string*, not which build
+//!    produced it. Like rule 5 this is key-named rather than pattern-matched (a 40-hex
+//!    SHA is indistinguishable from any other opaque identifier by value alone), and it
+//!    preserves the JSON type (`String`), so a consumer asserting the field is a string
+//!    still passes. That the value equals the accessor is pinned by unit tests in
+//!    `serve/dto.rs` and `serve/mod.rs`, which is where a value assertion belongs.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -298,14 +311,26 @@ fn redact_string_value(value: &str) -> Option<&'static str> {
 /// freeze.
 const VOLATILE_NUMERIC_KEYS: [&str; 1] = ["age_days"];
 
-/// Recursively redact every string *value* in `value` in place, plus the
-/// small key-named numeric exception in [`VOLATILE_NUMERIC_KEYS`] (redaction
-/// rule 5). Object **keys** are never touched — only
+/// Object-key names whose **string** value is replaced with a sentinel regardless of
+/// its content, per module docs redaction rule 6. Currently just `engine_build_sha` —
+/// the build-identity label `HealthResponse` wires, which necessarily changes on every
+/// commit and would otherwise make the drift check red permanently. Deliberately an
+/// explicit allowlist, not a pattern: no value-shape rule can distinguish a git SHA
+/// from any other opaque identifier this corpus exists to freeze.
+const VOLATILE_STRING_KEYS: [&str; 1] = ["engine_build_sha"];
+
+/// Sentinel substituted for a [`VOLATILE_STRING_KEYS`] value.
+const BUILD_SHA_SENTINEL: &str = "<BUILD_SHA>";
+
+/// Recursively redact every string *value* in `value` in place, plus the two
+/// small key-named exceptions: the numeric [`VOLATILE_NUMERIC_KEYS`] (redaction
+/// rule 5) and the string [`VOLATILE_STRING_KEYS`] (redaction rule 6). Object
+/// **keys** are never touched — only
 /// [`serde_json::Value::String`] leaves (found directly, or nested inside
 /// arrays/objects) are candidates for pattern-based redaction, and only when
 /// they match one of [`redact_string_value`]'s patterns; the
-/// `VOLATILE_NUMERIC_KEYS` exception rewrites a *value* looked up by its
-/// *key* name, never the key itself.
+/// `VOLATILE_NUMERIC_KEYS`/`VOLATILE_STRING_KEYS` exceptions rewrite a *value*
+/// looked up by its *key* name, never the key itself.
 fn redact_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(s) => {
@@ -326,6 +351,10 @@ fn redact_value(value: &mut serde_json::Value) {
             for (key, v) in map.iter_mut() {
                 if VOLATILE_NUMERIC_KEYS.contains(&key.as_str()) && v.is_number() {
                     *v = serde_json::json!(0);
+                    continue;
+                }
+                if VOLATILE_STRING_KEYS.contains(&key.as_str()) && v.is_string() {
+                    *v = serde_json::json!(BUILD_SHA_SENTINEL);
                     continue;
                 }
                 redact_value(v);
@@ -820,6 +849,62 @@ mod harness_tests {
         // The AUTHORED threshold must survive untouched — only the
         // live-clock-derived field is in `VOLATILE_NUMERIC_KEYS`.
         assert_eq!(value["threshold_days"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn redact_value_redacts_engine_build_sha_key_regardless_of_content() {
+        // Redaction rule 6: `engine_build_sha` is redacted by KEY name — a
+        // 40-hex git SHA is indistinguishable by value from any other opaque
+        // identifier this corpus exists to freeze.
+        let mut value = serde_json::json!({
+            "engine_build_sha": "9218ec1f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+            "service": "bastion",
+        });
+        redact_value(&mut value);
+        assert_eq!(
+            value["engine_build_sha"],
+            serde_json::json!("<BUILD_SHA>"),
+            "engine_build_sha must be redacted by key name"
+        );
+        assert!(
+            value["engine_build_sha"].is_string(),
+            "the redaction must preserve the field's JSON type"
+        );
+        // A neighbouring authored string must survive untouched.
+        assert_eq!(value["service"], serde_json::json!("bastion"));
+    }
+
+    /// Every spelling the accessor can produce (clean SHA, `-dirty` suffix,
+    /// the `"unknown"` fallback) must redact to the same sentinel — otherwise
+    /// the drift check would go red purely because a developer had an
+    /// uncommitted file, which is the failure rule 6 exists to prevent.
+    #[test]
+    fn redact_value_redacts_every_engine_build_sha_spelling_identically() {
+        for raw in [
+            "9218ec1f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+            "9218ec1f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f-dirty",
+            "unknown",
+        ] {
+            let mut value = serde_json::json!({ "engine_build_sha": raw });
+            redact_value(&mut value);
+            assert_eq!(
+                value["engine_build_sha"],
+                serde_json::json!("<BUILD_SHA>"),
+                "spelling {raw:?} must redact to the same sentinel"
+            );
+        }
+    }
+
+    #[test]
+    fn build_golden_redacts_the_health_engine_build_sha() {
+        let body = br#"{"status":"ok","service":"bastion","engine_build_sha":"9218ec1f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"}"#;
+        let golden = build_golden(200, body);
+        assert_eq!(
+            golden["body"]["engine_build_sha"],
+            serde_json::json!("<BUILD_SHA>")
+        );
+        assert_eq!(golden["body"]["status"], serde_json::json!("ok"));
+        assert_eq!(golden["body"]["service"], serde_json::json!("bastion"));
     }
 
     #[test]

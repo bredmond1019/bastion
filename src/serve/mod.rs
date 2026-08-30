@@ -2102,6 +2102,54 @@ mod tests {
         );
     }
 
+    /// `GET /health` must carry the embedded engine's build label so an operator can ask a
+    /// running daemon which build it is **without dispatching a run**
+    /// (`ticket-health-reports-engine-build-sha`).
+    ///
+    /// Asserted equal to `engine_core::engine_build_sha()` — the single accessor — rather
+    /// than to a literal, so the route and the accessor cannot drift apart.
+    ///
+    /// This is bastion's OWN `/health`, not engine-serve's: `run()` registers bastion's
+    /// first and actix-web resolves duplicate exact-path resources first-registration-wins
+    /// (`BA.7.C` task 2), which makes engine-serve's identically-pathed handler unreachable
+    /// in the deployed process. The ordering is deliberate and is NOT changed by this
+    /// ticket — the field was added to the handler that actually answers.
+    #[actix_web::test]
+    async fn health_body_contains_engine_build_sha_matching_accessor() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+
+        let req = test::TestRequest::get().uri("/health").to_request();
+        let resp = test::call_service(&app, req).await;
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let sha = body["engine_build_sha"].as_str().unwrap_or_else(|| {
+            panic!("health body must include a string engine_build_sha; got {body}")
+        });
+        assert_eq!(
+            sha,
+            engine_core::engine_build_sha(),
+            "health's engine_build_sha must equal engine_core::engine_build_sha(); got {body}"
+        );
+        assert!(
+            !sha.is_empty(),
+            "engine_build_sha must never be an empty string; got {body}"
+        );
+    }
+
+    /// ADDITIVE-ONLY guard: the two pre-existing keys an existing consumer parses must
+    /// survive the new field verbatim.
+    #[actix_web::test]
+    async fn health_body_keeps_legacy_status_and_service_keys() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+
+        let req = test::TestRequest::get().uri("/health").to_request();
+        let resp = test::call_service(&app, req).await;
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["status"], "ok", "got {body}");
+        assert_eq!(body["service"], "bastion", "got {body}");
+    }
+
     // ── health handler — negative paths ───────────────────────────────────
 
     #[actix_web::test]

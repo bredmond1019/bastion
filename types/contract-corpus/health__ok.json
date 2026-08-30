@@ -1,5 +1,6 @@
 {
   "body": {
+    "engine_build_sha": "<BUILD_SHA>",
     "service": "bastion",
     "status": "ok"
   },

@@ -1062,16 +1062,43 @@ export interface HandoffInfoDto {
 /**
  * JSON body returned by `GET /health`.
  * 
- * Matches the shape documented in `docs/serve-api.md` v0:
+ * Matches the shape documented in `docs/serve/serve-api.md` §3:
  * ```json
- * { "status": "ok", "service": "bastion" }
+ * { "status": "ok", "service": "bastion", "engine_build_sha": "<sha>" }
  * ```
+ * 
+ * `engine_build_sha` was added by `ticket-health-reports-engine-build-sha`. It is
+ * **additive**: a pre-existing consumer parsing only `{status, service}` is unaffected,
+ * and the field is `Option` on the *read* side (`#[serde(default)]`) so a body emitted by
+ * an older `bastion serve` still deserializes into this type. It is always populated on
+ * the *write* side by [`HealthResponse::ok`].
+ * 
+ * Why it lives on **bastion's** health handler rather than engine-serve's: `engine-serve`
+ * registers its own `GET /health` carrying the same field, but `run()` deliberately
+ * registers bastion's `/health` **first** and actix-web resolves duplicate exact-path
+ * resources first-registration-wins (`BA.7.C` task 2 — see the comment above `App::new()`
+ * in `serve/mod.rs`), so engine-serve's handler is unreachable in the deployed process.
+ * The ordering is the thing that keeps bastion's liveness contract stable for existing
+ * consumers, so the field is added to the handler that actually answers instead.
  */
 export interface HealthResponse {
 	/** Liveness status; always `"ok"` when the server is healthy. */
 	status: string;
 	/** Service identifier; always `"bastion"`. */
 	service: string;
+	/**
+	 * Build label of the embedded engine (`engine_core::engine_build_sha()`) — the full
+	 * git SHA, `"<sha>-dirty"` for a build from a dirty tree, or `"unknown"` when
+	 * provenance could not be established at build time.
+	 * 
+	 * Lets an operator ask a running daemon which build it is without dispatching a run.
+	 * The value is a `build.rs` compile-time constant: no git subprocess, no I/O, so
+	 * `/health` stays a cheap unauthenticated liveness probe.
+	 * 
+	 * `None` only when deserializing a body from an older server that predates the field;
+	 * this server always emits it.
+	 */
+	engine_build_sha?: string;
 }
 
 /**

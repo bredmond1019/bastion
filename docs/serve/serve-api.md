@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.38"
+title: "serve-api contract v0.40"
 description: "The pinned HTTP + WebSocket contract for `bastion serve` — bind address, bearer auth, the /ws hub and frame envelope, and the REST surfaces bastion-ui and bastion-web consume. Per-version deltas live in the Amendment Log at the bottom of this file, not here."
 doc_id: serve-api
 layer: [console, surface, engine]
@@ -10,9 +10,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan]
 ---
 
-# serve-api — v0.38 Contract
+# serve-api — v0.40 Contract
 
-**Version:** v0.38  
+**Version:** v0.40  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26, 28–29 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -42,8 +42,10 @@ export DATABASE_URL="postgres://..."                  # optional; needed for the
 export BASTION_ENGINE_API_KEY="<a second secret>"     # optional; mounts the abort/engine routes
 bastion serve                                         # binds 0.0.0.0:4317
 
-# from another shell — /health is the one public route
+# from another shell — /health is the one public route; it also reports which
+# engine build this daemon is running, without dispatching a run
 curl -s localhost:4317/health
+# {"status":"ok","service":"bastion","engine_build_sha":"9218ec1…"}
 
 # every other route needs the bearer token
 curl -s -H "Authorization: Bearer $BASTION_SERVE_TOKEN" localhost:4317/api/board
@@ -120,7 +122,10 @@ same request:
 
 The engine's own `GET /health` is shadowed by bastion's `/health` handler (first-registration-wins
 for duplicate exact-path routes — verified empirically, not a panic), so the process's `/health`
-contract (Section 3) is unchanged regardless of whether the engine is mounted.
+contract (Section 3) is unchanged regardless of whether the engine is mounted. Because of that
+shadowing, anything the engine's health handler reports has to be mirrored onto bastion's to be
+reachable at all — which is why bastion's response, not engine-serve's, carries `engine_build_sha`
+(v0.40; Section 3).
 
 ### 2.1 Scheme
 
@@ -195,7 +200,8 @@ Content-Type: application/json
 ```json
 {
   "status": "ok",
-  "service": "bastion"
+  "service": "bastion",
+  "engine_build_sha": "9218ec1f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
 }
 ```
 
@@ -203,6 +209,20 @@ Content-Type: application/json
 |---|---|---|
 | `status` | string | Always `"ok"` when the server is healthy |
 | `service` | string | Always `"bastion"` |
+| `engine_build_sha` (v0.40) | string | Build label of the embedded engine — `engine_core::engine_build_sha()`. The full 40-char git SHA, `"<sha>-dirty"` when the binary was built from a dirty tree, or `"unknown"` when provenance could not be established at build time. Additive: a consumer parsing only `{status, service}` is unaffected |
+
+**Why the build label is on *bastion's* `/health`, not engine-serve's.** `engine-serve`
+registers its own `GET /health` carrying the same field, but `run()` deliberately registers
+bastion's `/health` **before** `.configure(engine_serve::http::configure)`, and actix-web resolves
+duplicate exact-path resources first-registration-wins (`BA.7.C` task 2) — so engine-serve's
+identically-pathed handler is unreachable in the deployed process. That ordering is what keeps this
+liveness contract stable for existing consumers, so the field was added to the handler that actually
+answers rather than by reordering the two registrations.
+
+`engine_build_sha` costs nothing to serve: it is a `build.rs` compile-time constant, so no git
+subprocess and no I/O runs at request time and `/health` stays a cheap unauthenticated probe. Its
+value is asserted equal to `engine_core::engine_build_sha()` by tests in `src/serve/dto.rs` and
+`src/serve/mod.rs`, so this route and the run artifact that stamps the same label cannot drift.
 
 ### Error responses
 
@@ -3865,6 +3885,21 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-08-30 — v0.39 → v0.40 (`ticket-health-reports-engine-build-sha`, additive):** `GET /health`
+  (Section 3) now carries `engine_build_sha`, sourced from `engine_core::engine_build_sha()`, so an
+  operator can ask a running daemon which build it is without dispatching a run. Additive only — a
+  consumer parsing `{status, service}` is unaffected, and `HealthResponse.engine_build_sha` is
+  `Option` with `#[serde(default)]` on the read side so a body from an older server still
+  deserializes. The field was added to **bastion's** handler rather than by reordering the two
+  `/health` registrations: `engine-serve`'s identically-pathed handler already carried the field
+  (`EN.ticket.stamp-engine-sha-on-every-run` task 3) but is unreachable in the deployed process,
+  because `run()` registers bastion's `/health` first and actix-web resolves duplicate exact-path
+  resources first-registration-wins (`BA.7.C` task 2) — that ordering is deliberate and unchanged.
+  The `health__ok` contract-corpus golden pins the field through a new key-named redaction
+  (`src/serve/contract_corpus.rs` rule 6, sentinel `<BUILD_SHA>`); freezing the literal SHA would
+  make `check-contract-corpus-drift.sh` fail on every commit while freezing nothing of contractual
+  value. Note: this entry also corrects the header, which still read `v0.38` after `BA.21.C`'s
+  `v0.38 → v0.39` bump was recorded here but never applied to the title/`**Version:**` lines.
 - **2026-08-24 — v0.38 → v0.39 (`BA.21.C`, additive; doc-target deviation):** Added Section 27.1
   (Headless question path). The block record named `docs/cli.md` as the file to modify; that file
   does not exist in this repo (the same stale-record drift `BA.21.B` hit and recorded), so this
