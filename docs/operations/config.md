@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [configuration, environment variables, config file, workspace registry, precedence, TOML, theme]
-related: [observ, serve-api, brain, sessions]
+related: [observ, serve-api, brain, sessions, telegram-commands]
 ---
 
 # Configuration
@@ -291,6 +291,7 @@ Struct that mirrors the config-file keys. All fields are optional; constructed b
 | `max_total_tokens` | `Option<u64>` | Budget cap (BA.7.C): total token ceiling. |
 | `max_cost_usd` | `Option<f64>` | Budget cap (BA.7.C): total USD-cost ceiling. |
 | `engine_api_key` | `Option<String>` | `X-API-Key` secret for the engine's abort endpoint (BA.7.C). Distinct from `ServeConfig.token`. |
+| `telegram_commands` | `Option<HashMap<String, TelegramCommandEntry>>` | Optional `[telegram_commands]` allow-list mapping a command name to a triggerable workflow. See [telegram-commands.md](../serve/telegram-commands.md). |
 
 ### `ThemeConfig`
 
