@@ -7,7 +7,7 @@ layer: [console, surface]
 project: bastion
 status: active
 keywords: [serve, websocket, api contract, notify, telegram, index]
-related: [bastion-cli-docs-index, commands, tuning]
+related: [bastion-cli-docs-index, commands, tuning, telegram-commands]
 ---
 
 # Network Face & Operator Contact
@@ -23,6 +23,7 @@ out which header carries which.
 |---|---|
 | [serve-api.md](serve-api.md) | The pinned HTTP + WebSocket contract for `bastion serve` — bind address, the two auth schemes, the `/ws` hub and frame envelope, and every REST surface. `bastion-ui` and `bastion-web` pin against this file |
 | [notify.md](notify.md) | `bastion notify send\|ask` — a message, or a gated question that **blocks** until the operator taps an answer |
+| [telegram-commands.md](telegram-commands.md) | The session-QA bridge's `/command` router — built-in read-only commands, the `[telegram_commands]` allow-list that dispatches a workflow through `POST /events/`, and how to add one |
 
 `serve-api.md` is a **contract**: it is versioned, and per-version deltas live in its Amendment
 Log. Do not describe new behaviour there without bumping the version.
