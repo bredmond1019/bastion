@@ -48,11 +48,9 @@ engine-rs — so adding a triggerable command is a config edit, not a code chang
 
 3. **Type the command in Telegram**, in the configured chat: `/research Acme Corp`.
 
-## What must exist first — summary table
-
-The chat-id pin, the config path, and the engine-mount prerequisite are all covered above. One
-more thing worth stating up front: the router is **silent by design** for any chat id other than
-the one configured — see [Troubleshooting](#troubleshooting).
+> **The router is silent by design for any chat id but the configured one** — no reply, no error,
+> nothing in the chat. If a command appears to do nothing at all, check the chat id first; see
+> [Troubleshooting](#troubleshooting).
 
 ## How a message becomes a dispatch
 
@@ -91,8 +89,8 @@ once, in config — see [notify.md](notify.md) for how the `codesessions` bot's 
 | built-in | `/lanes` | — | a live lane report |
 | built-in | `/attention` | — | a live attention-board report |
 | built-in | `/help` (alias `/commands`) | — | every built-in plus every configured command, each rendered as its usage line |
-| example | `/article <url>` | `CONTENT_PIPELINE` | `{"envelope": {"source": {"type": "url", "url": "<url>"}, ...}}` |
-| example | `/yt <link>` | `CONTENT_PIPELINE` | `{"envelope": {"source": {"type": "video_id", "video_id": "<extracted id>"}, ...}}` |
+| example | `/article <url>` | `CONTENT_PIPELINE` | `{"envelope": {"source": {"kind": "url", "url": "<url>"}, ...}}` |
+| example | `/yt <link>` | `CONTENT_PIPELINE` | `{"envelope": {"source": {"kind": "video_id", "video_id": "<extracted id>"}, ...}}` |
 | example | `/research <company>` | `RESEARCH_AGENT` | `{"mode": "company", "profile": "thorough", "company_name": "<company>"}` |
 | example | `/intake <notes>` | `DIAGNOSTIC_INTAKE` | `{"notes": "<notes>"}` |
 | example | `/linkedin <since> <until>` | `LINKEDIN_POST` | `{"since": "<arg 0>", "until": "<arg 1>"}` |
