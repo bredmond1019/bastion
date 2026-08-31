@@ -10,6 +10,38 @@ timestamp: 2026-08-21T00:00:00-03:00
 
 ---
 
+## [run: 2026-08-31]
+
+Implemented the Telegram command router (BA.ticket.telegram-command-router) across six tasks:
+`FileConfig` gained a `[telegram_commands]` allow-list (task 1); a pure router core landed in
+`src/serve/session_qa/commands.rs` — `parse_command`, `route_command`, `build_trigger_data`,
+`youtube_video_id`, usage/reply rendering — with 42 unit tests including real `*EventSchema`
+round-trips for `DIAGNOSTIC_INTAKE`/`RESEARCH_AGENT`/`LINKEDIN_POST`/`CONTENT_PIPELINE` (task 2);
+`handle_message` now pins the configured chat id and routes any leading-`/` message as a command
+even mid-conversation, via a new `with_command_seams` builder wired to `WorkflowTrigger`/
+`ReadOnlyReporter` seams (task 3); the router dispatches through the real in-process
+`POST /events/` route and answers `/status`, `/lanes`, `/attention` with real content, wired at
+`bastion serve` boot (task 4); `docs/serve/telegram-commands.md` documents the allow-list for
+operators (task 5); task 6 validated the full gated suite. Final verdict: **PASS** — fmt, clippy
+`-D warnings`, `cargo test` (2615 passed), release build, contract-corpus drift, and typeshare
+drift all green; no code changes needed at the validate stage. Notable decisions: envelope-mode
+params mint a real `IngressEnvelope` (`ChannelType::Telegram`) rather than a flat key, and
+`source_kind` (`url` vs `video_id`) — not the URL host — decides which `CONTENT_PIPELINE` branch
+a link reaches, per the block's own amendment history. Next: BA.ticket.pricescout-telegram-bot
+(the `/shop` consumer of this router) is unblocked but still gated on `price-scout:PS.9.E` and the
+`operator-pricescout-notify-bot` session.
+
+```
+d5f35fe docs: update docs for BA.ticket.telegram-command-router
+1e63520 feat: implement BA.ticket.telegram-command-router-task5
+a68ce61 feat: implement BA.ticket.telegram-command-router-task4
+74b4d52 feat: implement BA.ticket.telegram-command-router-task3
+c189a6d feat: implement BA.ticket.telegram-command-router-task2
+941c793 feat: implement BA.ticket.telegram-command-router-task1
+10b7cee chore(harness): pull base-template — D83 shared library + retire the one-off stage commands
+4b3907b docs: standing rule 10 — bastion brain/code answer narrower questions than they look like
+```
+
 ## [run: 2026-08-27]
 
 ### Build/security cleanup — no feature work
