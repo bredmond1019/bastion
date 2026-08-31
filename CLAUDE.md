@@ -18,6 +18,9 @@ Personal Rust CLI — unified control panel for monitoring, validating, and oper
 1. **Every new function, module, or behaviour change ships with tests.** No exceptions — this applies to ad-hoc fixes and one-off changes just as much as formal blocks/tasks. If you add or change code, add or update the tests that cover it.
 2. **OKF frontmatter is required on every new `.md` file under `docs/` and `planning/`.** Three fields are **required**: `type`, `title`, `description`. Six are **optional but strongly encouraged**: `doc_id` (kebab-case filename stem), `layer` (list from closed vocab: `brain` · `engine` · `factory` · `console` · `surface` · `infra` · `business` · `content` · `meta`), `project` (closed vocab slug — use `bastion` for this repo; omit for cross-cutting docs), `status` (`active` · `draft` · `deprecated` · `superseded` · `archived`), `keywords` (3–7 free-form topic terms), `related` (list of `doc_id` values referencing other docs). Canonical guide: company-brain `docs/okf-frontmatter.md`; governing decision: brain **D27**. **Adding a new file to a directory requires updating that directory's `index.md`** (propagate up to the parent `index.md` if the scope changes).
 3. **Sequence, not calendar** — work the order in `master-plan.md`; pick up where you left off.
+   To pick the next block from the graph rather than a status file, load the
+   **`pick-the-next-block`** skill (`mev frontier` / `lanes` / `blocks` report three different
+   meanings of "ready").
 4. **Decisions are append-only** — never edit a settled decision; supersede it with a new
    atomic file in `planning/decisions/` and link back.
 5. **Verified identity / handles:** GitHub: bredmond1019 · Site: learn-agentic-ai.com · LinkedIn: bredmond1019 — treat these as the only authoritative
@@ -59,6 +62,15 @@ Personal Rust CLI — unified control panel for monitoring, validating, and oper
    `ci-blocked` (a Cargo dependency is red on GitHub with nothing queued to fix it). Branching,
    committing, and opening/reviewing/merging PRs to `main` locally are all fine from inside this
    repo — only the final `git push` of `main` to `origin` must go through that script.
+
+10. **`bastion brain` and `bastion code` answer narrower questions than they look like they do.**
+    `bastion brain` builds its graph from the `[[wikilink]]` corpus, **not** OKF `related:`
+    frontmatter — measured 2026-08-31, `bastion brain --dependents D24-rust-substrate-seam` printed
+    "no dependent results" and exited 0 on a document with 16 inbound `related:` edges. `bastion
+    code` is Rust-only and scans exactly one workspace root, so a caller in a sibling repo is
+    invisible. Before shipping a change to either command's output — or before trusting one of them
+    in your own work — load the **`check-blast-radius`** skill, which names which instrument answers
+    which question and gives a positive control for each.
 
 ## Known bugs
 
