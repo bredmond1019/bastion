@@ -2,6 +2,15 @@
 
 Personal Rust CLI — unified control panel for monitoring, validating, and operating the agentic engineering stack.
 
+## Workflow engine telemetry
+
+**After invoking `Workflow({name: 'sdlc-task'|'sdlc-flow', ...})`, load the `stamp-workflow-run-id`
+skill.** The engine script can't read its own Workflow run id back — the Workflow script API has no
+`runId` global and no filesystem access — so joining a run's `sdlc-task-state.json`/
+`sdlc-flow-state.json` to the exact Claude Code session transcript for cost telemetry relies on the
+*invoking* agent patching the id in after the call returns. Skip this and `workflow_run_id` simply
+stays `null` — a normal, expected state, never a defect to chase.
+
 ## Before you start
 
 - **Strategic context:** `planning/context.md` (read first) → `planning/status.md` (current state)
