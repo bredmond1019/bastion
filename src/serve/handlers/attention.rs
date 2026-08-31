@@ -332,7 +332,9 @@ fn brain_root_error_response(message: impl std::fmt::Display) -> HttpResponse {
 /// Malformed/unreadable individual `state.json` files are skipped (degrade
 /// gracefully) rather than failing the whole request — only an unresolvable
 /// brain root is a hard error.
-fn assemble_attention(root: &Path) -> Result<(BrainConfig, Vec<(StateSource, StateFile)>), String> {
+pub(crate) fn assemble_attention(
+    root: &Path,
+) -> Result<(BrainConfig, Vec<(StateSource, StateFile)>), String> {
     let config = load_brain_config(&root.join("brain.toml"))
         .map_err(|e| format!("could not load brain.toml at {}: {e}", root.display()))?;
 

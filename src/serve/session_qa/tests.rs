@@ -3106,3 +3106,238 @@ mod e2e {
         assert!(text.contains("until"));
     }
 }
+
+/// Production-seam pure-core tests (`BA.ticket.telegram-command-router` task
+/// 4): the HTTP-status→outcome mapping [`map_events_response`] tested per
+/// status/body shape, and the two read-only renderers tested against
+/// fixture DTOs/artifacts. No live network call, no engine boot, no disk
+/// walk anywhere in this module.
+mod production_seams {
+    use super::*;
+    use crate::serve::dto::{
+        AttentionCarryoverDto, AttentionDto, AttentionLanesDto, AttentionThresholdsDto, BoardScope,
+    };
+    use mev::brain::availability::{
+        LaneAvailabilityArtifact, LaneAvailabilityEntry, LaneLeverage, SegmentAvailability,
+        SegmentStatus,
+    };
+    use mev::brain::carryover::TriageLane;
+
+    // ── map_events_response ─────────────────────────────────────────────────
+
+    #[test]
+    fn map_events_response_202_names_the_run_id() {
+        let body = serde_json::json!({"run_id": "abc-123", "event_id": "abc-123"});
+        assert_eq!(
+            map_events_response(202, &body),
+            Ok("dispatched (run_id=abc-123)".to_string())
+        );
+    }
+
+    #[test]
+    fn map_events_response_202_missing_run_id_still_ok() {
+        let body = serde_json::json!({});
+        assert_eq!(
+            map_events_response(202, &body),
+            Ok("dispatched (response carried no run_id)".to_string())
+        );
+    }
+
+    #[test]
+    fn map_events_response_401_is_unauthorized_err() {
+        let body = serde_json::Value::Null;
+        assert!(
+            map_events_response(401, &body)
+                .unwrap_err()
+                .contains("unauthorized")
+        );
+    }
+
+    #[test]
+    fn map_events_response_422_unknown_workflow_type() {
+        let body = serde_json::json!({"error": "unknown workflow_type", "workflow_type": "nope"});
+        let err = map_events_response(422, &body).unwrap_err();
+        assert!(err.contains("unknown workflow_type"));
+        assert!(err.contains("nope"));
+    }
+
+    #[test]
+    fn map_events_response_422_unknown_repo() {
+        let body = serde_json::json!({
+            "error": "unknown repo",
+            "repo": "ghost-repo",
+            "message": "no such repo",
+        });
+        let err = map_events_response(422, &body).unwrap_err();
+        assert!(err.contains("unknown repo"));
+        assert!(err.contains("ghost-repo"));
+        assert!(err.contains("no such repo"));
+    }
+
+    #[test]
+    fn map_events_response_422_unknown_spec_slug() {
+        let body = serde_json::json!({"error": "unknown spec_slug", "spec_slug": "BA.nope"});
+        let err = map_events_response(422, &body).unwrap_err();
+        assert!(err.contains("unknown spec_slug"));
+        assert!(err.contains("BA.nope"));
+    }
+
+    #[test]
+    fn map_events_response_422_policy_resolution_failed() {
+        let body = serde_json::json!({
+            "error": "policy resolution failed",
+            "message": "unknown profile 'ghost'",
+        });
+        let err = map_events_response(422, &body).unwrap_err();
+        assert!(err.contains("policy resolution failed"));
+        assert!(err.contains("unknown profile 'ghost'"));
+    }
+
+    #[test]
+    fn map_events_response_422_unrecognized_shape() {
+        let body = serde_json::json!({});
+        let err = map_events_response(422, &body).unwrap_err();
+        assert!(err.contains("unrecognized rejection"));
+    }
+
+    #[test]
+    fn map_events_response_unexpected_status_is_err() {
+        let body = serde_json::Value::Null;
+        let err = map_events_response(500, &body).unwrap_err();
+        assert!(err.contains("500"));
+    }
+
+    // ── render_lanes_summary ─────────────────────────────────────────────────
+
+    fn sample_status(availability: SegmentAvailability, lane: &str) -> SegmentStatus {
+        SegmentStatus {
+            roadmap: "engine-orchestration".to_string(),
+            lane: lane.to_string(),
+            segment: 0,
+            repo: "bastion".to_string(),
+            head: Some("bastion:BA.1".to_string()),
+            availability,
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn render_lanes_summary_counts_by_availability_and_lists_startable() {
+        let artifact = LaneAvailabilityArtifact {
+            derived_at: "2026-08-31T00:00:00Z".to_string(),
+            degraded: false,
+            segments: vec![
+                LaneAvailabilityEntry {
+                    status: sample_status(SegmentAvailability::Startable, "derive"),
+                    leverage: LaneLeverage {
+                        lanes_freed: 0,
+                        lanes: vec![],
+                    },
+                },
+                LaneAvailabilityEntry {
+                    status: sample_status(SegmentAvailability::HeldBlock, "verify"),
+                    leverage: LaneLeverage {
+                        lanes_freed: 0,
+                        lanes: vec![],
+                    },
+                },
+                LaneAvailabilityEntry {
+                    status: sample_status(SegmentAvailability::Done, "ship"),
+                    leverage: LaneLeverage {
+                        lanes_freed: 0,
+                        lanes: vec![],
+                    },
+                },
+            ],
+        };
+
+        let summary = render_lanes_summary(&artifact);
+        assert!(summary.contains("1 startable"));
+        assert!(summary.contains("1 held"));
+        assert!(summary.contains("1 done"));
+        assert!(summary.contains("engine-orchestration/derive (bastion)"));
+        assert!(!summary.contains("degraded"));
+    }
+
+    #[test]
+    fn render_lanes_summary_degraded_is_noted() {
+        let artifact = LaneAvailabilityArtifact {
+            derived_at: "2026-08-31T00:00:00Z".to_string(),
+            degraded: true,
+            segments: vec![],
+        };
+        let summary = render_lanes_summary(&artifact);
+        assert!(summary.contains("degraded"));
+    }
+
+    // ── render_attention_summary ─────────────────────────────────────────────
+
+    fn sample_carryover() -> AttentionCarryoverDto {
+        AttentionCarryoverDto {
+            repo: "bastion".to_string(),
+            slug: "some-item".to_string(),
+            kind: "deferred".to_string(),
+            text: "something is stale".to_string(),
+            clears_when: None,
+            created: Some("2026-01-01".to_string()),
+            reviewed: None,
+            age_days: Some(200),
+            threshold_days: 21,
+            lane: TriageLane::Aging,
+            priority: None,
+            effective_priority: None,
+            unmet_blocks: vec![],
+            finding_id: None,
+            clears_when_satisfied: false,
+        }
+    }
+
+    #[test]
+    fn render_attention_summary_counts_and_lists_carryover() {
+        let dto = AttentionDto {
+            scope: BoardScope::Hq,
+            tier: None,
+            as_of: "2026-08-31".to_string(),
+            lanes: AttentionLanesDto {
+                stale_carryover: vec![sample_carryover()],
+                aging_backlog: vec![],
+                orphaned_captures: vec![],
+            },
+            thresholds: AttentionThresholdsDto {
+                env_days: 3,
+                deferred_days: 21,
+                known_issue_days: 14,
+                constraint_days: 90,
+                backlog_days: 14,
+            },
+        };
+
+        let summary = render_attention_summary(&dto);
+        assert!(summary.contains("2026-08-31"));
+        assert!(summary.contains("1 stale carryover"));
+        assert!(summary.contains("0 aging backlog"));
+        assert!(summary.contains("0 orphaned captures"));
+        assert!(summary.contains("bastion/some-item"));
+        assert!(summary.contains("something is stale"));
+    }
+
+    #[test]
+    fn render_attention_summary_empty_lanes_still_renders_header() {
+        let dto = AttentionDto {
+            scope: BoardScope::Hq,
+            tier: None,
+            as_of: "2026-08-31".to_string(),
+            lanes: AttentionLanesDto::default(),
+            thresholds: AttentionThresholdsDto {
+                env_days: 3,
+                deferred_days: 21,
+                known_issue_days: 14,
+                constraint_days: 90,
+                backlog_days: 14,
+            },
+        };
+
+        let summary = render_attention_summary(&dto);
+        assert!(summary.contains("0 stale carryover"));
+    }
+}

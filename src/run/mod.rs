@@ -200,7 +200,12 @@ pub async fn status() -> Result<()> {
 
 /// Render a plain-text summary table for the given probe outcomes.
 /// Pure function (no I/O) so it can be unit-tested without live services.
-fn render_status(db: &DbStatus, api: &ApiStatus) -> String {
+///
+/// `pub(crate)` (rather than private) so
+/// `serve::session_qa::ServeReadOnlyReporter`'s `/status` command
+/// (`BA.ticket.telegram-command-router` task 4) can reuse this exact
+/// rendering instead of re-deriving it.
+pub(crate) fn render_status(db: &DbStatus, api: &ApiStatus) -> String {
     let db_row = match db {
         DbStatus::Reachable => "DB    reachable".to_string(),
         DbStatus::Unreachable(msg) => format!("DB    unreachable ({msg})"),

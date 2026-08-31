@@ -715,6 +715,314 @@ impl QaTelegramClient for HttpQaTelegramClient {
     }
 }
 
+// ── Production seams (`BA.ticket.telegram-command-router` task 4) ──────────
+//
+// Two production impls of the traits above, plus the pure functions each
+// leans on for its unit-testable core. Neither impl changes the router's
+// logic in `commands.rs` / `handle_command` — task 3's tests keep passing
+// untouched.
+
+/// Real [`WorkflowTrigger`], dispatching through the in-process
+/// `POST /events/` route `bastion serve` already mounts
+/// (`engine_serve::http::post_events`).
+///
+/// This is a **loopback HTTP call to that route**, not a direct in-process
+/// call into `engine_serve` — recorded in the block record's Amendment Log:
+/// `engine_serve` exposes no generic in-process trigger entry point. The one
+/// non-HTTP dispatcher it does export, `schedule::dispatch_scheduled_entry`,
+/// takes a `ScheduleEntry` and hardcodes `ChannelType::Schedule` in its
+/// envelope, which would mislabel a Telegram-originated run. The loopback
+/// hits the real route, including its `repo`/`spec_slug` preflight
+/// validation, which the schedule path skips.
+pub struct HttpEventsTrigger {
+    /// This process's own bind address, scheme-qualified — e.g.
+    /// `http://127.0.0.1:8080` — never a value re-read from the environment.
+    base_url: String,
+    api_key: String,
+    http: reqwest::Client,
+}
+
+impl HttpEventsTrigger {
+    #[must_use]
+    pub fn new(base_url: String, api_key: String) -> Self {
+        Self {
+            base_url,
+            api_key,
+            http: reqwest::Client::new(),
+        }
+    }
+}
+
+/// Map a `POST /events/` response's HTTP status + JSON body onto
+/// [`WorkflowTrigger::trigger`]'s outcome. Pure — no I/O — so it is unit
+/// tested per status/body shape below; only the `reqwest` call itself
+/// ([`HttpEventsTrigger::trigger`]) is the untestable shell.
+///
+/// Mirrors exactly `engine_serve::http::post_events`'s response contract:
+/// `202 {run_id, event_id}` on success; `401` (no body) when the API key is
+/// rejected; `422` with one of four `"error"` shapes
+/// (`"unknown workflow_type"` / `"unknown repo"` / `"unknown spec_slug"` /
+/// `"policy resolution failed"`) on a pre-flight rejection.
+pub fn map_events_response(status: u16, body: &serde_json::Value) -> Result<String, String> {
+    match status {
+        202 => {
+            let run_id = body.get("run_id").and_then(serde_json::Value::as_str);
+            match run_id {
+                Some(run_id) => Ok(format!("dispatched (run_id={run_id})")),
+                None => Ok("dispatched (response carried no run_id)".to_string()),
+            }
+        }
+        401 => Err("dispatch unauthorized — the engine API key was rejected".to_string()),
+        422 => {
+            let error = body
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unrecognized rejection");
+            match error {
+                "unknown workflow_type" => {
+                    let workflow_type = body
+                        .get("workflow_type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?");
+                    Err(format!("unknown workflow_type: {workflow_type}"))
+                }
+                "unknown repo" => {
+                    let repo = body
+                        .get("repo")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?");
+                    let message = body.get("message").and_then(serde_json::Value::as_str);
+                    match message {
+                        Some(message) => Err(format!("unknown repo '{repo}': {message}")),
+                        None => Err(format!("unknown repo: {repo}")),
+                    }
+                }
+                "unknown spec_slug" => {
+                    let spec_slug = body
+                        .get("spec_slug")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?");
+                    Err(format!("unknown spec_slug: {spec_slug}"))
+                }
+                "policy resolution failed" => {
+                    let message = body
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    Err(format!("policy resolution failed: {message}"))
+                }
+                other => Err(format!("dispatch rejected (422: {other})")),
+            }
+        }
+        other => Err(format!("dispatch failed — unexpected HTTP status {other}")),
+    }
+}
+
+#[async_trait]
+impl WorkflowTrigger for HttpEventsTrigger {
+    async fn trigger(
+        &self,
+        workflow_type: &str,
+        data: &serde_json::Value,
+    ) -> Result<String, String> {
+        let url = format!("{}/events/", self.base_url.trim_end_matches('/'));
+        let resp = self
+            .http
+            .post(&url)
+            .header("X-API-Key", self.api_key.as_str())
+            .json(&serde_json::json!({
+                "workflow_type": workflow_type,
+                "data": data,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("dispatch request failed: {e}"))?;
+
+        let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        map_events_response(status, &body)
+    }
+}
+
+/// A [`WorkflowTrigger`] that always refuses, naming why — wired in place of
+/// [`HttpEventsTrigger`] when the engine routes are not mounted this boot,
+/// so a `Trigger` route still gets a helpful reply ("workflow dispatch is
+/// not configured") instead of the router POSTing to a route that does not
+/// exist, or `/status`/`/lanes`/`/attention` going unanswered merely
+/// because `DATABASE_URL`/the engine API key happen to be absent.
+pub struct UnconfiguredTrigger;
+
+#[async_trait]
+impl WorkflowTrigger for UnconfiguredTrigger {
+    async fn trigger(
+        &self,
+        _workflow_type: &str,
+        _data: &serde_json::Value,
+    ) -> Result<String, String> {
+        Err(
+            "workflow dispatch is not configured on this bastion (engine routes not mounted \
+             this boot)"
+                .to_string(),
+        )
+    }
+}
+
+/// Real [`ReadOnlyReporter`], reusing what already exists rather than
+/// re-deriving it: [`crate::run::render_status`] for `Status`,
+/// [`crate::serve::handlers::attention::build_attention`] for `Attention`,
+/// and the lane-availability artifact `mev::lanes_brain` already builds
+/// (the same one `serve::handlers::lanes::get_lanes` maps to the wire DTO)
+/// for `Lanes`.
+pub struct ServeReadOnlyReporter {
+    registry: crate::config::FileConfig,
+}
+
+impl ServeReadOnlyReporter {
+    #[must_use]
+    pub fn new(registry: crate::config::FileConfig) -> Self {
+        Self { registry }
+    }
+}
+
+/// Render a short plain-text summary of a
+/// `mev::brain::availability::LaneAvailabilityArtifact`. Pure — unit tested
+/// against a fixture artifact; [`truncate_for_telegram`] (applied by the
+/// caller, `handle_command`) handles the length cap, not this function.
+#[must_use]
+pub fn render_lanes_summary(
+    artifact: &mev::brain::availability::LaneAvailabilityArtifact,
+) -> String {
+    use mev::brain::availability::SegmentAvailability;
+
+    let mut startable = 0usize;
+    let mut held = 0usize;
+    let mut done = 0usize;
+    let mut startable_names: Vec<String> = Vec::new();
+
+    for entry in &artifact.segments {
+        match entry.status.availability {
+            SegmentAvailability::Startable => {
+                startable += 1;
+                startable_names.push(format!(
+                    "{}/{} ({})",
+                    entry.status.roadmap, entry.status.lane, entry.status.repo
+                ));
+            }
+            SegmentAvailability::Done => done += 1,
+            SegmentAvailability::HeldBlock
+            | SegmentAvailability::HeldOperator
+            | SegmentAvailability::HeldRepoBusy
+            | SegmentAvailability::HeldSlot => held += 1,
+        }
+    }
+
+    let mut lines = vec![format!(
+        "Lanes: {startable} startable, {held} held, {done} done"
+    )];
+    if artifact.degraded {
+        lines.push("(degraded: fleet-lock read failed)".to_string());
+    }
+    for name in startable_names.into_iter().take(10) {
+        lines.push(format!("- {name}"));
+    }
+    lines.join("\n")
+}
+
+/// Render a short plain-text summary of an `AttentionDto`. Pure — unit
+/// tested against a fixture DTO.
+#[must_use]
+pub fn render_attention_summary(dto: &crate::serve::dto::AttentionDto) -> String {
+    let carryover = &dto.lanes.stale_carryover;
+    let aging = &dto.lanes.aging_backlog;
+    let orphaned = &dto.lanes.orphaned_captures;
+
+    let mut lines = vec![format!(
+        "Attention as of {}: {} stale carryover, {} aging backlog, {} orphaned captures",
+        dto.as_of,
+        carryover.len(),
+        aging.len(),
+        orphaned.len()
+    )];
+    for item in carryover.iter().take(5) {
+        lines.push(format!(
+            "- [{:?}] {}/{}: {}",
+            item.lane, item.repo, item.slug, item.text
+        ));
+    }
+    lines.join("\n")
+}
+
+/// `Attention` (`/attention`) and `Lanes` (`/lanes`) both walk the on-disk
+/// brain corpus, which is blocking I/O — run under `spawn_blocking` so
+/// neither ever runs directly on the async runtime's worker thread.
+async fn report_status() -> Result<String, String> {
+    let cfg = crate::config::Config::load();
+    let db = match &cfg {
+        Ok(c) => crate::db::health::probe(&c.database_url).await,
+        Err(crate::config::ConfigError::MissingVar(_)) => {
+            crate::db::health::DbStatus::Unreachable("DATABASE_URL not set".to_string())
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    let fallback = "http://localhost:8080".to_string();
+    let api_url = cfg.as_ref().map(|c| &c.api_base_url).unwrap_or(&fallback);
+    let api = crate::api::client::ApiClient::new(api_url).health().await;
+    Ok(crate::run::render_status(&db, &api))
+}
+
+async fn report_lanes(registry: crate::config::FileConfig) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let start = crate::config::resolve_workspace_root(None, None, &registry)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let root = mev::brain::config::find_brain_root(&start)
+            .map_err(|e| format!("could not resolve brain root: {e}"))?;
+        let artifact = mev::lanes_brain(&root).map_err(|e| e.to_string())?;
+        Ok(render_lanes_summary(&artifact))
+    })
+    .await
+    .map_err(|e| format!("lanes lookup panicked: {e}"))?
+}
+
+async fn report_attention(registry: crate::config::FileConfig) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let start = crate::config::resolve_workspace_root(None, None, &registry)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let root = mev::brain::config::find_brain_root(&start)
+            .map_err(|e| format!("could not resolve brain root: {e}"))?;
+        let (config, files) = crate::serve::handlers::attention::assemble_attention(&root)?;
+        let (tier_scope, resolved_tier) =
+            crate::serve::handlers::board::resolve_scope(crate::serve::dto::BoardScope::Hq, None);
+        let today = chrono::Local::now().date_naive();
+        let dto = crate::serve::handlers::attention::build_attention(
+            crate::serve::dto::BoardScope::Hq,
+            resolved_tier,
+            &tier_scope,
+            &files,
+            &config,
+            &root,
+            today,
+        );
+        Ok(render_attention_summary(&dto))
+    })
+    .await
+    .map_err(|e| format!("attention lookup panicked: {e}"))?
+}
+
+#[async_trait]
+impl ReadOnlyReporter for ServeReadOnlyReporter {
+    async fn report(&self, command: ReadOnlyCommand) -> Result<String, String> {
+        match command {
+            ReadOnlyCommand::Status => report_status().await,
+            ReadOnlyCommand::Lanes => report_lanes(self.registry.clone()).await,
+            ReadOnlyCommand::Attention => report_attention(self.registry.clone()).await,
+            // `/help` is never routed through this trait (see
+            // `SessionQaBridge::handle_command`) — it renders from the
+            // allow-list alone.
+            ReadOnlyCommand::Help => Err("/help does not use the read-only reporter".to_string()),
+        }
+    }
+}
+
 /// Capture one session's pane, boxed so tests can inject a fake — mirrors
 /// `BlockedEdgePoller`'s `CaptureFn` seam, scoped to a single named session
 /// instead of a full sweep.

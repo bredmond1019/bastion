@@ -470,6 +470,18 @@ fn alarm_delivery_enabled(
     transport.is_some()
 }
 
+/// Derive the Telegram command router's allow-list from the already-loaded
+/// `FileConfig` registry (`BA.ticket.telegram-command-router` task 4) — a
+/// `FileConfig` with no `[telegram_commands]` table yields an empty map,
+/// never an error, matching `FileConfig`'s own absent-tolerant defaults.
+/// Pure function — no I/O — so it is unit-tested directly rather than only
+/// through a full `run_server` boot.
+fn telegram_commands_allow_list(
+    registry: &FileConfig,
+) -> std::collections::HashMap<String, crate::config::TelegramCommandEntry> {
+    registry.telegram_commands.clone().unwrap_or_default()
+}
+
 /// `poll_secs` is passed to the [`Hub`] to set its poll cadence.
 async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // Load the workspace registry once at startup (BA.11.D) — malformed or
@@ -513,9 +525,20 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // Hoisted above `Hub::new` (BA.11.N task 4) — the hub is constructed with
     // the real `stream_available` verdict this decision produces (D17
     // constraint 2), rather than a placeholder wired up after the fact.
-    let (engine_data, stream_available): (
+    // `engine_trigger_api_key` (`BA.ticket.telegram-command-router` task 4):
+    // `Some` ONLY when the engine routes are actually mounted this boot
+    // (the `Mount` decision AND a successful `PgPool` connect) — carried
+    // forward from the same `EngineMountDecision::Mount { engine_api_key,
+    // .. }` this match already destructures, rather than a second
+    // `std::env::var("BASTION_ENGINE_API_KEY")` read. The Telegram command
+    // router's `HttpEventsTrigger` seam is wired below only when this is
+    // `Some`, so a boot with the engine routes unmounted wires no trigger
+    // at all.
+    #[allow(clippy::type_complexity)]
+    let (engine_data, stream_available, engine_trigger_api_key): (
         Option<web::Data<EngineAppState>>,
         (bool, Option<String>),
+        Option<String>,
     ) = match decide_engine_mount(
         std::env::var("DATABASE_URL").ok().as_deref(),
         std::env::var("BASTION_ENGINE_API_KEY").ok().as_deref(),
@@ -586,6 +609,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                     // E0063 compile error here. Empty at boot is also the
                     // correct semantics -- run and campaign cancellation tokens
                     // are registered when their ids are minted, not at startup.
+                    let engine_api_key_for_trigger = engine_api_key.clone();
                     let state = EngineAppState::builder(
                         Arc::new(build_engine_dispatcher()),
                         live_store.clone(),
@@ -660,7 +684,11 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         }
                     };
 
-                    (Some(engine_data), (true, None))
+                    (
+                        Some(engine_data),
+                        (true, None),
+                        Some(engine_api_key_for_trigger),
+                    )
                 }
                 Err(e) => {
                     tracing::error!(
@@ -672,14 +700,14 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                         "engine routes not mounted — could not connect to DATABASE_URL: {e}"
                     );
                     eprintln!("bastion serve: {reason}");
-                    (None, (false, Some(reason)))
+                    (None, (false, Some(reason)), None)
                 }
             }
         }
         EngineMountDecision::Skip { reason } => {
             tracing::warn!(target: "bastion::serve", %reason);
             eprintln!("bastion serve: {reason}");
-            (None, (false, Some(reason)))
+            (None, (false, Some(reason)), None)
         }
     };
 
@@ -739,7 +767,45 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                 "session-QA bridge enabled (CodeSessionsBot configured)"
             );
             let (tx, rx) = tokio::sync::mpsc::channel(32);
-            let bridge = std::sync::Arc::new(session_qa::SessionQaBridge::new(qa_config));
+
+            // Telegram command router (`BA.ticket.telegram-command-router`
+            // task 4): chain the `[telegram_commands]` allow-list from the
+            // already-loaded `registry` binding (never a second config
+            // load) plus the two production seams. The workflow-types
+            // configured are never logged — only the count.
+            let telegram_commands = telegram_commands_allow_list(&registry);
+            tracing::info!(
+                target: "bastion::serve",
+                commands_configured = telegram_commands.len(),
+                "telegram command router: allow-list loaded"
+            );
+            let trigger: std::sync::Arc<dyn session_qa::WorkflowTrigger> =
+                match &engine_trigger_api_key {
+                    Some(engine_api_key) => {
+                        let base_url = format!("http://{addr}");
+                        std::sync::Arc::new(session_qa::HttpEventsTrigger::new(
+                            base_url,
+                            engine_api_key.clone(),
+                        ))
+                    }
+                    None => {
+                        tracing::info!(
+                            target: "bastion::serve",
+                            "telegram command router: engine routes not mounted this boot — \
+                             no workflow-dispatch seam wired (trigger commands will reply \
+                             that dispatch is unconfigured)"
+                        );
+                        std::sync::Arc::new(session_qa::UnconfiguredTrigger)
+                    }
+                };
+            let reporter: std::sync::Arc<dyn session_qa::ReadOnlyReporter> =
+                std::sync::Arc::new(session_qa::ServeReadOnlyReporter::new(registry.clone()));
+            let qa_bridge = session_qa::SessionQaBridge::new(qa_config).with_command_seams(
+                telegram_commands,
+                trigger,
+                reporter,
+            );
+            let bridge = std::sync::Arc::new(qa_bridge);
             let inbound_bridge = std::sync::Arc::clone(&bridge);
             actix_web::rt::spawn(async move {
                 inbound_bridge.run_inbound(rx).await;
@@ -1569,6 +1635,48 @@ mod engine_mount_tests {
             }
             other => panic!("expected Skip, got {other:?}"),
         }
+    }
+
+    // ── telegram_commands_allow_list tests
+    //    (`BA.ticket.telegram-command-router` task 4) ──────────────────────
+
+    #[test]
+    fn telegram_commands_allow_list_two_entries_yields_two_entry_map() {
+        use crate::config::{TelegramCommandEntry, TelegramCommandParam, TelegramParamSource};
+        use std::collections::HashMap;
+
+        fn entry(workflow_type: &str) -> TelegramCommandEntry {
+            TelegramCommandEntry {
+                workflow_type: workflow_type.to_string(),
+                data: None,
+                params: Vec::<TelegramCommandParam>::new(),
+            }
+        }
+        // `TelegramCommandParam`/`TelegramParamSource` referenced above only
+        // to document the full shape this table can carry; unused here
+        // since these two entries carry no `params`.
+        let _ = TelegramParamSource::Rest;
+
+        let mut table: HashMap<String, TelegramCommandEntry> = HashMap::new();
+        table.insert("research".to_string(), entry("RESEARCH_COMPANY"));
+        table.insert("intake".to_string(), entry("CONTENT_PIPELINE"));
+
+        let registry = FileConfig {
+            telegram_commands: Some(table),
+            ..FileConfig::default()
+        };
+
+        let allow_list = telegram_commands_allow_list(&registry);
+        assert_eq!(allow_list.len(), 2);
+        assert!(allow_list.contains_key("research"));
+        assert!(allow_list.contains_key("intake"));
+    }
+
+    #[test]
+    fn telegram_commands_allow_list_default_config_is_empty() {
+        let registry = FileConfig::default();
+        let allow_list = telegram_commands_allow_list(&registry);
+        assert!(allow_list.is_empty());
     }
 
     // ── classify_orphan_sweep tests (ticket-orphan-reconcile-wiring task 2) ──
