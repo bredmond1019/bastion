@@ -139,6 +139,11 @@ pub struct FileConfig {
     /// `ServeConfig.token` (bastion serve's own `Authorization: Bearer` gate) —
     /// two different secrets, two different schemes, two different route groups.
     pub engine_api_key: Option<String>,
+    /// The `[telegram_commands]` allow-list table (BA.ticket.telegram-command-router),
+    /// keyed by command NAME with no leading `/`. Absent entirely for existing
+    /// configs, which parse unchanged. Read once at `bastion serve` boot — adding
+    /// a command is a config edit plus a restart, not a hot reload.
+    pub telegram_commands: Option<HashMap<String, TelegramCommandEntry>>,
 }
 
 /// The `[theme]` TOML table.
@@ -152,6 +157,107 @@ pub struct ThemeConfig {
     /// Theme preset name — resolved via `ui_theme::theme_by_name`. Any value not
     /// recognized as a known preset falls back to the `bastion` default there.
     pub name: Option<String>,
+}
+
+// ── Telegram command router allow-list ─────────────────────────────────────
+
+/// Where a [`TelegramCommandParam`] pulls its value from, out of the message
+/// text that followed the command name.
+///
+/// Survey-driven (`planning/BA.ticket.telegram-command-router/workflow-payload-survey.md`):
+/// every triggerable workflow's event is a flat JSON object, so the router's whole
+/// job is filling one flat object from these four sources plus the fixed `data`
+/// base.
+#[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq, Eq)]
+pub enum TelegramParamSource {
+    /// The whole remainder of the message as one JSON string — a company name,
+    /// a URL, a paragraph of notes. Chosen so multi-word arguments survive.
+    #[serde(rename = "rest")]
+    Rest,
+    /// Every whitespace-split token as a JSON array of strings — a shopping list.
+    #[serde(rename = "args")]
+    Args,
+    /// The Nth whitespace-split token (see `index`) as a JSON string —
+    /// positional, for multi-field commands like `LINKEDIN_POST`'s `since`/`until`.
+    #[serde(rename = "arg")]
+    Arg,
+    /// Builds an `IngressEnvelope` (see [`TelegramSourceKind`]) and places it at `key`.
+    #[serde(rename = "envelope")]
+    Envelope,
+}
+
+/// Which `SourcePayload` variant an `envelope`-sourced param carries.
+///
+/// `CONTENT_PIPELINE`'s `SourceRouterNode::route` branches purely on this
+/// variant (`Url` → `FetchArticleNode`, `VideoId` → `FetchTranscriptNode`) and
+/// never inspects the URL's host — so an article command and a YouTube command
+/// are the same config shape, distinguished only by this field.
+#[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq, Eq)]
+pub enum TelegramSourceKind {
+    /// A plain URL — routes to `FetchArticleNode`.
+    #[serde(rename = "url")]
+    Url,
+    /// A YouTube video id, extracted from a pasted `youtube.com/watch?v=`,
+    /// `youtu.be/`, `/shorts/` or `/embed/` link — routes to `FetchTranscriptNode`.
+    #[serde(rename = "video_id")]
+    VideoId,
+    /// Plain text.
+    #[serde(rename = "text")]
+    Text,
+}
+
+/// Returns `true` — the default for [`TelegramCommandParam::required`].
+fn default_true() -> bool {
+    true
+}
+
+/// One parameter of a [`TelegramCommandEntry`]: which part of the message fills
+/// which field of the dispatched workflow's event payload.
+///
+/// Applied, in list order, over the entry's fixed `data` base — a param wins on
+/// key collision. `required` defaults to `true`; a required param with nothing
+/// to fill it refuses the dispatch with a usage reply rather than guessing a
+/// default or panicking.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub struct TelegramCommandParam {
+    /// The key this param fills in the dispatched workflow's flat event object.
+    pub key: String,
+    /// Where the value comes from.
+    pub from: TelegramParamSource,
+    /// Positional index into the whitespace-split argument tokens — required
+    /// when `from = "arg"`, ignored otherwise.
+    #[serde(default)]
+    pub index: Option<usize>,
+    /// Which `SourcePayload` variant to build — required when `from = "envelope"`,
+    /// ignored otherwise.
+    #[serde(default)]
+    pub source_kind: Option<TelegramSourceKind>,
+    /// Whether a missing value refuses the dispatch (`true`, the default) or is
+    /// tolerated as absent.
+    #[serde(default = "default_true")]
+    pub required: bool,
+}
+
+/// One `[telegram_commands.<name>]` allow-list entry — a command name to the
+/// workflow it dispatches, with no code change required to add another.
+///
+/// `chat_id` pinning happens at dispatch time, outside this config shape; this
+/// struct only says what a recognized command does once authorised.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub struct TelegramCommandEntry {
+    /// The `workflow_type` string dispatched through the in-process `/events/`
+    /// route (e.g. `"RESEARCH_AGENT"`, `"CONTENT_PIPELINE"`).
+    pub workflow_type: String,
+    /// Ordered list of parameters filling the dispatched event's payload from
+    /// the message text. Empty by default — a command with no arguments (e.g.
+    /// a fixed-`data`-only trigger) omits `params` entirely.
+    #[serde(default)]
+    pub params: Vec<TelegramCommandParam>,
+    /// Fixed base object merged under the params — covers tuning knobs like
+    /// `policy`/`profile`/`locale`, and required-but-not-argument fields like
+    /// `RESEARCH_AGENT`'s `mode`. `None` when a command needs no fixed fields.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
 }
 
 /// Resolve the active `ui_theme::Theme` from a parsed `FileConfig`.
@@ -987,6 +1093,145 @@ unknown_future_key = "ignored"
     fn parse_file_malformed_toml_returns_typed_error() {
         let bad_toml = "database_url = [not valid toml";
         let err = parse_file(bad_toml).unwrap_err();
+        assert!(matches!(err, ConfigError::MalformedFile(_)));
+    }
+
+    // ─── parse_file: [telegram_commands] table ───────────────────────────────
+
+    const TELEGRAM_COMMANDS_TOML: &str = r#"
+[telegram_commands.research]
+workflow_type = "RESEARCH_AGENT"
+data = { mode = "company", profile = "thorough" }
+params = [{ key = "company_name", from = "rest" }]
+
+[telegram_commands.intake]
+workflow_type = "DIAGNOSTIC_INTAKE"
+params = [{ key = "notes", from = "rest" }]
+
+[telegram_commands.article]
+workflow_type = "CONTENT_PIPELINE"
+params = [{ key = "envelope", from = "envelope", source_kind = "url" }]
+
+[telegram_commands.yt]
+workflow_type = "CONTENT_PIPELINE"
+params = [{ key = "envelope", from = "envelope", source_kind = "video_id" }]
+
+[telegram_commands.linkedin]
+workflow_type = "LINKEDIN_POST"
+params = [
+  { key = "since", from = "arg", index = 0 },
+  { key = "until", from = "arg", index = 1 },
+]
+
+[telegram_commands.shop]
+workflow_type = "PRICE_SCOUT"
+data = { region = "BR" }
+params = [{ key = "items", from = "args" }]
+"#;
+
+    #[test]
+    fn parse_file_telegram_commands_six_entry_example() {
+        let fc = parse_file(TELEGRAM_COMMANDS_TOML).expect("valid telegram_commands should parse");
+        let table = fc
+            .telegram_commands
+            .as_ref()
+            .expect("[telegram_commands] should be present");
+        assert_eq!(table.len(), 6);
+
+        let research = &table["research"];
+        assert_eq!(research.workflow_type, "RESEARCH_AGENT");
+        assert_eq!(
+            research.data,
+            Some(serde_json::json!({ "mode": "company", "profile": "thorough" }))
+        );
+        assert_eq!(research.params.len(), 1);
+        assert_eq!(research.params[0].key, "company_name");
+        assert_eq!(research.params[0].from, TelegramParamSource::Rest);
+
+        let linkedin = &table["linkedin"];
+        assert_eq!(linkedin.workflow_type, "LINKEDIN_POST");
+        assert_eq!(linkedin.params.len(), 2);
+        assert_eq!(linkedin.params[0].key, "since");
+        assert_eq!(linkedin.params[0].from, TelegramParamSource::Arg);
+        assert_eq!(linkedin.params[0].index, Some(0));
+        assert_eq!(linkedin.params[1].key, "until");
+        assert_eq!(linkedin.params[1].from, TelegramParamSource::Arg);
+        assert_eq!(linkedin.params[1].index, Some(1));
+
+        let article = &table["article"];
+        assert_eq!(article.params[0].from, TelegramParamSource::Envelope);
+        assert_eq!(article.params[0].source_kind, Some(TelegramSourceKind::Url));
+
+        let yt = &table["yt"];
+        assert_eq!(yt.params[0].source_kind, Some(TelegramSourceKind::VideoId));
+
+        let shop = &table["shop"];
+        assert_eq!(shop.workflow_type, "PRICE_SCOUT");
+        assert_eq!(shop.data, Some(serde_json::json!({ "region": "BR" })));
+        assert_eq!(shop.params[0].from, TelegramParamSource::Args);
+    }
+
+    #[test]
+    fn parse_file_telegram_commands_omitted_params_and_data_default() {
+        let toml = r#"
+[telegram_commands.status]
+workflow_type = "STATUS_ONLY"
+"#;
+        let fc = parse_file(toml).expect("entry with no params/data should parse");
+        let entry = &fc.telegram_commands.expect("table present")["status"];
+        assert_eq!(entry.workflow_type, "STATUS_ONLY");
+        assert!(entry.params.is_empty());
+        assert!(entry.data.is_none());
+    }
+
+    #[test]
+    fn parse_file_telegram_commands_required_defaults_true() {
+        let toml = r#"
+[telegram_commands.intake]
+workflow_type = "DIAGNOSTIC_INTAKE"
+params = [{ key = "notes", from = "rest" }]
+"#;
+        let fc = parse_file(toml).expect("valid TOML should parse");
+        let entry = &fc.telegram_commands.expect("table present")["intake"];
+        assert!(entry.params[0].required);
+    }
+
+    #[test]
+    fn parse_file_no_telegram_commands_table_yields_none() {
+        let toml = r#"database_url = "postgres://no-telegram/db""#;
+        let fc = parse_file(toml).expect("TOML without [telegram_commands] should parse");
+        assert!(fc.telegram_commands.is_none());
+    }
+
+    #[test]
+    fn parse_file_telegram_commands_missing_workflow_type_is_malformed() {
+        let toml = r#"
+[telegram_commands.bad]
+params = [{ key = "notes", from = "rest" }]
+"#;
+        let err = parse_file(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::MalformedFile(_)));
+    }
+
+    #[test]
+    fn parse_file_telegram_commands_unknown_from_is_malformed() {
+        let toml = r#"
+[telegram_commands.bad]
+workflow_type = "RESEARCH_AGENT"
+params = [{ key = "notes", from = "not_a_real_source" }]
+"#;
+        let err = parse_file(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::MalformedFile(_)));
+    }
+
+    #[test]
+    fn parse_file_telegram_commands_unknown_source_kind_is_malformed() {
+        let toml = r#"
+[telegram_commands.bad]
+workflow_type = "CONTENT_PIPELINE"
+params = [{ key = "envelope", from = "envelope", source_kind = "not_a_real_kind" }]
+"#;
+        let err = parse_file(toml).unwrap_err();
         assert!(matches!(err, ConfigError::MalformedFile(_)));
     }
 
