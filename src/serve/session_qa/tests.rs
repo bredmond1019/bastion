@@ -1358,7 +1358,7 @@ mod headless_tests {
 // prove.
 
 mod e2e {
-    use std::collections::VecDeque;
+    use std::collections::{HashMap as StdHashMap, VecDeque};
     use std::sync::{Arc, Mutex as StdMutex};
 
     use async_trait::async_trait;
@@ -1366,9 +1366,13 @@ mod e2e {
     use serde_json::json;
 
     use super::super::*;
-    use crate::config::BotToken;
+    use crate::config::{
+        BotToken, TelegramCommandEntry, TelegramCommandParam, TelegramParamSource,
+        TelegramSourceKind,
+    };
     use crate::detect::AgentState;
     use crate::serve::blocked_edge::sink::BlockedEdgeRecord;
+    use crate::serve::session_qa::commands::{self, ReadOnlyCommand};
 
     /// A pane that parses to a genuine `AskUserQuestion` prompt: a question, two plain
     /// choices, and the same rule-bounded `FreeText`/`ChatAbout` pair as the real
@@ -1756,7 +1760,7 @@ mod e2e {
         let client = Arc::new(FakeQaTelegramClient::new());
         let (inject, inject_log) = inject_recording();
         let bridge = SessionQaBridge::with_seams(
-            "chat-1".to_string(),
+            "999".to_string(),
             client.clone(),
             capture_returning(SAMPLE_PANE),
             inject,
@@ -2360,7 +2364,7 @@ mod e2e {
         let client = Arc::new(FakeQaTelegramClient::new());
         let (inject, log) = inject_ordered_recording();
         let bridge = SessionQaBridge::with_seams(
-            "chat-1".to_string(),
+            "999".to_string(),
             client.clone(),
             capture_returning(SAMPLE_PANE),
             inject,
@@ -2394,7 +2398,7 @@ mod e2e {
         let client = Arc::new(FakeQaTelegramClient::new());
         let (inject, log) = inject_ordered_recording();
         let bridge = SessionQaBridge::with_seams(
-            "chat-1".to_string(),
+            "999".to_string(),
             client.clone(),
             capture_returning(SAMPLE_PANE),
             inject,
@@ -2450,7 +2454,7 @@ mod e2e {
         let client = Arc::new(FakeQaTelegramClient::new());
         let (inject, log) = inject_ordered_recording();
         let bridge = SessionQaBridge::with_seams(
-            "chat-1".to_string(),
+            "999".to_string(),
             client.clone(),
             capture_returning(SAMPLE_PANE),
             inject,
@@ -2499,7 +2503,7 @@ mod e2e {
         let client = Arc::new(FakeQaTelegramClient::new());
         let (inject, log) = inject_ordered_recording();
         let bridge = SessionQaBridge::with_seams(
-            "chat-1".to_string(),
+            "999".to_string(),
             client.clone(),
             capture_returning(SAMPLE_PANE),
             inject,
@@ -2522,5 +2526,583 @@ mod e2e {
              Enter — that is the shipped BA.20.C sequence that silently submitted option 1 \
              and discarded the operator's text; got: {injected:?}"
         );
+    }
+
+    // ── Router (task 3): wiring into `handle_message` ───────────────────
+    //
+    // Every test here uses `SessionQaBridge::with_command_seams` on top of
+    // `with_seams`, so it exercises the same production `handle_message`
+    // path task 3 rewrote — chat-id pin, leading-`/` precedence, and the
+    // two injected seams below.
+
+    /// One recorded call to [`RecordingWorkflowTrigger`].
+    #[derive(Debug, Clone)]
+    struct TriggerCall {
+        workflow_type: String,
+        data: serde_json::Value,
+    }
+
+    /// In-memory [`WorkflowTrigger`]: records every call, in order, and
+    /// answers from a canned-result queue (a benign default once exhausted).
+    /// No network anywhere in this type.
+    #[derive(Default)]
+    struct RecordingWorkflowTrigger {
+        calls: StdMutex<Vec<TriggerCall>>,
+        queue: StdMutex<VecDeque<Result<String, String>>>,
+    }
+
+    impl RecordingWorkflowTrigger {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn calls(&self) -> Vec<TriggerCall> {
+            self.calls
+                .lock()
+                .expect("trigger calls mutex poisoned")
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl WorkflowTrigger for RecordingWorkflowTrigger {
+        async fn trigger(
+            &self,
+            workflow_type: &str,
+            data: &serde_json::Value,
+        ) -> Result<String, String> {
+            self.calls
+                .lock()
+                .expect("trigger calls mutex poisoned")
+                .push(TriggerCall {
+                    workflow_type: workflow_type.to_string(),
+                    data: data.clone(),
+                });
+            self.queue
+                .lock()
+                .expect("trigger queue mutex poisoned")
+                .pop_front()
+                .unwrap_or_else(|| Ok("triggered".to_string()))
+        }
+    }
+
+    /// In-memory [`ReadOnlyReporter`]: records every call, in order, and
+    /// answers from a canned-result queue (a benign default once exhausted).
+    #[derive(Default)]
+    struct RecordingReadOnlyReporter {
+        calls: StdMutex<Vec<ReadOnlyCommand>>,
+        queue: StdMutex<VecDeque<Result<String, String>>>,
+    }
+
+    impl RecordingReadOnlyReporter {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn calls(&self) -> Vec<ReadOnlyCommand> {
+            self.calls
+                .lock()
+                .expect("reporter calls mutex poisoned")
+                .clone()
+        }
+
+        fn push(&self, result: Result<String, String>) {
+            self.queue
+                .lock()
+                .expect("reporter queue mutex poisoned")
+                .push_back(result);
+        }
+    }
+
+    #[async_trait]
+    impl ReadOnlyReporter for RecordingReadOnlyReporter {
+        async fn report(&self, command: ReadOnlyCommand) -> Result<String, String> {
+            self.calls
+                .lock()
+                .expect("reporter calls mutex poisoned")
+                .push(command);
+            self.queue
+                .lock()
+                .expect("reporter queue mutex poisoned")
+                .pop_front()
+                .unwrap_or_else(|| Ok("ok".to_string()))
+        }
+    }
+
+    /// A [`ReadOnlyReporter`] that panics if ever called — proves `/help`
+    /// answers without touching the reporter seam at all.
+    struct NeverCalledReporter;
+
+    #[async_trait]
+    impl ReadOnlyReporter for NeverCalledReporter {
+        async fn report(&self, _command: ReadOnlyCommand) -> Result<String, String> {
+            panic!("`/help` must never call the reporter seam");
+        }
+    }
+
+    fn required_param(key: &str, from: TelegramParamSource) -> TelegramCommandParam {
+        TelegramCommandParam {
+            key: key.to_string(),
+            from,
+            index: None,
+            source_kind: None,
+            required: true,
+        }
+    }
+
+    fn arg_param(key: &str, index: usize) -> TelegramCommandParam {
+        TelegramCommandParam {
+            key: key.to_string(),
+            from: TelegramParamSource::Arg,
+            index: Some(index),
+            source_kind: None,
+            required: true,
+        }
+    }
+
+    fn envelope_param(key: &str, source_kind: TelegramSourceKind) -> TelegramCommandParam {
+        TelegramCommandParam {
+            key: key.to_string(),
+            from: TelegramParamSource::Envelope,
+            index: None,
+            source_kind: Some(source_kind),
+            required: true,
+        }
+    }
+
+    /// The allow-list this suite drives every router test against: one
+    /// `rest`-sourced command with fixed `data`, two `envelope`-sourced
+    /// commands distinguished only by `source_kind`, and one two-positional
+    /// command.
+    fn router_allow_list() -> StdHashMap<String, TelegramCommandEntry> {
+        let mut map = StdHashMap::new();
+        map.insert(
+            "research".to_string(),
+            TelegramCommandEntry {
+                workflow_type: "RESEARCH_AGENT".to_string(),
+                params: vec![required_param("company_name", TelegramParamSource::Rest)],
+                data: Some(json!({"mode": "company", "profile": "thorough"})),
+            },
+        );
+        map.insert(
+            "article".to_string(),
+            TelegramCommandEntry {
+                workflow_type: "CONTENT_PIPELINE".to_string(),
+                params: vec![envelope_param("envelope", TelegramSourceKind::Url)],
+                data: None,
+            },
+        );
+        map.insert(
+            "yt".to_string(),
+            TelegramCommandEntry {
+                workflow_type: "CONTENT_PIPELINE".to_string(),
+                params: vec![envelope_param("envelope", TelegramSourceKind::VideoId)],
+                data: None,
+            },
+        );
+        map.insert(
+            "linkedin".to_string(),
+            TelegramCommandEntry {
+                workflow_type: "LINKEDIN_POST".to_string(),
+                params: vec![arg_param("since", 0), arg_param("until", 1)],
+                data: None,
+            },
+        );
+        map
+    }
+
+    /// Builds a bridge on chat `"999"` (matching [`text_message_update`] /
+    /// [`callback_query_update`]'s hardcoded sender chat) with
+    /// [`router_allow_list`] and both recording fakes wired in.
+    fn router_bridge(
+        client: Arc<FakeQaTelegramClient>,
+    ) -> (
+        SessionQaBridge,
+        Arc<RecordingWorkflowTrigger>,
+        Arc<RecordingReadOnlyReporter>,
+    ) {
+        let trigger = Arc::new(RecordingWorkflowTrigger::new());
+        let reporter = Arc::new(RecordingReadOnlyReporter::new());
+        let bridge = SessionQaBridge::with_seams(
+            "999".to_string(),
+            client,
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        )
+        .with_command_seams(
+            router_allow_list(),
+            trigger.clone() as Arc<dyn WorkflowTrigger>,
+            reporter.clone() as Arc<dyn ReadOnlyReporter>,
+        );
+        (bridge, trigger, reporter)
+    }
+
+    /// The weight-bearing precedence test: with a follow-up OPEN for a
+    /// chat, a leading-`/` message routes as a command (the reporter
+    /// records the call, the injection fake records nothing for it) AND
+    /// plain text in the SAME chat still relays into the open conversation.
+    #[tokio::test]
+    async fn router_precedence_command_wins_over_open_follow_up_but_plain_text_still_relays() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, inject_log) = inject_recording();
+        let trigger = Arc::new(RecordingWorkflowTrigger::new());
+        let reporter = Arc::new(RecordingReadOnlyReporter::new());
+        let bridge = SessionQaBridge::with_seams(
+            "999".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        )
+        .with_command_seams(
+            router_allow_list(),
+            trigger.clone() as Arc<dyn WorkflowTrigger>,
+            reporter.clone() as Arc<dyn ReadOnlyReporter>,
+        );
+
+        // Open a FreeText follow-up for this chat via a real crossing + tap.
+        let question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+        let tap = callback_query_update(1, "cbq-1", &question_id, 3, 999, 555);
+        bridge.handle_update(&tap).await;
+        assert_eq!(
+            inject_log.lock().expect("inject log mutex poisoned").len(),
+            1,
+            "the FreeText tap itself injects the digit"
+        );
+
+        // A command arrives while that follow-up is open: it must route as
+        // a command, not be swallowed as the free-text answer.
+        let command = text_message_update(2, 999, "/status");
+        bridge.handle_update(&command).await;
+        assert_eq!(
+            reporter.calls(),
+            vec![ReadOnlyCommand::Status],
+            "the command must reach the reporter seam"
+        );
+        assert_eq!(
+            inject_log.lock().expect("inject log mutex poisoned").len(),
+            1,
+            "routing the command as a command must not touch tmux injection"
+        );
+
+        // The follow-up conversation must have survived the interleaved
+        // command: plain text now still relays into it.
+        let follow_up = text_message_update(3, 999, "teal, actually");
+        bridge.handle_update(&follow_up).await;
+        let injected = inject_log
+            .lock()
+            .expect("inject log mutex poisoned")
+            .clone();
+        assert_eq!(
+            injected.len(),
+            2,
+            "plain text after the interleaved command must still relay"
+        );
+        assert_eq!(
+            injected[1],
+            ("sess-1".to_string(), "teal, actually".to_string())
+        );
+    }
+
+    /// The previously-dropped path: an unsolicited `/<configured>` with NO
+    /// open follow-up now dispatches through the trigger fake instead of
+    /// being silently dropped at the old early return.
+    #[tokio::test]
+    async fn unsolicited_configured_command_with_no_follow_up_dispatches() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (bridge, trigger, _reporter) = router_bridge(client.clone());
+
+        let message = text_message_update(1, 999, "/research Acme Corp");
+        bridge.handle_update(&message).await;
+
+        let calls = trigger.calls();
+        assert_eq!(calls.len(), 1, "the previously-dropped path must dispatch");
+        assert_eq!(calls[0].workflow_type, "RESEARCH_AGENT");
+        assert_eq!(
+            calls[0].data,
+            json!({"mode": "company", "profile": "thorough", "company_name": "Acme Corp"})
+        );
+    }
+
+    /// A message from a chat id other than the configured one performs no
+    /// action at all: no dispatch, no reply, no injection, and any
+    /// pre-existing follow-up state is untouched.
+    #[tokio::test]
+    async fn message_from_non_configured_chat_id_performs_no_action() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (inject, inject_log) = inject_recording();
+        let trigger = Arc::new(RecordingWorkflowTrigger::new());
+        let reporter = Arc::new(RecordingReadOnlyReporter::new());
+        let bridge = SessionQaBridge::with_seams(
+            "999".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject,
+        )
+        .with_command_seams(
+            router_allow_list(),
+            trigger.clone() as Arc<dyn WorkflowTrigger>,
+            reporter.clone() as Arc<dyn ReadOnlyReporter>,
+        );
+
+        // Open a FreeText follow-up for the CONFIGURED chat (999).
+        let question_id = send_sample_crossing(&bridge, &client, "sess-1").await;
+        let tap = callback_query_update(1, "cbq-1", &question_id, 3, 999, 555);
+        bridge.handle_update(&tap).await;
+        let calls_before = client.calls().len();
+
+        // A message from a DIFFERENT chat (111) — command or not, it must
+        // be rejected outright.
+        let foreign_command = text_message_update(2, 111, "/research Acme Corp");
+        bridge.handle_update(&foreign_command).await;
+        let foreign_plain = text_message_update(3, 111, "some free text");
+        bridge.handle_update(&foreign_plain).await;
+
+        assert!(
+            trigger.calls().is_empty(),
+            "no dispatch for a foreign chat id"
+        );
+        assert_eq!(
+            client.calls().len(),
+            calls_before,
+            "no reply sent for a foreign chat id"
+        );
+        assert_eq!(
+            inject_log.lock().expect("inject log mutex poisoned").len(),
+            1,
+            "no additional injection beyond the original tap"
+        );
+
+        // The chat-999 follow-up state must be untouched: plain text from
+        // the real chat still relays.
+        let real_follow_up = text_message_update(4, 999, "teal, actually");
+        bridge.handle_update(&real_follow_up).await;
+        let injected = inject_log
+            .lock()
+            .expect("inject log mutex poisoned")
+            .clone();
+        assert_eq!(
+            injected.len(),
+            2,
+            "the real chat's follow-up must have survived"
+        );
+        assert_eq!(
+            injected[1],
+            ("sess-1".to_string(), "teal, actually".to_string())
+        );
+    }
+
+    /// An unrecognised command sends exactly one reply listing the
+    /// available commands and dispatches nothing.
+    #[tokio::test]
+    async fn unrecognised_command_replies_with_available_commands_and_dispatches_nothing() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (bridge, trigger, reporter) = router_bridge(client.clone());
+
+        let message = text_message_update(1, 999, "/nope something");
+        bridge.handle_update(&message).await;
+
+        assert!(trigger.calls().is_empty());
+        assert!(reporter.calls().is_empty());
+        let calls = client.calls();
+        let sends: Vec<_> = calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::SendMessage(body) => Some(body),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sends.len(), 1, "exactly one reply");
+        let text = sends[0]["text"].as_str().expect("text field");
+        assert!(text.contains("Unknown command: /nope"));
+        assert!(text.contains("/status"));
+        assert!(text.contains("/research <company_name>"));
+    }
+
+    /// Two different configured commands dispatch their own
+    /// `workflow_type`/`data` through the same router code path — the
+    /// "adding a triggerable workflow is a config change" claim.
+    #[tokio::test]
+    async fn two_configured_commands_dispatch_through_the_same_path() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (bridge, trigger, _reporter) = router_bridge(client.clone());
+
+        bridge
+            .handle_update(&text_message_update(
+                1,
+                999,
+                "/linkedin 2026-08-01 2026-08-31",
+            ))
+            .await;
+        bridge
+            .handle_update(&text_message_update(2, 999, "/research Acme Corp"))
+            .await;
+
+        let calls = trigger.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].workflow_type, "LINKEDIN_POST");
+        assert_eq!(
+            calls[0].data,
+            json!({"since": "2026-08-01", "until": "2026-08-31"})
+        );
+        assert_eq!(calls[1].workflow_type, "RESEARCH_AGENT");
+        assert_eq!(
+            calls[1].data,
+            json!({"mode": "company", "profile": "thorough", "company_name": "Acme Corp"})
+        );
+    }
+
+    /// A reporter returning more than 4,096 characters produces a
+    /// `send_message` body whose `text` is at most 4,096 chars and ends
+    /// with the truncation marker.
+    #[tokio::test]
+    async fn oversized_reporter_reply_is_truncated_with_marker() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (bridge, _trigger, reporter) = router_bridge(client.clone());
+        reporter.push(Ok("x".repeat(5000)));
+
+        bridge
+            .handle_update(&text_message_update(1, 999, "/status"))
+            .await;
+
+        let calls = client.calls();
+        let Call::SendMessage(body) = &calls[0] else {
+            panic!("expected sendMessage");
+        };
+        let text = body["text"].as_str().expect("text field");
+        assert!(text.chars().count() <= commands::TELEGRAM_MESSAGE_MAX_CHARS);
+        assert!(text.ends_with("[truncated]"));
+    }
+
+    /// An article link and a YouTube link are the same config shape
+    /// distinguished only by `source_kind` — one code path, two round
+    /// trips into the different `SourcePayload` variants.
+    #[tokio::test]
+    async fn article_and_youtube_commands_dispatch_distinct_source_payload_variants() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (bridge, trigger, _reporter) = router_bridge(client.clone());
+
+        bridge
+            .handle_update(&text_message_update(
+                1,
+                999,
+                "/article https://example.com/post",
+            ))
+            .await;
+        bridge
+            .handle_update(&text_message_update(
+                2,
+                999,
+                "/yt https://youtu.be/dQw4w9WgXcQ",
+            ))
+            .await;
+
+        let calls = trigger.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].workflow_type, "CONTENT_PIPELINE");
+        assert_eq!(calls[1].workflow_type, "CONTENT_PIPELINE");
+
+        let article_envelope: engine_contract::envelope::IngressEnvelope =
+            serde_json::from_value(calls[0].data["envelope"].clone())
+                .expect("article envelope must deserialize");
+        assert_eq!(
+            article_envelope.channel_type,
+            engine_contract::envelope::ChannelType::Telegram
+        );
+        assert!(matches!(
+            article_envelope.source,
+            engine_contract::envelope::SourcePayload::Url { .. }
+        ));
+
+        let yt_envelope: engine_contract::envelope::IngressEnvelope =
+            serde_json::from_value(calls[1].data["envelope"].clone())
+                .expect("yt envelope must deserialize");
+        match yt_envelope.source {
+            engine_contract::envelope::SourcePayload::VideoId { video_id } => {
+                assert_eq!(video_id, "dQw4w9WgXcQ");
+            }
+            other => panic!("expected SourcePayload::VideoId, got {other:?}"),
+        }
+    }
+
+    /// `/help` (and its alias `/commands`) answers from the allow-list
+    /// alone, with no reporter seam wired, and dispatches nothing.
+    #[tokio::test]
+    async fn help_answers_with_no_reporter_configured_and_dispatches_nothing() {
+        // `with_seams` alone leaves both `trigger` and `reporter` `None` —
+        // this bridge never gets `with_command_seams`'s reporter, only its
+        // allow-list-derived trigger, so `/help` is proven to work with no
+        // reporter wired at all.
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let trigger = Arc::new(RecordingWorkflowTrigger::new());
+        let bridge = SessionQaBridge::with_seams(
+            "999".to_string(),
+            client.clone(),
+            capture_returning(SAMPLE_PANE),
+            inject_ok(),
+        )
+        .with_command_seams(
+            router_allow_list(),
+            trigger.clone() as Arc<dyn WorkflowTrigger>,
+            Arc::new(NeverCalledReporter) as Arc<dyn ReadOnlyReporter>,
+        );
+
+        bridge
+            .handle_update(&text_message_update(1, 999, "/help"))
+            .await;
+        bridge
+            .handle_update(&text_message_update(2, 999, "/commands"))
+            .await;
+
+        assert!(trigger.calls().is_empty());
+        let calls = client.calls();
+        assert_eq!(calls.len(), 2);
+        for call in &calls {
+            let Call::SendMessage(body) = call else {
+                panic!("expected sendMessage");
+            };
+            let text = body["text"].as_str().expect("text field");
+            assert!(text.contains("Available commands"));
+            assert!(text.contains("/research <company_name>"));
+        }
+    }
+
+    /// A configured command needing an argument, sent bare, dispatches
+    /// nothing and replies with usage naming the missing key.
+    #[tokio::test]
+    async fn bare_command_missing_required_argument_replies_with_usage_and_dispatches_nothing() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (bridge, trigger, _reporter) = router_bridge(client.clone());
+
+        bridge
+            .handle_update(&text_message_update(1, 999, "/research"))
+            .await;
+
+        assert!(trigger.calls().is_empty());
+        let calls = client.calls();
+        let Call::SendMessage(body) = &calls[0] else {
+            panic!("expected sendMessage");
+        };
+        let text = body["text"].as_str().expect("text field");
+        assert!(text.contains("company_name"));
+    }
+
+    /// A two-positional command missing its second argument replies naming
+    /// the missing one and dispatches nothing.
+    #[tokio::test]
+    async fn two_positional_command_missing_second_argument_replies_with_usage() {
+        let client = Arc::new(FakeQaTelegramClient::new());
+        let (bridge, trigger, _reporter) = router_bridge(client.clone());
+
+        bridge
+            .handle_update(&text_message_update(1, 999, "/linkedin 2026-08-01"))
+            .await;
+
+        assert!(trigger.calls().is_empty());
+        let calls = client.calls();
+        let Call::SendMessage(body) = &calls[0] else {
+            panic!("expected sendMessage");
+        };
+        let text = body["text"].as_str().expect("text field");
+        assert!(text.contains("until"));
     }
 }

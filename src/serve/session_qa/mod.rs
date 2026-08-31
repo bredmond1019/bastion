@@ -543,9 +543,10 @@ use std::sync::{Arc, Mutex as StdMutex};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::config::{BotToken, CodeSessionsBotConfig};
+use crate::config::{BotToken, CodeSessionsBotConfig, TelegramCommandEntry};
 use crate::serve::blocked_edge::sink::BlockedEdgeRecord;
 use crate::serve::notify::{NotifyError, telegram_http};
+use crate::serve::session_qa::commands::{ParsedCommand, ReadOnlyCommand, TriggerContext};
 use crate::sessions::ask_question::parse_ask_question;
 
 /// The bridge's view of the Telegram Bot API, boxed as a trait object so
@@ -566,6 +567,34 @@ pub trait QaTelegramClient: Send + Sync {
         &self,
         query: &[(String, String)],
     ) -> Result<serde_json::Value, NotifyError>;
+}
+
+/// Dispatches a routed `/command`'s workflow through the in-process
+/// `POST /events/` route (`BA.ticket.telegram-command-router` task 3).
+/// Injected so the router is fully testable with no live network call and
+/// no engine boot — task 4 supplies the production impl over the route
+/// `bastion serve` already mounts.
+#[async_trait]
+pub trait WorkflowTrigger: Send + Sync {
+    /// `Ok` carries a short, human-readable confirmation (e.g. the minted
+    /// run id) suitable for echoing straight back to the chat. `Err`
+    /// carries a human-readable failure for the same purpose.
+    async fn trigger(
+        &self,
+        workflow_type: &str,
+        data: &serde_json::Value,
+    ) -> Result<String, String>;
+}
+
+/// Answers a built-in read-only command (`/status`, `/lanes`, `/attention`)
+/// with real content. `Help` is deliberately NOT routed through this trait
+/// (see [`SessionQaBridge::handle_command`]) — it renders from the
+/// allow-list alone so it answers even when no reporter is configured.
+#[async_trait]
+pub trait ReadOnlyReporter: Send + Sync {
+    /// `Ok` carries the reply text (truncated by the caller, not here).
+    /// `Err` carries a human-readable failure.
+    async fn report(&self, command: ReadOnlyCommand) -> Result<String, String>;
 }
 
 /// Real `reqwest`-backed [`QaTelegramClient`] against CodeSessionsBot.
@@ -742,6 +771,18 @@ pub struct SessionQaBridge {
     capture: CapturePaneFn,
     inject: InjectFn,
     follow_up: StdMutex<StdHashMap<ChatKey, ChatFollowUpState>>,
+    /// The `[telegram_commands]` allow-list, keyed by command name. Empty
+    /// on a bridge built via [`Self::with_seams`] — no command in an empty
+    /// map is ever a [`commands::CommandRoute::Trigger`].
+    commands: StdHashMap<String, TelegramCommandEntry>,
+    /// The workflow-dispatch seam. `None` on a bridge built via
+    /// [`Self::with_seams`] — a `Trigger` route then replies that the
+    /// capability is not configured, rather than silently doing nothing.
+    trigger: Option<Arc<dyn WorkflowTrigger>>,
+    /// The read-only-report seam. `None` on a bridge built via
+    /// [`Self::with_seams`] — every `ReadOnly` route except `/help` then
+    /// replies that the capability is not configured.
+    reporter: Option<Arc<dyn ReadOnlyReporter>>,
 }
 
 impl SessionQaBridge {
@@ -773,7 +814,26 @@ impl SessionQaBridge {
             capture,
             inject,
             follow_up: StdMutex::new(StdHashMap::new()),
+            commands: StdHashMap::new(),
+            trigger: None,
+            reporter: None,
         }
+    }
+
+    /// Chained builder adding the command router's allow-list and its two
+    /// seams. Kept separate from [`Self::with_seams`] so no existing call
+    /// site (in `tests.rs` or `serve/mod.rs`) has to change shape.
+    #[must_use]
+    pub fn with_command_seams(
+        mut self,
+        commands: StdHashMap<String, TelegramCommandEntry>,
+        trigger: Arc<dyn WorkflowTrigger>,
+        reporter: Arc<dyn ReadOnlyReporter>,
+    ) -> Self {
+        self.commands = commands;
+        self.trigger = Some(trigger);
+        self.reporter = Some(reporter);
+        self
     }
 
     /// Read-only access to the pending-questions registry, for tests that
@@ -1045,6 +1105,7 @@ impl SessionQaBridge {
     }
 
     async fn handle_message(&self, message: &serde_json::Value) {
+        // 1. Extract text and chat_id exactly as before task 3.
         let Some(text) = message.get("text").and_then(serde_json::Value::as_str) else {
             return;
         };
@@ -1056,6 +1117,36 @@ impl SessionQaBridge {
             return;
         };
 
+        // 2. Chat-id pin, BEFORE anything else — no follow-up state
+        // touched, no reply sent, no dispatch. Never log `text`: an
+        // unauthorized sender's message content has no business in the
+        // log even at warn level.
+        if !commands::is_authorized(&chat_id, &self.chat_id) {
+            tracing::warn!(
+                chat_id = %chat_id,
+                "session-qa: message from non-configured chat id; rejecting"
+            );
+            return;
+        }
+
+        // 3. Leading-`/` precedence: a command ALWAYS routes as a command,
+        // even with a follow-up open — the follow-up state is deliberately
+        // left untouched here so an open conversation survives an
+        // interleaved command.
+        if let Some(parsed) = commands::parse_command(text) {
+            let message_id = message
+                .get("message_id")
+                .and_then(serde_json::Value::as_i64);
+            self.handle_command(&chat_id, message_id, &parsed).await;
+            return;
+        }
+
+        // 4. Otherwise, fall through to the existing follow-up relay. The
+        // `else` below — today's silent drop — now simply returns: a
+        // non-command with no open conversation has nothing to answer.
+        // (The router closed the block's actual gap at step 3: an
+        // unsolicited `/command` with no open follow-up is now dispatched
+        // instead of being dropped here.)
         let Some(state) = self.take_follow_up_state(&chat_id) else {
             return;
         };
@@ -1088,6 +1179,69 @@ impl SessionQaBridge {
                 return;
             }
             self.registry.mark_answered(&question_id);
+        }
+    }
+
+    /// Route one parsed `/command` and send exactly one reply through
+    /// `self.client.send_message` — every [`commands::CommandRoute`] arm
+    /// funnels through here so "exactly one reply" is enforced in one
+    /// place rather than per-arm.
+    async fn handle_command(&self, chat_id: &str, message_id: Option<i64>, parsed: &ParsedCommand) {
+        let reply = match commands::route_command(parsed, &self.commands) {
+            // `/help` (and its alias `/commands`) renders from the
+            // allow-list alone, WITHOUT touching the reporter seam — so it
+            // works on a boot where nothing else is configured.
+            commands::CommandRoute::ReadOnly(ReadOnlyCommand::Help) => {
+                commands::available_commands_reply(&self.commands)
+            }
+            commands::CommandRoute::ReadOnly(command) => match &self.reporter {
+                Some(reporter) => match reporter.report(command).await {
+                    Ok(text) => text,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "session-qa: read-only report failed");
+                        format!("Failed to fetch that: {err}")
+                    }
+                },
+                None => "This read-only command is not configured on this bastion.".to_string(),
+            },
+            commands::CommandRoute::Trigger { name, entry } => {
+                let ctx = TriggerContext {
+                    chat_id: chat_id.to_string(),
+                    message_id,
+                    now_rfc3339: Utc::now().to_rfc3339(),
+                };
+                match commands::build_trigger_data(&entry, parsed, &ctx) {
+                    Ok(data) => match &self.trigger {
+                        Some(trigger) => match trigger.trigger(&entry.workflow_type, &data).await {
+                            Ok(confirmation) => confirmation,
+                            Err(err) => {
+                                tracing::warn!(
+                                    workflow_type = %entry.workflow_type,
+                                    error = %err,
+                                    "session-qa: workflow trigger failed"
+                                );
+                                format!("Failed to trigger {}: {err}", entry.workflow_type)
+                            }
+                        },
+                        None => "This command is not configured to dispatch on this bastion."
+                            .to_string(),
+                    },
+                    // A config/usage error dispatches NOTHING — the
+                    // trigger seam is never called in this arm.
+                    Err(err) => commands::trigger_data_error_reply(&name, &entry, &err),
+                }
+            }
+            commands::CommandRoute::Unknown { name } => {
+                commands::unknown_command_reply(&name, &self.commands)
+            }
+        };
+
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": commands::truncate_for_telegram(&reply),
+        });
+        if let Err(err) = self.client.send_message(body).await {
+            tracing::warn!(error = %err, "session-qa: command reply sendMessage failed");
         }
     }
 
