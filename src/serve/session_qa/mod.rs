@@ -33,6 +33,10 @@ use crate::sessions::ask_question::{AskQuestionPrompt, OptionKind};
 /// is most likely to cause.
 pub mod headless;
 
+/// The Telegram command router's pure core (`BA.ticket.telegram-command-router`).
+/// Consumed via `commands::*` by the `handle_message` wiring (task 3).
+pub mod commands;
+
 // ── PendingQuestion / PendingQuestions registry ─────────────────────────────
 
 /// One question this process has sent (or is about to send) to Telegram,
