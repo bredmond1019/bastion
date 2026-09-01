@@ -61,7 +61,11 @@ BASTION_<SLUG>_CHAT_ID
 |---|---|---|
 | `telegram` | BastionBot | `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` |
 | `codesessions` | CodeSessionsBot | `BASTION_CODESESSIONS_BOT_TOKEN` / `BASTION_CODESESSIONS_CHAT_ID` |
-| `lane` | LaneBot | `BASTION_LANE_BOT_TOKEN` / `BASTION_LANE_CHAT_ID` |
+| `lane` | OrchestrationBot (`@bastion_orchestrator_bot`) | `BASTION_LANE_BOT_TOKEN` / `BASTION_LANE_CHAT_ID` |
+
+The slug and the bot's Telegram display name are independent: the `lane` slug names the
+credential pair and the `--bot` value, while OrchestrationBot is what the bot is called in
+Telegram. Renaming the bot in Telegram changes no env var and no slug.
 
 Adding a **fourth** bot needs only a new env pair — no code change, because credential
 resolution is generic over the slug (`named_bot_config` in `src/config.rs`).
@@ -69,7 +73,13 @@ resolution is generic over the slug (`named_bot_config` in `src/config.rs`).
 An unknown or unconfigured `--bot` slug is a hard error naming both derived env vars and
 listing which slugs DO have a complete pair present — never a silent fallback to another bot.
 
-## Why a third bot (LaneBot)
+**Credential-visibility gotcha.** `BASTION_LANE_BOT_TOKEN` / `BASTION_LANE_CHAT_ID` live in
+`~/.zshenv`, so they are only visible to a shell that sources it — zsh does, a bash/sh/CI runner
+does not. Attribute a `bot 'lane' is not configured` error to *the shell the runner launches*, not
+to the bot being missing. (`~/.zshrc` is the wrong home regardless: zsh sources it for interactive
+shells only, so a non-interactive lane call would see nothing.)
+
+## Why a third bot (OrchestrationBot)
 
 Telegram delivers each update to exactly one `getUpdates` consumer per bot token. `bastion
 serve` already runs two such consumers in the background:
@@ -78,7 +88,7 @@ serve` already runs two such consumers in the background:
 - `SessionQaBridge::run_outbound` polls `codesessions` (CodeSessionsBot).
 
 A CLI `notify ask` process polling either of those same tokens would randomly steal the taps
-those loops exist to receive. LaneBot (`lane`) gives the CLI a stream nothing else consumes, so
+those loops exist to receive. OrchestrationBot (`lane`) gives the CLI a stream nothing else consumes, so
 it is the default `--bot`.
 
 **Per-verb, per-slug hazard:**
@@ -86,14 +96,12 @@ it is the default `--bot`.
 - `notify send` is outbound-only — it never calls `getUpdates` — and is safe against **any**
   bot, at any time, including `telegram` or `codesessions`.
 - `notify ask` against `telegram` or `codesessions` **while `bastion serve` is up** competes
-  with that background poller for the same update stream. This is allowed (it is how the
-  live round trip was exercised before LaneBot's credentials existed — see below) but a
-  deliberate act: the CLI prints a warning to stderr when `--bot` names a serve-polled slug.
+  with that background poller for the same update stream. This is allowed but a deliberate act:
+  the CLI prints a warning to stderr when `--bot` names a serve-polled slug.
 
-**Operator note:** LaneBot's credentials (`BASTION_LANE_BOT_TOKEN` / `BASTION_LANE_CHAT_ID`) are
-not provisioned yet — tracked as the `operator-lanebot-credential` exit on the downstream
-`notify-operator` skill block. Until then, `--bot codesessions` against the already-configured
-`@bastion_code_bot` exercises the live path — safe only while `bastion serve` is stopped.
+**Operator note:** OrchestrationBot's credentials (`BASTION_LANE_BOT_TOKEN` /
+`BASTION_LANE_CHAT_ID`) are provisioned — the `operator-lanebot-credential` gate closed
+2026-08-24, and `bastion notify send --bot lane` was verified end to end.
 
 ## `bastion notify send`
 

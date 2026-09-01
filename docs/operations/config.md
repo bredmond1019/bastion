@@ -74,8 +74,8 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `BASTION_TELEGRAM_CHAT_ID` | No | — | Operator's Telegram chat id the bot delivers to. Same Mini-plist-only, absent-tolerant, paired-with-the-token contract as `BASTION_TELEGRAM_BOT_TOKEN` above. |
 | `BASTION_CODESESSIONS_BOT_TOKEN` | No | — | Bot token for CodeSessionsBot, the session-QA bridge's bot (`BA.20.C`, [serve-api.md](../serve/serve-api.md#27-session-qa-bridge)). **Deliberately distinct from `BASTION_TELEGRAM_BOT_TOKEN`** — that pair is BastionBot's approve/reject gate transport; this pair is a second bot, shared with the HQ chore's `claude_session_notify.sh`. CodeSessionsBot does not exist yet as of `BA.20.C`, so unset is the expected state today (bridge disabled). Both this and `BASTION_CODESESSIONS_CHAT_ID` absent leaves the bridge disabled; exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
 | `BASTION_CODESESSIONS_CHAT_ID` | No | — | The operator's Telegram chat id CodeSessionsBot delivers to. Same absent-tolerant, paired-with-the-token contract as `BASTION_CODESESSIONS_BOT_TOKEN` above. |
-| `BASTION_LANE_BOT_TOKEN` | No | — | Bot token for LaneBot, the third bot `bastion notify send\|ask` (`BA.ticket.notify-operator-cli`, [notify.md](../serve/notify.md)) uses by default. **Deliberately distinct from `BASTION_TELEGRAM_BOT_TOKEN` and `BASTION_CODESESSIONS_BOT_TOKEN`** — `bastion serve` already runs one `getUpdates` long-poll per bot token (BastionBot's approve/reject gate, CodeSessionsBot's session-QA bridge), and Telegram hands each update to exactly one consumer, so a CLI polling either of those tokens would steal the taps those loops exist to receive. LaneBot's credentials are not provisioned yet (`operator-lanebot-credential`); both this and `BASTION_LANE_CHAT_ID` absent leaves `--bot lane` unconfigured — exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
-| `BASTION_LANE_CHAT_ID` | No | — | The operator's Telegram chat id LaneBot delivers to. Same absent-tolerant, paired-with-the-token contract as `BASTION_LANE_BOT_TOKEN` above. |
+| `BASTION_LANE_BOT_TOKEN` | No | — | Bot token for OrchestrationBot (`@bastion_orchestrator_bot`), the third bot `bastion notify send\|ask` (`BA.ticket.notify-operator-cli`, [notify.md](../serve/notify.md)) uses by default. **Deliberately distinct from `BASTION_TELEGRAM_BOT_TOKEN` and `BASTION_CODESESSIONS_BOT_TOKEN`** — `bastion serve` already runs one `getUpdates` long-poll per bot token (BastionBot's approve/reject gate, CodeSessionsBot's session-QA bridge), and Telegram hands each update to exactly one consumer, so a CLI polling either of those tokens would steal the taps those loops exist to receive. These credentials are provisioned (the `operator-lanebot-credential` gate closed 2026-08-24) and live in `~/.zshenv`, so only a shell that sources it sees them — zsh does, a bash/sh/CI runner does not; both this and `BASTION_LANE_CHAT_ID` absent leaves `--bot lane` unconfigured — exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
+| `BASTION_LANE_CHAT_ID` | No | — | The operator's Telegram chat id OrchestrationBot delivers to. Same absent-tolerant, paired-with-the-token contract as `BASTION_LANE_BOT_TOKEN` above. |
 | `BASTION_FAIL_ON_BUILD_DRIFT` | No | `false` (falsy) | Opt-in hard-fail switch for build-provenance drift on `bastion emit-state --write` — see [brainval.md](../knowledge/brainval.md#--build-stamp-and-the-build-provenance-drift-guard). By default, drift between the running binary's compiled-in git SHA and the live source tree prints a loud stderr banner but still lets the write proceed; setting this env var to a truthy value (`1`, `true`, `yes`, `on`, case-insensitive) turns that same drift into a non-zero exit with nothing written, before `mev::emit_state` is called. Same effect as the `--fail-on-drift` flag on `emit-state` — either alone is sufficient, with no precedence to reason about. Exists so `scripts/routine.sh`'s unattended nightly run on the Mac Mini can refuse to write from a stale build without editing that HQ-owned script's arguments. |
 
 ## Config file
@@ -231,27 +231,30 @@ error, reused rather than duplicated). CodeSessionsBot does not exist yet as of 
 absent — the bridge disabled — is the expected state today. Same `BotToken` newtype, same redacted
 `Debug`.
 
-## LaneBot (`BA.ticket.notify-operator-cli`)
+## OrchestrationBot (`BA.ticket.notify-operator-cli`)
 
-A third, fully optional env-var pair configures LaneBot, the default bot for `bastion notify
-send|ask` (`src/notify_cli.rs`); see [notify.md](../serve/notify.md) for the full verb contract.
+A third, fully optional env-var pair configures OrchestrationBot
+(`@bastion_orchestrator_bot`), the default bot for `bastion notify send|ask` (`src/notify_cli.rs`); see [notify.md](../serve/notify.md) for the full verb contract.
 
 | Env var | Type | Description |
 |---|---|---|
-| `BASTION_LANE_BOT_TOKEN` | `Option<String>` | LaneBot's Telegram bot token. |
-| `BASTION_LANE_CHAT_ID` | `Option<String>` | The operator's Telegram chat id LaneBot delivers to. |
+| `BASTION_LANE_BOT_TOKEN` | `Option<String>` | OrchestrationBot's Telegram bot token. |
+| `BASTION_LANE_CHAT_ID` | `Option<String>` | The operator's Telegram chat id OrchestrationBot delivers to. |
 
 **A third bot, not a reuse of either existing pair.** `bastion serve` already runs one
 `getUpdates` long-poll per bot token — `NotifyPollLoop::run` for BastionBot (`telegram`) and
 `SessionQaBridge::run_outbound` for CodeSessionsBot (`codesessions`) — and Telegram hands each
 update to exactly one consumer. A CLI `notify ask` polling either of those tokens would
-randomly steal the taps those loops exist to receive. LaneBot gives the CLI a stream nothing
+randomly steal the taps those loops exist to receive. OrchestrationBot gives the CLI a stream nothing
 else consumes. Read via `load_lane_bot_config` / the pure `lane_bot_config`, itself a thin
 alias over the slug-generic `named_bot_config(slug, token_env, chat_env)` that also backs
 `--bot <slug>` routing for `telegram` and `codesessions` — same both-or-neither truth table,
-same `ConfigError::IncompleteTelegramConfig` error, reused rather than duplicated. LaneBot's
-credentials are not provisioned yet, so both absent is the expected state today; `--bot lane`
-is `bastion notify`'s default regardless. Same `BotToken` newtype, same redacted `Debug`.
+same `ConfigError::IncompleteTelegramConfig` error, reused rather than duplicated. These
+credentials are provisioned (the `operator-lanebot-credential` gate closed 2026-08-24) and live in
+`~/.zshenv` — only a shell that sources it sees them, so a bash/sh/CI runner will report `--bot
+lane` unconfigured even on this machine. `--bot lane` is `bastion notify`'s default regardless. The
+credential slug `lane` and the Telegram display name OrchestrationBot are independent — renaming the
+bot changes no env var. Same `BotToken` newtype, same redacted `Debug`.
 
 ## Precedence rules
 
