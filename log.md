@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-21T00:00:00-03:00
+timestamp: 2026-08-31T21:32:05-03:00
 ---
 # Log — bastion
 
@@ -11,6 +11,35 @@ timestamp: 2026-08-21T00:00:00-03:00
 ---
 
 ## [run: 2026-08-31]
+
+### Telegram command router — spec, ship, close-out, and the two traps that only a source read caught
+
+- **What:** Authored `BA.ticket.telegram-command-router` from a survey of all 15 workflows in
+  `engine-core/src/workflows/`, ran it through `/sdlc-flow` (6/6 tasks PASS, PR #42), closed it out
+  and fast-forward-merged into local `main`. Rebuilt and installed `mev` and `bastion` (both were
+  stale; `toolchain-freshness` now PASS). Audited `planning/context.md` against real repo state.
+- **Why:** The operator wanted to trigger engine-rs workflows from Telegram — a YouTube or article
+  link, a company name, later a shopping list. The survey (kept at
+  `planning/BA.ticket.telegram-command-router/workflow-payload-survey.md`) is what made the config
+  general instead of hardcoded, and it killed the design twice:
+  1. A single `arg_key` cannot express `LINKEDIN_POST`'s two required fields (`since`/`until`), nor
+     `RESEARCH_AGENT`'s required `mode` enum sitting *alongside* the argument. Replaced with an
+     ordered `params` list (`rest` | `args` | `arg`+`index` | `envelope`+`source_kind`).
+  2. `CONTENT_PIPELINE`'s `SourceRouterNode` branches on the `SourcePayload` variant alone and never
+     inspects the URL's host — so `/yt` configured as `source_kind = "url"` would have silently run
+     the **article** fetcher. `/article` and `/yt` are one shape, separated only by `source_kind`.
+  Both bugs were in my own worked examples and neither would have surfaced until a live dispatch
+  failed or ran the wrong branch. Tests now assert each built payload *deserializes into the real
+  `*EventSchema`*, which is the only check that catches this class.
+- **Also:** Close-out's `write-repo-doc` pass caught a third factual error — the new doc described
+  the envelope as `"source": {"type": ...}` when `SourcePayload` is `#[serde(tag = "kind")]`. Fixed
+  (`bfe06d3`). `context.md` was well out of date: Document Set missing seven real entries including
+  the whole `docs/` tree, phase list frozen at 0–4 against a real 17 phases, Governing Principles at
+  5 against CLAUDE.md's 10, and a `todo!()` rule governing zero remaining stubs.
+- **Refs:** `planning/BA.ticket.telegram-command-router/` · `docs/serve/telegram-commands.md` ·
+  PR #42 · carryover `telegram-command-router-merged-locally-but-unpushed`
+
+### /sdlc-flow run — implementation detail (engine-authored)
 
 Implemented the Telegram command router (BA.ticket.telegram-command-router) across six tasks:
 `FileConfig` gained a `[telegram_commands]` allow-list (task 1); a pure router core landed in
