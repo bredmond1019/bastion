@@ -226,6 +226,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 lineage,
                 root,
                 workspace,
+                json,
             } => {
                 let query = if let Some(id) = dependents {
                     brain::BrainQuery::Dependents(id)
@@ -243,7 +244,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     std::env::var("XDG_CONFIG_HOME").ok(),
                     std::env::var("HOME").ok(),
                 )?;
-                brain::run(query, root, workspace, &registry)
+                brain::run(query, root, workspace, &registry, json)
             }
             // ValidateBrain is DB-free (D4) and synchronous — thin pass-through to the `mev`
             // path-dep library (D15 / BA.15.2). No mev/bella source is touched.
@@ -282,6 +283,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 dependents,
                 root,
                 workspace,
+                json,
             } => {
                 let query = if let Some(name) = def {
                     brain::code_graph::CodeQuery::Def(name)
@@ -297,7 +299,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     std::env::var("XDG_CONFIG_HOME").ok(),
                     std::env::var("HOME").ok(),
                 )?;
-                brain::code_graph::run_code(query, root, workspace, &registry)
+                brain::code_graph::run_code(query, root, workspace, &registry, json)
             }
             // View/Edit are DB-free (D4) and synchronous — thin pass-throughs to the
             // `bella` terminal markdown viewer/editor over bella-engine (D14/BA.15.2).
@@ -559,6 +561,7 @@ mod tests {
                 lineage: None,
                 root: None,
                 workspace: None,
+                json: false,
             }),
             "brain"
         );
@@ -633,6 +636,7 @@ mod tests {
                 dependents: None,
                 root: None,
                 workspace: None,
+                json: false,
             }),
             "code"
         );

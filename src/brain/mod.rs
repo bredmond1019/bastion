@@ -142,6 +142,7 @@ pub fn run(
     explicit_root: Option<PathBuf>,
     workspace: Option<String>,
     registry: &FileConfig,
+    json: bool,
 ) -> Result<()> {
     // Pure: resolve the effective corpus root (no DB, no Config::load).
     let root = crate::config::resolve_workspace_root(explicit_root, workspace.as_deref(), registry)
@@ -184,7 +185,11 @@ pub fn run(
 
     match results {
         Ok(result_nodes) => {
-            if result_nodes.is_empty() {
+            if json {
+                let rendered =
+                    render_json(label, node_id, &root.display().to_string(), &result_nodes)?;
+                println!("{rendered}");
+            } else if result_nodes.is_empty() {
                 println!("# no {label} results for '{node_id}'");
             } else {
                 for node in &result_nodes {

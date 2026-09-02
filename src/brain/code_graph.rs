@@ -457,6 +457,7 @@ pub fn run_code(
     explicit_root: Option<PathBuf>,
     workspace: Option<String>,
     registry: &FileConfig,
+    json: bool,
 ) -> Result<()> {
     use crate::brain::code::extract_all;
 
@@ -506,10 +507,14 @@ pub fn run_code(
     let (nodes, edges) = build_code_node_edge_lists(&all_symbols, &all_refs);
     let graph = BrainGraph::build(nodes, edges);
 
+    let root_str = root.display().to_string();
+
     match &query {
         CodeQuery::Def(name) => {
             let defs = find_definition(&all_symbols, name);
-            if defs.is_empty() {
+            if json {
+                println!("{}", render_def_json(&root_str, name, &defs)?);
+            } else if defs.is_empty() {
                 println!("# no def results for '{name}'");
             } else {
                 for sym in defs {
@@ -519,7 +524,9 @@ pub fn run_code(
         }
         CodeQuery::Refs(name) => {
             let references = find_references(&all_refs, name);
-            if references.is_empty() {
+            if json {
+                println!("{}", render_refs_json(&root_str, name, &references)?);
+            } else if references.is_empty() {
                 println!("# no ref results for '{name}'");
             } else {
                 for r in references {
@@ -530,7 +537,9 @@ pub fn run_code(
         CodeQuery::Dependents(name) => {
             // Use bare-name lookup (D10): multiple qualified nodes may share the same name.
             let callers = graph.predecessors_by_name(name);
-            if callers.is_empty() {
+            if json {
+                println!("{}", render_dependents_json(&root_str, name, &callers)?);
+            } else if callers.is_empty() {
                 println!("# no dependent results for '{name}'");
             } else {
                 for node in &callers {
