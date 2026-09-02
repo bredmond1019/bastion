@@ -673,6 +673,36 @@ pub fn load_code_sessions_bot_config() -> Result<Option<CodeSessionsBotConfig>, 
     )
 }
 
+// ── PricescoutBotConfig (BA.ticket.pricescout-telegram-bot task 1) ─────────
+//
+// A THIRD inbound loop, on a dedicated `pricescout` token, for the family's
+// `/shop` command — not a reuse of the `telegram` or `codesessions` tokens.
+// Absence disables the loop, not an error (mirrors `CodeSessionsBotConfig`,
+// not `LaneBotConfig`'s hard-error CLI contract): `bastion serve` must boot
+// exactly as today when this pair is unset.
+//
+// Defined below [`named_bot_config`]/[`load_named_bot_config`] (which this
+// is a thin alias over) rather than beside [`CodeSessionsBotConfig`] purely
+// because the generic path it reuses is defined later in this file; the
+// doc comment on `load_code_sessions_bot_config` above is what "beside"
+// refers to.
+
+/// Load [`BotCredentials`] for the `pricescout` bot from
+/// `BASTION_PRICESCOUT_BOT_TOKEN` / `BASTION_PRICESCOUT_CHAT_ID` + `.env`
+/// file. DB-free.
+///
+/// **Thin alias over [`load_named_bot_config`]** — unlike [`LaneBotConfig`],
+/// the family's bot needs no distinct struct shape (nothing downstream
+/// depends on a bespoke `PricescoutBotConfig` type), so this loader is a
+/// direct pass-through to the generic per-slug path rather than a wrapper
+/// that translates the error back to a bespoke shape. Both-absent is
+/// `Ok(None)`; both-present resolves; exactly one present is
+/// `Err(ConfigError::IncompleteNamedBotConfig(missing))` naming the missing
+/// var.
+pub fn load_pricescout_bot_config() -> Result<Option<BotCredentials>, ConfigError> {
+    load_named_bot_config("pricescout")
+}
+
 // ── LaneBotConfig (BA.ticket.notify-operator-cli task 1) ───────────────────
 
 /// Resolved LaneBot config: present only when both `BASTION_LANE_BOT_TOKEN`
@@ -833,7 +863,7 @@ pub fn load_named_bot_config(slug: &str) -> Result<Option<BotCredentials>, Confi
 /// The bot slugs this repo knows the env-var pattern for. Adding a bot to
 /// this list is the only code change a new bot ever needs beyond its env
 /// pair — everything else in `named_bot_config` is already generic.
-pub const KNOWN_BOT_SLUGS: &[&str] = &["telegram", "codesessions", "lane"];
+pub const KNOWN_BOT_SLUGS: &[&str] = &["telegram", "codesessions", "lane", "pricescout"];
 
 /// Which of [`KNOWN_BOT_SLUGS`] have a COMPLETE credential pair present in
 /// `env_snapshot`, in `KNOWN_BOT_SLUGS` order.
@@ -1957,6 +1987,83 @@ brain = "/Users/alice/brain"
     fn configured_bot_slugs_empty_env_is_empty() {
         let env = HashMap::new();
         assert!(configured_bot_slugs(&env).is_empty());
+    }
+
+    // ─── pricescout bot slug (BA.ticket.pricescout-telegram-bot task 1) ───────
+
+    #[test]
+    fn known_bot_slugs_contains_pricescout() {
+        assert!(KNOWN_BOT_SLUGS.contains(&"pricescout"));
+    }
+
+    #[test]
+    fn known_bot_slugs_still_contains_telegram_codesessions_and_lane() {
+        // Adding pricescout must not displace or reorder the existing slugs.
+        assert!(KNOWN_BOT_SLUGS.contains(&"telegram"));
+        assert!(KNOWN_BOT_SLUGS.contains(&"codesessions"));
+        assert!(KNOWN_BOT_SLUGS.contains(&"lane"));
+    }
+
+    #[test]
+    fn named_bot_config_pricescout_both_absent_is_none() {
+        let cfg = named_bot_config("pricescout", None, None).expect("absent is not an error");
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn named_bot_config_pricescout_both_present_resolves() {
+        let cfg = named_bot_config(
+            "pricescout",
+            Some("ps-bot-token-value".into()),
+            Some("ps-chat-42".into()),
+        )
+        .expect("both present should resolve")
+        .expect("expected Some");
+        assert_eq!(cfg.slug, "pricescout");
+        assert_eq!(cfg.bot_token.expose(), "ps-bot-token-value");
+        assert_eq!(cfg.chat_id, "ps-chat-42");
+    }
+
+    #[test]
+    fn named_bot_config_pricescout_token_only_is_typed_error_naming_chat_id() {
+        let err =
+            named_bot_config("pricescout", Some("ps-bot-token-value".into()), None).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteNamedBotConfig("BASTION_PRICESCOUT_CHAT_ID".to_string())
+        );
+    }
+
+    #[test]
+    fn named_bot_config_pricescout_chat_id_only_is_typed_error_naming_bot_token() {
+        let err = named_bot_config("pricescout", None, Some("ps-chat-42".into())).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::IncompleteNamedBotConfig("BASTION_PRICESCOUT_BOT_TOKEN".to_string())
+        );
+    }
+
+    #[test]
+    fn pricescout_env_var_names_are_derived_correctly() {
+        let (token_var, chat_var) = bot_env_var_names("pricescout");
+        assert_eq!(token_var, "BASTION_PRICESCOUT_BOT_TOKEN");
+        assert_eq!(chat_var, "BASTION_PRICESCOUT_CHAT_ID");
+    }
+
+    #[test]
+    fn configured_bot_slugs_reports_pricescout_when_complete() {
+        let mut env = HashMap::new();
+        env.insert(
+            "BASTION_PRICESCOUT_BOT_TOKEN".to_string(),
+            "ps-token".to_string(),
+        );
+        env.insert(
+            "BASTION_PRICESCOUT_CHAT_ID".to_string(),
+            "ps-chat".to_string(),
+        );
+
+        let configured = configured_bot_slugs(&env);
+        assert_eq!(configured, vec!["pricescout".to_string()]);
     }
 
     // ─── planning_root ────────────────────────────────────────────────────────
