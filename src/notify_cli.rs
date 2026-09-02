@@ -431,10 +431,13 @@ impl AskLock {
 
 /// Bot slugs `bastion serve` polls in the background
 /// (`NotifyPollLoop::run` for `telegram`, `SessionQaBridge::run_outbound`
-/// for `codesessions`). `ask` against one of these warns on stderr that it
-/// competes with that loop for the same `getUpdates` stream; `send` never
-/// warns (it never reads updates and so cannot steal anything).
-pub const POLLED_BOT_SLUGS: &[&str] = &["telegram", "codesessions"];
+/// for `codesessions`, and the family's `/shop` loop for `pricescout` —
+/// BA.ticket.pricescout-telegram-bot). `ask` against one of these warns on
+/// stderr that it competes with that loop for the same `getUpdates` stream;
+/// `send` never warns (it never reads updates and so cannot steal
+/// anything) — which is why price-scout's outbound alerts (PS.9.D) can
+/// keep sharing the `pricescout` bot for `send`.
+pub const POLLED_BOT_SLUGS: &[&str] = &["telegram", "codesessions", "pricescout"];
 
 /// The `-` stdin marker `--text`/`--summary` accept.
 const STDIN_MARKER: &str = "-";
@@ -1313,9 +1316,10 @@ mod tests {
     // ── is_polled_bot_slug / competing_poller_warning ───────────────
 
     #[test]
-    fn is_polled_bot_slug_true_for_telegram_and_codesessions() {
+    fn is_polled_bot_slug_true_for_telegram_codesessions_and_pricescout() {
         assert!(is_polled_bot_slug("telegram"));
         assert!(is_polled_bot_slug("codesessions"));
+        assert!(is_polled_bot_slug("pricescout"));
     }
 
     #[test]
@@ -1324,10 +1328,20 @@ mod tests {
         assert!(!is_polled_bot_slug("some-other-bot"));
     }
 
+    /// Load-bearing membership pin (BA.ticket.pricescout-telegram-bot task
+    /// 1): once the pricescout inbound loop exists, an `ask` on this slug
+    /// would otherwise silently steal the family's messages with no error
+    /// anywhere. This test is what keeps that from regressing silently.
+    #[test]
+    fn polled_bot_slugs_contains_pricescout() {
+        assert!(POLLED_BOT_SLUGS.contains(&"pricescout"));
+    }
+
     #[test]
     fn competing_poller_warning_present_for_polled_slugs() {
         assert!(competing_poller_warning("telegram").is_some());
         assert!(competing_poller_warning("codesessions").is_some());
+        assert!(competing_poller_warning("pricescout").is_some());
     }
 
     #[test]

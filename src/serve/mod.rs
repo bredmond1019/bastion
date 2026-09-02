@@ -41,6 +41,7 @@ pub mod dto;
 pub mod handlers;
 pub mod notify;
 pub mod poll;
+pub mod pricescout;
 pub mod session_qa;
 pub mod status;
 pub mod ws;
@@ -833,6 +834,44 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             None
         }
     };
+
+    // ── Pricescout bridge (BA.ticket.pricescout-telegram-bot task 3) ───────
+    //
+    // A THIRD inbound Telegram loop, on its own dedicated `pricescout`
+    // token — never a second consumer of `telegram` or `codesessions`.
+    // Gated on `pricescout` bot config (task 1) being present; absent is
+    // the expected state until the operator gate closes, and boot must be
+    // byte-for-byte the behaviour it has today. Mirrors the session-QA gate
+    // immediately above in shape, but this loop needs no channel from the
+    // blocked-edge poller — it has no inbound path, only its own
+    // `getUpdates` outbound loop.
+    match crate::config::load_pricescout_bot_config() {
+        Ok(Some(creds)) => {
+            tracing::info!(
+                target: "bastion::serve",
+                "pricescout bridge enabled (pricescout bot configured)"
+            );
+            let list_url = std::env::var("BASTION_PRICESCOUT_LIST_URL")
+                .unwrap_or_else(|_| pricescout::DEFAULT_LIST_URL.to_string());
+            let bridge = pricescout::PricescoutBridge::new(creds, list_url);
+            actix_web::rt::spawn(async move {
+                bridge.run_outbound().await;
+            });
+        }
+        Ok(None) => {
+            tracing::info!(
+                target: "bastion::serve",
+                "pricescout bridge disabled (BASTION_PRICESCOUT_BOT_TOKEN / BASTION_PRICESCOUT_CHAT_ID unset)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "bastion::serve",
+                error = %e,
+                "pricescout bridge disabled — invalid pricescout bot config"
+            );
+        }
+    }
 
     match sink_path {
         Some(sink_path) => {
@@ -6047,6 +6086,112 @@ heading = "bastion"
         assert!(
             !logs.contains("session-QA bridge enabled"),
             "no bridge should have been spawned with CodeSessionsBot config absent; got logs:\n{logs}"
+        );
+    }
+
+    /// `BA.ticket.pricescout-telegram-bot` task 3 (acceptance criteria 1
+    /// and 2): with the `pricescout` bot config absent, `run_server`'s
+    /// setup path must reach and log the disabled decision, and boot
+    /// exactly as it does today — no third loop spawned. Same shape as
+    /// `run_server_with_no_codesessions_config_spawns_no_bridge` immediately
+    /// above: ephemeral port, abort after a short grace period, assert on
+    /// captured logs rather than a natural return.
+    #[actix_web::test]
+    async fn run_server_with_no_pricescout_config_spawns_no_bridge() {
+        let env_lock = lock_env();
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "run_server_no_pricescout_bridge");
+        let _p1 = EnvVarGuard::unset(&env_lock, "BASTION_PRICESCOUT_BOT_TOKEN");
+        let _p2 = EnvVarGuard::unset(&env_lock, "BASTION_PRICESCOUT_CHAT_ID");
+        let _t1 = EnvVarGuard::unset(&env_lock, "BASTION_CODESESSIONS_BOT_TOKEN");
+        let _t2 = EnvVarGuard::unset(&env_lock, "BASTION_CODESESSIONS_CHAT_ID");
+        let _db = EnvVarGuard::unset(&env_lock, "DATABASE_URL");
+        let _engine_key = EnvVarGuard::unset(&env_lock, "BASTION_ENGINE_API_KEY");
+        let _tg_token = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN");
+        let _tg_chat = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = SharedLogBuf(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer)
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .finish();
+        let _tracing_guard = tracing::subscriber::set_default(subscriber);
+
+        let handle = actix_web::rt::spawn(run_server(
+            "127.0.0.1:0".to_string(),
+            "boot-test-token".to_string(),
+            2,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        handle.abort();
+        let _ = handle.await;
+
+        drop(_tracing_guard);
+        let logs =
+            String::from_utf8_lossy(&buf.lock().unwrap_or_else(|e| e.into_inner())).to_string();
+
+        assert!(
+            logs.contains("pricescout bridge disabled"),
+            "expected the disabled pricescout-bridge log line; got logs:\n{logs}"
+        );
+        assert!(
+            !logs.contains("pricescout bridge enabled"),
+            "no pricescout bridge should have been spawned with its config absent; got logs:\n{logs}"
+        );
+    }
+
+    /// `BA.ticket.pricescout-telegram-bot` task 3 (acceptance criterion 1):
+    /// with the `pricescout` bot config present, `run_server`'s setup path
+    /// spawns the third loop and logs the enabled decision. The spawned
+    /// `run_outbound` loop's own `getUpdates` call will fail against the
+    /// fake token (no real network reachable/expected here) and retry
+    /// forever, which is fine — this test only asserts on the boot-time
+    /// decision, aborting the task well before any such retry matters.
+    #[actix_web::test]
+    async fn run_server_with_pricescout_config_spawns_bridge() {
+        let env_lock = lock_env();
+        let _dotenv_shadow = DotenvShadow::new(&env_lock, "run_server_pricescout_bridge_enabled");
+        let _p1 = EnvVarGuard::set(&env_lock, "BASTION_PRICESCOUT_BOT_TOKEN", "fake-ps-token");
+        let _p2 = EnvVarGuard::set(&env_lock, "BASTION_PRICESCOUT_CHAT_ID", "42");
+        let _t1 = EnvVarGuard::unset(&env_lock, "BASTION_CODESESSIONS_BOT_TOKEN");
+        let _t2 = EnvVarGuard::unset(&env_lock, "BASTION_CODESESSIONS_CHAT_ID");
+        let _db = EnvVarGuard::unset(&env_lock, "DATABASE_URL");
+        let _engine_key = EnvVarGuard::unset(&env_lock, "BASTION_ENGINE_API_KEY");
+        let _tg_token = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN");
+        let _tg_chat = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = SharedLogBuf(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer)
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .finish();
+        let _tracing_guard = tracing::subscriber::set_default(subscriber);
+
+        let handle = actix_web::rt::spawn(run_server(
+            "127.0.0.1:0".to_string(),
+            "boot-test-token".to_string(),
+            2,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        handle.abort();
+        let _ = handle.await;
+
+        drop(_tracing_guard);
+        let logs =
+            String::from_utf8_lossy(&buf.lock().unwrap_or_else(|e| e.into_inner())).to_string();
+
+        assert!(
+            logs.contains("pricescout bridge enabled"),
+            "expected the enabled pricescout-bridge log line; got logs:\n{logs}"
+        );
+        assert!(
+            !logs.contains("pricescout bridge disabled"),
+            "the bridge must not also log disabled when config is present; got logs:\n{logs}"
         );
     }
 
