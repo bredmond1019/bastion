@@ -224,6 +224,11 @@ pub enum Commands {
         /// (~/.config/bastion/config.toml).  Alias: --knowledge-dir.
         #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
         workspace: Option<String>,
+        /// Emit the machine-readable JSON envelope instead of the greppable text output.
+        /// Orthogonal to the query-mode group — does not require a query flag on its own.
+        /// See docs/brain-graph-output.md for the documented shape.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Start the HTTP+WebSocket network face (Tailscale-reachable)
@@ -361,6 +366,11 @@ pub enum Commands {
         /// Alias: --knowledge-dir.
         #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
         workspace: Option<String>,
+        /// Emit the machine-readable JSON envelope instead of the greppable text output.
+        /// Orthogonal to the code-query-mode group — does not require a query flag on its own.
+        /// See docs/brain-graph-output.md for the documented shape.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Open a markdown document in bella's terminal viewer (bella-engine pass-through)
@@ -634,6 +644,7 @@ mod tests {
                 lineage,
                 root,
                 workspace,
+                json,
             }) => {
                 assert_eq!(dependents, Some("d20".to_string()));
                 assert!(blast_radius.is_none());
@@ -641,6 +652,7 @@ mod tests {
                 // --root is now Option<PathBuf>; unset when not supplied
                 assert!(root.is_none());
                 assert!(workspace.is_none());
+                assert!(!json);
             }
             other => panic!("expected Brain, got {other:?}"),
         }
@@ -656,12 +668,14 @@ mod tests {
                 lineage,
                 root,
                 workspace,
+                json,
             }) => {
                 assert!(dependents.is_none());
                 assert_eq!(blast_radius, Some("d20".to_string()));
                 assert!(lineage.is_none());
                 assert!(root.is_none());
                 assert!(workspace.is_none());
+                assert!(!json);
             }
             other => panic!("expected Brain, got {other:?}"),
         }
@@ -677,15 +691,43 @@ mod tests {
                 lineage,
                 root,
                 workspace,
+                json,
             }) => {
                 assert!(dependents.is_none());
                 assert!(blast_radius.is_none());
                 assert_eq!(lineage, Some("d3".to_string()));
                 assert!(root.is_none());
                 assert!(workspace.is_none());
+                assert!(!json);
             }
             other => panic!("expected Brain, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn brain_json_flag_parses_true() {
+        let cli =
+            Cli::try_parse_from(["bastion", "brain", "--dependents", "d20", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Brain { json, .. }) => assert!(json),
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_json_flag_defaults_false() {
+        let cli = Cli::try_parse_from(["bastion", "brain", "--dependents", "d20"]).unwrap();
+        match cli.command {
+            Some(Commands::Brain { json, .. }) => assert!(!json),
+            other => panic!("expected Brain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brain_json_flag_orthogonal_to_query_group() {
+        // --json alone, with no query flag, must still fail with clap's existing
+        // required-group error — not a new one.
+        assert!(Cli::try_parse_from(["bastion", "brain", "--json"]).is_err());
     }
 
     #[test]
@@ -981,15 +1023,42 @@ mod tests {
                 dependents,
                 root,
                 workspace,
+                json,
             }) => {
                 assert_eq!(def, Some("alpha".to_string()));
                 assert!(refs.is_none());
                 assert!(dependents.is_none());
                 assert!(root.is_none());
                 assert!(workspace.is_none());
+                assert!(!json);
             }
             other => panic!("expected Code, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn code_json_flag_parses_true() {
+        let cli = Cli::try_parse_from(["bastion", "code", "--def", "alpha", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Code { json, .. }) => assert!(json),
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_json_flag_defaults_false() {
+        let cli = Cli::try_parse_from(["bastion", "code", "--def", "alpha"]).unwrap();
+        match cli.command {
+            Some(Commands::Code { json, .. }) => assert!(!json),
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_json_flag_orthogonal_to_query_group() {
+        // --json alone, with no query flag, must still fail with clap's existing
+        // required-group error — not a new one.
+        assert!(Cli::try_parse_from(["bastion", "code", "--json"]).is_err());
     }
 
     #[test]

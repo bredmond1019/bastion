@@ -24,9 +24,13 @@ bastion brain [--dependents <NODE_ID>
               | --lineage <NODE_ID>]
               [--root <DIR>]
               [--workspace <NAME> | --knowledge-dir <NAME>]
+              [--json]
 ```
 
-Exactly one of `--dependents`, `--blast-radius`, or `--lineage` is required.
+Exactly one of `--dependents`, `--blast-radius`, or `--lineage` is required. `--json` is
+orthogonal to that group — it does not satisfy the requirement on its own — and switches the
+output from the greppable text below to the versioned envelope documented in
+[brain-graph-output.md](../brain-graph-output.md).
 
 The corpus root is resolved with the following precedence (highest to lowest):
 
@@ -66,6 +70,9 @@ When no results match, a single comment line is printed:
 
 Lines are independently greppable by relation (`grep "^blast-radius:"`) or by
 node id (`grep "\td20"`).
+
+This text output is unversioned and may change; pass `--json` for the documented, stable
+envelope instead — see [brain-graph-output.md](../brain-graph-output.md).
 
 ## Corpus Discovery and Graph Construction
 
@@ -116,7 +123,11 @@ any known node.
 | `query_label(query)` | `fn` | Returns the stable output prefix label for a query variant (`"dependent"`, `"blast-radius"`, `"lineage"`). |
 | `query_node_id(query)` | `fn` | Extracts the target node id string from any `BrainQuery` variant. |
 | `format_result_line(label, node)` | `fn` | Formats one result as `"<label>: <id>\t<path>"`. |
-| `run(query, explicit_root, workspace, registry)` | `fn` | Thin I/O shell — resolves corpus root via workspace registry, discovers corpus, builds graph, runs query, prints report. Returns `Err` on unknown workspace name, empty corpus, or unknown node id. |
+| `BrainJsonResult` | struct | `{id, path}` — one `--json` result row, built from a `BrainNode` via a `From<&BrainNode>` impl. |
+| `BrainJsonEnvelope` | struct | The `--json` top-level object: `tool`, `root`, `query`, `node_id`, `results`. |
+| `run(query, explicit_root, workspace, registry, json)` | `fn` | Thin I/O shell — resolves corpus root via workspace registry, discovers corpus, builds graph, runs query, prints the greppable report or (`json: true`) the versioned JSON envelope. Returns `Err` on unknown workspace name, empty corpus, or unknown node id. |
+| `build_json_envelope(query, root, results)` | `fn` | Pure: builds the `--json` envelope object for a query and its results — see [brain-graph-output.md](../brain-graph-output.md). |
+| `render_json(envelope)` | `fn` | Pure: serializes a `BrainJsonEnvelope` to the printed JSON string. |
 
 ### `src/brain/okf.rs`
 

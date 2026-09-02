@@ -44,6 +44,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use serde::Serialize;
 
 use crate::brain::code::{CodeRef, CodeSymbol, SymbolKind};
 use crate::brain::graph::BrainGraph;
@@ -223,6 +224,166 @@ pub fn format_dependent_line(node: &BrainNode) -> String {
     format!("dependent: {}\t{}", node.title, node.path.display())
 }
 
+// ── JSON envelope (pure, unit-tested) ─────────────────────────────────────────
+//
+// `bastion code`'s three queries return three different payload shapes
+// (`CodeSymbol` for `def`, `CodeRef` for `refs`, `BrainNode` for `dependents`),
+// so each gets its own result-row type rather than forcing them into one
+// flattened row that would drop fields. All three share the same top-level
+// envelope shape as `brain::BrainJsonEnvelope` (task 1) so the two verbs read
+// as one contract — see `docs/brain-graph-output.md`.
+
+/// One result row in a `bastion code --json --def` envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodeJsonDefResult {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub path: String,
+    pub line: usize,
+}
+
+impl From<&CodeSymbol> for CodeJsonDefResult {
+    fn from(sym: &CodeSymbol) -> Self {
+        CodeJsonDefResult {
+            name: sym.name.clone(),
+            kind: sym.kind.clone(),
+            path: sym.path.display().to_string(),
+            line: sym.line,
+        }
+    }
+}
+
+/// One result row in a `bastion code --json --refs` envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodeJsonRefResult {
+    pub name: String,
+    pub path: String,
+    pub line: usize,
+}
+
+impl From<&CodeRef> for CodeJsonRefResult {
+    fn from(r: &CodeRef) -> Self {
+        CodeJsonRefResult {
+            name: r.name.clone(),
+            path: r.path.display().to_string(),
+            line: r.line,
+        }
+    }
+}
+
+/// One result row in a `bastion code --json --dependents` envelope.
+///
+/// Carries `id` (the qualified D10 node id) and `title` (the bare symbol name
+/// `format_dependent_line` prints) alongside `path`, so the JSON path does not
+/// lose the qualified id the text path discards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodeJsonDependentResult {
+    pub id: String,
+    pub title: String,
+    pub path: String,
+}
+
+impl From<&BrainNode> for CodeJsonDependentResult {
+    fn from(node: &BrainNode) -> Self {
+        CodeJsonDependentResult {
+            id: node.id.clone(),
+            title: node.title.clone(),
+            path: node.path.display().to_string(),
+        }
+    }
+}
+
+/// The stable top-level JSON envelope for `bastion code --json`.
+///
+/// Generic over the result row type so all three queries share one envelope
+/// shape (`tool`, `root`, `query`, `name`, `results`) while each keeps the
+/// fields its own payload type actually has. Mirrors `brain::BrainJsonEnvelope`
+/// (task 1) and `bastion assess --json`'s convention.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodeJsonEnvelope<T: Serialize> {
+    pub tool: &'static str,
+    pub root: String,
+    pub query: String,
+    pub name: String,
+    pub results: Vec<T>,
+}
+
+/// Build the JSON envelope for `bastion code --json --def`. Pure — no I/O.
+///
+/// `results` is the raw `find_definition` slice (empty when nothing matched —
+/// the empty case renders as `results: []`, never the text path's
+/// `# no def results for '<name>'` comment line).
+pub fn build_def_json_envelope(
+    root: &str,
+    name: &str,
+    results: &[&CodeSymbol],
+) -> CodeJsonEnvelope<CodeJsonDefResult> {
+    CodeJsonEnvelope {
+        tool: "code",
+        root: root.to_string(),
+        query: "def".to_string(),
+        name: name.to_string(),
+        results: results
+            .iter()
+            .map(|s| CodeJsonDefResult::from(*s))
+            .collect(),
+    }
+}
+
+/// Render a `bastion code --json --def` query result as a pretty-printed JSON
+/// string. Pure — no I/O; the caller decides whether and where to print it.
+pub fn render_def_json(root: &str, name: &str, results: &[&CodeSymbol]) -> Result<String> {
+    let envelope = build_def_json_envelope(root, name, results);
+    Ok(serde_json::to_string_pretty(&envelope)?)
+}
+
+/// Build the JSON envelope for `bastion code --json --refs`. Pure — no I/O.
+pub fn build_refs_json_envelope(
+    root: &str,
+    name: &str,
+    results: &[&CodeRef],
+) -> CodeJsonEnvelope<CodeJsonRefResult> {
+    CodeJsonEnvelope {
+        tool: "code",
+        root: root.to_string(),
+        query: "refs".to_string(),
+        name: name.to_string(),
+        results: results
+            .iter()
+            .map(|r| CodeJsonRefResult::from(*r))
+            .collect(),
+    }
+}
+
+/// Render a `bastion code --json --refs` query result as a pretty-printed JSON
+/// string. Pure — no I/O; the caller decides whether and where to print it.
+pub fn render_refs_json(root: &str, name: &str, results: &[&CodeRef]) -> Result<String> {
+    let envelope = build_refs_json_envelope(root, name, results);
+    Ok(serde_json::to_string_pretty(&envelope)?)
+}
+
+/// Build the JSON envelope for `bastion code --json --dependents`. Pure — no I/O.
+pub fn build_dependents_json_envelope(
+    root: &str,
+    name: &str,
+    results: &[BrainNode],
+) -> CodeJsonEnvelope<CodeJsonDependentResult> {
+    CodeJsonEnvelope {
+        tool: "code",
+        root: root.to_string(),
+        query: "dependents".to_string(),
+        name: name.to_string(),
+        results: results.iter().map(CodeJsonDependentResult::from).collect(),
+    }
+}
+
+/// Render a `bastion code --json --dependents` query result as a pretty-printed
+/// JSON string. Pure — no I/O; the caller decides whether and where to print it.
+pub fn render_dependents_json(root: &str, name: &str, results: &[BrainNode]) -> Result<String> {
+    let envelope = build_dependents_json_envelope(root, name, results);
+    Ok(serde_json::to_string_pretty(&envelope)?)
+}
+
 // ── File walker ───────────────────────────────────────────────────────────────
 
 /// Walk `root` recursively and return all `.rs` files in deterministic (sorted) order.
@@ -296,6 +457,7 @@ pub fn run_code(
     explicit_root: Option<PathBuf>,
     workspace: Option<String>,
     registry: &FileConfig,
+    json: bool,
 ) -> Result<()> {
     use crate::brain::code::extract_all;
 
@@ -345,10 +507,14 @@ pub fn run_code(
     let (nodes, edges) = build_code_node_edge_lists(&all_symbols, &all_refs);
     let graph = BrainGraph::build(nodes, edges);
 
+    let root_str = root.display().to_string();
+
     match &query {
         CodeQuery::Def(name) => {
             let defs = find_definition(&all_symbols, name);
-            if defs.is_empty() {
+            if json {
+                println!("{}", render_def_json(&root_str, name, &defs)?);
+            } else if defs.is_empty() {
                 println!("# no def results for '{name}'");
             } else {
                 for sym in defs {
@@ -358,7 +524,9 @@ pub fn run_code(
         }
         CodeQuery::Refs(name) => {
             let references = find_references(&all_refs, name);
-            if references.is_empty() {
+            if json {
+                println!("{}", render_refs_json(&root_str, name, &references)?);
+            } else if references.is_empty() {
                 println!("# no ref results for '{name}'");
             } else {
                 for r in references {
@@ -369,7 +537,9 @@ pub fn run_code(
         CodeQuery::Dependents(name) => {
             // Use bare-name lookup (D10): multiple qualified nodes may share the same name.
             let callers = graph.predecessors_by_name(name);
-            if callers.is_empty() {
+            if json {
+                println!("{}", render_dependents_json(&root_str, name, &callers)?);
+            } else if callers.is_empty() {
                 println!("# no dependent results for '{name}'");
             } else {
                 for node in &callers {
@@ -802,6 +972,90 @@ mod tests {
         let line = format_dependent_line(&node);
         // Shows bare name (title), not qualified id
         assert_eq!(line, "dependent: main_consumer\tconsumer.rs");
+    }
+
+    // ── build_*_json_envelope / render_*_json ─────────────────────────────────
+
+    #[test]
+    fn render_def_json_parses_and_carries_expected_fields() {
+        use crate::brain::code::SymbolKind;
+        let sym = CodeSymbol {
+            name: "alpha".to_string(),
+            kind: SymbolKind::Fn,
+            path: PathBuf::from("lib.rs"),
+            line: 1,
+        };
+        let rendered = render_def_json("/tmp/root", "alpha", &[&sym]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["tool"], "code");
+        assert_eq!(parsed["root"], "/tmp/root");
+        assert_eq!(parsed["query"], "def");
+        assert_eq!(parsed["name"], "alpha");
+        assert_eq!(parsed["results"][0]["name"], "alpha");
+        assert_eq!(parsed["results"][0]["kind"], "fn");
+        assert_eq!(parsed["results"][0]["path"], "lib.rs");
+        assert_eq!(parsed["results"][0]["line"], 1);
+    }
+
+    #[test]
+    fn render_def_json_empty_results_is_empty_array_not_comment_line() {
+        let rendered = render_def_json("/root", "nope", &[]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["query"], "def");
+        assert_eq!(parsed["name"], "nope");
+        assert!(parsed["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn render_refs_json_parses_and_carries_expected_fields() {
+        let r = CodeRef {
+            name: "alpha".to_string(),
+            path: PathBuf::from("consumer.rs"),
+            line: 6,
+        };
+        let rendered = render_refs_json("/tmp/root", "alpha", &[&r]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["tool"], "code");
+        assert_eq!(parsed["root"], "/tmp/root");
+        assert_eq!(parsed["query"], "refs");
+        assert_eq!(parsed["name"], "alpha");
+        assert_eq!(parsed["results"][0]["name"], "alpha");
+        assert_eq!(parsed["results"][0]["path"], "consumer.rs");
+        assert_eq!(parsed["results"][0]["line"], 6);
+    }
+
+    #[test]
+    fn render_refs_json_empty_results_is_empty_array_not_comment_line() {
+        let rendered = render_refs_json("/root", "nope", &[]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["query"], "refs");
+        assert!(parsed["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn render_dependents_json_parses_and_carries_expected_fields() {
+        let node = BrainNode {
+            id: "consumer::fn::main_consumer".to_string(),
+            title: "main_consumer".to_string(),
+            path: PathBuf::from("consumer.rs"),
+        };
+        let rendered = render_dependents_json("/tmp/root", "render", &[node]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["tool"], "code");
+        assert_eq!(parsed["root"], "/tmp/root");
+        assert_eq!(parsed["query"], "dependents");
+        assert_eq!(parsed["name"], "render");
+        assert_eq!(parsed["results"][0]["id"], "consumer::fn::main_consumer");
+        assert_eq!(parsed["results"][0]["title"], "main_consumer");
+        assert_eq!(parsed["results"][0]["path"], "consumer.rs");
+    }
+
+    #[test]
+    fn render_dependents_json_empty_results_is_empty_array_not_comment_line() {
+        let rendered = render_dependents_json("/root", "nope", &[]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["query"], "dependents");
+        assert!(parsed["results"].as_array().unwrap().is_empty());
     }
 
     // ── find_rust_files: basic behaviour ─────────────────────────────────────

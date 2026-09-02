@@ -10,6 +10,70 @@ timestamp: 2026-08-31T21:32:05-03:00
 
 ---
 
+## [run: 2026-09-02]
+
+### BA.22.C — `--json` on `bastion brain`/`bastion code`, closed out (5 of 5 tasks, review PASS)
+
+- **What:** Resumed `/sdlc-flow BA.22.C` from the task-5 bail recorded below. Re-ran task 5's
+  full validation suite (fmt, clippy `-D warnings`, `cargo test` via
+  `NEXTEST_POLICY_OVERRIDE=1`, release build, contract-corpus drift, typeshare drift) — 2635
+  tests passed, 0 failed. The `types/serve.ts` typeshare-drift flag against okf-core's
+  `KnownCarryoverNeeds` enum was re-verified as pre-existing at baseline (not caused by any
+  BA.22.C task, which declares `files: []`), confirmed by independently re-checking the diff
+  against `main`, `grep`-ing the type's absence from `types/serve.ts`, and tracing the enum to
+  okf-core commit `3cffdd8` — out of scope per standing rule 3a. Task 5 passed with that one
+  known exception. End review verdict: **PASS**.
+- **Result:** All five tasks landed — task 1's `BrainJsonEnvelope`/`build_json_envelope`/
+  `render_json` for `bastion brain`'s three queries, tasks 2–3's mirror `CodeJsonEnvelope` for
+  `bastion code`'s def/refs/dependents queries plus `--json` wired through the `Brain`/`Code` CLI
+  variants, and task 4's `docs/brain-graph-output.md` documenting all six JSON envelope shapes.
+- **Decisions:** the pre-existing typeshare drift stays untouched (belongs to a separate
+  okf-core-driven fix, not this spec); block `BA.22.C` is now closed in `state.json` and
+  `status.md` reflects Done.
+- Next: pick up the next item in `status.md`'s `next` queue — the typeshare drift itself remains
+  an open follow-up for whoever picks up okf-core's `KnownCarryoverNeeds` reconciliation.
+
+```
+796982e docs: update docs for BA.22.C
+1f49b6e chore: wrap up BA.22.C
+a68ddeb feat: implement BA.22.C-task4
+5b8cedf feat: implement BA.22.C-task3
+f217560 feat: implement BA.22.C-task2
+6d58b2b feat: implement BA.22.C-task1
+```
+
+## [run: 2026-09-02]
+
+### BA.22.C — `--json` on `bastion brain`/`bastion code`, tasks 1–4 landed, BAILED on task 5's pre-existing typeshare drift
+
+- **What:** Ran `/sdlc-flow BA.22.C`. Task 1 added a pure `BrainJsonEnvelope`/`build_json_envelope`/
+  `render_json` for `bastion brain`'s three queries in `src/brain/mod.rs`, unit-tested, with the
+  text path untouched. Tasks 2 and 3 (the mirror JSON envelope for `bastion code`'s def/refs/
+  dependents queries in `src/brain/code_graph.rs`, and wiring `--json` through the `Brain`/`Code`
+  CLI variants in `cli.rs`/`main.rs`) were found already fully implemented and committed
+  (`c5beb61`, `ac2fea3`) from a prior attempt on this branch — verified against spec rather than
+  redone. Task 4 added `docs/brain-graph-output.md` documenting all six `--json` envelope shapes
+  plus its `docs/index.md` row. Task 5 (full-suite validation) ran fmt/clippy/test/build/
+  contract-corpus-drift clean, but `scripts/check-typeshare-drift.sh` failed on `types/serve.ts`
+  drift against okf-core's `KnownCarryoverNeeds` enum.
+- **BAILED:** re-ran the typeshare-drift check against `main` and got byte-identical failure output —
+  the drift predates this spec entirely and originates from okf-core's own commits
+  (`3cffdd8`/`00b79b3`), not from any BA.22.C task. Task 5 declares `files: []`, and none of
+  BA.22.C's changed files touch `types/`, `dto.rs`, or okf-core, so fixing it here is out of scope
+  per standing rule 3a (STOP, don't fix/revert something outside the task's declared files).
+- **Decisions:** left the pre-existing typeshare drift untouched; did not run `scripts/gen-types.sh`.
+  Block BA.22.C stays open — status.md and state.json both record it as blocked rather than closed.
+- Next: a follow-up (in okf-core or a dedicated bastion ticket) needs to resolve the
+  `KnownCarryoverNeeds` typeshare drift before BA.22.C's task 5 can pass cleanly; once that lands,
+  re-run `/sdlc-flow BA.22.C 5` to close out.
+
+```
+5d54365 feat: implement BA.22.C-task4
+ac2fea3 feat: implement BA.22.C-task3
+c5beb61 feat: implement BA.22.C-task2
+db21ade feat: implement BA.22.C-task1
+```
+
 ## [run: 2026-08-31]
 
 ### Telegram command router — spec, ship, close-out, and the two traps that only a source read caught

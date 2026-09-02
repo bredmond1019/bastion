@@ -122,8 +122,8 @@ Read files on disk. Never write back — `/log-work` owns the writes (decision D
 
 | Command | What it does | Doc |
 |---|---|---|
-| `bastion brain (--dependents\|--blast-radius\|--lineage) <NODE_ID>` | Structural queries over the OKF `[[link]]` corpus: who points at this doc, what breaks if it changes, what it transitively references. | [brain.md](knowledge/brain.md) |
-| `bastion code (--def\|--refs\|--dependents) <SYMBOL>` | Same three questions over Rust source, via deterministic tree-sitter extraction. Rust `.rs` files only. | [code.md](knowledge/code.md) |
+| `bastion brain (--dependents\|--blast-radius\|--lineage) <NODE_ID> [--json]` | Structural queries over the OKF `[[link]]` corpus: who points at this doc, what breaks if it changes, what it transitively references. `--json` emits the versioned envelope instead of greppable text — see [brain-graph-output.md](brain-graph-output.md). | [brain.md](knowledge/brain.md) |
+| `bastion code (--def\|--refs\|--dependents) <SYMBOL> [--json]` | Same three questions over Rust source, via deterministic tree-sitter extraction. Rust `.rs` files only. `--json` emits the versioned envelope instead of greppable text — see [brain-graph-output.md](brain-graph-output.md). | [code.md](knowledge/code.md) |
 | `bastion validate [PATH]` | Frontmatter + link validation over a markdown/MDX tree. Exits non-zero on any error. | [validate.md](knowledge/validate.md) |
 | `bastion assess [PATH] [--json]` | Read-only repo diagnostic: OKF coverage, graph readiness, state readiness. Writes nothing. | [assess.md](knowledge/assess.md) |
 | `bastion validate-brain [PATH] [--sync\|--graph\|--state\|--links\|--structure] [--json]` | Validate the whole company-brain corpus (`mev` pass-through). **One flag per invocation** — they do not compose. | [brainval.md](knowledge/brainval.md) |

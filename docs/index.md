@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [bastion, cli, operator reference, index, docs]
-related: [commands, tuning, bastion-docs-workflows-index, bastion-docs-terminal-index, bastion-docs-boards-index, bastion-docs-knowledge-index, bastion-docs-serve-index, bastion-docs-operations-index, data-contract, carryover-contract, workspace-contract]
+related: [commands, tuning, bastion-docs-workflows-index, bastion-docs-terminal-index, bastion-docs-boards-index, bastion-docs-knowledge-index, bastion-docs-serve-index, bastion-docs-operations-index, data-contract, carryover-contract, workspace-contract, brain-graph-output]
 ---
 
 # bastion CLI — Docs
@@ -65,3 +65,12 @@ without bumping its version is the failure they exist to prevent.**
 | [data-contract.md](data-contract.md) | The orchestrator's `events` row contract |
 | [carryover-contract.md](carryover-contract.md) | `mev`'s carryover triage ranking contract |
 | [workspace-contract.md](workspace-contract.md) | The orchestrator's knowledge-workspace contract |
+
+## Pinned contracts (bastion-owned)
+
+Unlike the three above, this one is authored and owned *by this repo* — it is the contract a
+consuming skill or script pins against, not a view of someone else's.
+
+| File | Consumed by |
+|---|---|
+| [brain-graph-output.md](brain-graph-output.md) | The `bastion brain --json` / `bastion code --json` output shape — `base-template`'s `brain-graph` skill (block `BT.3.F`) |

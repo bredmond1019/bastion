@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use serde::Serialize;
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 
 // ── Language singleton ────────────────────────────────────────────────────────
@@ -32,7 +33,11 @@ fn rust_language() -> Language {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// The category of a symbol definition extracted from Rust source.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` renders each variant as a lowercase string (`"fn"`, `"struct"`, ...)
+/// for `bastion code --json`'s `def` results — see `docs/brain-graph-output.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SymbolKind {
     /// A `fn` item — top-level, method inside `impl`, or nested.
     Fn,
