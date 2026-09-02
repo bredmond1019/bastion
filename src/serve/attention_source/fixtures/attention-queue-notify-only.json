@@ -1,0 +1,50 @@
+[
+  {
+    "item_id": "14e25af6d375d891b8ae1cfd0faa53571b8fa5e9bb9e38494c7274cab15965b3",
+    "gate_id": "attention:14e25af6d375d891b8ae1cfd0faa53571b8fa5e9bb9e38494c7274cab15965b3",
+    "rendered_summary": "[engine-rs] HOT kind=defect slug=budget-max-cost-usd-cannot-fire-on-any-sdlc-run age=0d — SAFETY, not telemetry. Every HTTP-triggered run carries a $5 DEFAULT_MAX_COST_US… [P0]",
+    "options": [
+      {
+        "key": "promote",
+        "label": "Promote"
+      },
+      {
+        "key": "snooze",
+        "label": "Snooze"
+      },
+      {
+        "key": "session",
+        "label": "Open session"
+      }
+    ],
+    "digest": "d298430f49717b35c37979c3c8e4db78d113f7c2f0b0d342d11e451ba214655b",
+    "effective_priority": 0,
+    "lane": "hot",
+    "repo": "engine-rs",
+    "source": "attention-board"
+  },
+  {
+    "item_id": "ec7b3433bbc43d24d4c4cbcdeda73a3b2e2321b003422d0de1b71d1174cb2358",
+    "gate_id": "attention:ec7b3433bbc43d24d4c4cbcdeda73a3b2e2321b003422d0de1b71d1174cb2358",
+    "rendered_summary": "[bastion-web] BLOCKING kind=deferred slug=docs-graph-and-related-chips-blocked-upstream age=31d — The docs graph and clickable `related:` chips remain **blocked upstream** on `BW… [effective P3]",
+    "options": [
+      {
+        "key": "promote",
+        "label": "Promote"
+      },
+      {
+        "key": "snooze",
+        "label": "Snooze"
+      },
+      {
+        "key": "session",
+        "label": "Open session"
+      }
+    ],
+    "digest": "8af47ccea144b5352a8b434dc4aaff3de5be68922efc1a7cf2f69afb5184df38",
+    "effective_priority": 3,
+    "lane": "blocking",
+    "repo": "bastion-web",
+    "source": "attention-board"
+  }
+]

@@ -1,14 +1,18 @@
 //! Task 1: pure parsing tests for `mev attention-queue --notify-only`
 //! payloads, against the checked-in fixture captured 2026-09-01
-//! (`planning/BA.21.D/attention-queue-notify-only.fixture.json`, 2 items
-//! from a live 548-item board).
+//! (`fixtures/attention-queue-notify-only.json`, 2 items from a live
+//! 548-item board).
+//!
+//! The fixture lives HERE, in the crate's own tracked tree, not in
+//! `planning/` where it was captured: `.gitignore:31` ignores `/planning`
+//! (it is a symlink into the private HQ vault), so a `planning/`-rooted
+//! `include_str!` compiles locally and fails in public CI with
+//! "couldn't read ...: No such file or directory". Same convention as
+//! `src/serve/status/fixtures/` and `src/brain/fixtures/`.
 
 use super::*;
 
-const FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/planning/BA.21.D/attention-queue-notify-only.fixture.json"
-));
+const FIXTURE: &str = include_str!("fixtures/attention-queue-notify-only.json");
 
 #[test]
 fn fixture_parses_to_exactly_two_items() {
