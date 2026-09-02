@@ -282,9 +282,13 @@ rule that killed the idea of a second operator-control listener.
 This bot's allow-list is deliberately narrower than the operator's: it recognizes `/shop <items>`
 and nothing else — no command that reads or triggers operator-facing state. The family's bot must
 never expose the operator's commands, so a leaked PriceScout token only buys shopping lists, not the
-stack. Reuses `src/serve/session_qa/commands.rs`'s router (`BA.ticket.telegram-command-router`)
-rather than growing a second one; a message from a chat id other than
-`BASTION_PRICESCOUT_CHAT_ID` is rejected and performs no action. There is no follow-up conversation
+stack. It has its own narrow router (`route_pricescout_message`), not the operator's
+`session_qa::commands::route_command` — that router resolves its built-ins (`status`, `lanes`,
+`attention`, `help`) unconditionally regardless of allow-list, which would leak operator-facing
+info here. Only two low-level helpers are reused from `src/serve/session_qa/commands.rs`:
+`parse_command` (the `/name args` split) and `is_authorized` (the chat-id pin) — everything else
+this router resolves is refused. A message from a chat id other than `BASTION_PRICESCOUT_CHAT_ID`
+is rejected and performs no action. There is no follow-up conversation
 state on this loop — that machinery lives on `codesessions` only, and replicating it here would
 import a precedence hazard this bot avoids by construction.
 

@@ -55,13 +55,14 @@ BASTION_<SLUG>_BOT_TOKEN
 BASTION_<SLUG>_CHAT_ID
 ```
 
-(`<SLUG>` is `<slug>` upper-cased.) Three slugs exist today:
+(`<SLUG>` is `<slug>` upper-cased.) Four slugs exist today:
 
 | Slug | Bot | Env pair |
 |---|---|---|
 | `telegram` | BastionBot | `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` |
 | `codesessions` | CodeSessionsBot | `BASTION_CODESESSIONS_BOT_TOKEN` / `BASTION_CODESESSIONS_CHAT_ID` |
 | `lane` | OrchestrationBot (`@bastion_orchestrator_bot`) | `BASTION_LANE_BOT_TOKEN` / `BASTION_LANE_CHAT_ID` |
+| `pricescout` | PriceScoutBot | `BASTION_PRICESCOUT_BOT_TOKEN` / `BASTION_PRICESCOUT_CHAT_ID` |
 
 The slug and the bot's Telegram display name are independent: the `lane` slug names the
 credential pair and the `--bot` value, while OrchestrationBot is what the bot is called in
@@ -82,12 +83,14 @@ shells only, so a non-interactive lane call would see nothing.)
 ## Why a third bot (OrchestrationBot)
 
 Telegram delivers each update to exactly one `getUpdates` consumer per bot token. `bastion
-serve` already runs two such consumers in the background:
+serve` already runs three such consumers in the background:
 
 - `NotifyPollLoop::run` polls `telegram` (BastionBot) for the approve/reject gate.
 - `SessionQaBridge::run_outbound` polls `codesessions` (CodeSessionsBot).
+- `PricescoutBridge` polls `pricescout` (PriceScoutBot) for the family's `/shop` command
+  (`BA.ticket.pricescout-telegram-bot`; see [config.md](../operations/config.md#pricescoutbot-bridge-baticketpricescout-telegram-bot)).
 
-A CLI `notify ask` process polling either of those same tokens would randomly steal the taps
+A CLI `notify ask` process polling any of those same tokens would randomly steal the taps
 those loops exist to receive. OrchestrationBot (`lane`) gives the CLI a stream nothing else consumes, so
 it is the default `--bot`.
 
@@ -199,8 +202,8 @@ retired. If you are looking for this verb's successor, start at `engine-rs`'s
 
 ## Out of scope
 
-- `bastion serve`'s two background `getUpdates` pollers (`NotifyPollLoop`, `SessionQaBridge`) —
-  this verb adds a CLI path alongside them and does not touch either.
+- `bastion serve`'s three background `getUpdates` pollers (`NotifyPollLoop`, `SessionQaBridge`,
+  `PricescoutBridge`) — this verb adds a CLI path alongside them and does not touch any of them.
 - Free-text replies — `ask` resolves inline-keyboard taps only.
 - The `engine_core::operator` payload/digest/limits contract itself — this verb only consumes
   it.
