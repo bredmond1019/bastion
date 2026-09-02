@@ -472,6 +472,29 @@ fn alarm_delivery_enabled(
     transport.is_some()
 }
 
+/// Whether the attention-board delivery source should be spawned —
+/// `BASTION_ATTENTION_SOURCE`.
+///
+/// **OPT-IN, and deliberately so.** Every other toggle in this repo
+/// (`BASTION_NOTIFY`) is opt-out, because those features are wanted by
+/// default. This one is not: shipped 2026-09-02 in `BA.21.D`, it was
+/// observed re-sending the same items to the operator on every tick
+/// (~5 min) and was disabled at the operator's request pending review.
+/// Absent or unparseable -> `false`, so the loop stays off until someone
+/// deliberately turns it on with `BASTION_ATTENTION_SOURCE=true`.
+///
+/// Gating here rather than at `alarm_delivery_enabled` is the point: that
+/// gate is shared with the stale-run alarm loop, so reusing it would
+/// silently disable the alarm too.
+///
+/// Pure fn taking the env value rather than reading the environment, so
+/// the decision is unit-testable without `set_var`.
+fn attention_source_enabled(env_value: Option<String>) -> bool {
+    env_value
+        .and_then(|s| s.trim().parse::<bool>().ok())
+        .unwrap_or(false)
+}
+
 /// Derive the Telegram command router's allow-list from the already-loaded
 /// `FileConfig` registry (`BA.ticket.telegram-command-router` task 4) — a
 /// `FileConfig` with no `[telegram_commands]` table yields an empty map,
@@ -1350,7 +1373,11 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
     // poller's own `tick_decision` fails closed (never falls back to
     // admitting the unfiltered board) and this boot site only decides
     // *whether the loop is spawned at all*, never what it admits.
-    let _attention_source_handle = if alarm_delivery_enabled(operator_transport.as_ref()) {
+    let attention_source_on =
+        attention_source_enabled(std::env::var("BASTION_ATTENTION_SOURCE").ok());
+    let _attention_source_handle = if alarm_delivery_enabled(operator_transport.as_ref())
+        && attention_source_on
+    {
         let transport = operator_transport
             .clone()
             .expect("alarm_delivery_enabled(Some(..)) implies operator_transport is Some");
@@ -1372,9 +1399,15 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             ),
         ))
     } else {
+        let reason = if !attention_source_on {
+            "BASTION_ATTENTION_SOURCE is not set to true (opt-in; disabled 2026-09-02 pending review)"
+        } else {
+            "no operator transport configured"
+        };
         tracing::info!(
             target: "bastion::serve",
-            "attention-board delivery source not spawned — no operator transport configured"
+            reason = %reason,
+            "attention-board delivery source not spawned"
         );
         None
     };
@@ -1867,6 +1900,39 @@ mod engine_mount_tests {
     #[test]
     fn alarm_delivery_enabled_is_false_with_no_transport() {
         assert!(!alarm_delivery_enabled(None));
+    }
+
+    // ── attention_source_enabled (BASTION_ATTENTION_SOURCE) ──────────────────
+    //
+    // Opt-in, unlike every other toggle here. The absent case is the one that
+    // matters: it is what an unchanged deployment sees, and it must be `false`.
+
+    #[test]
+    fn attention_source_disabled_when_env_absent() {
+        assert!(!attention_source_enabled(None));
+    }
+
+    #[test]
+    fn attention_source_enabled_only_for_true() {
+        assert!(attention_source_enabled(Some("true".to_owned())));
+        assert!(!attention_source_enabled(Some("false".to_owned())));
+    }
+
+    #[test]
+    fn attention_source_disabled_for_unparseable_values() {
+        // Fail closed: anything that is not literally parseable as `true`
+        // leaves the loop off rather than guessing the operator meant yes.
+        for v in ["1", "yes", "TRUE", "on", "", "  ", "maybe"] {
+            assert!(
+                !attention_source_enabled(Some(v.to_owned())),
+                "{v:?} should not enable the attention source"
+            );
+        }
+    }
+
+    #[test]
+    fn attention_source_tolerates_surrounding_whitespace() {
+        assert!(attention_source_enabled(Some("  true  ".to_owned())));
     }
 
     #[test]

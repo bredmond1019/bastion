@@ -311,6 +311,32 @@ booting unchanged, logged at info; exactly one set is the same typed
 `load_pricescout_bot_config`, itself a thin alias over the slug-generic `named_bot_config` — no
 bespoke config struct, since nothing downstream needs one beyond the generic `BotCredentials`.
 
+## Attention-board delivery (`BA.21.D`) — opt-in, currently OFF
+
+`BASTION_ATTENTION_SOURCE` gates the loop that shells `mev attention-queue --notify-only` and
+delivers admitted items to the operator's phone.
+
+| Variable | Values | Default |
+|---|---|---|
+| `BASTION_ATTENTION_SOURCE` | the literal `true` enables it; anything else, including absent, `1`, `yes` and `TRUE`, leaves it off | **off** |
+
+**Why this one is opt-in when every other toggle here is opt-out.** The loop shipped on
+2026-09-02 and was immediately observed re-sending the same items to the operator on every tick
+(~5 minutes). It was disabled at the operator's request pending review, so the default is off and
+turning it on is a deliberate act.
+
+**What is NOT affected.** The gate is separate from `alarm_delivery_enabled`, which the stale-run
+alarm loop shares — disabling the attention source leaves that alarm, the notify poll loop, the
+session-QA bridge and the PriceScout loop all running exactly as before. `bastion serve` logs
+which reason applied at boot:
+
+```
+attention-board delivery source not spawned  reason="BASTION_ATTENTION_SOURCE is not set to true (opt-in; disabled 2026-09-02 pending review)"
+```
+
+**Before turning it back on**, read `carryover[] attention-source-redelivers-every-tick` in
+`planning/state.json` — it records what was and was not ruled out about the repeat deliveries.
+
 ## Precedence rules
 
 An environment variable **always wins** over the config file for the same key.
