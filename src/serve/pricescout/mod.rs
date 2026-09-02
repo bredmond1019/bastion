@@ -26,9 +26,15 @@
 //! only; replicating it on this loop would import the precedence hazard a
 //! dedicated bot exists to avoid.
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use super::notify::NotifyError;
 use super::session_qa::commands::{is_authorized, parse_command};
+use super::session_qa::{HttpQaTelegramClient, QaTelegramClient};
+use crate::config::BotCredentials;
 
 /// The only command name this bot answers. Exported so the spawn/dispatch
 /// shell (task 3) and tests share one literal rather than each hardcoding
@@ -142,6 +148,254 @@ pub fn shop_ack_text(queries: &[String]) -> String {
             .to_string(),
         1 => "Got it — looking up 1 item. You'll hear back when it's ready.".to_string(),
         n => format!("Got it — looking up {n} items. You'll hear back when it's ready."),
+    }
+}
+
+// ── I/O shell (task 3) ──────────────────────────────────────────────────
+//
+// Everything above this line is the pure core from task 2 (no I/O, no
+// async, no network). Everything below is the thin shell that wires it
+// into an actual `getUpdates` long-poll loop against the dedicated
+// `pricescout` bot token, and submits `/shop` to price-scout's
+// `POST /api/lists`. The shell is deliberately thin over the pure core —
+// per CLAUDE.md rule 6, the untestable I/O parts here are limited to the
+// Telegram HTTP calls (reused wholesale from `session_qa`'s already-tested
+// `QaTelegramClient`/`HttpQaTelegramClient`) and this module's own
+// `HttpPriceScoutListClient`, both injected as trait objects so
+// `PricescoutBridge`'s dispatch logic is fully unit-testable with no
+// network and no bot token (`tests.rs`).
+
+/// Default base URL for price-scout's `POST /api/lists`, used when
+/// `BASTION_PRICESCOUT_LIST_URL` is unset — price-scout's local FastAPI dev
+/// server's default port. Override via that env var for any other
+/// deployment (documented alongside the bot's own two env vars in
+/// `.env.example` / `docs/config.md`).
+pub const DEFAULT_LIST_URL: &str = "http://localhost:8000/api/lists";
+
+/// Seam over price-scout's `POST /api/lists`, boxed as a trait object so
+/// tests can inject a fake with no real network call — mirrors
+/// `QaTelegramClient`'s shape in `session_qa`.
+///
+/// Deliberately returns `Result<(), String>` rather than a typed error:
+/// nothing downstream branches on *why* the submit failed, only whether it
+/// did — the failure is logged and otherwise swallowed, since the
+/// acknowledgement has already gone out by the time this resolves (see
+/// [`PricescoutBridge::handle_shop`]) and the completion notification is
+/// PS.9.D's job, not this loop's.
+#[async_trait]
+pub trait PriceScoutListClient: Send + Sync {
+    async fn submit_list(&self, body: Value) -> Result<(), String>;
+}
+
+/// Real `reqwest`-backed [`PriceScoutListClient`] against price-scout's
+/// `POST /api/lists`.
+///
+/// **Attaches no credential of any kind.** `POST /api/lists` is
+/// unauthenticated today (`routes_lists.py`'s only FastAPI dependencies are
+/// `get_store`, `get_job_runner`, `get_list_notifier` — no API-key
+/// dependency), and price-scout's `integration-contract.md` gates only the
+/// four `/api/jobs*` routes with `X-API-Key`. That the route is ungated is
+/// a real finding, filed as carryover against price-scout — not this
+/// block's to fix — and is exactly why this client must never be tempted
+/// to attach `PRICE_SCOUT_JOBS_API_KEY` or any other secret "just in case".
+pub struct HttpPriceScoutListClient {
+    list_url: String,
+    client: reqwest::Client,
+}
+
+impl HttpPriceScoutListClient {
+    #[must_use]
+    pub fn new(list_url: String) -> Self {
+        Self {
+            list_url,
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl PriceScoutListClient for HttpPriceScoutListClient {
+    async fn submit_list(&self, body: Value) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(&self.list_url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("POST {} failed: {e}", self.list_url))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("POST {} returned HTTP {status}", self.list_url));
+        }
+        Ok(())
+    }
+}
+
+/// The runtime bridge: runs one `getUpdates` long-poll loop against the
+/// dedicated `pricescout` bot token, and on `/shop` submits to
+/// price-scout's list endpoint without blocking the acknowledgement.
+///
+/// No follow-up conversation state (unlike `SessionQaBridge`) — this loop
+/// has nothing to collide with, by construction (see the module doc
+/// comment above).
+pub struct PricescoutBridge {
+    chat_id: String,
+    client: Arc<dyn QaTelegramClient>,
+    list_client: Arc<dyn PriceScoutListClient>,
+}
+
+impl PricescoutBridge {
+    /// Long-poll timeout asked of Telegram for `getUpdates` — mirrors
+    /// `HttpQaTelegramClient::GETUPDATES_TIMEOUT_SECS`, which is private to
+    /// `session_qa` and so cannot be referenced from here directly.
+    const GETUPDATES_TIMEOUT_SECS: u64 = 30;
+
+    /// Construct a bridge against the real Telegram API (the dedicated
+    /// `pricescout` token) and the real price-scout `POST /api/lists`
+    /// endpoint at `list_url`.
+    #[must_use]
+    pub fn new(creds: BotCredentials, list_url: String) -> Self {
+        Self::with_seams(
+            creds.chat_id,
+            Arc::new(HttpQaTelegramClient::new(creds.bot_token)),
+            Arc::new(HttpPriceScoutListClient::new(list_url)),
+        )
+    }
+
+    /// Construct a bridge with every I/O seam injected — the constructor
+    /// `tests.rs`'s hermetic tests use.
+    #[must_use]
+    pub fn with_seams(
+        chat_id: String,
+        client: Arc<dyn QaTelegramClient>,
+        list_client: Arc<dyn PriceScoutListClient>,
+    ) -> Self {
+        Self {
+            chat_id,
+            client,
+            list_client,
+        }
+    }
+
+    /// Run one `getUpdates` long-poll loop, handling every update as it
+    /// arrives, forever. Mirrors `SessionQaBridge::run_outbound` exactly —
+    /// every failure path is logged and the loop continues, no failure ever
+    /// terminates it, and this is the `pricescout` token's ONLY
+    /// `getUpdates` consumer (its own dedicated poller, never a second
+    /// consumer of `telegram` or `codesessions`).
+    pub async fn run_outbound(&self) {
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut query = Vec::new();
+            if let Some(offset) = &cursor {
+                query.push(("offset".to_string(), offset.clone()));
+            }
+            query.push((
+                "timeout".to_string(),
+                Self::GETUPDATES_TIMEOUT_SECS.to_string(),
+            ));
+
+            let raw = match self.client.get_updates(&query).await {
+                Ok(raw) => raw,
+                Err(NotifyError::RateLimited { retry_after_secs }) => {
+                    tracing::debug!(
+                        retry_after_secs,
+                        "pricescout: getUpdates rate limited; backing off"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(retry_after_secs)).await;
+                    continue;
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "pricescout: getUpdates failed; retrying");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
+            let Some(updates) = raw.get("result").and_then(Value::as_array) else {
+                tracing::warn!("pricescout: getUpdates response missing result array");
+                continue;
+            };
+
+            for update in updates {
+                if let Some(update_id) = update.get("update_id").and_then(Value::as_i64) {
+                    cursor = Some((update_id + 1).to_string());
+                }
+                self.handle_update(update).await;
+            }
+        }
+    }
+
+    /// Dispatch one raw Telegram update: only plain-text messages carry a
+    /// `/shop` command on this bot — anything else (callback queries,
+    /// edited messages, unrelated update types) is silently ignored, since
+    /// this loop has no inline-keyboard or callback surface at all.
+    async fn handle_update(&self, update: &Value) {
+        if let Some(message) = update.get("message") {
+            self.handle_message(message).await;
+        }
+    }
+
+    async fn handle_message(&self, message: &Value) {
+        let Some(text) = message.get("text").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(chat_id) = message
+            .get("chat")
+            .and_then(|c| c.get("id"))
+            .map(|id| id.to_string())
+        else {
+            return;
+        };
+
+        // Chat-id pin BEFORE anything else — a message from a chat other
+        // than the configured one is rejected and performs no action.
+        // Never log `text`: an unauthorized sender's message content has no
+        // business in the log even at warn level.
+        if !is_family_chat(&chat_id, &self.chat_id) {
+            tracing::warn!(
+                chat_id = %chat_id,
+                "pricescout: message from non-configured chat id; rejecting"
+            );
+            return;
+        }
+
+        match route_pricescout_message(text) {
+            PricescoutRoute::Shop { queries } => self.handle_shop(queries).await,
+            // Every built-in the operator's router recognizes, every
+            // operator `[telegram_commands]` entry, and plain text are all
+            // refused identically and silently — this bot has exactly one
+            // command, and the family's allow-list must never grow an
+            // operator-facing reply surface even in its refusal text.
+            PricescoutRoute::Refused { .. } => {}
+        }
+    }
+
+    /// Handle a parsed `/shop`: submit the built list body to price-scout
+    /// WITHOUT waiting on its response — `POST /api/lists` runs the whole
+    /// batch synchronously and can take minutes for a family-sized list —
+    /// then send exactly one immediate acknowledgement.
+    async fn handle_shop(&self, queries: Vec<String>) {
+        let body = build_shop_list_body(&queries, None);
+        let list_client = Arc::clone(&self.list_client);
+        // Detached: this task's completion is never awaited here, which is
+        // what makes the acknowledgement below arrive without waiting on
+        // price-scout's batch. Failure is logged only — PS.9.D's
+        // `notify_list_ready` seam is what tells the family the batch
+        // finished, not this loop.
+        tokio::spawn(async move {
+            if let Err(err) = list_client.submit_list(body).await {
+                tracing::warn!(error = %err, "pricescout: POST /api/lists failed");
+            }
+        });
+
+        let ack_body = json!({
+            "chat_id": self.chat_id,
+            "text": shop_ack_text(&queries),
+        });
+        if let Err(err) = self.client.send_message(ack_body).await {
+            tracing::warn!(error = %err, "pricescout: acknowledgement sendMessage failed");
+        }
     }
 }
 
