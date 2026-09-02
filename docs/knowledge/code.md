@@ -28,9 +28,13 @@ bastion code (--def <SYMBOL>
              | --dependents <SYMBOL>)
              [--root <DIR>]
              [--workspace <NAME> | --knowledge-dir <NAME>]
+             [--json]
 ```
 
-Exactly one of `--def`, `--refs`, or `--dependents` is required.
+Exactly one of `--def`, `--refs`, or `--dependents` is required. `--json` is orthogonal to
+that group — it does not satisfy the requirement on its own — and switches the output from
+the greppable text below to the versioned envelope documented in
+[brain-graph-output.md](../brain-graph-output.md).
 
 The scan root is resolved with the following precedence (highest to lowest):
 
@@ -80,9 +84,12 @@ When no results match, a single comment line is printed:
 Lines are independently greppable by relation (`grep "^ref:"`) or by
 symbol name (`grep "\trun_code"`).
 
+This text output is unversioned and may change; pass `--json` for the documented, stable
+envelope instead — see [brain-graph-output.md](../brain-graph-output.md).
+
 ## Extraction and Graph Construction
 
-`run_code()` in `src/brain/code_graph.rs`:
+`run_code(query, explicit_root, workspace, registry, json)` in `src/brain/code_graph.rs`:
 
 1. **Resolves** the effective scan root via `config::resolve_workspace_root` —
    pure, DB-free, using the workspace registry loaded from the config file.
@@ -131,7 +138,7 @@ dropped. Duplicate `(from, to)` pairs are deduplicated.
 | Module | File | Responsibility |
 |---|---|---|
 | `brain::code` | `src/brain/code.rs` | Pure tree-sitter extraction: `SymbolKind`, `CodeSymbol`, `CodeRef`, `extract_symbols`, `extract_refs` |
-| `brain::code_graph` | `src/brain/code_graph.rs` | Graph layer and I/O shell: `CodeQuery`, `build_code_node_edge_lists`, query helpers, `find_rust_files`, `run_code` |
+| `brain::code_graph` | `src/brain/code_graph.rs` | Graph layer and I/O shell: `CodeQuery`, `build_code_node_edge_lists`, query helpers, `find_rust_files`, `run_code`, and the `--json` envelope builders/renderers (`build_def_json_envelope`/`render_def_json`, `build_refs_json_envelope`/`render_refs_json`, `build_dependents_json_envelope`/`render_dependents_json`) — see [brain-graph-output.md](../brain-graph-output.md) |
 
 The code graph reuses `BrainNode` / `BrainEdge` (from `brain::okf`) and
 `BrainGraph` (from `brain::graph`) — the same types and algorithms that power
