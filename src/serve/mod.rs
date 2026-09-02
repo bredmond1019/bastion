@@ -31,6 +31,7 @@
 //! - All other routes (including future `/ws`) — **protected** behind
 //!   [`auth::BearerAuthMiddleware`], requiring `Authorization: Bearer <token>`.
 
+pub mod attention_source;
 pub mod auth;
 pub mod blocked_edge;
 #[cfg(test)]
