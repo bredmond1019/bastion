@@ -157,7 +157,7 @@ The session surface runs DB-free (D4); it needs neither Postgres.
 ## Directory map
 
 ```
-bastion/                ← single-package crate; member of the core/ Cargo workspace (D44)
+bastion/                ← standalone single-package crate (no Cargo workspace) — D44
 ├── .claude/            ← Claude Code commands + SDLC workflow engines
 ├── planning/           ← context, status, master-plan, harness.json, decisions/
 ├── Cargo.toml          ← the bastion package manifest ([package], not a workspace)
@@ -178,9 +178,14 @@ bastion/                ← single-package crate; member of the core/ Cargo work
 ```
 
 > **Workspace note (D44):** bastion no longer nests its crates under `crates/`. The former
-> `crates/okf-core` is now the standalone `core/okf-core` repo, and the tier build graph lives in
-> `core/Cargo.toml`. `cargo` invoked from this dir resolves through the core workspace (shared
-> `core/Cargo.lock` + `core/target/`).
+> `crates/okf-core` is now the standalone `core/okf-core` repo. **There is no `core/Cargo.toml` and
+> no tier-wide Cargo workspace** — bastion is a standalone package that reaches its siblings through
+> unpinned path dependencies (`okf-core = { path = "../okf-core" }`, and likewise `../mev`,
+> `../bella/crates/bella-engine`, `../engine-rs/crates/engine-serve`, `../engine-rs/crates/engine-contract`).
+> `cargo` invoked from this dir resolves against **this repo's own `Cargo.lock` and `target/`**, not a
+> shared tier one. Two consequences: a sibling repo's breaking change lands here at build time with no
+> version pin to absorb it (see the `[dependencies]` comments in `Cargo.toml`), and a worktree of this
+> repo only builds if the sibling paths still resolve from it.
 
 ## What NOT to touch
 
