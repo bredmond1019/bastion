@@ -12,6 +12,38 @@ timestamp: 2026-08-31T21:32:05-03:00
 
 ## [run: 2026-09-02]
 
+### BA.22.C — `--json` on `bastion brain`/`bastion code`, closed out (5 of 5 tasks, review PASS)
+
+- **What:** Resumed `/sdlc-flow BA.22.C` from the task-5 bail recorded below. Re-ran task 5's
+  full validation suite (fmt, clippy `-D warnings`, `cargo test` via
+  `NEXTEST_POLICY_OVERRIDE=1`, release build, contract-corpus drift, typeshare drift) — 2635
+  tests passed, 0 failed. The `types/serve.ts` typeshare-drift flag against okf-core's
+  `KnownCarryoverNeeds` enum was re-verified as pre-existing at baseline (not caused by any
+  BA.22.C task, which declares `files: []`), confirmed by independently re-checking the diff
+  against `main`, `grep`-ing the type's absence from `types/serve.ts`, and tracing the enum to
+  okf-core commit `3cffdd8` — out of scope per standing rule 3a. Task 5 passed with that one
+  known exception. End review verdict: **PASS**.
+- **Result:** All five tasks landed — task 1's `BrainJsonEnvelope`/`build_json_envelope`/
+  `render_json` for `bastion brain`'s three queries, tasks 2–3's mirror `CodeJsonEnvelope` for
+  `bastion code`'s def/refs/dependents queries plus `--json` wired through the `Brain`/`Code` CLI
+  variants, and task 4's `docs/brain-graph-output.md` documenting all six JSON envelope shapes.
+- **Decisions:** the pre-existing typeshare drift stays untouched (belongs to a separate
+  okf-core-driven fix, not this spec); block `BA.22.C` is now closed in `state.json` and
+  `status.md` reflects Done.
+- Next: pick up the next item in `status.md`'s `next` queue — the typeshare drift itself remains
+  an open follow-up for whoever picks up okf-core's `KnownCarryoverNeeds` reconciliation.
+
+```
+796982e docs: update docs for BA.22.C
+1f49b6e chore: wrap up BA.22.C
+a68ddeb feat: implement BA.22.C-task4
+5b8cedf feat: implement BA.22.C-task3
+f217560 feat: implement BA.22.C-task2
+6d58b2b feat: implement BA.22.C-task1
+```
+
+## [run: 2026-09-02]
+
 ### BA.22.C — `--json` on `bastion brain`/`bastion code`, tasks 1–4 landed, BAILED on task 5's pre-existing typeshare drift
 
 - **What:** Ran `/sdlc-flow BA.22.C`. Task 1 added a pure `BrainJsonEnvelope`/`build_json_envelope`/
