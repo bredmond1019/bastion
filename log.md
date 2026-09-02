@@ -12,6 +12,41 @@ timestamp: 2026-08-31T21:32:05-03:00
 
 ## [run: 2026-09-02]
 
+BA.ticket.pricescout-telegram-bot task 1 registered the `pricescout` bot slug: `KNOWN_BOT_SLUGS`
+gained the entry, a thin `load_pricescout_bot_config()` alias sits beside
+`load_code_sessions_bot_config()` over `BASTION_PRICESCOUT_BOT_TOKEN`/`_CHAT_ID` (returning the
+generic `BotCredentials` rather than a bespoke struct, since nothing downstream needs a distinct
+type — a documented deviation from the spec's "thin alias like lane's" phrasing), and
+`POLLED_BOT_SLUGS` in `notify_cli.rs` picked up the slug too, with unit tests pinning both
+memberships and the both-absent/one-set truth table. Tasks 2-5 (the inbound loop itself, the
+`/shop` command, docs, and full-suite validation) did not run. The spec BAILED after task 1:
+`cargo nextest run --lib --bins` fails to compile for reasons entirely unrelated to this task's
+files (`src/config.rs`, `src/notify_cli.rs`) — `mev`'s `RepoEntry` struct gained a required
+`public` field, breaking test-only struct literals in `src/serve/handlers/attention.rs:426` and
+`src/serve/handlers/epics.rs:260,281`. Verified pre-existing by building `cargo nextest run --lib
+--bins` in a clean worktree checked out at the parent commit (`9fe802f`, before this task's
+commit) — the identical 3 `E0063` errors reproduce with none of this task's changes present.
+`cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo check --lib --bins` all pass clean
+with task 1's changes. Next: fix the `mev::RepoEntry` `public`-field fallout in
+`src/serve/handlers/attention.rs`/`epics.rs` (unrelated pre-existing breakage, not part of this
+spec) so `cargo test`/`nextest` can compile again, then resume BA.ticket.pricescout-telegram-bot
+from task 2.
+
+```
+595b18a feat: implement BA.ticket.pricescout-telegram-bot-task1
+9fe802f docs(data-contract): re-pin 1.8.0 -> 1.10.0 across a lineage change
+8afdbfd fix(docs): correct the base-template data-contract doc_id in serve-api related:
+a3429bb Merge pull request #44 from bredmond1019/BA.21.D-flow
+11b5b6e fix(attention_source): move the test fixture out of gitignored planning/
+f04431b chore: wrap up BA.21.D
+80b0182 feat: implement BA.21.D-task4
+c7b4d5e feat: implement BA.21.D-task3
+```
+
+---
+
+## [run: 2026-09-02]
+
 BA.21.D — "The attention board reaches you" — closed out (5 of 5 tasks, review PASS). Task 1
 added `src/serve/attention_source/` with a pure `AttentionQueueItem` type and
 `parse_attention_queue_payload()`, unit-tested against the checked-in `mev attention-queue
