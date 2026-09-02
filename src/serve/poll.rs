@@ -276,24 +276,40 @@ impl FlowWatcher {
     }
 
     /// Observe the current set of flow states for `repo`, returning a
-    /// [`WorkflowDonePayload`] for each flow that just transitioned from a
-    /// non-terminal status to a terminal one (`"done"` or `"blocked"`).
+    /// `(payload, event_name)` pair for each flow that just transitioned
+    /// from a non-terminal status to a terminal one (`"done"`, `"blocked"`,
+    /// or `"reconcile_failed"`).
+    ///
+    /// `event_name` is `detect_transition`'s returned event string —
+    /// `"workflow_done"` for an ordinary `done`/`blocked` transition, or the
+    /// distinct `"workflow_reconcile_failed"` for a transition into the
+    /// gate-failure terminal state. `WorkflowDonePayload` itself is
+    /// unchanged (it is `#[typeshare]`); the event name travels alongside it
+    /// as a plain `String` rather than as a new payload field, so the wire
+    /// DTO and `types/serve.ts` are untouched by this change.
     ///
     /// Always updates the internal map to the latest status for every flow
     /// passed in, regardless of whether an event was emitted.
-    pub fn observe(&mut self, repo: &str, flows: &[FlowState]) -> Vec<WorkflowDonePayload> {
+    pub fn observe(
+        &mut self,
+        repo: &str,
+        flows: &[FlowState],
+    ) -> Vec<(WorkflowDonePayload, String)> {
         let mut events = Vec::new();
 
         for flow in flows {
             let key = (repo.to_owned(), flow.spec_slug.clone());
             let prev = self.last_status.get(&key).map(String::as_str);
 
-            if detect_transition(prev, flow).is_some() {
-                events.push(WorkflowDonePayload {
-                    repo: repo.to_owned(),
-                    spec_slug: flow.spec_slug.clone(),
-                    status: flow.status.clone(),
-                });
+            if let Some(event_name) = detect_transition(prev, flow) {
+                events.push((
+                    WorkflowDonePayload {
+                        repo: repo.to_owned(),
+                        spec_slug: flow.spec_slug.clone(),
+                        status: flow.status.clone(),
+                    },
+                    event_name,
+                ));
             }
 
             self.last_status.insert(key, flow.status.clone());
@@ -303,21 +319,28 @@ impl FlowWatcher {
     }
 }
 
-/// Build the `event{workflow_done}` [`WsFrame`] for a transitioned flow.
+/// Build the `event{workflow_done}` (or `event{workflow_reconcile_failed}`)
+/// [`WsFrame`] for a transitioned flow.
 ///
 /// Wire format (serve-api §11.5, flattened `EventPayload` + workflow fields):
-/// `{ "session": "", "event": "workflow_done", "repo": …, "spec_slug": …, "status": … }`
+/// `{ "session": "", "event": <event_name>, "repo": …, "spec_slug": …, "status": … }`
 /// with `kind == "event"`. `session` is always the empty string — this event is
 /// not scoped to a tmux session — and delivery is not subscription-gated (the
 /// I/O shell in `src/serve/ws/server.rs` broadcasts it to every connection).
 ///
+/// `event_name` is the string [`crate::serve::status::flow::detect_transition`]
+/// returned for this transition — `"workflow_done"` for `done`/`blocked`,
+/// `"workflow_reconcile_failed"` for a reconcile-failed gate. Callers must
+/// not hard-code `"workflow_done"`; the caller (`watch_cycle`) carries the
+/// name through from `FlowWatcher::observe` instead.
+///
 /// Pure function: no I/O, no actor messaging.
-pub fn workflow_done_frame(payload: &WorkflowDonePayload) -> WsFrame {
+pub fn workflow_done_frame(payload: &WorkflowDonePayload, event_name: &str) -> WsFrame {
     WsFrame {
         kind: WsFrameKind::Event,
         payload: serde_json::json!({
             "session": "",
-            "event": "workflow_done",
+            "event": event_name,
             "repo": payload.repo,
             "spec_slug": payload.spec_slug,
             "status": payload.status,
@@ -1133,9 +1156,10 @@ background\t0\t1\t1718000100\tzsh\n";
         watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
         let events = watcher.observe("bastion", &[flow("phase11-blockD", "done")]);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].repo, "bastion");
-        assert_eq!(events[0].spec_slug, "phase11-blockD");
-        assert_eq!(events[0].status, "done");
+        assert_eq!(events[0].0.repo, "bastion");
+        assert_eq!(events[0].0.spec_slug, "phase11-blockD");
+        assert_eq!(events[0].0.status, "done");
+        assert_eq!(events[0].1, "workflow_done");
     }
 
     #[test]
@@ -1144,7 +1168,18 @@ background\t0\t1\t1718000100\tzsh\n";
         watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
         let events = watcher.observe("bastion", &[flow("phase11-blockD", "blocked")]);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].status, "blocked");
+        assert_eq!(events[0].0.status, "blocked");
+        assert_eq!(events[0].1, "workflow_done");
+    }
+
+    #[test]
+    fn flow_watcher_running_to_reconcile_failed_emits_distinct_event() {
+        let mut watcher = FlowWatcher::new();
+        watcher.observe("bastion", &[flow("phase11-blockD", "running")]);
+        let events = watcher.observe("bastion", &[flow("phase11-blockD", "reconcile_failed")]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0.status, "reconcile_failed");
+        assert_eq!(events[0].1, "workflow_reconcile_failed");
     }
 
     #[test]
@@ -1167,7 +1202,7 @@ background\t0\t1\t1718000100\tzsh\n";
         // Same spec_slug, different repo — transitions must be tracked independently.
         let events_a = watcher.observe("bastion", &[flow("phase11-blockD", "done")]);
         assert_eq!(events_a.len(), 1);
-        assert_eq!(events_a[0].repo, "bastion");
+        assert_eq!(events_a[0].0.repo, "bastion");
 
         let events_b = watcher.observe("bella", &[flow("phase11-blockD", "running")]);
         assert!(
@@ -1194,7 +1229,7 @@ background\t0\t1\t1718000100\tzsh\n";
             ],
         );
         assert_eq!(events.len(), 1, "only the transitioned flow should emit");
-        assert_eq!(events[0].spec_slug, "phase11-blockA");
+        assert_eq!(events[0].0.spec_slug, "phase11-blockA");
     }
 
     // ── workflow_done_frame ──────────────────────────────────────────────────
@@ -1206,7 +1241,7 @@ background\t0\t1\t1718000100\tzsh\n";
             spec_slug: "phase11-blockD".to_owned(),
             status: "done".to_owned(),
         };
-        let frame = workflow_done_frame(&payload);
+        let frame = workflow_done_frame(&payload, "workflow_done");
         assert_eq!(frame.kind, WsFrameKind::Event);
     }
 
@@ -1217,7 +1252,7 @@ background\t0\t1\t1718000100\tzsh\n";
             spec_slug: "phase11-blockD".to_owned(),
             status: "done".to_owned(),
         };
-        let frame = workflow_done_frame(&payload);
+        let frame = workflow_done_frame(&payload, "workflow_done");
 
         assert_eq!(frame.payload["session"], serde_json::json!(""));
         assert_eq!(frame.payload["event"], serde_json::json!("workflow_done"));
@@ -1243,10 +1278,29 @@ background\t0\t1\t1718000100\tzsh\n";
             spec_slug: "some-spec".to_owned(),
             status: "blocked".to_owned(),
         };
-        let frame = workflow_done_frame(&payload);
+        let frame = workflow_done_frame(&payload, "workflow_done");
         assert_eq!(frame.payload["status"], serde_json::json!("blocked"));
         assert_eq!(frame.payload["repo"], serde_json::json!("bella"));
         assert_eq!(frame.payload["spec_slug"], serde_json::json!("some-spec"));
+    }
+
+    #[test]
+    fn workflow_done_frame_carries_reconcile_failed_event_name() {
+        let payload = WorkflowDonePayload {
+            repo: "bastion".to_owned(),
+            spec_slug: "some-spec".to_owned(),
+            status: "reconcile_failed".to_owned(),
+        };
+        let frame = workflow_done_frame(&payload, "workflow_reconcile_failed");
+        assert_eq!(
+            frame.payload["event"],
+            serde_json::json!("workflow_reconcile_failed")
+        );
+        assert_ne!(frame.payload["event"], serde_json::json!("workflow_done"));
+        assert_eq!(
+            frame.payload["status"],
+            serde_json::json!("reconcile_failed")
+        );
     }
 
     // ── RunWatcher (BA.11.N) ──────────────────────────────────────────────────

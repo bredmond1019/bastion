@@ -306,8 +306,8 @@ pub(crate) fn watch_cycle(registry: &FileConfig, watcher: &mut FlowWatcher) -> V
     for name in names {
         let root = &workspaces[name];
         let flows = collect_flow_states(root);
-        for payload in watcher.observe(name, &flows) {
-            frames.push(workflow_done_frame(&payload));
+        for (payload, event_name) in watcher.observe(name, &flows) {
+            frames.push(workflow_done_frame(&payload, &event_name));
         }
     }
     frames
@@ -845,6 +845,34 @@ mod tests {
     }
 
     #[test]
+    fn watch_cycle_running_to_reconcile_failed_emits_distinct_event() {
+        let tmp = TempDir::new();
+        let flow_path = tmp.path().join("planning/spec-a/sdlc/sdlc-flow-state.json");
+        write(&flow_path, &flow_json("spec-a", "running"));
+        let registry = registry_with("bastion", tmp.path());
+        let mut watcher = FlowWatcher::new();
+
+        assert!(watch_cycle(&registry, &mut watcher).is_empty());
+
+        write(&flow_path, &flow_json("spec-a", "reconcile_failed"));
+        let frames = watch_cycle(&registry, &mut watcher);
+        assert_eq!(
+            frames.len(),
+            1,
+            "running→reconcile_failed must emit exactly one frame"
+        );
+        assert_eq!(frames[0].kind, WsFrameKind::Event);
+        // This is the assertion that matters: the distinct event name must
+        // actually reach the built WsFrame, not just detect_transition's
+        // return value — that gap was the pre-existing bug.
+        assert_eq!(frames[0].payload["event"], "workflow_reconcile_failed");
+        assert_ne!(frames[0].payload["event"], "workflow_done");
+        assert_eq!(frames[0].payload["repo"], "bastion");
+        assert_eq!(frames[0].payload["spec_slug"], "spec-a");
+        assert_eq!(frames[0].payload["status"], "reconcile_failed");
+    }
+
+    #[test]
     fn watch_cycle_empty_registry_emits_no_frames() {
         let registry = FileConfig::default();
         let mut watcher = FlowWatcher::new();
@@ -1049,7 +1077,7 @@ mod tests {
             spec_slug: "spec-a".to_string(),
             status: "done".to_string(),
         };
-        let frame = workflow_done_frame(&payload);
+        let frame = workflow_done_frame(&payload, "workflow_done");
         hub.broadcast_all(frame.clone());
 
         let received = recorder.send(DrainReceived).await.unwrap();

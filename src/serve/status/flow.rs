@@ -41,26 +41,39 @@ pub fn parse_flow_state(content: &str) -> Option<FlowState> {
     serde_json::from_str(content).ok()
 }
 
-/// Returns `true` for the two terminal status strings (`"done"`, `"blocked"`),
-/// `false` for anything else (e.g. `"running"`, `"pending"`).
+/// Returns `true` for the three terminal status strings (`"done"`,
+/// `"blocked"`, `"reconcile_failed"`), `false` for anything else (e.g.
+/// `"running"`, `"pending"`). `"reconcile_failed"` is a distinct terminal
+/// gate-failure category (base-template D56,
+/// `doc_id: sdlc-run-state-data-contract`) — it did finish, the run is not
+/// going to advance further, but it must not be conflated with an ordinary
+/// `"done"`/`"blocked"` terminal state by any caller.
 pub fn is_terminal(status: &str) -> bool {
-    matches!(status, "done" | "blocked")
+    matches!(status, "done" | "blocked" | "reconcile_failed")
 }
 
 /// Detect a non-terminal → terminal status transition.
 ///
 /// Returns `Some("workflow_done")` when `prev_status` is `Some` and
-/// non-terminal while `current.status` is terminal. Returns `None` in every
-/// other case: no previous status (`prev_status` is `None`, i.e. first
-/// observation), previous status already terminal, or current status still
-/// non-terminal.
+/// non-terminal while `current.status` transitions into the ordinary
+/// terminal set (`"done"`/`"blocked"`). Returns
+/// `Some("workflow_reconcile_failed")` when the transition is instead into
+/// `"reconcile_failed"` — a distinct event name so a consumer cannot fold
+/// the gate-failure outcome into the success/blocked one just by matching on
+/// event name. Returns `None` in every other case: no previous status
+/// (`prev_status` is `None`, i.e. first observation), previous status
+/// already terminal, or current status still non-terminal.
 pub fn detect_transition(prev_status: Option<&str>, current: &FlowState) -> Option<String> {
     let prev = prev_status?;
     if is_terminal(prev) {
         return None;
     }
     if is_terminal(&current.status) {
-        return Some("workflow_done".to_string());
+        return Some(if current.status == "reconcile_failed" {
+            "workflow_reconcile_failed".to_string()
+        } else {
+            "workflow_done".to_string()
+        });
     }
     None
 }
@@ -153,6 +166,7 @@ mod tests {
     fn is_terminal_matches_done_and_blocked_only() {
         assert!(is_terminal("done"));
         assert!(is_terminal("blocked"));
+        assert!(is_terminal("reconcile_failed"));
         assert!(!is_terminal("running"));
         assert!(!is_terminal("pending"));
         assert!(!is_terminal(""));
@@ -194,5 +208,24 @@ mod tests {
     fn detect_transition_no_prev_emits_no_event() {
         let current = flow_with_status("done");
         assert_eq!(detect_transition(None, &current), None);
+    }
+
+    #[test]
+    fn detect_transition_running_to_reconcile_failed_emits_distinct_event() {
+        let current = flow_with_status("reconcile_failed");
+        let event = detect_transition(Some("running"), &current);
+        assert_eq!(event, Some("workflow_reconcile_failed".to_string()));
+        assert_ne!(event, Some("workflow_done".to_string()));
+    }
+
+    #[test]
+    fn detect_transition_reconcile_failed_to_anything_emits_no_event() {
+        let current = flow_with_status("running");
+        assert_eq!(detect_transition(Some("reconcile_failed"), &current), None);
+        let current_done = flow_with_status("done");
+        assert_eq!(
+            detect_transition(Some("reconcile_failed"), &current_done),
+            None
+        );
     }
 }
