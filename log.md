@@ -12,6 +12,37 @@ timestamp: 2026-08-31T21:32:05-03:00
 
 ## [run: 2026-09-02]
 
+BA.21.D — "The attention board reaches you" — closed out (5 of 5 tasks, review PASS). Task 1
+added `src/serve/attention_source/` with a pure `AttentionQueueItem` type and
+`parse_attention_queue_payload()`, unit-tested against the checked-in `mev attention-queue
+--notify-only` fixture. Task 2 added the pure per-tick admission decision (`tick_decision`):
+dedups already-delivered items, depth-limits delivery via `engine_core`'s
+`OperatorQueuePolicy`/`compare_items` (priority sign inverted, since the board's 0-is-highest
+convention is the opposite of `compare_items`'s higher-sorts-first), digests the remainder via
+`storm_digest`, and fails closed (admits nothing, warns) on any `mev`-missing/non-zero-exit/
+unparseable-output case. Task 3 mounted an `AttentionSourcePoller` in `serve/mod.rs` that shells
+out to `mev attention-queue --notify-only`, applies the admission decision, and delivers admitted
+items plus a digest tail over BA.21.A's `OperatorTransport` into the same `pending_payloads`
+registry `stale_run_alarm` uses — gated only on transport being configured, no `engine_mounted`
+requirement. Task 4 documented the path in `docs/commands.md`: the poller, the triage rule living
+solely in `brain.toml`'s `[attention]` table, and the measured 548/2 admission numbers. Task 5 ran
+the full gated suite: fmt, clippy, `cargo test` (2667 passed, 0 failed via
+`NEXTEST_POLICY_OVERRIDE=1`), release build, contract-corpus and typeshare drift checks — all
+green. Final verdict: **PASS**. Notable decisions: reused
+`engine_core::operator::OperatorResponseOption`/`ItemSource::GateApproval` rather than inventing
+new types where the shapes already matched; used `storm_digest` (not `build_digest`) since all
+newly-observed items share one enqueued_at; used `Arc<dyn Fn() -> AttentionFetch + Send + Sync>`
+(not `FnMut`) so the blocking `mev` spawn can run inside `tokio::task::spawn_blocking` while async
+delivery runs on the calling task. Next: BA.ticket.pricescout-telegram-bot, or whatever
+`pick-the-next-block` surfaces next from the graph.
+
+```
+80b0182 feat: implement BA.21.D-task4
+c7b4d5e feat: implement BA.21.D-task3
+23b1c67 feat: implement BA.21.D-task2
+74bc0ce feat: implement BA.21.D-task1
+```
+
 ### BA.22.C — `--json` on `bastion brain`/`bastion code`, closed out (5 of 5 tasks, review PASS)
 
 - **What:** Resumed `/sdlc-flow BA.22.C` from the task-5 bail recorded below. Re-ran task 5's
