@@ -138,3 +138,224 @@ fn parse_error_display_names_the_payload_as_malformed() {
         "unexpected error message: {message}"
     );
 }
+
+// ── Task 3: the I/O shell — deliver(), digest rendering, run() ─────────────
+
+mod shell {
+    use super::*;
+    use async_trait::async_trait;
+    use engine_core::operator::{
+        DeliveredMessage, NotifyError, OperatorResponse, OperatorResponseOption, UpdateCursor,
+        ValidatedOperatorPayload,
+    };
+    use poller::AttentionFetch;
+    use std::sync::Mutex;
+
+    fn item(id: &str, priority: i64) -> AttentionQueueItem {
+        AttentionQueueItem {
+            item_id: id.to_string(),
+            gate_id: format!("attention:{id}"),
+            rendered_summary: format!("[repo] item {id}"),
+            options: vec![
+                OperatorResponseOption::new("promote", "Promote"),
+                OperatorResponseOption::new("snooze", "Snooze"),
+            ],
+            digest: format!("digest-{id}"),
+            effective_priority: priority,
+            lane: "hot".to_string(),
+            repo: "repo".to_string(),
+            source: "attention-board".to_string(),
+        }
+    }
+
+    /// A transport double recording every `send` call, always succeeding.
+    /// `poll_responses` is never exercised by these tests.
+    #[derive(Default)]
+    struct RecordingTransport {
+        sent: Mutex<Vec<ValidatedOperatorPayload>>,
+    }
+
+    impl RecordingTransport {
+        fn sent_gate_ids(&self) -> Vec<String> {
+            self.sent
+                .lock()
+                .expect("sent mutex is never poisoned in these tests")
+                .iter()
+                .map(|p| p.payload().gate_id.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl OperatorTransport for RecordingTransport {
+        async fn send(
+            &self,
+            payload: &ValidatedOperatorPayload,
+        ) -> Result<DeliveredMessage, NotifyError> {
+            self.sent
+                .lock()
+                .expect("sent mutex is never poisoned in these tests")
+                .push(payload.clone());
+            Ok(DeliveredMessage {
+                transport_message_id: String::new(),
+            })
+        }
+
+        async fn poll_responses(
+            &self,
+            since: Option<UpdateCursor>,
+        ) -> Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError> {
+            Ok((Vec::new(), since))
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        Utc::now()
+    }
+
+    #[tokio::test]
+    async fn deliver_sends_admitted_items_and_registers_them_pending() {
+        let transport = Arc::new(RecordingTransport::default());
+        let pending = Arc::new(PendingPayloads::new());
+        let mut poller = AttentionSourcePoller::with_fetch(
+            transport.clone(),
+            pending.clone(),
+            OperatorQueuePolicy {
+                operator_queue_depth: 5,
+                ..OperatorQueuePolicy::default()
+            },
+            Arc::new(|| AttentionFetch::MevMissing),
+        );
+
+        let fetch = AttentionFetch::Items(vec![item("a", 0)]);
+        let delivered = poller.deliver(fetch, now()).await;
+
+        assert_eq!(delivered, 1);
+        assert_eq!(transport.sent_gate_ids(), vec!["attention:a".to_string()]);
+        assert!(pending.get("attention:a").is_some());
+    }
+
+    #[tokio::test]
+    async fn deliver_never_re_sends_an_item_already_delivered() {
+        let transport = Arc::new(RecordingTransport::default());
+        let pending = Arc::new(PendingPayloads::new());
+        let mut poller = AttentionSourcePoller::with_fetch(
+            transport.clone(),
+            pending,
+            OperatorQueuePolicy::default(),
+            Arc::new(|| AttentionFetch::MevMissing),
+        );
+
+        let fetch = AttentionFetch::Items(vec![item("a", 0)]);
+        poller.deliver(fetch.clone(), now()).await;
+        poller.deliver(fetch, now()).await;
+
+        assert_eq!(
+            transport.sent_gate_ids().len(),
+            1,
+            "second tick must not re-send an already-delivered item"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_sends_a_digest_for_the_remainder_beyond_depth() {
+        let transport = Arc::new(RecordingTransport::default());
+        let pending = Arc::new(PendingPayloads::new());
+        let mut poller = AttentionSourcePoller::with_fetch(
+            transport.clone(),
+            pending,
+            OperatorQueuePolicy {
+                operator_queue_depth: 1,
+                ..OperatorQueuePolicy::default()
+            },
+            Arc::new(|| AttentionFetch::MevMissing),
+        );
+
+        let fetch = AttentionFetch::Items(vec![item("a", 0), item("b", 1), item("c", 2)]);
+        let delivered = poller.deliver(fetch, now()).await;
+
+        // One individual item delivered (depth == 1), plus one digest
+        // message for the remainder — never N independent sends.
+        assert_eq!(delivered, 1);
+        assert_eq!(transport.sent_gate_ids().len(), 2);
+        assert!(
+            transport
+                .sent_gate_ids()
+                .iter()
+                .any(|g| g.starts_with("attention-digest:")),
+            "expected one digest-gated message among the sends: {:?}",
+            transport.sent_gate_ids()
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_sends_nothing_on_a_failed_fetch() {
+        let transport = Arc::new(RecordingTransport::default());
+        let pending = Arc::new(PendingPayloads::new());
+        let mut poller = AttentionSourcePoller::with_fetch(
+            transport.clone(),
+            pending,
+            OperatorQueuePolicy::default(),
+            Arc::new(|| AttentionFetch::MevMissing),
+        );
+
+        let delivered = poller.deliver(AttentionFetch::MevMissing, now()).await;
+
+        assert_eq!(delivered, 0);
+        assert!(transport.sent_gate_ids().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_delivers_on_its_first_tick_from_the_injected_fetch() {
+        let transport = Arc::new(RecordingTransport::default());
+        let pending = Arc::new(PendingPayloads::new());
+        let poller = AttentionSourcePoller::with_fetch(
+            transport.clone(),
+            pending,
+            OperatorQueuePolicy::default(),
+            Arc::new(|| AttentionFetch::Items(vec![item("a", 0)])),
+        );
+
+        // `run` never returns under normal operation — race it against a
+        // short timeout and assert the first tick already delivered.
+        let _ = tokio::time::timeout(Duration::from_millis(50), poller.run(1)).await;
+
+        assert_eq!(transport.sent_gate_ids(), vec!["attention:a".to_string()]);
+    }
+}
+
+// ── Read-only guarantee (D25): no write anywhere in this source ───────────
+
+#[test]
+fn attention_source_module_never_opens_a_file_for_writing() {
+    // Static source-text assertion, mirroring `src/serve/mod.rs`'s own
+    // `include_str!`-based needle tests: `mev attention-queue --notify-only`
+    // is spawned to READ its stdout only. Every write-shaped std::fs/
+    // OpenOptions call is a needle this module's source must never contain.
+    let mod_source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/serve/attention_source/mod.rs"
+    ));
+    let poller_source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/serve/attention_source/poller.rs"
+    ));
+
+    for needle in [
+        "std::fs::write",
+        "std::fs::File::create",
+        "OpenOptions",
+        ".write(true)",
+    ] {
+        assert!(
+            !mod_source.contains(needle),
+            "attention_source/mod.rs must never write a file (D25 read-only guarantee) \
+             — found forbidden needle {needle:?}"
+        );
+        assert!(
+            !poller_source.contains(needle),
+            "attention_source/poller.rs must never write a file (D25 read-only guarantee) \
+             — found forbidden needle {needle:?}"
+        );
+    }
+}
