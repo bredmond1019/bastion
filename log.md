@@ -2,9 +2,29 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-08-31T21:32:05-03:00
+timestamp: 2026-09-02T07:26:32-0300
 ---
 # Log — bastion
+
+## [2026-09-02]
+
+### Closed the bastion lane of the context-handling-between-nodes roadmap
+- **What:** Drove four blocks to closed — `BA.22.C` (`--json` on `bastion brain`/`code` plus
+  `docs/brain-graph-output.md`, this repo's first documented CLI output contract),
+  `BA.ticket.reconcile-failed-status-surface` (`reconcile_failed` terminal, distinct
+  `workflow_reconcile_failed` event on the WS frame), `BA.21.D` (the Attention board reaches the
+  operator via `mev attention-queue --notify-only`, failing closed), and
+  `BA.ticket.pricescout-telegram-bot` (a third inbound Telegram loop on its own token). PRs #43,
+  #44, #45 merged. `BA.24.A` never started — held two hops out on `OP.fork-9-orm-choice`. Also
+  repaired two fleet breaks neither block asked for: regenerated `types/serve.ts` for okf-core's
+  `KnownCarryoverNeeds`, and adopted mev's new required `RepoEntry.public`.
+- **Why:** Three of the five block records were materially wrong — the reconcile ticket's fix would
+  have shipped nothing observable, `BA.21.D`'s record carried an already-closed operator gate and
+  told bastion to re-implement a rule `mev` ships, and the pricescout endpoint was unauthenticated.
+  Rewriting them against the source rather than the record is what made the lane worth running.
+- **Refs:** `planning/orchestration-run/context-handling-between-nodes/{notes.md,review.md}`,
+  `planning/roadmaps/context-handling-between-nodes/roadmap.md` (HQ)
+
 
 *Append-only working log. One dated entry per session. Newest entries at the top.*
 
