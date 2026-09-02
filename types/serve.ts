@@ -1964,3 +1964,21 @@ export enum DisposalReason {
 	Withdrawn = "withdrawn",
 }
 
+/**
+ * The fixed, known `Carryover.needs` vocabulary — what kind of work closes
+ * an entry (`code`, `docs`, `state`, `operator`, `dedupe`), as distinct from
+ * [`KnownCarryoverKind`], which says why the entry exists.
+ * 
+ * Carries the typeshare annotation itself (rather than the enclosing
+ * [`CarryoverNeeds`] wrapper) per [`BlockedBy`]'s documented rule at
+ * src/state.rs:196: typeshare cannot represent an untagged algebraic enum,
+ * so the payload type is annotated and the wrapper is not.
+ */
+export enum KnownCarryoverNeeds {
+	Code = "code",
+	Docs = "docs",
+	State = "state",
+	Operator = "operator",
+	Dedupe = "dedupe",
+}
+
