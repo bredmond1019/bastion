@@ -12,6 +12,41 @@ timestamp: 2026-08-31T21:32:05-03:00
 
 ## [run: 2026-09-02]
 
+BA.ticket.pricescout-telegram-bot closed end to end (5/5 tasks, review PASS), resuming past the
+prior session's BAIL. Task 1 (already committed as 595b18a) registered the `pricescout` bot slug
+in `KNOWN_BOT_SLUGS`/`POLLED_BOT_SLUGS` with a thin `load_pricescout_bot_config()` returning the
+generic `BotCredentials` directly. Task 2 built the pure core in `src/serve/pricescout/`: a
+narrow `route_pricescout_message` router that resolves only `/shop` and refuses every operator
+built-in and allow-list command, a `/shop` item parser (comma/newline-split, blank-trimmed), and a
+`POST /api/lists` body builder (`source: telegram`, `sources: [mercado_livre]`, `pages: 1`) — 29
+hermetic tests, no I/O. Task 3 wired the third inbound Telegram loop into `bastion serve`
+(`PricescoutBridge`), dispatching `/shop` to price-scout's list endpoint via an injected
+`PriceScoutListClient` HTTP seam through a detached `tokio::spawn` so the immediate acknowledgement
+never blocks on the paced scraper; refused messages are silently dropped to avoid leaking any
+operator-facing surface. Task 4 documented the two new env vars plus
+`BASTION_PRICESCOUT_LIST_URL` in `.env.example` and `docs/operations/config.md` (the repo's real
+config-doc path — the spec named `docs/config.md`). Task 5 ran the full gated suite: fmt, clippy,
+`cargo test` 2725 passed / 0 failed, release build, contract-corpus and typeshare drift checks all
+clean. The task-1 BAIL (a pre-existing `mev::RepoEntry.public` compile break in unrelated test
+fixtures) was independently reproduced as foreign before being accepted, then cleared upstream by
+`c5ee7f9`. Review verdict PASS, no findings. Block flipped closed in `state.json`, validated clean
+by `mev validate-brain --state`. Next: BA.11.F — Auth hardening, contract freeze, docs.
+
+```
+5182be8 docs: update docs for BA.ticket.pricescout-telegram-bot
+000eaf4 docs: document the pricescout Telegram bot (BA.ticket.pricescout-telegram-bot task 4)
+7ac8c46 feat: implement BA.ticket.pricescout-telegram-bot-task3
+f601182 feat: implement BA.ticket.pricescout-telegram-bot-task2
+5668aa8 Merge branch 'main' into BA.ticket.pricescout-telegram-bot-flow
+c5ee7f9 fix(tests): add mev's new required RepoEntry.public field to three fixtures
+85e9269 chore: wrap up BA.ticket.pricescout-telegram-bot
+595b18a feat: implement BA.ticket.pricescout-telegram-bot-task1
+```
+
+---
+
+## [run: 2026-09-02]
+
 BA.ticket.pricescout-telegram-bot task 1 registered the `pricescout` bot slug: `KNOWN_BOT_SLUGS`
 gained the entry, a thin `load_pricescout_bot_config()` alias sits beside
 `load_code_sessions_bot_config()` over `BASTION_PRICESCOUT_BOT_TOKEN`/`_CHAT_ID` (returning the
