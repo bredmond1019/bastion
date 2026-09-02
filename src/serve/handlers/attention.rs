@@ -431,6 +431,11 @@ mod tests {
             cache_doc: String::new(),
             heading: String::new(),
             prefix: None,
+            // mev's RepoEntry gained this required field in 0b41978
+            // (MV.ticket.surface-leak-check-task1). It is fail-closed by
+            // design -- false means private, never scanned -- and these
+            // fixtures do not exercise it, so false is both correct and safe.
+            public: false,
         }
     }
 
