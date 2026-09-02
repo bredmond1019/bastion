@@ -7,7 +7,7 @@ layer: [console, surface, engine]
 project: bastion
 status: active
 keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, block-graph, reconcile_failed]
-related: [config, observ, data-contract, abort, master-plan, "base-template:sdlc-run-state-data-contract"]
+related: [config, observ, data-contract, abort, master-plan, "base-template:run-state-data-contract"]
 ---
 
 # serve-api — v0.41 Contract
@@ -443,7 +443,7 @@ Pushed when a significant event is detected.
 |---|---|---|
 | `"needs_input"` | v0.2 | Session pane is on a permission/approval prompt (`Blocked` state with `visible_blocker`, per `detect::detect()` over the Claude manifest).  Emitted once per rising edge (Blocked→not-Blocked→Blocked emits again; continuous Blocked does not repeat). |
 | `"workflow_done"` | v0.3 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` (e.g. `"running"`) to the ordinary terminal set (`"done"` or `"blocked"`), per `FlowWatcher::observe()` (`src/serve/poll.rs`).  Carries `repo`, `spec_slug`, and `status` fields alongside the `event` field (see Section 11.5). |
-| `"workflow_reconcile_failed"` | v0.41 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` into the third terminal status, `"reconcile_failed"` (base-template D56, `doc_id: sdlc-run-state-data-contract`, cross-repo id `base-template:sdlc-run-state-data-contract`), per the same `FlowWatcher::observe()`.  A distinct event name on purpose — `reconcile_failed` did finish (the run is not going to advance further) but **must not be rendered identically to `"workflow_done"`'s `"done"` outcome** (that reads as finished-and-clean when it is not) **nor identically to `"workflow_done"`'s `"blocked"` outcome** (that reads as ordinary bailed work when this is a distinct gate-failure category). Carries the same `repo`, `spec_slug`, and `status` fields as `workflow_done` (see Section 11.5). |
+| `"workflow_reconcile_failed"` | v0.41 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` into the third terminal status, `"reconcile_failed"` (base-template D56, `doc_id: run-state-data-contract`, cross-repo id `base-template:run-state-data-contract`), per the same `FlowWatcher::observe()`.  A distinct event name on purpose — `reconcile_failed` did finish (the run is not going to advance further) but **must not be rendered identically to `"workflow_done"`'s `"done"` outcome** (that reads as finished-and-clean when it is not) **nor identically to `"workflow_done"`'s `"blocked"` outcome** (that reads as ordinary bailed work when this is a distinct gate-failure category). Carries the same `repo`, `spec_slug`, and `status` fields as `workflow_done` (see Section 11.5). |
 | `"run_transition"` | v0.23 | A `runs`-topic subscriber's tracked run's aggregate status changes, or the run disappears from `LiveStateStore::list_active()` (gone lifecycle-terminal), per `RunWatcher::observe()` (`src/serve/poll.rs`). Carries `run_id`, `status`, `terminal`, and an optional `spec_slug` field alongside the `event` field (see Section 8.3). |
 | `"run_stream_status"` | v0.23 | Pushed once, immediately, to a connection when it subscribes to the `runs` topic — reports whether the engine is mounted (`available`) and, when not, why (`reason`). Not tied to any run; fires exactly once per subscribe (see Section 8.3). |
 
@@ -533,8 +533,8 @@ prev_status.is_some() && !is_terminal(prev_status) && is_terminal(current.status
 where `is_terminal(status)` is `true` for **three** values: `"done"`,
 `"blocked"`, and `"reconcile_failed"` (`src/serve/status/flow.rs::is_terminal`).
 `"reconcile_failed"` is base-template D56's terminal gate-failure status
-(`doc_id: sdlc-run-state-data-contract`, cross-repo id
-`base-template:sdlc-run-state-data-contract`) — see that document for the full
+(`doc_id: run-state-data-contract`, cross-repo id
+`base-template:run-state-data-contract`) — see that document for the full
 vocabulary; it is not re-derived here. No event is emitted on the **first**
 observation of a given `(repo, spec_slug)` pair (no `prev_status` to compare
 against), nor when the status is unchanged or was already terminal on the
@@ -1222,7 +1222,7 @@ alone (rather than on `event`) could otherwise fold all three into one
 "finished" bucket — `reconcile_failed` looks finished-and-clean if conflated
 with `done`, and looks like ordinary bailed work if conflated with `blocked`,
 when it is in fact a distinct gate-failure category (base-template D56,
-`base-template:sdlc-run-state-data-contract`) that a dashboard or UI should
+`base-template:run-state-data-contract`) that a dashboard or UI should
 surface as its own state.
 
 ---
@@ -3926,7 +3926,7 @@ deliberately not duplicated in this repo.
 - **2026-09-02 — v0.40 → v0.41 (`ticket-reconcile-failed-status-surface`, additive):** Documented
   `"reconcile_failed"` as a third terminal `sdlc-flow-state.json` status alongside `"done"` and
   `"blocked"` — the upstream vocabulary is base-template's D56
-  (`base-template:sdlc-run-state-data-contract`; read that document for the vocabulary itself,
+  (`base-template:run-state-data-contract`; read that document for the vocabulary itself,
   not re-derived here). Added the `"workflow_reconcile_failed"` event name to the Section 7.7
   event-name table, rewrote Section 8.2 to cover the three-way `is_terminal` classification and
   the event-name-carries-the-outcome distinction, and added a `workflow_reconcile_failed`
