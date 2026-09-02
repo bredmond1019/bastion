@@ -76,6 +76,9 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `BASTION_CODESESSIONS_CHAT_ID` | No | — | The operator's Telegram chat id CodeSessionsBot delivers to. Same absent-tolerant, paired-with-the-token contract as `BASTION_CODESESSIONS_BOT_TOKEN` above. |
 | `BASTION_LANE_BOT_TOKEN` | No | — | Bot token for OrchestrationBot (`@bastion_orchestrator_bot`), the third bot `bastion notify send\|ask` (`BA.ticket.notify-operator-cli`, [notify.md](../serve/notify.md)) uses by default. **Deliberately distinct from `BASTION_TELEGRAM_BOT_TOKEN` and `BASTION_CODESESSIONS_BOT_TOKEN`** — `bastion serve` already runs one `getUpdates` long-poll per bot token (BastionBot's approve/reject gate, CodeSessionsBot's session-QA bridge), and Telegram hands each update to exactly one consumer, so a CLI polling either of those tokens would steal the taps those loops exist to receive. These credentials are provisioned (the `operator-lanebot-credential` gate closed 2026-08-24) and live in `~/.zshenv`, so only a shell that sources it sees them — zsh does, a bash/sh/CI runner does not; both this and `BASTION_LANE_CHAT_ID` absent leaves `--bot lane` unconfigured — exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
 | `BASTION_LANE_CHAT_ID` | No | — | The operator's Telegram chat id OrchestrationBot delivers to. Same absent-tolerant, paired-with-the-token contract as `BASTION_LANE_BOT_TOKEN` above. |
+| `BASTION_PRICESCOUT_BOT_TOKEN` | No | — | Bot token for PriceScoutBot, the THIRD inbound Telegram loop, dedicated to the family's `/shop` command (`BA.ticket.pricescout-telegram-bot`). **Its own token, distinct from `BASTION_TELEGRAM_BOT_TOKEN` and `BASTION_CODESESSIONS_BOT_TOKEN`** — a third `getUpdates` long-poll on a third token is safe (the one-consumer rule is per token, not global), where a second consumer of either existing token would steal that loop's updates. This bot's allow-list is family-safe: `/shop <items>` and nothing operator-facing. Both this and `BASTION_PRICESCOUT_CHAT_ID` absent leaves the bridge disabled, `bastion serve` booting unchanged; exactly one present is a typed `ConfigError::IncompleteNamedBotConfig`. |
+| `BASTION_PRICESCOUT_CHAT_ID` | No | — | The family's Telegram chat id PriceScoutBot delivers to and accepts `/shop` from. Same absent-tolerant, paired-with-the-token contract as `BASTION_PRICESCOUT_BOT_TOKEN` above. |
+| `BASTION_PRICESCOUT_LIST_URL` | No | `http://localhost:8000/api/lists` | Base URL of price-scout's `POST /api/lists` endpoint that `/shop` submits to (`source: "telegram"`). No credential is ever attached to this request — the route is unauthenticated (a price-scout finding, filed as carryover there, not fixed here). |
 | `BASTION_FAIL_ON_BUILD_DRIFT` | No | `false` (falsy) | Opt-in hard-fail switch for build-provenance drift on `bastion emit-state --write` — see [brainval.md](../knowledge/brainval.md#--build-stamp-and-the-build-provenance-drift-guard). By default, drift between the running binary's compiled-in git SHA and the live source tree prints a loud stderr banner but still lets the write proceed; setting this env var to a truthy value (`1`, `true`, `yes`, `on`, case-insensitive) turns that same drift into a non-zero exit with nothing written, before `mev::emit_state` is called. Same effect as the `--fail-on-drift` flag on `emit-state` — either alone is sufficient, with no precedence to reason about. Exists so `scripts/routine.sh`'s unattended nightly run on the Mac Mini can refuse to write from a stale build without editing that HQ-owned script's arguments. |
 
 ## Config file
@@ -256,6 +259,54 @@ lane` unconfigured even on this machine. `--bot lane` is `bastion notify`'s defa
 credential slug `lane` and the Telegram display name OrchestrationBot are independent — renaming the
 bot changes no env var. Same `BotToken` newtype, same redacted `Debug`.
 
+## PriceScoutBot bridge (`BA.ticket.pricescout-telegram-bot`)
+
+A THIRD, fully optional env-var pair configures PriceScoutBot — a dedicated inbound Telegram loop
+for the family, spawned alongside BastionBot's `NotifyPollLoop` and CodeSessionsBot's
+`SessionQaBridge` (`src/serve/pricescout/`).
+
+| Env var | Type | Description |
+|---|---|---|
+| `BASTION_PRICESCOUT_BOT_TOKEN` | `Option<String>` | PriceScoutBot's Telegram bot token. |
+| `BASTION_PRICESCOUT_CHAT_ID` | `Option<String>` | The family's Telegram chat id PriceScoutBot delivers to and accepts commands from. |
+| `BASTION_PRICESCOUT_LIST_URL` | `String`, default `http://localhost:8000/api/lists` | Base URL of price-scout's list-submission endpoint. |
+
+**A dedicated bot on its own token, not a command on the operator's channel** (operator decision,
+2026-08-31). The one-consumer-per-token rule that governs BastionBot and CodeSessionsBot is **per
+token, not global**: `bastion serve` runs one `getUpdates` long-poll per bot token, and Telegram
+hands each update to exactly one consumer, so a *second* consumer of an *existing* token (BastionBot
+or CodeSessionsBot) would steal that loop's updates — but a brand-new, *third* token is a brand-new,
+safe consumer. That is what makes a dedicated bot the right shape here rather than a violation of the
+rule that killed the idea of a second operator-control listener.
+
+This bot's allow-list is deliberately narrower than the operator's: it recognizes `/shop <items>`
+and nothing else — no command that reads or triggers operator-facing state. The family's bot must
+never expose the operator's commands, so a leaked PriceScout token only buys shopping lists, not the
+stack. Reuses `src/serve/session_qa/commands.rs`'s router (`BA.ticket.telegram-command-router`)
+rather than growing a second one; a message from a chat id other than
+`BASTION_PRICESCOUT_CHAT_ID` is rejected and performs no action. There is no follow-up conversation
+state on this loop — that machinery lives on `codesessions` only, and replicating it here would
+import a precedence hazard this bot avoids by construction.
+
+`/shop <items>` (comma- or newline-separated, trimmed, blanks dropped) submits
+`{source: "telegram", queries[], sources: ["mercado_livre"], pages: 1}` to price-scout's
+`POST /api/lists` (`BASTION_PRICESCOUT_LIST_URL`) **without attaching any credential** — that route
+is unauthenticated, a price-scout-side finding filed as carryover and not this bridge's to fix. The
+submission does not block the reply: `POST /api/lists` runs the batch synchronously and can take
+minutes, so the bridge acknowledges immediately with the parsed item count, and the completion
+notification arrives later via price-scout's own outbound alerts (`PS.9.D`) on this same bot —
+exactly one acknowledgement per command, never a progress stream.
+
+`bastion notify ask --bot pricescout` would compete for the same `getUpdates` stream once this loop
+is running, which is why `pricescout` is in `POLLED_BOT_SLUGS` alongside `telegram` and
+`codesessions` (`src/notify_cli.rs`) and gets the same competing-poller warning. `bastion notify
+send --bot pricescout` is unaffected — it never reads updates — which is why price-scout's outbound
+alerts can keep sharing this bot. Both env vars absent leaves the bridge disabled and `bastion serve`
+booting unchanged, logged at info; exactly one set is the same typed
+`ConfigError::IncompleteNamedBotConfig` the other named bots use. Read via
+`load_pricescout_bot_config`, itself a thin alias over the slug-generic `named_bot_config` — no
+bespoke config struct, since nothing downstream needs one beyond the generic `BotCredentials`.
+
 ## Precedence rules
 
 An environment variable **always wins** over the config file for the same key.
@@ -276,7 +327,8 @@ Built-in defaults apply only when both the environment and file omit a value.
 | `NoWorkspaceRegistry` | `--workspace` used but no `[workspaces]` table exists in the config file. |
 | `MissingServeToken` | `bastion serve` started without a bearer token (neither `--token` nor `BASTION_SERVE_TOKEN` set, or either resolved to an empty string). |
 | `MalformedBudgetValue(&'static str, String, &'static str)` | A budget env var (`BASTION_MAX_TOTAL_TOKENS` or `BASTION_MAX_COST_USD`) was set but failed to parse as its expected numeric type. Carries the variable name, the offending value, and the expected type. Never silently defaults to "no cap". |
-| `IncompleteTelegramConfig(&'static str)` | Exactly one of `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` was set (`BA.18.B`), **or** exactly one of `BASTION_CODESESSIONS_BOT_TOKEN` / `BASTION_CODESESSIONS_CHAT_ID` was set (`BA.20.C`), **or** exactly one of `BASTION_LANE_BOT_TOKEN` / `BASTION_LANE_CHAT_ID` was set (`BA.ticket.notify-operator-cli`, reusing this same variant via the slug-generic `named_bot_config`). Carries the name of the missing variable. Never silently treated as "transport/bridge/bot not configured" — that state is reserved for both absent. |
+| `IncompleteTelegramConfig(&'static str)` | Exactly one of `BASTION_TELEGRAM_BOT_TOKEN` / `BASTION_TELEGRAM_CHAT_ID` was set (`BA.18.B`), **or** exactly one of `BASTION_CODESESSIONS_BOT_TOKEN` / `BASTION_CODESESSIONS_CHAT_ID` was set (`BA.20.C`), **or** exactly one of `BASTION_LANE_BOT_TOKEN` / `BASTION_LANE_CHAT_ID` was set (`BA.ticket.notify-operator-cli`; `lane_bot_config` translates the generic error below back to this shape so its pre-existing signature keeps working unedited). Carries the name of the missing variable. Never silently treated as "transport/bridge/bot not configured" — that state is reserved for both absent. |
+| `IncompleteNamedBotConfig(String)` | The generic, slug-parameterized form `named_bot_config` returns directly. Raised when exactly one of `BASTION_PRICESCOUT_BOT_TOKEN` / `BASTION_PRICESCOUT_CHAT_ID` was set (`BA.ticket.pricescout-telegram-bot`) — `load_pricescout_bot_config` has no bespoke config struct, so unlike `lane_bot_config` it does not translate this back to `IncompleteTelegramConfig`. Carries the name of the missing variable. |
 
 ### `FileConfig`
 
