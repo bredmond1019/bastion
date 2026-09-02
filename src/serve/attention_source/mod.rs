@@ -32,8 +32,10 @@
 //! response-option shape is forked — only the extra board-context fields are
 //! new here.
 
-// `poller` (the process-spawning shell + pure admission decision) is added
-// by task 2/3 of this spec; task 1 is parsing only.
+// Task 2 adds the pure admission decision (new/duplicate, depth, storm —
+// never a second triage rule); task 3 adds the process-spawning shell on
+// top and mounts a poller driving it from `src/serve/mod.rs`.
+pub mod poller;
 #[cfg(test)]
 mod tests;
 
