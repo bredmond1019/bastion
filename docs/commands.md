@@ -135,12 +135,42 @@ Read files on disk. Never write back — `/log-work` owns the writes (decision D
 
 | Command | What it does | Doc |
 |---|---|---|
-| `bastion serve [--addr] [--token]` | Start the HTTP + WebSocket face (default `0.0.0.0:4317`, Tailscale-reachable). Mandatory bearer auth via `BASTION_SERVE_TOKEN`. Also mounts the Engine routes that `bastion abort` calls. | [serve-api.md](serve/serve-api.md) |
+| `bastion serve [--addr] [--token]` | Start the HTTP + WebSocket face (default `0.0.0.0:4317`, Tailscale-reachable). Mandatory bearer auth via `BASTION_SERVE_TOKEN`. Also mounts the Engine routes that `bastion abort` calls, and (BA.21.D) the attention-board notification source described below. | [serve-api.md](serve/serve-api.md) |
 | `bastion notify send --text <s> [--bot lane]` | Fire-and-forget message to the operator over Telegram. No buttons, no lock. | [notify.md](serve/notify.md) |
 | `bastion notify ask --gate-id <id> --summary <s> --option key:Label [--timeout-secs 300] [--bot lane]` | Ask the operator a gated question with response buttons and **block** until a resolving tap. Exit 0 answered, 2 timeout, 3 stale digest, 4 lock held. | [notify.md](serve/notify.md) |
 | `bastion view <path>` | Open a markdown file in bella's terminal viewer. | [docview.md](knowledge/docview.md) |
 | `bastion edit <path>` | Open a markdown file in bella's editor. Currently the same invocation as `view` — bella exposes no distinct edit flag yet. | [docview.md](knowledge/docview.md) |
 | `bastion man [--out <dir>]` | Generate the roff man page. Hidden from `--help`; kept for packaging. | — |
+
+### What reaches the phone from the attention board (BA.21.D)
+
+`bastion serve` mounts a poller (`src/serve/attention_source/`) that shells out to `mev
+attention-queue --notify-only` on a cadence and delivers the admitted items over BA.21.A's
+operator transport, through the same headless question path and `PendingPayloads` registry
+BA.21.C built — so an admitted item arrives as a real, answerable notification, not a
+struct-to-struct assertion.
+
+**The triage rule lives in `brain.toml`'s `[attention]` table and is applied entirely by `mev
+attention-queue --notify-only` — never by bastion.** bastion only consumes the already-filtered
+set; it does not re-implement, second-guess, or narrow the cut. There is exactly one place to
+change what counts as notification-worthy: the `[attention]` table, not this repo. Measured
+2026-09-01 on the live corpus: the full Attention board held 548 items; `--notify-only` admitted
+2. A second cut implemented here would desynchronise from `/attention` the moment either side
+changed — the same class of bug the digest-pinning note in `planning/blocks/BA.21.D.json` warns
+about for the two independent `digest_of` implementations.
+
+What bastion's poller *does* decide, purely from the already-admitted set: which items are new
+(not already delivered, keyed on `item_id`), how many may be open at once
+(`policy.operator_queue_depth`, from `engine_core::operator::queue::OperatorQueuePolicy`), and
+collapsing the remainder into a single digest message rather than sending one notification per
+item — including on a restart burst.
+
+**Fail-closed, not fail-open.** If `mev` is missing, exits non-zero, or emits output that does
+not parse, the poller admits *nothing* and logs a warning — it never falls back to the unfiltered
+board. Admitting all 548 items because a subprocess failed would be a far worse outcome than
+admitting none, and avoiding exactly that is why this source exists. The source is also
+read-only end to end: no code path here opens any `state.json` for writing, matching `GET
+/api/attention`'s read-only guarantee (D25).
 
 ## Not a command
 

@@ -31,6 +31,7 @@
 //! - All other routes (including future `/ws`) — **protected** behind
 //!   [`auth::BearerAuthMiddleware`], requiring `Authorization: Bearer <token>`.
 
+pub mod attention_source;
 pub mod auth;
 pub mod blocked_edge;
 #[cfg(test)]
@@ -1297,6 +1298,47 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             );
             None
         };
+
+    // ── Attention-board delivery loop (BA.21.D task 3) ────────────────────
+    //
+    // Same `alarm_delivery_enabled` gate the stale-run alarm loop uses:
+    // only spawned when an operator transport was actually configured. No
+    // `engine_mounted` requirement (unlike the headless loop above) — the
+    // source shells out to `mev attention-queue --notify-only` directly,
+    // independent of whether this process's own engine embed mounted.
+    // Absent transport, or `mev` itself missing/failing at tick time,
+    // `serve` boots and keeps running exactly as it does today — the
+    // poller's own `tick_decision` fails closed (never falls back to
+    // admitting the unfiltered board) and this boot site only decides
+    // *whether the loop is spawned at all*, never what it admits.
+    let _attention_source_handle = if alarm_delivery_enabled(operator_transport.as_ref()) {
+        let transport = operator_transport
+            .clone()
+            .expect("alarm_delivery_enabled(Some(..)) implies operator_transport is Some");
+        tracing::info!(
+            target: "bastion::serve",
+            "attention-board delivery source spawned"
+        );
+        let poller = attention_source::AttentionSourcePoller::new(
+            transport,
+            std::sync::Arc::clone(&pending_payloads),
+            engine_core::operator::queue::OperatorQueuePolicy::default(),
+        );
+        Some(actix_web::rt::spawn(
+            poller.run(
+                notify::stale_run_alarm::sweep_interval(
+                    &engine_core::operator::orphan::OrphanPolicy::default(),
+                )
+                .as_secs(),
+            ),
+        ))
+    } else {
+        tracing::info!(
+            target: "bastion::serve",
+            "attention-board delivery source not spawned — no operator transport configured"
+        );
+        None
+    };
 
     let registry = web::Data::new(registry);
 

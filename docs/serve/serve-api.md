@@ -1,18 +1,18 @@
 ---
 type: Guideline
-title: "serve-api contract v0.40"
+title: "serve-api contract v0.41"
 description: "The pinned HTTP + WebSocket contract for `bastion serve` — bind address, bearer auth, the /ws hub and frame envelope, and the REST surfaces bastion-ui and bastion-web consume. Per-version deltas live in the Amendment Log at the bottom of this file, not here."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, block-graph]
-related: [config, observ, data-contract, abort, master-plan]
+keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, block-graph, reconcile_failed]
+related: [config, observ, data-contract, abort, master-plan, "base-template:sdlc-run-state-data-contract"]
 ---
 
-# serve-api — v0.40 Contract
+# serve-api — v0.41 Contract
 
-**Version:** v0.40  
+**Version:** v0.41  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26, 28–29 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -442,7 +442,8 @@ Pushed when a significant event is detected.
 | Event | Since | Trigger condition |
 |---|---|---|
 | `"needs_input"` | v0.2 | Session pane is on a permission/approval prompt (`Blocked` state with `visible_blocker`, per `detect::detect()` over the Claude manifest).  Emitted once per rising edge (Blocked→not-Blocked→Blocked emits again; continuous Blocked does not repeat). |
-| `"workflow_done"` | v0.3 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` (e.g. `"running"`) to a terminal one (`"done"` or `"blocked"`), per `FlowWatcher::observe()` (`src/serve/poll.rs`).  Carries `repo`, `spec_slug`, and `status` fields alongside the `event` field (see Section 11.5). |
+| `"workflow_done"` | v0.3 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` (e.g. `"running"`) to the ordinary terminal set (`"done"` or `"blocked"`), per `FlowWatcher::observe()` (`src/serve/poll.rs`).  Carries `repo`, `spec_slug`, and `status` fields alongside the `event` field (see Section 11.5). |
+| `"workflow_reconcile_failed"` | v0.41 | A spec's `sdlc-flow-state.json` transitions from a non-terminal `status` into the third terminal status, `"reconcile_failed"` (base-template D56, `doc_id: sdlc-run-state-data-contract`, cross-repo id `base-template:sdlc-run-state-data-contract`), per the same `FlowWatcher::observe()`.  A distinct event name on purpose — `reconcile_failed` did finish (the run is not going to advance further) but **must not be rendered identically to `"workflow_done"`'s `"done"` outcome** (that reads as finished-and-clean when it is not) **nor identically to `"workflow_done"`'s `"blocked"` outcome** (that reads as ordinary bailed work when this is a distinct gate-failure category). Carries the same `repo`, `spec_slug`, and `status` fields as `workflow_done` (see Section 11.5). |
 | `"run_transition"` | v0.23 | A `runs`-topic subscriber's tracked run's aggregate status changes, or the run disappears from `LiveStateStore::list_active()` (gone lifecycle-terminal), per `RunWatcher::observe()` (`src/serve/poll.rs`). Carries `run_id`, `status`, `terminal`, and an optional `spec_slug` field alongside the `event` field (see Section 8.3). |
 | `"run_stream_status"` | v0.23 | Pushed once, immediately, to a connection when it subscribes to the `runs` topic — reports whether the engine is mounted (`available`) and, when not, why (`reason`). Not tied to any run; fires exactly once per subscribe (see Section 8.3). |
 
@@ -519,25 +520,43 @@ interval (Section 7.6) never compute the rising edge themselves — the
 former only reads the poller's shared pane-capture sweep for `last_line`,
 and the latter only pushes pane-content diffs.
 
-### 8.2 `event{workflow_done}` (v0.3)
+### 8.2 `event{workflow_done}` / `event{workflow_reconcile_failed}` (v0.3; third terminal status v0.41)
 
 [`FlowWatcher`](../../src/serve/poll.rs) tracks the last-known `status` for every
 `(repo, spec_slug)` pair it has observed from parsed `sdlc-flow-state.json`
-files (Section 11.4).  `FlowWatcher::observe()` emits a `workflow_done` payload
-when:
+files (Section 11.4).  `FlowWatcher::observe()` emits a payload when:
 
 ```
 prev_status.is_some() && !is_terminal(prev_status) && is_terminal(current.status)
 ```
 
-where `is_terminal(status)` is `true` for `"done"` and `"blocked"`.  No event is
-emitted on the **first** observation of a given `(repo, spec_slug)` pair (no
-`prev_status` to compare against), nor when the status is unchanged or was
-already terminal on the previous observation.
+where `is_terminal(status)` is `true` for **three** values: `"done"`,
+`"blocked"`, and `"reconcile_failed"` (`src/serve/status/flow.rs::is_terminal`).
+`"reconcile_failed"` is base-template D56's terminal gate-failure status
+(`doc_id: sdlc-run-state-data-contract`, cross-repo id
+`base-template:sdlc-run-state-data-contract`) — see that document for the full
+vocabulary; it is not re-derived here. No event is emitted on the **first**
+observation of a given `(repo, spec_slug)` pair (no `prev_status` to compare
+against), nor when the status is unchanged or was already terminal on the
+previous observation.
 
-The payload carries `{ "repo", "spec_slug", "status" }` flattened alongside the
-`event` field (Section 7.7) — `status` is whichever terminal value (`"done"` or
-`"blocked"`) triggered the transition.
+The **event name on the wire distinguishes the outcome**, per
+`detect_transition()`:
+
+- A transition into `"done"` or `"blocked"` emits event name `"workflow_done"`
+  (unchanged since v0.3).
+- A transition into `"reconcile_failed"` emits the distinct event name
+  `"workflow_reconcile_failed"` instead. This is deliberate: a consumer that
+  folded `reconcile_failed` into `workflow_done`'s event name would render a
+  failed terminal gate identically to an ordinary `"done"`/`"blocked"` finish,
+  which is exactly the failure mode D56 exists to prevent.
+
+In both cases the payload carries `{ "repo", "spec_slug", "status" }` flattened
+alongside the `event` field (Section 7.7) — `status` is whichever terminal
+value (`"done"`, `"blocked"`, or `"reconcile_failed"`) triggered the
+transition. `WorkflowDonePayload`'s fields are unchanged by the addition of
+the third status; the event name, not the payload shape, is what carries the
+distinction (see Section 11.5 for both wire-format examples).
 
 This push is wired: `Hub` owns a `FlowWatcher` and runs an always-on poll
 (`src/serve/ws/server.rs`, cadence = `BASTION_POLL_INTERVAL`, not gated on
@@ -1170,23 +1189,41 @@ whatever parses.
 
 ---
 
-### 11.5 `event{workflow_done}` — pushed over `/ws`
+### 11.5 `event{workflow_done}` / `event{workflow_reconcile_failed}` — pushed over `/ws`
 
 Not a REST response — pushed asynchronously over the `/ws` hub connection (an
 `"event"` frame per Section 7.7) when [`FlowWatcher::observe()`](../../src/serve/poll.rs)
 detects a `running`→terminal transition while polling the same
 `sdlc-flow-state.json` files this section's routes read. See Section 8.2 for
-the full transition semantics.
+the full transition semantics, including why the event name — not the payload
+shape — is what distinguishes an ordinary finish from a gate failure.
+
+Ordinary terminal finish (`"done"` or `"blocked"`), unchanged since v0.3:
 
 ```json
 { "session": "", "event": "workflow_done", "repo": "bastion", "spec_slug": "phase11-blockD", "status": "done" }
+```
+
+Terminal gate failure (v0.41) — same payload shape, distinct event name:
+
+```json
+{ "session": "", "event": "workflow_reconcile_failed", "repo": "bastion", "spec_slug": "phase11-blockD", "status": "reconcile_failed" }
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `repo` | string | Workspace registry name the workflow belongs to |
 | `spec_slug` | string | `sdlc-flow-state.json` spec slug |
-| `status` | string | The terminal status that triggered the event (`"done"` or `"blocked"`) |
+| `status` | string | The terminal status that triggered the event (`"done"`, `"blocked"`, or `"reconcile_failed"`) |
+
+**`reconcile_failed` must not be rendered identically to `done` or to
+`blocked`.** A consumer reading only the wire format and matching on `status`
+alone (rather than on `event`) could otherwise fold all three into one
+"finished" bucket — `reconcile_failed` looks finished-and-clean if conflated
+with `done`, and looks like ordinary bailed work if conflated with `blocked`,
+when it is in fact a distinct gate-failure category (base-template D56,
+`base-template:sdlc-run-state-data-contract`) that a dashboard or UI should
+surface as its own state.
 
 ---
 
@@ -3886,6 +3923,19 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-09-02 — v0.40 → v0.41 (`ticket-reconcile-failed-status-surface`, additive):** Documented
+  `"reconcile_failed"` as a third terminal `sdlc-flow-state.json` status alongside `"done"` and
+  `"blocked"` — the upstream vocabulary is base-template's D56
+  (`base-template:sdlc-run-state-data-contract`; read that document for the vocabulary itself,
+  not re-derived here). Added the `"workflow_reconcile_failed"` event name to the Section 7.7
+  event-name table, rewrote Section 8.2 to cover the three-way `is_terminal` classification and
+  the event-name-carries-the-outcome distinction, and added a `workflow_reconcile_failed`
+  wire-format example alongside `workflow_done`'s in Section 11.5, with an explicit statement that
+  `reconcile_failed` must not be rendered identically to either `done` or `blocked`. Additive only:
+  `WorkflowDonePayload`'s fields are unchanged (the distinction travels as the frame's `event`
+  string, not a new payload field, per the corresponding source change in
+  `ticket-reconcile-failed-status-surface` task 1) — no DTO shape changed, `types/serve.ts` is not
+  regenerated, and the contract-corpus goldens are untouched.
 - **2026-08-30 — v0.39 → v0.40 (`ticket-health-reports-engine-build-sha`, additive):** `GET /health`
   (Section 3) now carries `engine_build_sha`, sourced from `engine_core::engine_build_sha()`, so an
   operator can ask a running daemon which build it is without dispatching a run. Additive only — a
