@@ -1,249 +1,28 @@
 # CLAUDE.md — bastion
 
-Personal Rust CLI — unified control panel for monitoring, validating, and operating the agentic engineering stack.
+@AGENTS.md
 
-## Workflow engine telemetry
+The file above carries everything that is true for any agent working in this repo: what bastion is,
+the orientation pointers, the standing rules, build/test/run, the environment, the directory map,
+the SDLC pipeline notes, the response style and the stopping rule. **Read it as part of these
+instructions** — Claude Code loads it automatically through the `@` import.
 
-**After invoking `Workflow({name: 'sdlc-task'|'sdlc-flow', ...})`, load the `stamp-workflow-run-id`
-skill.** The engine script can't read its own Workflow run id back — the Workflow script API has no
-`runId` global and no filesystem access — so joining a run's `sdlc-task-state.json`/
-`sdlc-flow-state.json` to the exact Claude Code session transcript for cost telemetry relies on the
-*invoking* agent patching the id in after the call returns. Skip this and `workflow_run_id` simply
-stays `null` — a normal, expected state, never a defect to chase.
+Only Claude-specific content belongs below.
 
-## Before you start
+## Fleet & Core Skills
 
-- **Strategic context:** `planning/context.md` (read first) → `planning/status.md` (current state)
-- **Symlink warning:** the `planning/` directory is actually a local symlink pointing to the company brain repo's `_planning/` vault (e.g. `core/_planning/bastion/`). The brain repo is responsible for tracking all planning files under Git. Do not track `planning/` in this project's public Git repository (it is gitignored).
-- **Symlink traps:** `rg`/`grep`/`find` are symlink-blind by default — a search that must include `planning/` content needs `-L`/`--follow`. `git mv` fails through the symlink face ("source directory is empty") — move planning files via the real vault path (`.../_planning/<slug>/...`), never via `planning/...`. Planning changes are committed in the brain repo (`agentic-portfolio`) with an explicit pathspec, never in this repo.
-- **Plan:** `planning/master-plan.md` — the phase/block sequence
-- **Pipeline config:** `planning/harness.json` — the validation commands + UI-test config the
-  SDLC engines run (see `planning/harness.examples.md` for ready-made stack profiles)
-- **Decisions log:** `planning/decisions/` (start at `planning/decisions/index.md`) — check
-  before relitigating any settled choice
+The harness carries specialized skills in `.claude/skills/` (and `.agents/skills/`). Always consult
+the corresponding skill before executing high-stakes fleet operations:
 
-## Standing rules
-
-1. **Every new function, module, or behaviour change ships with tests.** No exceptions — this applies to ad-hoc fixes and one-off changes just as much as formal blocks/tasks. If you add or change code, add or update the tests that cover it.
-2. **OKF frontmatter is required on every new `.md` file under `docs/` and `planning/`.** Three fields are **required**: `type`, `title`, `description`. Six are **optional but strongly encouraged**: `doc_id` (kebab-case filename stem), `layer` (list from closed vocab: `brain` · `engine` · `factory` · `console` · `surface` · `infra` · `business` · `content` · `meta`), `project` (closed vocab slug — use `bastion` for this repo; omit for cross-cutting docs), `status` (`active` · `draft` · `deprecated` · `superseded` · `archived`), `keywords` (3–7 free-form topic terms), `related` (list of `doc_id` values referencing other docs). Canonical guide: company-brain `docs/okf-frontmatter.md`; governing decision: brain **D27**. **Adding a new file to a directory requires updating that directory's `index.md`** (propagate up to the parent `index.md` if the scope changes).
-3. **Sequence, not calendar** — work the order in `master-plan.md`; pick up where you left off.
-   To pick the next block from the graph rather than a status file, load the
-   **`pick-the-next-block`** skill (`mev frontier` / `lanes` / `blocks` report three different
-   meanings of "ready").
-4. **Decisions are append-only** — never edit a settled decision; supersede it with a new
-   atomic file in `planning/decisions/` and link back.
-5. **Verified identity / handles:** GitHub: bredmond1019 · Site: learn-agentic-ai.com · LinkedIn: bredmond1019 — treat these as the only authoritative
-   identities/URLs; flag any other handle or profile link as unverified before publishing it.
-6. **Coverage bar — separate pure logic from I/O, test the logic exhaustively.** A block is not
-   "done" on a green `cargo test` alone; each pass must satisfy all of:
-   - **Pure logic is exhaustively unit-tested without I/O.** Command/arg construction, parsing,
-     formatting, and classification live in pure functions and are asserted directly (e.g.
-     `*_args()` return `Vec<String>` checked element-by-element; parsers run against fixtures).
-     Keep I/O boundaries (process spawns, Postgres, HTTP) thin shells over that pure core so the
-     core stays testable — this is the established `tmux.rs` construction-vs-execution split.
-   - **Error and degradation paths are tested, not just happy paths.** Every typed error variant
-     and graceful-degradation branch a block introduces gets an explicit case (see
-     `degrade_tmux_error` / `classify_no_server`).
-   - **The thin I/O shell that can't be unit-tested is manually smoke-tested**, and the result is
-     recorded in the task spec's `## Notes`. An untested execution fn is acceptable only when it is
-     a trivial wrapper over already-tested pure functions.
-7. **`bella-engine` is an unpinned cross-repo dependency — expect and coordinate breaks from
-   `../bella`.** `Cargo.toml` pins it as a path dependency with no version lock and no cross-repo CI
-   (see `planning/decisions/D14-bella-engine-dependency-contract.md`, and bella's own
-   `D3-bella-engine-shared-with-bastion.md`). If `cargo build` breaks on a `bella_engine::*` symbol,
-   that's a signal to check what changed upstream in `../bella/crates/bella-engine`, not necessarily
-   a bastion regression. Do not add `default-features = false` to the `bella-engine` dependency —
-   bastion deliberately stays open to features bella adds (e.g. images) rather than excluded by a
-   bella-only default.
-8. **Use `cargo nextest run`, never plain `cargo test`, for any test run you invoke yourself
-   during a task** (scoped: `cargo nextest run <module::path>`; full fast pass: `cargo nextest run
-   --lib`). This is a 2000+-test suite — plain `cargo test`'s serial-per-binary model is slow. The
-   one exception is the task explicitly designated to own full-suite validation for a spec — that
-   task runs the real `cargo test` / `cargo build --release` gates, per `planning/harness.json`'s
-   `command` (not `fastCommand`). See "Build / test / run" below for the full rationale.
-9. **Never `git push` this repo directly from inside it.** This repo sits in the fleet's Cargo
-   path-dependency graph (`bastion` -> `bella`, `engine-rs`, `mev`, `okf-core`), and every Rust
-   repo's CI clones its sibling path-deps at their unpinned default branch — pushing out of
-   order breaks a sibling's CI on code that was actually fine (the 2026-08-18 outage: `bastion`
-   red with `cannot find function lanes_brain in crate mev` purely because `mev` sat 23 commits
-   unpushed). Route every push through the company-brain's `agentic-portfolio/scripts/git_push.sh
-   --all`, which pushes the whole fleet in dependency order and skips a repo flagged
-   `ci-blocked` (a Cargo dependency is red on GitHub with nothing queued to fix it). Branching,
-   committing, and opening/reviewing/merging PRs to `main` locally are all fine from inside this
-   repo — only the final `git push` of `main` to `origin` must go through that script.
-
-10. **`bastion brain` and `bastion code` answer narrower questions than they look like they do.**
-    `bastion brain` builds its graph from the `[[wikilink]]` corpus, **not** OKF `related:`
-    frontmatter — measured 2026-08-31, `bastion brain --dependents D24-rust-substrate-seam` printed
-    "no dependent results" and exited 0 on a document with 16 inbound `related:` edges. `bastion
-    code` is Rust-only and scans exactly one workspace root, so a caller in a sibling repo is
-    invisible. Before shipping a change to either command's output — or before trusting one of them
-    in your own work — load the **`check-blast-radius`** skill, which names which instrument answers
-    which question and gives a positive control for each.
-
-## Known bugs
-
-None known at initialization.
-
-## Build / test / run
-
-```bash
-cargo fmt --check              # format gate
-cargo clippy -- -D warnings    # lint gate
-cargo nextest run --lib --bins        # fast — use this, not plain `cargo test`
-cargo build --release          # release build
-cargo run -- --help            # verify CLI help
-cargo run -- status            # smoke test (Phase 0+)
-```
-
-> **Always prefer `cargo nextest run --lib --bins` over plain `cargo test` in this repo.** With 2000+
-> unit tests, plain `cargo test`'s serial-per-binary libtest model is slow; `nextest` runs tests
-> as parallel OS processes instead, cutting wall-clock dramatically. This is wired as the
-> `fastCommand` on the `test` check in `planning/harness.json`, which the SDLC engines use for
-> per-task (`testDepth: "fast"`) runs — reach for it manually too whenever iterating outside the
-> harness. Requires `cargo-nextest` on PATH (`brew install cargo-nextest`); `cargo test` remains
-> the authoritative full-suite gate.
->
-> **Scope even narrower while mid-task**: `cargo nextest run <module::path>` for just the touched
-> module. Only the task(s) explicitly owning full-suite validation for a spec should run the
-> full `cargo test` / `cargo build --release` gates.
->
-> **`sccache` is wired in via `.cargo/config.toml`** (`rustc-wrapper = "sccache"`) — caches
-> compiled object code across builds so repeated compiles within an SDLC spec reuse work instead
-> of recompiling from scratch. Requires `sccache` on PATH (`brew install sccache`).
->
-> The SDLC pipeline reads its validation suite from `planning/harness.json` (not from this
-> block). Keep the `<test>`/`<build>` commands here in sync with that file's
-> `validation.checks[]` so humans and the pipeline run the same thing.
-
-## Environment
-
-Copy `.env.example` to `.env` and fill in:
-```
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
-BASTION_API_URL=http://localhost:8080
-BASTION_POLL_INTERVAL=2
-```
-
-`DATABASE_URL` must point to whichever Postgres holds the `events` contract `bastion` reads
-directly and read-only (D2) — the observability track (`monitor`, `costs`) and the `BA.7.C`
-budget-gate/abort paths all read the same `events` table shape. **Which stack populates that
-table depends on how the run was triggered — this is no longer always the Python orchestrator
-(re-checked 2026-07-16 against D48):**
-
-- Runs triggered through the orchestrator's own FastAPI/Celery stack are still written by the
-  orchestrator. Bring that stack up **from the `python-orchestration-system/` repo** (starts
-  Postgres + Redis + FastAPI on `:8080` + Celery in a tmux session):
-
-  ```bash
-  ./scripts/dev.sh        # START
-  ./scripts/dev.sh stop   # STOP
-  ```
-
-- Runs triggered through the embedded Engine (`engine-serve`, mounted by `bastion serve` per
-  D48 — see `docs/serve-api.md` §13) are written by `engine-store`'s durable writer instead.
-  **Do not use the orchestrator's `./scripts/dev.sh` for this path** — D48 supersedes `OR.I`,
-  the Python orchestrator has no abort endpoint and never will, and its dev stack is not what
-  wrote those rows. Stand up Postgres following `../engine-rs`'s own setup instead (see
-  `planning/7.C-cost-budget-alerts-abort/tasks.md`'s Notes section for the worked case: the
-  `bastion serve` embed + `bastion abort` smoke test).
-
-`BASTION_ENGINE_API_KEY` (the engine routes' `X-API-Key` secret) and the optional
-`BASTION_MAX_TOTAL_TOKENS` / `BASTION_MAX_COST_USD` budget caps are documented in
-`.env.example` and `docs/config.md`.
-
-The session surface runs DB-free (D4); it needs neither Postgres.
-
-## Directory map
-
-```
-bastion/                ← standalone single-package crate (no Cargo workspace) — D44
-├── .claude/            ← Claude Code commands + SDLC workflow engines
-├── planning/           ← context, status, master-plan, harness.json, decisions/
-├── Cargo.toml          ← the bastion package manifest ([package], not a workspace)
-└── src/
-    ├── main.rs         ← clap dispatch
-    ├── cli.rs          ← subcommand definitions
-    ├── config.rs       ← env/config loading
-    ├── observ/         ← structured error taxonomy (C001–C014) + tracing helpers (Phase 7)
-    ├── db/             ← PostgreSQL queries (workflows, costs)
-    ├── api/            ← reqwest client for FastAPI
-    ├── monitor/        ← live TUI graph inspector (ratatui + petgraph)
-    ├── inspect/        ← static post-mortem graph view
-    ├── validate/       ← markdown/MDX content validation
-    ├── costs/          ← LLM spend summary
-    ├── run/            ← workflow trigger + stack health check
-    ├── sessions/       ← tmux session control (Phase 5; shells to tmux, no DB) — D4
-    └── brain/          ← OKF corpus reader + petgraph structural queries (Phase 6)
-```
-
-> **Workspace note (D44):** bastion no longer nests its crates under `crates/`. The former
-> `crates/okf-core` is now the standalone `core/okf-core` repo. **There is no `core/Cargo.toml` and
-> no tier-wide Cargo workspace** — bastion is a standalone package that reaches its siblings through
-> unpinned path dependencies (`okf-core = { path = "../okf-core" }`, and likewise `../mev`,
-> `../bella/crates/bella-engine`, `../engine-rs/crates/engine-serve`, `../engine-rs/crates/engine-contract`).
-> `cargo` invoked from this dir resolves against **this repo's own `Cargo.lock` and `target/`**, not a
-> shared tier one. Two consequences: a sibling repo's breaking change lands here at build time with no
-> version pin to absorb it (see the `[dependencies]` comments in `Cargo.toml`), and a worktree of this
-> repo only builds if the sibling paths still resolve from it.
-
-## What NOT to touch
-
-<!-- Reference-only code, generated files, migration history, etc. List them as they appear. -->
-
----
-
-## SDLC pipeline
-
-This project carries the curated SDLC harness. Run `/prime` to orient, then drive structured
-work through `/generate-tasks → /implement → /test → /review-task → /document → /log-work`.
-See `.claude/commands/README.md` for the full pipeline reference.
-
-> **Stack note:** the SDLC engines carry no stack defaults. Point them at this project's stack
-> by filling `planning/harness.json` (validation commands + optional UI-test config). Copy a
-> ready-made profile from `planning/harness.examples.md` (Rust / Python / Next.js). Do **not**
-> edit the `workflows/*.js` engines for stack reasons — that's what `harness.json` is for.
-
-<!-- BEGIN:response-style -->
-## Response Style
-
-You are read by an operator scanning several concurrent agent sessions. Long prose is the failure
-mode, not thoroughness.
-
-1. **First line = the outcome** — what happened, and whether it needs them.
-2. **Then the specifics** — bullets, one line each, max ~6. Facts, not narration.
-3. **Last line = the ask**, if there is one. One question, answerable in a word.
-
-**Ceiling: 10 lines for a normal turn, 20 for an end-of-run report.** Only depth the operator
-explicitly asked for may exceed it.
-
-Durable detail goes to disk — the commands already require that. **Link the path; do not restate
-the file.** Lead with failures, blocks, and anything that did not match the ask, in plain words with
-the real error text. Cut reasoning narration, unasked-for next steps, and self-assessment.
-
-Full rationale, the complete cut-list, and worked before/after examples: the
-**`report-to-the-operator`** skill.
-<!-- END:response-style -->
-
-<!-- BEGIN:session-continuity -->
-## Stopping, continuing, and handing off
-
-**Run to completion. Never stop, clear, or hand off because context is getting large.** There is no
-token band, no percentage, and no "the next block would be cleaner in a fresh session." A chain runs
-every block it was given; a lane that stops after one block and waits to be relaunched by hand
-defeats the entire point of the run and puts the operator back in the loop after every block. If
-context genuinely runs out, the harness summarizes and you keep going — that is its job, not yours.
-
-There is exactly **one** reason to end a session early, and it is about correctness, not cost:
-**something the running session depends on changed underneath it** — an engine, command file,
-installed binary (`mev`, `bastion`), hook or `settings.json` edited this session, or a `CLAUDE.md`
-you already read. The running session is a launch-time snapshot (base-template standing rule 10), so
-it keeps producing pre-change results, which read as an unreliable agent rather than a stale
-snapshot. **Name the trigger, finish the unit of work in flight, and say plainly that a fresh
-session is needed.** Do not present it as a context-budget decision, and do not go looking for the
-trigger as an excuse to stop.
-
-Whenever you do hand off, write the entry point first — `status.md`, `handoff.md`, a spec's
-`tasks.json`, or an orchestration-run `notes.md` — so the next agent starts from an artifact instead
-of from your memory.
-<!-- END:session-continuity -->
+| Skill | Primary Focus | When to consult |
+|---|---|---|
+| **`commit-in-this-fleet`** | Safe git operations across multi-repo & vault symlinks | BEFORE any `git add`, `commit`, `stash`, `reset`, or `mv` |
+| **`derive-state-safely`** | Authored vs derived state and writer execution | BEFORE running `mev emit-state --write`, `set-block-status`, or other state writers |
+| **`edit-state-json`** | Canonical `planning/state.json` schema & graph edges | BEFORE hand-editing `state.json` or authoring `depends_on`/`carryover` |
+| **`notify-operator`** | Operator alerting discipline via `bastion notify` | BEFORE sending notifications or deciding a lane is blocked |
+| **`ping-agent`** | Cross-lane messaging envelopes & registry protocol | BEFORE sending or triaging cross-lane messages |
+| **`report-to-the-operator`** | Concise operator reporting ceiling & format | When drafting chat replies, turn outputs, and run reports |
+| **`run-the-gates`** | Fleet validation suite & gate diagnostics | BEFORE running `validate-brain` or `harness.json` checks |
+| **`stop-or-continue`** | Session restart vs continuation correctness criteria | When an underlying binary/engine changes; never restart for token budget |
+| **`write-okf-markdown`** | OKF YAML frontmatter & index.md row maintenance | BEFORE creating or editing any `.md` under `docs/` or `planning/` |
+| **`write-repo-doc`** | Reader-first internal documentation standards | BEFORE writing or restructuring docs under `docs/` or guides |
