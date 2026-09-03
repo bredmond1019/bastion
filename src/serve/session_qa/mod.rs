@@ -909,7 +909,11 @@ pub fn render_lanes_summary(
                 ));
             }
             SegmentAvailability::Done => done += 1,
-            SegmentAvailability::HeldBlock
+            // `HeldUnregistered` (mev MV.ticket.lane-file-registration-two-clauses)
+            // counts as held like every other hold: the head exists but no engine
+            // can start it, because one of the two registration clauses fails.
+            SegmentAvailability::HeldUnregistered
+            | SegmentAvailability::HeldBlock
             | SegmentAvailability::HeldOperator
             | SegmentAvailability::HeldRepoBusy
             | SegmentAvailability::HeldSlot => held += 1,

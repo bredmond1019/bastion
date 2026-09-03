@@ -3226,6 +3226,7 @@ mod production_seams {
         let artifact = LaneAvailabilityArtifact {
             derived_at: "2026-08-31T00:00:00Z".to_string(),
             degraded: false,
+            registration_issues: Vec::new(),
             segments: vec![
                 LaneAvailabilityEntry {
                     status: sample_status(SegmentAvailability::Startable, "derive"),
@@ -3264,6 +3265,7 @@ mod production_seams {
         let artifact = LaneAvailabilityArtifact {
             derived_at: "2026-08-31T00:00:00Z".to_string(),
             degraded: true,
+            registration_issues: Vec::new(),
             segments: vec![],
         };
         let summary = render_lanes_summary(&artifact);

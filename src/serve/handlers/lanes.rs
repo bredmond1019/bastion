@@ -314,6 +314,7 @@ mod tests {
         let artifact = LaneAvailabilityArtifact {
             derived_at: "2026-08-18T10:00:00-07:00".to_owned(),
             degraded: true,
+            registration_issues: Vec::new(),
             segments: vec![LaneAvailabilityEntry {
                 status: sample_status(SegmentAvailability::Startable),
                 leverage: LaneLeverage::default(),
@@ -330,6 +331,7 @@ mod tests {
         let artifact = LaneAvailabilityArtifact {
             derived_at: "2026-08-18T10:00:00-07:00".to_owned(),
             degraded: false,
+            registration_issues: Vec::new(),
             segments: Vec::new(),
         };
         let dto = artifact_to_dto(artifact);
