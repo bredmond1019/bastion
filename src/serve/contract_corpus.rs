@@ -3221,6 +3221,23 @@ heading = "Beta"
 }"#,
         );
 
+        // `planning/blocks/BE.1.A.json` — clause 2's on-disk record
+        // (`MV.ticket.lane-file-registration-two-clauses` Task 2, mev
+        // `src/brain/availability.rs`/`lane_segments.rs`). `BE.1.A` is `open`
+        // (not a terminal status), so `lane_registration_diagnostics` requires
+        // this file to exist or the segment reports `held-unregistered`
+        // instead of `startable`. `AL.1.A`/`AL.1.B` are `closed`, a terminal
+        // status clause 2 skips entirely, so they need no matching record.
+        write(
+            &root
+                .join("repos")
+                .join("beta")
+                .join("planning")
+                .join("blocks")
+                .join("BE.1.A.json"),
+            r#"{ "id": "BE.1.A" }"#,
+        );
+
         tmp
     }
 
