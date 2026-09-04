@@ -193,10 +193,11 @@ async fn aborting_a_live_run_returns_202_then_repeat_abort_returns_404() {
     let release = Arc::new(Notify::new());
     let (base_url, live) = spawn_engine(release.clone()).await;
 
-    // Trigger the fixture workflow directly (bastion's `ApiClient` has no
-    // `/events/` trigger method today — `trigger_workflow` posts to `/`,
-    // the orchestrator's dispatcher route, not the engine's). A raw
-    // `reqwest` client is the same shape `abort_integration.rs` uses.
+    // Trigger the fixture workflow via a raw `reqwest` client rather than
+    // `ApiClient::trigger_workflow()`: that method now posts to the correct
+    // `/events/` route but sends no `X-API-Key` header, so it 401s against
+    // this engine (tracked in BA.ticket.trigger-workflow-sends-no-api-key).
+    // A raw `reqwest` client is the same shape `abort_integration.rs` uses.
     let raw = reqwest::Client::new();
     let trigger_base_url = base_url.clone();
     let trigger_handle = tokio::spawn(async move {
