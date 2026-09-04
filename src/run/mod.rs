@@ -159,7 +159,8 @@ pub async fn trigger(
         }
     }
 
-    let client = ApiClient::new(&config.api_base_url);
+    let client =
+        ApiClient::new(&config.api_base_url).with_engine_api_key(config.engine_api_key.clone());
     let outcome = client
         .trigger_workflow(&workflow, data)
         .await
