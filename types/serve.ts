@@ -1952,6 +1952,11 @@ export interface WsFrame {
  * so a mistyped reason is not a fixable live value, it is a permanent line
  * in a file nothing ever edits. Rejecting an unknown reason at parse time,
  * loudly, is cheaper than a wrong row that outlives the mistake.
+ * Exhaustive, because the append-only archive it feeds already rejects an
+ * unrecognized reason loudly at parse time (no `#[serde(other)]`, no
+ * fallback — see above): a permanent record is exactly the case where a
+ * new disposal reason must be a deliberate vocabulary addition, not a
+ * value a `#[non_exhaustive]`-softened match quietly waves through.
  */
 export enum DisposalReason {
 	/** The condition that made this entry matter is gone. */
@@ -1973,6 +1978,10 @@ export enum DisposalReason {
  * [`CarryoverNeeds`] wrapper) per [`BlockedBy`]'s documented rule at
  * src/state.rs:196: typeshare cannot represent an untagged algebraic enum,
  * so the payload type is annotated and the wrapper is not.
+ * Exhaustive, for the same reason as [`KnownCarryoverKind`]: it is the
+ * closed reference vocabulary the wrapping [`CarryoverNeeds`] already
+ * degrades unrecognized values against, so `#[non_exhaustive]` here would
+ * duplicate that degradation one layer too early.
  */
 export enum KnownCarryoverNeeds {
 	Code = "code",
