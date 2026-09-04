@@ -5,7 +5,47 @@
 //! `now`/`next`/`blocked` scalars, followed by a rolled-up `## Metrics`
 //! section listing each repo's metrics bullets.
 
+use std::path::Path;
+
 use super::parse::RepoRollup;
+
+/// Render the provenance line(s) naming (a) the config file the
+/// `[workspaces]` registry was read from, and (b) the workspaces rolled up.
+///
+/// Pure: `config_path` and `workspace_names` arrive as parameters — no
+/// filesystem access, no env reads, no consultation of the operator's real
+/// `~/.config/bastion/config.toml`.
+///
+/// - `config_path` is `None` when [`crate::config::config_path`] found
+///   neither `XDG_CONFIG_HOME` nor `HOME` set; that case renders an explicit
+///   "no config resolved" line rather than a blank/omitted one.
+/// - An empty `workspace_names` slice still names the config file that WAS
+///   consulted, so "the registry is empty" is distinguishable from "the
+///   config file was never found".
+/// - The workspace name list is truncated for readability past a handful of
+///   entries, but the printed COUNT is always exact.
+pub fn render_provenance(config_path: Option<&Path>, workspace_names: &[String]) -> String {
+    let registry_line = match config_path {
+        Some(path) => format!("registry: {}", path.display()),
+        None => "registry: none resolved (no XDG_CONFIG_HOME or HOME)".to_string(),
+    };
+
+    const MAX_LISTED: usize = 12;
+    let count = workspace_names.len();
+    let workspaces_line = if count == 0 {
+        "0 workspaces registered".to_string()
+    } else if count <= MAX_LISTED {
+        format!("{count} workspaces: {}", workspace_names.join(", "))
+    } else {
+        let shown = workspace_names[..MAX_LISTED].join(", ");
+        format!(
+            "{count} workspaces: {shown}, ... ({} more)",
+            count - MAX_LISTED
+        )
+    };
+
+    format!("{registry_line} — {workspaces_line}\n")
+}
 
 /// Render `rollups` into a cross-repo table + metrics rollup String.
 ///
@@ -169,5 +209,65 @@ mod tests {
             bastion_pos < amistad_pos,
             "render_table must not reorder rollups"
         );
+    }
+
+    // ── render_provenance ────────────────────────────────────────────────
+
+    #[test]
+    fn provenance_populated_registry_shows_path_and_exact_count() {
+        let path = std::path::PathBuf::from("/Users/alice/.config/bastion/config.toml");
+        let names = vec![
+            "amistad".to_string(),
+            "bastion".to_string(),
+            "brain".to_string(),
+        ];
+        let out = render_provenance(Some(&path), &names);
+        assert!(out.contains("/Users/alice/.config/bastion/config.toml"));
+        assert!(out.contains("3 workspaces"));
+        assert!(out.contains("amistad"));
+        assert!(out.contains("bastion"));
+        assert!(out.contains("brain"));
+    }
+
+    #[test]
+    fn provenance_empty_registry_still_names_config_file() {
+        let path = std::path::PathBuf::from("/Users/alice/.config/bastion/config.toml");
+        let out = render_provenance(Some(&path), &[]);
+        assert!(out.contains("/Users/alice/.config/bastion/config.toml"));
+        assert!(out.contains("0 workspaces"));
+    }
+
+    #[test]
+    fn provenance_none_config_path_renders_explicit_message() {
+        let out = render_provenance(None, &[]);
+        assert!(out.contains("none resolved"));
+        assert!(out.contains("XDG_CONFIG_HOME"));
+        assert!(out.contains("HOME"));
+    }
+
+    #[test]
+    fn provenance_none_config_path_with_workspaces_still_explicit() {
+        let names = vec!["bastion".to_string()];
+        let out = render_provenance(None, &names);
+        assert!(out.contains("none resolved"));
+        assert!(out.contains("1 workspaces"));
+    }
+
+    #[test]
+    fn provenance_truncates_long_workspace_list_but_keeps_exact_count() {
+        let path = std::path::PathBuf::from("/x/config.toml");
+        let names: Vec<String> = (0..20).map(|i| format!("repo{i}")).collect();
+        let out = render_provenance(Some(&path), &names);
+        assert!(out.contains("20 workspaces"));
+        assert!(out.contains("more"));
+        // truncated: not every one of the 20 names should be present verbatim
+        assert!(!out.contains("repo19"));
+    }
+
+    #[test]
+    fn provenance_never_empty_string() {
+        assert!(!render_provenance(None, &[]).is_empty());
+        let path = std::path::PathBuf::from("/x/config.toml");
+        assert!(!render_provenance(Some(&path), &[]).is_empty());
     }
 }
