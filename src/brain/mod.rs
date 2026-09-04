@@ -144,9 +144,21 @@ pub fn run(
     registry: &FileConfig,
     json: bool,
 ) -> Result<()> {
-    // Pure: resolve the effective corpus root (no DB, no Config::load).
-    let root = crate::config::resolve_workspace_root(explicit_root, workspace.as_deref(), registry)
-        .map_err(anyhow::Error::from)?;
+    // Resolve the effective corpus root (no DB, no Config::load) — CLI resolver
+    // prefers a cwd `brain.toml` walk-up over the configured `default_workspace`
+    // (task 1), so running from inside a secondary checkout (a worktree, a
+    // second clone, the sandbox) resolves to that checkout, not the operator's
+    // global default.
+    let (root, root_source) =
+        crate::config::resolve_cli_root_from_cwd(explicit_root, workspace.as_deref(), registry)
+            .map_err(anyhow::Error::from)?;
+
+    // Print the resolved root on the human output path — today it appeared
+    // only inside the --json envelope, which is exactly why a wrong-tree
+    // answer was silent. Stderr keeps parseable --json stdout untouched.
+    if !json {
+        eprintln!("brain: root {} ({})", root.display(), root_source);
+    }
 
     // I/O: discover corpus files.
     let files = crate::validate::find_markdown_files(&root);
