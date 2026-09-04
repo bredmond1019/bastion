@@ -541,6 +541,34 @@ mod tests {
     }
 
     #[test]
+    fn status_api_url_uses_file_config_when_cfg_err_and_env_absent() {
+        // Proves `status_api_url` actually threads the loaded workspace-registry
+        // `file` through to `resolve_api_base_url`. Without this case every other
+        // Err-path test passes `FileConfig::default()`, so a mis-wired `file`
+        // argument (e.g. always passing `None`) would go unnoticed.
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let file = FileConfig {
+            api_base_url: Some("http://file-config:7777".to_string()),
+            ..FileConfig::default()
+        };
+        let resolved = status_api_url(Err(&err), None, &file);
+        assert_eq!(resolved, "http://file-config:7777");
+    }
+
+    #[test]
+    fn status_api_url_env_beats_file_config_when_cfg_err() {
+        // Same precedence `Config::from_sources` implements on the happy path:
+        // env > file. Pins that the Err path does not silently invert it.
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let file = FileConfig {
+            api_base_url: Some("http://file-config:7777".to_string()),
+            ..FileConfig::default()
+        };
+        let resolved = status_api_url(Err(&err), Some("http://env:8888".to_string()), &file);
+        assert_eq!(resolved, "http://env:8888");
+    }
+
+    #[test]
     fn status_api_url_uses_loaded_configs_own_value_when_cfg_ok() {
         let cfg = Config::from_vars(
             Some("postgres://localhost/db".into()),
