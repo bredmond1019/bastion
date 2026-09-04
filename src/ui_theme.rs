@@ -49,23 +49,28 @@ pub struct Theme {
     pub border_active: Color,
     /// Deep navy — code / block backgrounds.
     pub surface: Color,
+    /// Amber — caution/paused states.
+    pub warning: Color,
 }
 
 impl Theme {
-    /// The default bastion Mission Control palette (deep navy / periwinkle / cyan / sage).
+    /// The default bastion Mission Control palette — the fleet's shared
+    /// "cool-aurora" palette (canonical in `core/bastion-web/app/globals.css`,
+    /// ported verbatim from `business/bastiel`).
     pub fn bastion() -> Self {
         Theme {
             name: "bastion",
-            accent: rgb(0x88, 0x99, 0xff),
-            violet: rgb(0xb0, 0x7f, 0xff),
-            cyan: rgb(0x00, 0xd2, 0xff),
-            sage: rgb(0x5c, 0xce, 0x94),
-            rose: rgb(0xff, 0x6b, 0x8a),
-            muted: rgb(0x6b, 0x70, 0x99),
-            text: rgb(0xd0, 0xd4, 0xf0),
-            border_dim: rgb(0x3d, 0x40, 0x58),
-            border_active: rgb(0x58, 0x65, 0xd6),
-            surface: rgb(0x1e, 0x20, 0x3a),
+            accent: rgb(0x5d, 0x7b, 0xff),
+            violet: rgb(0xb0, 0x8c, 0xff),
+            cyan: rgb(0x58, 0xb6, 0xff),
+            sage: rgb(0x4a, 0xde, 0x80),
+            rose: rgb(0xff, 0x64, 0x67),
+            muted: rgb(0x73, 0x7a, 0xa0),
+            text: rgb(0xee, 0xf0, 0xfb),
+            border_dim: rgb(0x26, 0x2c, 0x46),
+            border_active: rgb(0x8f, 0xa1, 0xff),
+            surface: rgb(0x17, 0x1c, 0x33),
+            warning: rgb(0xe0, 0xb6, 0x4a),
         }
     }
 }
@@ -178,6 +183,11 @@ pub fn border_active() -> Color {
 /// Deep navy — code / block backgrounds.
 pub fn surface() -> Color {
     current_theme().surface
+}
+
+/// Amber — caution/paused states.
+pub fn warning() -> Color {
+    current_theme().warning
 }
 
 // ── Composed styles ───────────────────────────────────────────────────────────
@@ -306,8 +316,9 @@ mod tests {
     #[test]
     fn bastion_preset_matches_expected_accent_color() {
         let theme = Theme::bastion();
-        assert_eq!(theme.accent, rgb(0x88, 0x99, 0xff));
-        assert_eq!(theme.surface, rgb(0x1e, 0x20, 0x3a));
+        assert_eq!(theme.accent, rgb(0x5d, 0x7b, 0xff));
+        assert_eq!(theme.surface, rgb(0x17, 0x1c, 0x33));
+        assert_eq!(theme.warning, rgb(0xe0, 0xb6, 0x4a));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 use crate::db::workflows::{NodeState, RunStatus};
 use crate::monitor::app::App;
+use crate::ui_theme;
 
 use ratatui::{
     Frame,
@@ -17,22 +18,23 @@ use ratatui::{
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
 
-/// Map a `RunStatus` to a terminal color.
+/// Map a `RunStatus` to a terminal color, routed through `ui_theme` so the
+/// TUI's status colors stay on the shared cool-aurora palette.
 pub fn status_color(status: &RunStatus) -> Color {
     match status {
-        RunStatus::Running => Color::Yellow,
-        RunStatus::Success => Color::Green,
-        RunStatus::Failed => Color::Red,
-        RunStatus::Pending => Color::DarkGray,
+        RunStatus::Running => ui_theme::cyan(),
+        RunStatus::Success => ui_theme::sage(),
+        RunStatus::Failed => ui_theme::rose(),
+        RunStatus::Pending => ui_theme::muted(),
         // Run-level-only states (metadata annotations, BA.7.C) never appear
         // on an individual `NodeState`, but this fn is generic over
         // `RunStatus` so the match must stay exhaustive.
-        RunStatus::Cancelled => Color::Magenta,
-        RunStatus::BudgetHalted => Color::Red,
-        // Distinct from Running's Yellow — a paused run is deliberately not
-        // "busy" colored, and distinct from Cancelled's Magenta since it can
-        // still resume.
-        RunStatus::Suspended => Color::Cyan,
+        RunStatus::Cancelled => ui_theme::muted(),
+        RunStatus::BudgetHalted => ui_theme::rose(),
+        // Distinct from Running's cyan — a paused run is deliberately given
+        // its own caution color (warning amber) rather than colliding with
+        // the "running" convention.
+        RunStatus::Suspended => ui_theme::warning(),
     }
 }
 
@@ -110,7 +112,7 @@ pub fn format_node_detail(node: &NodeState) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::raw("Error:    "),
-            Span::styled(err.clone(), Style::default().fg(Color::Red)),
+            Span::styled(err.clone(), Style::default().fg(ui_theme::rose())),
         ]));
     }
 
@@ -219,7 +221,7 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
 
         let style = if is_selected {
             Style::default()
-                .fg(Color::Black)
+                .fg(ui_theme::surface())
                 .bg(color)
                 .add_modifier(Modifier::BOLD)
         } else {
@@ -463,28 +465,28 @@ mod tests {
     // ── status_color ─────────────────────────────────────────────────────────
 
     #[test]
-    fn status_color_running_is_yellow() {
-        assert_eq!(status_color(&RunStatus::Running), Color::Yellow);
+    fn status_color_running_is_theme_cyan() {
+        assert_eq!(status_color(&RunStatus::Running), ui_theme::cyan());
     }
 
     #[test]
-    fn status_color_success_is_green() {
-        assert_eq!(status_color(&RunStatus::Success), Color::Green);
+    fn status_color_success_is_theme_sage() {
+        assert_eq!(status_color(&RunStatus::Success), ui_theme::sage());
     }
 
     #[test]
-    fn status_color_failed_is_red() {
-        assert_eq!(status_color(&RunStatus::Failed), Color::Red);
+    fn status_color_failed_is_theme_rose() {
+        assert_eq!(status_color(&RunStatus::Failed), ui_theme::rose());
     }
 
     #[test]
-    fn status_color_pending_is_dark_gray() {
-        assert_eq!(status_color(&RunStatus::Pending), Color::DarkGray);
+    fn status_color_pending_is_theme_muted() {
+        assert_eq!(status_color(&RunStatus::Pending), ui_theme::muted());
     }
 
     #[test]
-    fn status_color_suspended_is_cyan_and_distinct_from_running_and_cancelled() {
-        assert_eq!(status_color(&RunStatus::Suspended), Color::Cyan);
+    fn status_color_suspended_is_theme_warning_and_distinct_from_running_and_cancelled() {
+        assert_eq!(status_color(&RunStatus::Suspended), ui_theme::warning());
         assert_ne!(
             status_color(&RunStatus::Suspended),
             status_color(&RunStatus::Running)
@@ -492,6 +494,16 @@ mod tests {
         assert_ne!(
             status_color(&RunStatus::Suspended),
             status_color(&RunStatus::Cancelled)
+        );
+    }
+
+    #[test]
+    fn status_color_running_and_suspended_no_longer_collide() {
+        // Previously both mapped to Color::Cyan — this is the collision this
+        // task fixes: Running keeps cyan, Suspended moves to warning amber.
+        assert_ne!(
+            status_color(&RunStatus::Running),
+            status_color(&RunStatus::Suspended)
         );
     }
 
