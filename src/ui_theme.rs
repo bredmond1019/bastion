@@ -17,6 +17,8 @@
 
 use bella_engine::palette::rgb;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders};
 use std::sync::OnceLock;
 
 // ── Runtime theme ───────────────────────────────────────────────────────────
@@ -282,6 +284,26 @@ pub fn border_active_style() -> Style {
     Style::default().fg(border_active())
 }
 
+// ── Shared chrome ────────────────────────────────────────────────────────────
+
+/// Build a bordered `Block` with the fleet-standard border treatment — dim
+/// when inactive, accent when focused — deduplicating the
+/// `Block::default().title(...).borders(Borders::ALL).border_style(...)`
+/// pattern repeated 14x across `monitor/ui.rs`, `sessions/ui.rs`, and
+/// `overview/mod.rs`. `title` accepts anything `ratatui::text::Line` accepts
+/// (a plain `&str`/`String`, or a `Span::styled(...)` for a custom-colored
+/// title), so callers with a per-title color keep it exactly.
+pub fn themed_block<'a>(title: impl Into<Line<'a>>, active: bool) -> Block<'a> {
+    Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(if active {
+            border_active_style()
+        } else {
+            border_dim_style()
+        })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -319,6 +341,38 @@ mod tests {
         assert_eq!(theme.accent, rgb(0x5d, 0x7b, 0xff));
         assert_eq!(theme.surface, rgb(0x17, 0x1c, 0x33));
         assert_eq!(theme.warning, rgb(0xe0, 0xb6, 0x4a));
+    }
+
+    #[test]
+    fn themed_block_active_renders_border_active_color() {
+        use ratatui::widgets::Widget;
+        let area = ratatui::layout::Rect::new(0, 0, 8, 3);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        themed_block("t", true).render(area, &mut buf);
+        let top_left = buf.cell((0, 0)).expect("border cell present");
+        assert_eq!(top_left.fg, border_active());
+    }
+
+    #[test]
+    fn themed_block_inactive_renders_border_dim_color() {
+        use ratatui::widgets::Widget;
+        let area = ratatui::layout::Rect::new(0, 0, 8, 3);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        themed_block("t", false).render(area, &mut buf);
+        let top_left = buf.cell((0, 0)).expect("border cell present");
+        assert_eq!(top_left.fg, border_dim());
+    }
+
+    #[test]
+    fn themed_block_renders_the_given_title_text() {
+        use ratatui::widgets::Widget;
+        let area = ratatui::layout::Rect::new(0, 0, 20, 3);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        themed_block("Hello", false).render(area, &mut buf);
+        let rendered: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 0)).and_then(|c| c.symbol().chars().next()))
+            .collect();
+        assert!(rendered.contains("Hello"), "expected title in {rendered:?}");
     }
 
     #[test]

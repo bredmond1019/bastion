@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
@@ -279,15 +279,22 @@ pub fn build_graph_lines(app: &App) -> Vec<Line<'static>> {
 
 // ── Render ─────────────────────────────────────────────────────────────────────
 
+/// Width of the navigation-list pane (left) as a percentage of the frame.
+const NAV_PANE_PCT: u16 = 25;
+/// Width of the graph / session-detail pane (middle) as a percentage of the frame.
+const GRAPH_PANE_PCT: u16 = 40;
+/// Width of the node-detail pane (right) as a percentage of the frame.
+const DETAIL_PANE_PCT: u16 = 35;
+
 /// Top-level render function — splits the frame into three panes:
 /// list (left), graph/session (middle), and detail (right), then delegates.
 pub fn render(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25), // Navigation list
-            Constraint::Percentage(40), // Graph / Session detail
-            Constraint::Percentage(35), // Node detail
+            Constraint::Percentage(NAV_PANE_PCT),
+            Constraint::Percentage(GRAPH_PANE_PCT),
+            Constraint::Percentage(DETAIL_PANE_PCT),
         ])
         .split(area);
 
@@ -297,10 +304,7 @@ pub fn render(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn render_list_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let block = Block::default()
-        .title(" Mission Control ")
-        .borders(Borders::ALL)
-        .border_style(crate::ui_theme::border_dim_style());
+    let block = crate::ui_theme::themed_block(" Mission Control ", false);
 
     let mut lines = Vec::new();
     for (i, item) in app.items.iter().enumerate() {
@@ -337,10 +341,7 @@ fn render_graph_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) 
     match item {
         Some(crate::monitor::app::MissionItem::Run(r)) => {
             let run_title = format!(" {} — {} ", r.workflow_name, r.id);
-            let block = Block::default()
-                .title(run_title)
-                .borders(Borders::ALL)
-                .border_style(crate::ui_theme::border_active_style());
+            let block = crate::ui_theme::themed_block(run_title, true);
             let lines = build_graph_lines(app);
             let para = Paragraph::new(lines)
                 .block(block)
@@ -349,10 +350,7 @@ fn render_graph_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) 
         }
         Some(crate::monitor::app::MissionItem::Session(s)) => {
             let title = format!(" Session: {} ", s.name);
-            let block = Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(crate::ui_theme::border_active_style());
+            let block = crate::ui_theme::themed_block(title, true);
 
             let mut text = vec![];
             text.push(Line::from(format!("State: {:?}", s.state)));
@@ -368,10 +366,7 @@ fn render_graph_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) 
             frame.render_widget(para, area);
         }
         None => {
-            let block = Block::default()
-                .title(" No items ")
-                .borders(Borders::ALL)
-                .border_style(crate::ui_theme::border_dim_style());
+            let block = crate::ui_theme::themed_block(" No items ", false);
             frame.render_widget(block, area);
         }
     }
@@ -403,10 +398,7 @@ fn render_detail_pane(frame: &mut Frame, area: ratatui::layout::Rect, app: &App)
         ),
     };
 
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(crate::ui_theme::border_dim_style());
+    let block = crate::ui_theme::themed_block(title, false);
 
     // Render banner (errors / status) in the bottom row of the detail pane.
     let inner = if let Some(banner) = &app.banner {

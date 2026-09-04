@@ -24,7 +24,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{List, ListItem, ListState, Paragraph},
 };
 use std::{io, time::Duration};
 
@@ -235,9 +235,6 @@ fn draw_with_root(
     list_state: &mut ListState,
     planning_root: &std::path::Path,
 ) {
-    let th = &crate::ui_theme::border_dim();
-    let th_active = &crate::ui_theme::border_active();
-
     // The bottom "agents · priority" strip (BA.13.1.3) is always reserved,
     // regardless of `SelectedNode` — it renders under Mission Control, HQ,
     // every tier, and every space.
@@ -263,10 +260,10 @@ fn draw_with_root(
     let sidebar_area = app.pane_areas.spine;
 
     // ── Sidebar ───────────────────────────────────────────────────────────────
-    let sidebar_block = Block::default()
-        .title(Span::styled(" spaces ", crate::ui_theme::title_style()))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(*th));
+    let sidebar_block = crate::ui_theme::themed_block(
+        Span::styled(" spaces ", crate::ui_theme::title_style()),
+        false,
+    );
 
     // `◆ Mission Control` is pinned first by `spine_rows()` regardless of whether
     // `space_tree` has any tiers, so the sidebar always has at least one row —
@@ -287,11 +284,6 @@ fn draw_with_root(
     // than re-deriving the same `Layout` splits here.
     let content_area = app.pane_areas.content;
     let browser_area = app.pane_areas.browser;
-
-    // Content block shared border style
-    let content_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(*th));
 
     match app.selected_node() {
         SelectedNode::MissionControl => {
@@ -319,28 +311,20 @@ fn draw_with_root(
                 None,
                 &tables,
             );
-            let tier_block = content_block.clone().title(Span::styled(
-                format!(" {tier_name} "),
-                crate::ui_theme::title_style(),
-            ));
+            let tier_block = crate::ui_theme::themed_block(
+                Span::styled(format!(" {tier_name} "), crate::ui_theme::title_style()),
+                false,
+            );
             let paragraph = Paragraph::new(rendered.lines).block(tier_block);
             frame.render_widget(paragraph, content_area);
         }
         SelectedNode::Hq | SelectedNode::Space(_) => {
             // Browser Pane
-            let browser_border = if app.overview_pane == crate::sessions::app::OverviewPane::Browser
-            {
-                *th_active
-            } else {
-                *th
-            };
-            let browser_block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(browser_border))
-                .title(Span::styled(
-                    " file browser ",
-                    crate::ui_theme::title_style(),
-                ));
+            let browser_active = app.overview_pane == crate::sessions::app::OverviewPane::Browser;
+            let browser_block = crate::ui_theme::themed_block(
+                Span::styled(" file browser ", crate::ui_theme::title_style()),
+                browser_active,
+            );
 
             let mut list_items = Vec::new();
             for entry in &app.file_browser.entries {
@@ -363,16 +347,11 @@ fn draw_with_root(
             frame.render_stateful_widget(browser_list, browser_area, &mut list_state);
 
             // Content Pane
-            let content_border = if app.overview_pane == crate::sessions::app::OverviewPane::Content
-            {
-                *th_active
-            } else {
-                *th
-            };
-            let content_block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(content_border))
-                .title(Span::styled(" content ", crate::ui_theme::title_style()));
+            let content_active = app.overview_pane == crate::sessions::app::OverviewPane::Content;
+            let content_block = crate::ui_theme::themed_block(
+                Span::styled(" content ", crate::ui_theme::title_style()),
+                content_active,
+            );
 
             let file_path = match &app.space_overview_file {
                 Some(p) => p.clone(),
@@ -404,13 +383,10 @@ fn draw_with_root(
     // Always-on cross-space "agents · priority" strip, sorted by urgency
     // (Blocked/needs-input first — `session_urgency`/`agent_panel_rows`,
     // BA.13.1.1/.2). Renders under every `SelectedNode`.
-    let strip_block = Block::default()
-        .title(Span::styled(
-            " agents · priority ",
-            crate::ui_theme::title_style(),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(*th));
+    let strip_block = crate::ui_theme::themed_block(
+        Span::styled(" agents · priority ", crate::ui_theme::title_style()),
+        false,
+    );
     let strip_list = List::new(build_agent_panel_items(&panel_rows)).block(strip_block);
     frame.render_widget(strip_list, app.pane_areas.agent_panel);
 

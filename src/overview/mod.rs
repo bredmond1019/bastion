@@ -9,9 +9,16 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph},
 };
 use std::{fs, io};
+
+/// Height of the "In Progress" Kanban column as a percentage of the columns row.
+const NOW_COLUMN_PCT: u16 = 33;
+/// Height of the "Up Next" Kanban column as a percentage of the columns row.
+const NEXT_COLUMN_PCT: u16 = 33;
+/// Height of the "Blocked" Kanban column as a percentage of the columns row.
+const BLOCKED_COLUMN_PCT: u16 = 34;
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct StateJson {
@@ -93,20 +100,16 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
             .fg(crate::ui_theme::text())
             .add_modifier(Modifier::BOLD),
     ))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(crate::ui_theme::border_active())),
-    );
+    .block(crate::ui_theme::themed_block("", true));
     frame.render_widget(header, main_layout[0]);
 
     // ── Columns ───────────────────────────────────────────────────────────────
     let columns = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
+            Constraint::Percentage(NOW_COLUMN_PCT),
+            Constraint::Percentage(NEXT_COLUMN_PCT),
+            Constraint::Percentage(BLOCKED_COLUMN_PCT),
         ])
         .split(main_layout[1]);
 
@@ -142,41 +145,35 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
     let next_items = build_items(&state.focus.next);
     let blocked_items = build_items(&state.focus.blocked);
 
-    let now_list = List::new(now_items).block(
-        Block::default()
-            .title(ratatui::text::Span::styled(
-                " In Progress ",
-                Style::default()
-                    .fg(crate::ui_theme::sage())
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(crate::ui_theme::border_dim())),
-    );
+    let now_list = List::new(now_items).block(crate::ui_theme::themed_block(
+        ratatui::text::Span::styled(
+            " In Progress ",
+            Style::default()
+                .fg(crate::ui_theme::sage())
+                .add_modifier(Modifier::BOLD),
+        ),
+        false,
+    ));
 
-    let next_list = List::new(next_items).block(
-        Block::default()
-            .title(ratatui::text::Span::styled(
-                " Up Next ",
-                Style::default()
-                    .fg(crate::ui_theme::violet())
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(crate::ui_theme::border_dim())),
-    );
+    let next_list = List::new(next_items).block(crate::ui_theme::themed_block(
+        ratatui::text::Span::styled(
+            " Up Next ",
+            Style::default()
+                .fg(crate::ui_theme::violet())
+                .add_modifier(Modifier::BOLD),
+        ),
+        false,
+    ));
 
-    let blocked_list = List::new(blocked_items).block(
-        Block::default()
-            .title(ratatui::text::Span::styled(
-                " Blocked ",
-                Style::default()
-                    .fg(crate::ui_theme::rose())
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(crate::ui_theme::border_dim())),
-    );
+    let blocked_list = List::new(blocked_items).block(crate::ui_theme::themed_block(
+        ratatui::text::Span::styled(
+            " Blocked ",
+            Style::default()
+                .fg(crate::ui_theme::rose())
+                .add_modifier(Modifier::BOLD),
+        ),
+        false,
+    ));
 
     frame.render_widget(now_list, columns[0]);
     frame.render_widget(next_list, columns[1]);
