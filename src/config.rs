@@ -393,11 +393,27 @@ pub struct Config {
     pub notify_enabled: bool,
 }
 
-impl Config {
-    /// Default FastAPI base URL — orchestrator `/health` lives on port 8080
-    /// (recon 2026-06-18; the scaffold's old 8000 default was wrong).
-    const DEFAULT_API_URL: &'static str = "http://localhost:8080";
+/// Default FastAPI base URL — orchestrator `/health` lives on port 8080
+/// (recon 2026-06-18; the scaffold's old 8000 default was wrong).
+///
+/// Module-scoped (rather than an associated const) so [`resolve_api_base_url`] can be a
+/// standalone pure function callable without a fully-constructed [`Config`].
+pub(crate) const DEFAULT_API_URL: &str = "http://localhost:8080";
 
+/// Resolve the API base URL from env (highest precedence), then the workspace registry file,
+/// then [`DEFAULT_API_URL`]. Pure and infallible — no I/O, no `Result`, no panic path — so a
+/// caller (e.g. `run::status()`) can resolve this independently of whether the rest of
+/// [`Config::from_sources`] succeeded (BA.ticket.status-config-error-coupling).
+pub(crate) fn resolve_api_base_url(
+    env_api: Option<String>,
+    file_api_base_url: Option<String>,
+) -> String {
+    env_api
+        .or(file_api_base_url)
+        .unwrap_or_else(|| DEFAULT_API_URL.to_string())
+}
+
+impl Config {
     pub fn load() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
 
@@ -458,9 +474,7 @@ impl Config {
             .or(file.database_url)
             .ok_or(ConfigError::MissingVar("DATABASE_URL"))?;
 
-        let api_base_url = env_api
-            .or(file.api_base_url)
-            .unwrap_or_else(|| Self::DEFAULT_API_URL.to_string());
+        let api_base_url = resolve_api_base_url(env_api, file.api_base_url);
 
         let poll_interval_secs = env_poll
             .and_then(|s| s.parse::<u64>().ok())
@@ -988,6 +1002,29 @@ mod tests {
     fn missing_database_url_is_typed_error_not_panic() {
         let err = Config::from_vars(None, None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingVar("DATABASE_URL"));
+    }
+
+    // ─── resolve_api_base_url: pure precedence (no Config::load, no I/O) ──────
+
+    #[test]
+    fn resolve_api_base_url_env_wins_over_file() {
+        let resolved = resolve_api_base_url(
+            Some("http://env:8888".into()),
+            Some("http://file:9000".into()),
+        );
+        assert_eq!(resolved, "http://env:8888");
+    }
+
+    #[test]
+    fn resolve_api_base_url_file_wins_when_env_absent() {
+        let resolved = resolve_api_base_url(None, Some("http://file:7777".into()));
+        assert_eq!(resolved, "http://file:7777");
+    }
+
+    #[test]
+    fn resolve_api_base_url_default_when_both_absent() {
+        let resolved = resolve_api_base_url(None, None);
+        assert_eq!(resolved, "http://localhost:8080");
     }
 
     // ─── from_sources: precedence ─────────────────────────────────────────────
