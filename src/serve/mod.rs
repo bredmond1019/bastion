@@ -635,10 +635,22 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
                     // correct semantics -- run and campaign cancellation tokens
                     // are registered when their ids are minted, not at startup.
                     let engine_api_key_for_trigger = engine_api_key.clone();
+                    // BA.ticket.install-journal-handle-and-wire-drain task 1:
+                    // install this SAME handle (cloned -- `DurableHandle` is a
+                    // cheap `mpsc::UnboundedSender` + `Option<PgPool>` clone)
+                    // as engine-rs's process-global journal sink before it is
+                    // handed to `EngineAppState::builder`. Without this call
+                    // `journal_sink_live()` finds `None` and silently drops
+                    // every `JournalRow` (a documented self-skip, not a panic
+                    // or a log line). `spawn_durable_writer` is still called
+                    // exactly once here -- the clone shares the SAME writer
+                    // task and pool, never a second writer.
+                    let durable_handle = spawn_durable_writer(Some(pool));
+                    engine_serve::journal::set_journal_durable_handle(durable_handle.clone());
                     let state = EngineAppState::builder(
                         Arc::new(build_engine_dispatcher()),
                         live_store.clone(),
-                        spawn_durable_writer(Some(pool)),
+                        durable_handle,
                         engine_api_key,
                     )
                     .build();
@@ -5675,6 +5687,65 @@ heading = "bastion"
             );
 
         test::init_service(app).await
+    }
+
+    // ── Journal DurableHandle install (task 1,
+    //    BA.ticket.install-journal-handle-and-wire-drain) ───────────────────
+    //
+    // Guards against the exact silent-drop bug this task fixes: the
+    // engine-mount arm of `run` must install the `DurableHandle` it
+    // constructs as engine-rs's process-global journal sink, or every
+    // `JournalRow` is dropped with no panic and no log line
+    // (`journal_sink_live`'s documented self-skip). This test drives the
+    // same install call the production arm makes (DB-free, via
+    // `spawn_durable_writer(None)`, matching the file's established
+    // pattern) and asserts the process-global cell transitions None -> Some.
+
+    /// RAII guard that restores the process-global journal handle cell to
+    /// `None` on drop -- including on an assertion panic mid-test. The cell
+    /// (`engine_serve::journal`'s `OnceLock<RwLock<Option<DurableHandle>>>`)
+    /// is shared by every test in this binary; a bare trailing `clear_*`
+    /// call would leak a handle into a sibling test on panic and turn this
+    /// into an intermittent failure someone else has to debug.
+    struct JournalHandleGuard;
+
+    impl Drop for JournalHandleGuard {
+        fn drop(&mut self) {
+            engine_serve::journal::clear_journal_durable_handle();
+        }
+    }
+
+    #[actix_web::test]
+    async fn journal_durable_handle_is_installed_by_engine_mount_arm() {
+        // Ensure a clean starting point regardless of test execution order
+        // (`cargo test` runs this binary's tests concurrently by default).
+        engine_serve::journal::clear_journal_durable_handle();
+        let _guard = JournalHandleGuard;
+
+        assert!(
+            engine_serve::journal::journal_durable_handle().is_none(),
+            "journal handle must be None before the install call"
+        );
+
+        // Mirrors the production engine-mount arm in `run`: construct the
+        // handle once via `spawn_durable_writer`, install a clone as the
+        // process-global journal sink, and use the original for
+        // `EngineAppState::builder` (DB-free here since this test never
+        // touches Postgres).
+        let durable_handle = spawn_durable_writer(None);
+        engine_serve::journal::set_journal_durable_handle(durable_handle.clone());
+        let _state = EngineAppState::builder(
+            Arc::new(build_engine_dispatcher()),
+            LiveStateStore::new(),
+            durable_handle,
+            ENGINE_TEST_KEY.to_string(),
+        )
+        .build();
+
+        assert!(
+            engine_serve::journal::journal_durable_handle().is_some(),
+            "journal handle must be Some after the install call"
+        );
     }
 
     /// One (method, path) pair per route registered by
