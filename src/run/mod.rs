@@ -8,7 +8,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 
 use crate::api::client::{ApiClient, ApiStatus};
-use crate::config::{Config, ConfigError};
+use crate::config::{Config, ConfigError, FileConfig};
 use crate::costs::budget::{BreachReason, Budget, GateVerdict, Spend, evaluate};
 use crate::costs::{self, Window};
 use crate::db::costs as db_costs;
@@ -190,12 +190,41 @@ pub async fn status() -> Result<()> {
         Err(e) => return Err(anyhow!("{e}")),
     };
 
-    let fallback = "http://localhost:8080".to_string();
-    let api_url = cfg.as_ref().map(|c| &c.api_base_url).unwrap_or(&fallback);
-    let api = ApiClient::new(api_url).health().await;
+    // Resolve the API URL independently of whatever happened to the DB half of
+    // `cfg` — a missing DATABASE_URL must never discard a correctly-set
+    // BASTION_API_URL (BA.ticket.status-config-error-coupling). Reload the
+    // workspace registry file directly (degrading to `FileConfig::default()`
+    // on any read/parse failure) so this doesn't depend on `cfg` at all.
+    let file = crate::config::load_workspace_registry(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
+    .unwrap_or_default();
+    let api_url = status_api_url(cfg.as_ref(), std::env::var("BASTION_API_URL").ok(), &file);
+    let api = ApiClient::new(&api_url).health().await;
 
     print!("{}", render_status(&db, &api));
     Ok(())
+}
+
+/// Resolve the API base URL for `status()`, independent of whether the DB half of
+/// `cfg` succeeded. Pure — no I/O — so it is unit-testable without `Config::load()`
+/// or process env vars.
+///
+/// - `cfg` is `Ok` → use the already-resolved `api_base_url` from the loaded `Config`
+///   (the happy path; keeps behaviour identical when config loading fully succeeds).
+/// - `cfg` is `Err` → the rest of `Config::from_sources` never ran (it short-circuits
+///   on `DATABASE_URL` before `api_base_url` is computed), so resolve it directly via
+///   [`crate::config::resolve_api_base_url`] from `env_api` + the already-loaded `file`.
+pub(crate) fn status_api_url(
+    cfg: Result<&Config, &ConfigError>,
+    env_api: Option<String>,
+    file: &FileConfig,
+) -> String {
+    match cfg {
+        Ok(c) => c.api_base_url.clone(),
+        Err(_) => crate::config::resolve_api_base_url(env_api, file.api_base_url.clone()),
+    }
 }
 
 /// Render a plain-text summary table for the given probe outcomes.
@@ -483,5 +512,49 @@ mod tests {
         );
         assert!(out.contains("DB    reachable"));
         assert!(out.contains("API   unreachable (HTTP 503)"));
+    }
+
+    // ─── status_api_url — the DATABASE_URL/BASTION_API_URL coupling fix ───────
+    // (BA.ticket.status-config-error-coupling)
+
+    #[test]
+    fn status_api_url_reproduces_finding_6_env_wins_when_cfg_missing_db() {
+        // The exact live reproduction: `BASTION_API_URL=http://localhost:18090
+        // bastion status` with no DATABASE_URL. `Config::load()` short-circuits
+        // on the missing DATABASE_URL before api_base_url is ever computed, so
+        // `cfg` is `Err`. The resolved URL must still be the operator's own
+        // BASTION_API_URL, never the hardcoded "http://localhost:8080" fallback.
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let resolved = status_api_url(
+            Err(&err),
+            Some("http://localhost:18090".to_string()),
+            &FileConfig::default(),
+        );
+        assert_eq!(resolved, "http://localhost:18090");
+    }
+
+    #[test]
+    fn status_api_url_falls_back_to_default_when_neither_set() {
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let resolved = status_api_url(Err(&err), None, &FileConfig::default());
+        assert_eq!(resolved, "http://localhost:8080");
+    }
+
+    #[test]
+    fn status_api_url_uses_loaded_configs_own_value_when_cfg_ok() {
+        let cfg = Config::from_vars(
+            Some("postgres://localhost/db".into()),
+            Some("http://localhost:9000".into()),
+            None,
+        )
+        .expect("should parse");
+        // env_api/file are irrelevant on the Ok path — the already-resolved
+        // Config value wins, proving the refactor didn't regress the happy path.
+        let resolved = status_api_url(
+            Ok(&cfg),
+            Some("http://should-be-ignored:1".to_string()),
+            &FileConfig::default(),
+        );
+        assert_eq!(resolved, "http://localhost:9000");
     }
 }
