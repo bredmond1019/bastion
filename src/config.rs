@@ -348,6 +348,135 @@ pub fn resolve_workspace_root(
     Ok(PathBuf::from("."))
 }
 
+/// Resolve the effective corpus root for CLI call sites (`bastion code`,
+/// `bastion brain`) — same as [`resolve_workspace_root`], but with a cwd
+/// `brain.toml` walk-up inserted ahead of `default_workspace`.
+///
+/// Precedence (highest → lowest):
+/// 1. `explicit_root` — supplied via `--root <path>` (always wins).
+/// 2. `workspace_name` — look up in `file.workspaces`; unknown name → typed error.
+/// 3. `cwd_brain_root` — an already-resolved brain root discovered by walking
+///    up from cwd (see [`mev::brain::config::find_brain_root`]), if `Some`.
+/// 4. `file.default_workspace` — resolve from registry; unknown name → typed error.
+/// 5. Built-in default: `PathBuf::from(".")`.
+///
+/// Pure function — no I/O, no filesystem access. The cwd walk-up itself is
+/// performed by the caller (see [`resolve_cli_root_from_cwd`]) and passed in
+/// as `cwd_brain_root`, so this function stays trivially unit-testable
+/// against a fixture `FileConfig`.
+///
+/// **Deliberately does NOT change [`resolve_workspace_root`]'s own behaviour** —
+/// ~12 server-side callers (serve handlers, session_qa) depend on that
+/// function's exact precedence as-is; this is a separate entry point for CLI
+/// call sites only (`bastion code`, `bastion brain`).
+pub(crate) fn resolve_cli_root(
+    explicit_root: Option<PathBuf>,
+    workspace_name: Option<&str>,
+    cwd_brain_root: Option<PathBuf>,
+    file: &FileConfig,
+) -> Result<PathBuf, ConfigError> {
+    // 1. Explicit --root wins.
+    if let Some(root) = explicit_root {
+        return Ok(root);
+    }
+
+    let registry = file.workspaces.as_ref();
+
+    // 2. Named --workspace lookup.
+    if let Some(name) = workspace_name {
+        let Some(m) = registry else {
+            return Err(ConfigError::NoWorkspaceRegistry);
+        };
+        return match m.get(name) {
+            Some(path) => Ok(path.clone()),
+            None => Err(ConfigError::UnknownWorkspace(name.to_string())),
+        };
+    }
+
+    // 3. cwd brain.toml walk-up wins over the configured default_workspace.
+    if let Some(root) = cwd_brain_root {
+        return Ok(root);
+    }
+
+    // 4. default_workspace from config.
+    if let Some(ref default_name) = file.default_workspace {
+        let Some(m) = registry else {
+            return Err(ConfigError::NoWorkspaceRegistry);
+        };
+        return match m.get(default_name.as_str()) {
+            Some(path) => Ok(path.clone()),
+            None => Err(ConfigError::UnknownWorkspace(default_name.clone())),
+        };
+    }
+
+    // 5. Built-in default.
+    Ok(PathBuf::from("."))
+}
+
+/// How a CLI-resolved corpus root was determined — for the human-output-path
+/// print at the `bastion code` / `bastion brain` call sites (task 2/3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CliRootSource {
+    ExplicitRoot,
+    Workspace,
+    CwdBrainToml,
+    DefaultWorkspace,
+    BuiltinDefault,
+}
+
+impl std::fmt::Display for CliRootSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            CliRootSource::ExplicitRoot => "--root",
+            CliRootSource::Workspace => "--workspace",
+            CliRootSource::CwdBrainToml => "cwd brain.toml",
+            CliRootSource::DefaultWorkspace => "config default_workspace",
+            CliRootSource::BuiltinDefault => "built-in default",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// Thin non-pure wrapper over [`resolve_cli_root`]: supplies `cwd_brain_root`
+/// by walking up from the current directory via
+/// [`mev::brain::config::find_brain_root`], degrading any lookup failure
+/// (no `brain.toml` found, cwd unreadable, etc.) to `None` rather than
+/// erroring — the cwd walk-up is a best-effort convenience, not a hard
+/// requirement, so its absence must fall through to `default_workspace`
+/// exactly as before this change.
+///
+/// Returns the resolved root together with which precedence step won, so
+/// callers can print the resolution source on the human output path.
+pub(crate) fn resolve_cli_root_from_cwd(
+    explicit_root: Option<PathBuf>,
+    workspace_name: Option<&str>,
+    file: &FileConfig,
+) -> Result<(PathBuf, CliRootSource), ConfigError> {
+    if explicit_root.is_some() {
+        let root = resolve_cli_root(explicit_root, workspace_name, None, file)?;
+        return Ok((root, CliRootSource::ExplicitRoot));
+    }
+    if workspace_name.is_some() {
+        let root = resolve_cli_root(explicit_root, workspace_name, None, file)?;
+        return Ok((root, CliRootSource::Workspace));
+    }
+
+    let cwd_brain_root = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| mev::brain::config::find_brain_root(&cwd).ok());
+
+    let source = if cwd_brain_root.is_some() {
+        CliRootSource::CwdBrainToml
+    } else if file.default_workspace.is_some() {
+        CliRootSource::DefaultWorkspace
+    } else {
+        CliRootSource::BuiltinDefault
+    };
+
+    let root = resolve_cli_root(explicit_root, workspace_name, cwd_brain_root, file)?;
+    Ok((root, source))
+}
+
 /// Load **only** the workspace registry from the config file — DB-free.
 ///
 /// Reads the config file identified by `config_path(xdg_config_home, home)`, parses it,
@@ -1557,6 +1686,115 @@ brain = "/Users/alice/brain"
         let fc = FileConfig::default();
         let result = resolve_workspace_root(Some(PathBuf::from("/my/root")), None, &fc).unwrap();
         assert_eq!(result, PathBuf::from("/my/root"));
+    }
+
+    // ─── resolve_cli_root ──────────────────────────────────────────────────────
+    // Pure-function precedence tests: explicit root > workspace name > cwd
+    // brain.toml > default_workspace > ".". No filesystem access — the cwd
+    // brain root is injected directly, never discovered by walking the real
+    // filesystem (that's `find_brain_root`, already tested upstream in mev).
+
+    #[test]
+    fn cli_root_explicit_root_wins_over_everything() {
+        let mut fc = make_registry(&[("brain", "/registry/brain")]);
+        fc.default_workspace = Some("brain".into());
+        let result = resolve_cli_root(
+            Some(PathBuf::from("/explicit/root")),
+            Some("workspace-name"),
+            Some(PathBuf::from("/cwd/brain")),
+            &fc,
+        )
+        .unwrap();
+        assert_eq!(result, PathBuf::from("/explicit/root"));
+    }
+
+    #[test]
+    fn cli_root_workspace_name_wins_over_cwd_brain_root() {
+        let fc = make_registry(&[("client-a", "/repos/client-a")]);
+        let result = resolve_cli_root(
+            None,
+            Some("client-a"),
+            Some(PathBuf::from("/cwd/brain")),
+            &fc,
+        )
+        .unwrap();
+        assert_eq!(result, PathBuf::from("/repos/client-a"));
+    }
+
+    #[test]
+    fn cli_root_cwd_brain_root_wins_over_default_workspace() {
+        let mut fc = make_registry(&[("brain", "/registry/brain")]);
+        fc.default_workspace = Some("brain".into());
+        let result = resolve_cli_root(None, None, Some(PathBuf::from("/cwd/brain")), &fc).unwrap();
+        assert_eq!(result, PathBuf::from("/cwd/brain"));
+    }
+
+    #[test]
+    fn cli_root_default_workspace_applies_when_cwd_root_is_none() {
+        let mut fc = make_registry(&[("brain", "/registry/brain")]);
+        fc.default_workspace = Some("brain".into());
+        let result = resolve_cli_root(None, None, None, &fc).unwrap();
+        assert_eq!(result, PathBuf::from("/registry/brain"));
+    }
+
+    #[test]
+    fn cli_root_falls_back_to_dot_when_nothing_else_resolves() {
+        let fc = FileConfig::default();
+        let result = resolve_cli_root(None, None, None, &fc).unwrap();
+        assert_eq!(result, PathBuf::from("."));
+    }
+
+    #[test]
+    fn cli_root_unknown_workspace_name_is_typed_error() {
+        let fc = make_registry(&[("brain", "/repos/brain")]);
+        let err = resolve_cli_root(
+            None,
+            Some("missing"),
+            Some(PathBuf::from("/cwd/brain")),
+            &fc,
+        )
+        .unwrap_err();
+        assert_eq!(err, ConfigError::UnknownWorkspace("missing".into()));
+    }
+
+    #[test]
+    fn cli_root_named_workspace_with_no_registry_is_no_registry_error() {
+        let fc = FileConfig::default();
+        let err = resolve_cli_root(None, Some("brain"), None, &fc).unwrap_err();
+        assert_eq!(err, ConfigError::NoWorkspaceRegistry);
+    }
+
+    #[test]
+    fn cli_root_default_workspace_unknown_is_typed_error() {
+        let mut fc = make_registry(&[("brain", "/repos/brain")]);
+        fc.default_workspace = Some("nonexistent".into());
+        let err = resolve_cli_root(None, None, None, &fc).unwrap_err();
+        assert_eq!(err, ConfigError::UnknownWorkspace("nonexistent".into()));
+    }
+
+    #[test]
+    fn cli_root_default_workspace_with_no_registry_is_no_registry_error() {
+        let fc = FileConfig {
+            default_workspace: Some("brain".into()),
+            ..Default::default()
+        };
+        let err = resolve_cli_root(None, None, None, &fc).unwrap_err();
+        assert_eq!(err, ConfigError::NoWorkspaceRegistry);
+    }
+
+    #[test]
+    fn cli_root_source_display_strings() {
+        assert_eq!(CliRootSource::ExplicitRoot.to_string(), "--root");
+        assert_eq!(CliRootSource::Workspace.to_string(), "--workspace");
+        assert_eq!(CliRootSource::CwdBrainToml.to_string(), "cwd brain.toml");
+        assert_eq!(
+            CliRootSource::DefaultWorkspace.to_string(),
+            "config default_workspace"
+        );
+        assert_eq!(
+            CliRootSource::BuiltinDefault.to_string(),
+            "built-in default"
+        );
     }
 
     // ─── build_serve_config ───────────────────────────────────────────────────
