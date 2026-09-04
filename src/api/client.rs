@@ -419,14 +419,37 @@ impl ApiClient {
         // can ignore `event_id`.
         let url = self.trigger_url();
         let body = trigger_body(workflow_type, data);
-        self.client
+
+        // Unlike abort_run/resume_run, an absent engine_api_key is NOT a
+        // hard client-side refusal here: this method returns
+        // `anyhow::Result`, not `ConsoleError`, and some deployments still
+        // run /events/ unauthenticated — a hard refusal would break a
+        // working key-less client. Instead, send the header only when a key
+        // is configured (preserving today's behaviour when it is not), and
+        // let a 401 response name the missing credential explicitly rather
+        // than surfacing the generic "returned an error status" text.
+        let mut req = self
+            .client
             .post(&url)
             .json(&body)
-            .timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(2));
+        if let Some(key) = self.engine_api_key.as_deref() {
+            req = req.header("X-API-Key", key);
+        }
+
+        let resp = req
             .send()
             .await
-            .context("sending trigger request to orchestrator")?
-            .error_for_status()
+            .context("sending trigger request to orchestrator")?;
+
+        if resp.status().as_u16() == 401 {
+            anyhow::bail!(
+                "trigger endpoint returned 401 — set BASTION_ENGINE_API_KEY (or config.toml's \
+                 engine_api_key); trigger_workflow sends X-API-Key only when one is configured"
+            );
+        }
+
+        resp.error_for_status()
             .context("orchestrator trigger endpoint returned an error status (check workflow_type and data)")?
             .json::<TaskAccepted>()
             .await
@@ -567,6 +590,50 @@ mod tests {
     fn trigger_url_no_trailing_slash_appended() {
         let client = ApiClient::new("http://localhost:8080");
         assert_eq!(client.trigger_url(), "http://localhost:8080/events/");
+    }
+
+    // ── trigger_workflow — engine_api_key is optional, not a hard refusal ──────
+    // Mirrors abort_run_without_engine_api_key_is_config_error /
+    // abort_run_connection_failure_is_io_error, but trigger_workflow's
+    // absent-key policy deliberately diverges from abort_run's: no key still
+    // means the request is attempted (some deployments run /events/
+    // unauthenticated), so the assertion here is a connection error either
+    // way — a key-less client never short-circuits before the network call.
+
+    #[tokio::test]
+    async fn trigger_workflow_without_engine_api_key_still_attempts_request() {
+        // Port 1 refuses connections on any dev/CI machine (no listener) —
+        // a deterministic transport failure without a live server. Unlike
+        // abort_run, no engine_api_key does NOT produce a typed ConfigError
+        // here: the request is still sent, so this surfaces as a connection
+        // failure from anyhow's `.context(...)` chain, not a config error.
+        let client = ApiClient::new("http://127.0.0.1:1");
+        let err = client
+            .trigger_workflow("my_workflow", None)
+            .await
+            .expect_err("connection failure should be an error even without a key configured");
+        assert!(
+            err.to_string().contains("sending trigger request"),
+            "expected the connection-failure context, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trigger_workflow_with_engine_api_key_still_attempts_request() {
+        // A key-bearing client attaches the header before sending, so this
+        // pins that construction with a key doesn't change the connection
+        // failure path — the header is present but the transport still
+        // fails against a closed port.
+        let client =
+            ApiClient::new("http://127.0.0.1:1").with_engine_api_key(Some("key".to_string()));
+        let err = client
+            .trigger_workflow("my_workflow", None)
+            .await
+            .expect_err("connection failure should be an error");
+        assert!(
+            err.to_string().contains("sending trigger request"),
+            "expected the connection-failure context, got: {err}"
+        );
     }
 
     // ── abort_url ─────────────────────────────────────────────────────────────
