@@ -28,15 +28,25 @@ pub use crate::serve::status::repo::{RepoStatus, parse_status};
 /// `collect::collect_rollups`); this fn adds no new degradation logic of
 /// its own.
 pub fn run() -> anyhow::Result<()> {
+    let resolved_config_path = crate::config::config_path(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    );
+
     let registry = crate::config::load_workspace_registry(
         std::env::var("XDG_CONFIG_HOME").ok(),
         std::env::var("HOME").ok(),
     )?;
 
     let workspaces = registry.workspaces.unwrap_or_default();
+    let mut workspace_names: Vec<String> = workspaces.keys().cloned().collect();
+    workspace_names.sort();
+
     let rollups = collect::collect_rollups(&workspaces);
+    let provenance = render::render_provenance(resolved_config_path.as_deref(), &workspace_names);
     let table = render::render_table(&rollups);
 
+    println!("{provenance}");
     println!("{table}");
 
     Ok(())
