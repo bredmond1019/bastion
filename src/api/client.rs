@@ -401,10 +401,11 @@ impl ApiClient {
             .context("decoding workflow graph body")
     }
 
-    /// Returns the trigger URL for `POST /` — base URL with any trailing slash preserved as a
-    /// single `/`, so both `http://host:8080` and `http://host:8080/` produce `http://host:8080/`.
+    /// Returns the trigger URL for `POST /events/` — base URL with any trailing slash
+    /// normalized away and `/events/` appended, so both `http://host:8080` and
+    /// `http://host:8080/` produce `http://host:8080/events/`.
     fn trigger_url(&self) -> String {
-        format!("{}/", self.base_url.trim_end_matches('/'))
+        format!("{}/events/", self.base_url.trim_end_matches('/'))
     }
 
     pub async fn trigger_workflow(
@@ -412,10 +413,10 @@ impl ApiClient {
         workflow_type: &str,
         data: Option<serde_json::Value>,
     ) -> Result<TriggerOutcome> {
-        // Orchestrator's generic dispatcher: POST / with {workflow_type, data}
-        // → 202 {task_id, event_id?, message} (data contract §7, event_id per
-        // v1.2.0). Returns both ids — callers that only need `task_id` (the
-        // pre-v1.2.0 shape) can ignore `event_id`.
+        // engine-serve's /events/ route: POST /events/ with {workflow_type, data}
+        // → 202 {task_id, event_id?, message} (event_id per v1.2.0). Returns
+        // both ids — callers that only need `task_id` (the pre-v1.2.0 shape)
+        // can ignore `event_id`.
         let url = self.trigger_url();
         let body = trigger_body(workflow_type, data);
         self.client
@@ -559,13 +560,13 @@ mod tests {
     #[test]
     fn trigger_url_trailing_slash_stripped_and_readded() {
         let client = ApiClient::new("http://localhost:8080/");
-        assert_eq!(client.trigger_url(), "http://localhost:8080/");
+        assert_eq!(client.trigger_url(), "http://localhost:8080/events/");
     }
 
     #[test]
     fn trigger_url_no_trailing_slash_appended() {
         let client = ApiClient::new("http://localhost:8080");
-        assert_eq!(client.trigger_url(), "http://localhost:8080/");
+        assert_eq!(client.trigger_url(), "http://localhost:8080/events/");
     }
 
     // ── abort_url ─────────────────────────────────────────────────────────────
