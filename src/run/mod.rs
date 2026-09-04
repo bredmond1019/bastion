@@ -242,8 +242,24 @@ pub(crate) fn render_status(db: &DbStatus, api: &ApiStatus) -> String {
     };
 
     let api_row = match api {
-        ApiStatus::Reachable { status, version } => {
-            format!("API   reachable (status={status}, version={version})")
+        ApiStatus::Reachable {
+            status,
+            version,
+            service,
+            engine_build_sha,
+        } => {
+            if let Some(version) = version {
+                // Synapse's shape (`{status, version}`) — unchanged from today's output.
+                format!("API   reachable (status={status}, version={version})")
+            } else if service.is_some() || engine_build_sha.is_some() {
+                // bastion serve's shape (`{status, service, engine_build_sha}`, no version).
+                let service = service.as_deref().unwrap_or("bastion");
+                let build = engine_build_sha.as_deref().unwrap_or("unknown");
+                format!("API   reachable (service={service}, build={build})")
+            } else {
+                // Neither version nor service/engine_build_sha present — fall back to status alone.
+                format!("API   reachable (status={status})")
+            }
         }
         ApiStatus::Unreachable(msg) => format!("API   unreachable ({msg})"),
     };
@@ -498,11 +514,44 @@ mod tests {
             &DbStatus::Reachable,
             &ApiStatus::Reachable {
                 status: "ok".to_string(),
-                version: "0.1.0".to_string(),
+                version: Some("0.1.0".to_string()),
+                service: None,
+                engine_build_sha: None,
             },
         );
         assert!(out.contains("DB    reachable"));
         assert!(out.contains("API   reachable (status=ok, version=0.1.0)"));
+    }
+
+    #[test]
+    fn render_reachable_bastion_serve_shape_shows_build_sha() {
+        // BA.ticket.status-health-body-mismatch — bastion serve's real /health shape
+        // carries service+engine_build_sha, never version.
+        let out = render_status(
+            &DbStatus::Reachable,
+            &ApiStatus::Reachable {
+                status: "ok".to_string(),
+                version: None,
+                service: Some("bastion".to_string()),
+                engine_build_sha: Some("24cb2cac".to_string()),
+            },
+        );
+        assert!(out.contains("DB    reachable"));
+        assert!(out.contains("API   reachable (service=bastion, build=24cb2cac)"));
+    }
+
+    #[test]
+    fn render_reachable_status_only_falls_back_to_status() {
+        let out = render_status(
+            &DbStatus::Reachable,
+            &ApiStatus::Reachable {
+                status: "ok".to_string(),
+                version: None,
+                service: None,
+                engine_build_sha: None,
+            },
+        );
+        assert!(out.contains("API   reachable (status=ok)"));
     }
 
     #[test]

@@ -8,15 +8,30 @@ use crate::observ::errors::ConsoleError;
 /// Unreachable is a normal outcome (not an `Err`) so `bastion status` never fails on it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApiStatus {
-    Reachable { status: String, version: String },
+    Reachable {
+        status: String,
+        version: Option<String>,
+        service: Option<String>,
+        engine_build_sha: Option<String>,
+    },
     Unreachable(String),
 }
 
-/// Orchestrator `/health` body — `{ "status": ..., "version": ... }` (recon 2026-06-18).
+/// `/health` body — two real shapes are served across this fleet: Synapse's
+/// `{ "status": ..., "version": ... }` (recon 2026-06-18) and `bastion serve`'s own
+/// `{ "status": ..., "service": ..., "engine_build_sha": ... }` (found live 2026-09-04,
+/// BA.ticket.status-health-body-mismatch). `status` stays required — a body missing even
+/// that is genuinely malformed and must still fail to deserialize; the rest are optional
+/// so either real shape parses.
 #[derive(Debug, Deserialize)]
 struct HealthBody {
     status: String,
-    version: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    service: Option<String>,
+    #[serde(default)]
+    engine_build_sha: Option<String>,
 }
 
 /// Request body for `POST /` — the generic workflow dispatcher.
@@ -479,6 +494,8 @@ impl ApiClient {
                 Ok(body) => ApiStatus::Reachable {
                     status: body.status,
                     version: body.version,
+                    service: body.service,
+                    engine_build_sha: body.engine_build_sha,
                 },
                 Err(e) => ApiStatus::Unreachable(format!("invalid health body: {e}")),
             },
@@ -497,11 +514,15 @@ mod tests {
     fn api_status_reachable_equality() {
         let a = ApiStatus::Reachable {
             status: "ok".to_string(),
-            version: "1.0.0".to_string(),
+            version: Some("1.0.0".to_string()),
+            service: None,
+            engine_build_sha: None,
         };
         let b = ApiStatus::Reachable {
             status: "ok".to_string(),
-            version: "1.0.0".to_string(),
+            version: Some("1.0.0".to_string()),
+            service: None,
+            engine_build_sha: None,
         };
         assert_eq!(a, b);
     }
@@ -517,7 +538,9 @@ mod tests {
     fn api_status_reachable_ne_unreachable() {
         let reachable = ApiStatus::Reachable {
             status: "ok".to_string(),
-            version: "1.0.0".to_string(),
+            version: Some("1.0.0".to_string()),
+            service: None,
+            engine_build_sha: None,
         };
         let unreachable = ApiStatus::Unreachable("error".to_string());
         assert_ne!(reachable, unreachable);
@@ -533,7 +556,9 @@ mod tests {
             "{:?}",
             ApiStatus::Reachable {
                 status: "ok".to_string(),
-                version: "0.1.0".to_string(),
+                version: Some("0.1.0".to_string()),
+                service: None,
+                engine_build_sha: None,
             }
         );
         assert!(r.contains("Reachable"));
@@ -549,6 +574,37 @@ mod tests {
     fn health_url_no_trailing_slash() {
         let client = ApiClient::new("http://localhost:8000");
         assert_eq!(client.health_url(), "http://localhost:8000/health");
+    }
+
+    // ── HealthBody — both real /health shapes this fleet serves ───────────────
+    // (BA.ticket.status-health-body-mismatch)
+
+    #[test]
+    fn health_body_parses_synapse_shape() {
+        let body: HealthBody =
+            serde_json::from_str(r#"{"status":"ok","version":"0.1.0"}"#).unwrap();
+        assert_eq!(body.status, "ok");
+        assert_eq!(body.version, Some("0.1.0".to_string()));
+        assert_eq!(body.service, None);
+        assert_eq!(body.engine_build_sha, None);
+    }
+
+    #[test]
+    fn health_body_parses_bastion_serve_shape() {
+        let body: HealthBody = serde_json::from_str(
+            r#"{"status":"ok","service":"bastion","engine_build_sha":"abc123"}"#,
+        )
+        .unwrap();
+        assert_eq!(body.status, "ok");
+        assert_eq!(body.version, None);
+        assert_eq!(body.service, Some("bastion".to_string()));
+        assert_eq!(body.engine_build_sha, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn health_body_missing_status_fails_to_parse() {
+        let result: Result<HealthBody, _> = serde_json::from_str(r#"{"version":"0.1.0"}"#);
+        assert!(result.is_err());
     }
 
     // ── trigger_body ─────────────────────────────────────────────────────────
