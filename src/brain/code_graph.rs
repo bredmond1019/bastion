@@ -461,9 +461,21 @@ pub fn run_code(
 ) -> Result<()> {
     use crate::brain::code::extract_all;
 
-    // Resolve scan root (no DB, no Config::load).
-    let root = crate::config::resolve_workspace_root(explicit_root, workspace.as_deref(), registry)
-        .map_err(anyhow::Error::from)?;
+    // Resolve scan root (no DB, no Config::load) — CLI resolver prefers a cwd
+    // `brain.toml` walk-up over the configured `default_workspace` (task 1),
+    // so running from inside a secondary checkout (a worktree, a second
+    // clone, the sandbox) resolves to that checkout, not the operator's
+    // global default.
+    let (root, root_source) =
+        crate::config::resolve_cli_root_from_cwd(explicit_root, workspace.as_deref(), registry)
+            .map_err(anyhow::Error::from)?;
+
+    // Print the resolved root on the human output path — today it appeared
+    // only inside the --json envelope, which is exactly why a wrong-tree
+    // answer was silent. Stderr keeps parseable --json stdout untouched.
+    if !json {
+        eprintln!("code: root {} ({})", root.display(), root_source);
+    }
 
     // Discover .rs files.
     let files = find_rust_files(&root);
