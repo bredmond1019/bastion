@@ -6,6 +6,18 @@ timestamp: 2026-09-02T07:26:32-0300
 ---
 # Log — bastion
 
+## [run: 2026-09-05]
+
+Ran /sdlc-flow on BA.ticket.serve-auth-boundary-freeze through tasks 1-5: task 1 threaded BASTION_SERVE_SIGNING_KEY/BASTION_SERVE_CLOCK_SKEW_SECS into ServeConfig; task 2 made token_matches/api_key_matches constant-time via subtle::ConstantTimeEq; task 3 added src/serve/source_auth.rs, a pure HMAC-SHA256 machine-caller signature core (canonical string, skew check, 19 unit tests); task 4 wired the signature as an alternative to bearer auth in BearerAuthMiddleware at both /api and /ws sites; task 5 froze docs/serve/serve-api.md at v1.0.0, documented both auth tiers, and added the self-testing scripts/check-serve-api-version.sh gate to planning/harness.json. All five tasks individually passed with confirmed workAssertionPassed outcomes. The consolidated end-of-flow review returned PARTIAL and the run BAILED: AC10 requires the contract corpus to carry a new 401/unauthorized golden, but task 5 explicitly scoped src/serve/contract_corpus.rs OUT of its files[], and no task in the breakdown owns adding that scenario — scripts/check-contract-corpus-drift.sh passes only because it confirms no drift against the existing (401-less) corpus, which is a false-positive signal for AC10, not evidence the criterion is met. This is a scope mismatch between the spec (which asserts the golden must exist) and the task decomposition (which never assigned it an owner), so it needs re-planning to add an owning task/files[] entry rather than a retry of task 5. Next: re-plan the spec to add a task (or extend an existing one) that owns adding a 401 scenario to src/serve/contract_corpus.rs, regenerate the corpus, and confirm the drift check protects the new golden before re-running review.
+
+```
+43098d3 feat: implement BA.ticket.serve-auth-boundary-freeze-task5
+51b70e9 feat: implement BA.ticket.serve-auth-boundary-freeze-task4
+a87de84 feat: implement BA.ticket.serve-auth-boundary-freeze-task3
+aefb4da feat: implement BA.ticket.serve-auth-boundary-freeze-task2
+696a008 feat: implement BA.ticket.serve-auth-boundary-freeze-task1
+```
+
 ## [2026-09-02]
 
 ### Closed the bastion lane of the context-handling-between-nodes roadmap
