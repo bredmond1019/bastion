@@ -38,7 +38,7 @@ Examples:
 
 ## Execution Model
 
-Run inline — do NOT spawn a subagent. `/update-docs`, `write-repo-doc`, `/handoff`, and `/clean-worktree` are
+Run inline — do NOT spawn a subagent. `/update-docs`, `write-repo-doc` / `write-operating-doc`, `/handoff`, and `/clean-worktree` are
 invoked as Skill tool calls or commands from the main agent context; they have their own confirmation gates.
 
 ## Instructions
@@ -304,6 +304,18 @@ in this fleet predate that standard: they open with prose instead of a quickstar
 they never define, and name commands and scripts without linking them. `/close-out` runs on
 virtually every piece of work, which makes it the one reliable place these get fixed — a doc that is
 never touched stays as it is, and that is fine.
+
+**Pick the right standard for the doc's job — there are two, and they differ in kind, not degree.**
+
+| The doc is meant to be | Load |
+|---|---|
+| **understood** — a reference, a guide, an architecture page | `write-repo-doc` |
+| **acted on** — an operating rhythm, a checklist, a next-action board, a runbook | `write-operating-doc` |
+
+The operating standard is one screen, tables over prose, at most five things to do, every item a
+physical act under 20 minutes, and the argument split out into a `-rationale.md` sibling. Applying
+`write-repo-doc` to an operating doc produces a well-structured page nobody can act on — which is
+the failure it was written from: a 165-line doc that was correct, complete, and not read.
 
 **Scope, so this does not become a rewrite of the whole repo:** only docs in this run's
 `changed`/`created` set. Never sweep `docs/` looking for work.

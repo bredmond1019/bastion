@@ -51,11 +51,24 @@ pub struct ServeConfig {
     pub addr: String,
     /// Bearer token that protected routes enforce.
     pub token: String,
+    /// HMAC-SHA256 key for the machine-caller signature tier (`x-timestamp`/
+    /// `x-signature`). `None` when unset or set to an empty string — an absent
+    /// signing key is never an error; it leaves `serve` bearer-only, exactly as
+    /// it behaves today.
+    pub signing_key: Option<String>,
+    /// How many seconds a signed request's `v0:<unix-ts>:` prefix may drift from
+    /// "now" before it is rejected — bounds how long a captured signature stays
+    /// replayable. Falls back to [`ServeConfig::DEFAULT_CLOCK_SKEW_SECS`] when
+    /// unset or unparseable.
+    pub clock_skew_secs: u64,
 }
 
 impl ServeConfig {
     /// Default bind address — Tailscale-reachable, port 4317.
     const DEFAULT_ADDR: &'static str = "0.0.0.0:4317";
+    /// Default clock-skew window (seconds) for the signed-request tier — bounds
+    /// how long a captured signature stays replayable.
+    pub const DEFAULT_CLOCK_SKEW_SECS: u64 = 300;
 }
 
 /// Build a [`ServeConfig`] by merging CLI flags (highest precedence) over env vars (middle)
@@ -64,6 +77,12 @@ impl ServeConfig {
 /// `addr_flag` and `token_flag` come from the CLI `--addr`/`--token` flags (may be `None`).
 /// `addr_env` and `token_env` come from `BASTION_SERVE_ADDR` and `BASTION_SERVE_TOKEN`
 /// respectively (may be `None` when not set).
+///
+/// `signing_key_flag`/`signing_key_env` resolve `BASTION_SERVE_SIGNING_KEY` with the same
+/// flag-over-env precedence as `addr`/`token`, except there is no built-in default — an
+/// absent or empty-string key resolves to `None`, never an error. `skew_env` resolves
+/// `BASTION_SERVE_CLOCK_SKEW_SECS`; a missing or non-numeric value falls back to
+/// [`ServeConfig::DEFAULT_CLOCK_SKEW_SECS`] rather than erroring (there is no CLI flag for it).
 ///
 /// **Pure function — no I/O, no env access.** Call from `load_serve_config` or tests directly.
 ///
@@ -75,6 +94,9 @@ pub fn build_serve_config(
     token_flag: Option<String>,
     addr_env: Option<String>,
     token_env: Option<String>,
+    signing_key_flag: Option<String>,
+    signing_key_env: Option<String>,
+    skew_env: Option<String>,
 ) -> Result<ServeConfig, ConfigError> {
     let addr = addr_flag
         .or(addr_env)
@@ -85,7 +107,20 @@ pub fn build_serve_config(
         .filter(|s| !s.is_empty())
         .ok_or(ConfigError::MissingServeToken)?;
 
-    Ok(ServeConfig { addr, token })
+    let signing_key = signing_key_flag
+        .or(signing_key_env)
+        .filter(|s| !s.is_empty());
+
+    let clock_skew_secs = skew_env
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(ServeConfig::DEFAULT_CLOCK_SKEW_SECS);
+
+    Ok(ServeConfig {
+        addr,
+        token,
+        signing_key,
+        clock_skew_secs,
+    })
 }
 
 /// Load [`ServeConfig`] from environment variables + `.env` file.
@@ -93,7 +128,8 @@ pub fn build_serve_config(
 /// **DB-free** — does not read or require `DATABASE_URL`.
 ///
 /// CLI flag values (from clap) should be passed in as `addr_flag` / `token_flag` and take
-/// precedence over the env values read here.
+/// precedence over the env values read here. There is no CLI flag for the signing key or
+/// clock-skew window yet — both resolve from env only.
 ///
 /// # Errors
 /// Returns [`ConfigError::MissingServeToken`] when neither `--token` nor `BASTION_SERVE_TOKEN`
@@ -108,6 +144,9 @@ pub fn load_serve_config(
         token_flag,
         std::env::var("BASTION_SERVE_ADDR").ok(),
         std::env::var("BASTION_SERVE_TOKEN").ok(),
+        None,
+        std::env::var("BASTION_SERVE_SIGNING_KEY").ok(),
+        std::env::var("BASTION_SERVE_CLOCK_SKEW_SECS").ok(),
     )
 }
 
@@ -1807,6 +1846,9 @@ brain = "/Users/alice/brain"
             Some("flag-token".into()),
             Some("0.0.0.0:1111".into()),
             Some("env-token".into()),
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(sc.addr, "127.0.0.1:9000");
@@ -1821,6 +1863,9 @@ brain = "/Users/alice/brain"
             None,
             Some("10.0.0.1:5000".into()),
             Some("env-secret".into()),
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(sc.addr, "10.0.0.1:5000");
@@ -1830,7 +1875,8 @@ brain = "/Users/alice/brain"
     #[test]
     fn serve_config_default_addr_when_both_omit() {
         // Neither flag nor env provides addr → built-in default.
-        let sc = build_serve_config(None, Some("tok".into()), None, None).unwrap();
+        let sc =
+            build_serve_config(None, Some("tok".into()), None, None, None, None, None).unwrap();
         assert_eq!(sc.addr, "0.0.0.0:4317");
     }
 
@@ -1842,6 +1888,9 @@ brain = "/Users/alice/brain"
             None,
             None,
             Some("env-tok".into()),
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(sc.addr, "192.168.1.5:8080");
@@ -1851,13 +1900,13 @@ brain = "/Users/alice/brain"
     #[test]
     fn serve_config_missing_token_is_typed_error() {
         // Neither --token nor BASTION_SERVE_TOKEN → MissingServeToken.
-        let err = build_serve_config(None, None, None, None).unwrap_err();
+        let err = build_serve_config(None, None, None, None, None, None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingServeToken);
     }
 
     #[test]
     fn serve_config_missing_token_error_message_is_descriptive() {
-        let err = build_serve_config(None, None, None, None).unwrap_err();
+        let err = build_serve_config(None, None, None, None, None, None, None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("BASTION_SERVE_TOKEN"),
@@ -1868,7 +1917,16 @@ brain = "/Users/alice/brain"
     #[test]
     fn serve_config_token_from_flag_alone_succeeds() {
         // Env is absent; CLI flag alone satisfies the mandatory token.
-        let sc = build_serve_config(None, Some("only-flag-token".into()), None, None).unwrap();
+        let sc = build_serve_config(
+            None,
+            Some("only-flag-token".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(sc.token, "only-flag-token");
         assert_eq!(sc.addr, "0.0.0.0:4317"); // default addr
     }
@@ -1876,7 +1934,16 @@ brain = "/Users/alice/brain"
     #[test]
     fn serve_config_token_from_env_alone_succeeds() {
         // CLI flag absent; env alone satisfies the mandatory token.
-        let sc = build_serve_config(None, None, None, Some("only-env-token".into())).unwrap();
+        let sc = build_serve_config(
+            None,
+            None,
+            None,
+            Some("only-env-token".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(sc.token, "only-env-token");
     }
 
@@ -1885,15 +1952,114 @@ brain = "/Users/alice/brain"
         // BASTION_SERVE_TOKEN="" (set but empty) must be treated the same as absent.
         // An empty token would cause every protected request to return 401 with no
         // way to authenticate — the server must refuse to start.
-        let err = build_serve_config(None, None, None, Some(String::new())).unwrap_err();
+        let err = build_serve_config(None, None, None, Some(String::new()), None, None, None)
+            .unwrap_err();
         assert_eq!(err, ConfigError::MissingServeToken);
     }
 
     #[test]
     fn serve_config_empty_flag_token_is_typed_error() {
         // --token "" (empty string from CLI) must also be rejected.
-        let err = build_serve_config(None, Some(String::new()), None, None).unwrap_err();
+        let err = build_serve_config(None, Some(String::new()), None, None, None, None, None)
+            .unwrap_err();
         assert_eq!(err, ConfigError::MissingServeToken);
+    }
+
+    // ─── signing_key / clock_skew_secs (BA.ticket.serve-auth-boundary-freeze task 1) ──
+
+    #[test]
+    fn serve_config_signing_key_flag_wins_over_env() {
+        let sc = build_serve_config(
+            None,
+            Some("tok".into()),
+            None,
+            None,
+            Some("flag-key".into()),
+            Some("env-key".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(sc.signing_key.as_deref(), Some("flag-key"));
+    }
+
+    #[test]
+    fn serve_config_signing_key_from_env_alone() {
+        let sc = build_serve_config(
+            None,
+            Some("tok".into()),
+            None,
+            None,
+            None,
+            Some("env-key".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(sc.signing_key.as_deref(), Some("env-key"));
+    }
+
+    #[test]
+    fn serve_config_signing_key_absent_is_none() {
+        // Absence is never an error — bearer-only boot is the unchanged default.
+        let sc =
+            build_serve_config(None, Some("tok".into()), None, None, None, None, None).unwrap();
+        assert_eq!(sc.signing_key, None);
+    }
+
+    #[test]
+    fn serve_config_signing_key_empty_string_is_none() {
+        // Mirrors how `token` filters `!s.is_empty()` — an empty-string key must
+        // not be treated as "configured".
+        let sc = build_serve_config(
+            None,
+            Some("tok".into()),
+            None,
+            None,
+            None,
+            Some(String::new()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(sc.signing_key, None);
+    }
+
+    #[test]
+    fn serve_config_clock_skew_from_env() {
+        let sc = build_serve_config(
+            None,
+            Some("tok".into()),
+            None,
+            None,
+            None,
+            None,
+            Some("120".into()),
+        )
+        .unwrap();
+        assert_eq!(sc.clock_skew_secs, 120);
+    }
+
+    #[test]
+    fn serve_config_clock_skew_absent_falls_back_to_default() {
+        let sc =
+            build_serve_config(None, Some("tok".into()), None, None, None, None, None).unwrap();
+        assert_eq!(sc.clock_skew_secs, ServeConfig::DEFAULT_CLOCK_SKEW_SECS);
+    }
+
+    #[test]
+    fn serve_config_clock_skew_garbage_falls_back_to_default() {
+        // Non-numeric BASTION_SERVE_CLOCK_SKEW_SECS must not error — it silently
+        // falls back to the default, matching the lenient-parse convention used
+        // elsewhere in this file (e.g. `poll_interval_secs`).
+        let sc = build_serve_config(
+            None,
+            Some("tok".into()),
+            None,
+            None,
+            None,
+            None,
+            Some("not-a-number".into()),
+        )
+        .unwrap();
+        assert_eq!(sc.clock_skew_secs, ServeConfig::DEFAULT_CLOCK_SKEW_SECS);
     }
 
     // ─── telegram_config (BA.18.B task 4) ────────────────────────────────────
@@ -2522,7 +2688,16 @@ brain = "/Users/alice/brain"
         .expect("should parse");
         assert_eq!(c.engine_api_key.as_deref(), Some("engine-secret"));
 
-        let sc = build_serve_config(None, Some("serve-secret".into()), None, None).unwrap();
+        let sc = build_serve_config(
+            None,
+            Some("serve-secret".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(sc.token, "serve-secret");
         assert_ne!(c.engine_api_key.as_deref(), Some(sc.token.as_str()));
     }

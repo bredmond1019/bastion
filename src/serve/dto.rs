@@ -598,6 +598,70 @@ impl From<crate::serve::status::repo::RepoStatus> for RepoStatusDto {
     }
 }
 
+/// The response envelope for `GET /api/repos/status` (BA.ticket.batch-repo-status).
+///
+/// Always returned in this shape — unlike [`WorkflowsAggregateDto`], this
+/// envelope has no `?with_skipped=1` opt-in: the route has no existing
+/// consumer to keep byte-identical, so the honest `{entries, skipped}` shape
+/// is the default rather than gated behind a flag. `entries` carries the
+/// same [`RepoStatusDto`] body the per-repo route (`GET
+/// /api/repos/{name}/status`) returns for each workspace whose `status.md`
+/// parsed; `skipped` names every workspace this request covered but could
+/// not report on, and why. Both fields always serialize, including when
+/// empty (`[]`, never an absent key) — `entries.len() + skipped.len()`
+/// always equals the number of workspaces the request covered. See
+/// serve-api §11.7.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoStatusAggregateDto {
+    pub entries: Vec<RepoStatusDto>,
+    pub skipped: Vec<SkippedWorkspaceDto>,
+}
+
+#[cfg(test)]
+mod repo_status_aggregate_dto_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_with_entries_and_skipped_populated() {
+        let dto = RepoStatusAggregateDto {
+            entries: vec![RepoStatusDto {
+                name: "bastion".to_string(),
+                now: "now".to_string(),
+                next: "next".to_string(),
+                blocked: "blocked".to_string(),
+                has_handoff: true,
+                momentum_now: "".to_string(),
+                momentum_next: "".to_string(),
+                momentum_blocked: "".to_string(),
+                momentum_improve: "".to_string(),
+                momentum_recurring: "".to_string(),
+            }],
+            skipped: vec![SkippedWorkspaceDto {
+                repo: "orchestrator".to_string(),
+                reason: "missing_or_malformed_status".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let round_tripped: RepoStatusAggregateDto =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, dto);
+    }
+
+    #[test]
+    fn empty_entries_and_skipped_serialize_as_empty_arrays_not_absent_keys() {
+        let dto = RepoStatusAggregateDto {
+            entries: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let value = serde_json::to_value(&dto).expect("serialize to value");
+        assert!(value["entries"].is_array());
+        assert!(value["skipped"].is_array());
+        assert_eq!(value["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(value["skipped"].as_array().unwrap().len(), 0);
+    }
+}
+
 /// JSON response element for `GET /repos/{name}/workflows`.
 ///
 /// Serializable projection of [`crate::serve::status::flow::FlowState`].
@@ -1480,6 +1544,19 @@ pub struct AttentionCarryoverDto {
     /// Whether every reference extracted from `clears_when` is currently satisfied
     /// (`mev::CarryoverLane::Cleared`), verbatim from `mev::CarryoverRanking`.
     pub clears_when_satisfied: bool,
+    /// Short human-authored headline for this entry, sourced verbatim from the
+    /// carryover entry's own recorded `summary` field
+    /// (`okf_core::state::Carryover::summary`) when one is recorded. `None` when
+    /// the entry records no such headline — never synthesized from [`Self::slug`]
+    /// or [`Self::text`]: the slug stays the operator's own identity for the row
+    /// (it is never replaced), and `text` is the full multi-paragraph finding that
+    /// bastion-web's BW.14.C deliberately stopped rendering as a title because it
+    /// read as noise. Added by `BA.ticket.attention-carryover-title` so a
+    /// carryover row is legible to a reader who did not author the slug (e.g. the
+    /// pt-BR public demo) while leaving the slug visible as identity, per the
+    /// operator's recorded position in that block's Notes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// One `backlog[]` node that has crossed the backlog staleness threshold — used for both the
@@ -4220,6 +4297,7 @@ mod tests {
             unmet_blocks: Vec::new(),
             finding_id: None,
             clears_when_satisfied: false,
+            title: None,
         }
     }
 
@@ -4394,6 +4472,43 @@ mod tests {
     }
 
     // ── RunStateDto / NodeTransitionDto (BA.11.M) ──────────────────────────
+    #[test]
+    fn attention_carryover_dto_title_absent_omits_key_and_matches_pre_block_payload() {
+        // D68 task 1, case A + case C: a title-less DTO must omit the `title` key
+        // entirely (not `"title": null`), and the resulting payload must be
+        // byte-identical to the pre-block shape captured before this field
+        // existed — this is the entire non-breaking claim for BA.ticket.attention-carryover-title.
+        let dto = sample_attention_carryover();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        assert!(
+            !v.as_object().expect("object").contains_key("title"),
+            "expected 'title' to be an absent key when None, not present (possibly as null)"
+        );
+        // Pre-block payload captured via `cargo check` E0560 evidence (see spec Notes)
+        // before the `title` field existed on the struct; this is the same
+        // sample_attention_carryover() fixture serialized then, reproduced here as a
+        // literal so the comparison survives the field being added.
+        const PRE_BLOCK_PAYLOAD: &str = r#"{"repo":"bastion","slug":"engine-mount-env","kind":"env","text":"engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set","clears_when":"the engine mount is documented in .env.example","created":"2026-07-01","age_days":23,"threshold_days":3,"lane":"aging","clears_when_satisfied":false}"#;
+        assert_eq!(
+            json, PRE_BLOCK_PAYLOAD,
+            "title-less AttentionCarryoverDto payload must stay byte-identical to the pre-block shape"
+        );
+    }
+
+    #[test]
+    fn attention_carryover_dto_title_present_round_trips() {
+        // D68 task 1, case B — a title-bearing DTO round-trips its title unchanged.
+        let dto = AttentionCarryoverDto {
+            title: Some("Engine mount needs an env var".to_owned()),
+            ..sample_attention_carryover()
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: AttentionCarryoverDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        assert_eq!(v["title"], "Engine mount needs an env var");
+    }
 
     fn sample_run_state_dto() -> RunStateDto {
         RunStateDto {

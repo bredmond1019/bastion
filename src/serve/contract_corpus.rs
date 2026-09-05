@@ -1686,11 +1686,15 @@ mod attention_scenarios {
     use crate::config::FileConfig;
     use crate::serve::handlers::attention::get_attention;
 
-    /// Build a fixture HQ brain corpus with one stale `carryover[]` entry
-    /// (`bastion`, `known_issue`, threshold 10 days — created 15 days ago,
-    /// so it trips), one aging `backlog[]` idea (threshold 7 days — created
-    /// 10 days ago), and one `origin.type == "capture"` backlog idea aged
-    /// the same way (lands in `orphaned_captures`, not `aging_backlog`).
+    /// Build a fixture HQ brain corpus with two stale `carryover[]` entries
+    /// (`bastion`, threshold 10/3 days — both created 15 days ago, so both
+    /// trip): one with no recorded `summary` (title-less, pinning
+    /// `AttentionCarryoverDto.title`'s absent-key case) and one with a
+    /// `summary` (title-bearing, pinning the present case —
+    /// `BA.ticket.attention-carryover-title`). Also one aging `backlog[]`
+    /// idea (threshold 7 days — created 10 days ago), and one
+    /// `origin.type == "capture"` backlog idea aged the same way (lands in
+    /// `orphaned_captures`, not `aging_backlog`).
     fn fixture_populated() -> TempDir {
         let tmp = TempDir::new("attention-populated");
         let root = tmp.path();
@@ -1752,6 +1756,14 @@ heading = "Bastion"
       "scope": {{"repo": "bastion"}},
       "kind": "known_issue",
       "text": "some known issue that has gone stale",
+      "created": "{created}"
+    }},
+    {{
+      "slug": "stale-env-with-title",
+      "scope": {{"repo": "bastion"}},
+      "kind": "env",
+      "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
+      "summary": "Engine mount needs an env var",
       "created": "{created}"
     }}
   ]
@@ -2173,6 +2185,101 @@ mod workflows_scenarios {
         });
         let req = actix_web::test::TestRequest::get().uri("/api/workflows?with_skipped=1");
         dump("workflows", "skipped", req, &app).await;
+    }
+}
+
+/// `GET /api/repos/status` corpus scenarios (`BA.ticket.batch-repo-status`,
+/// task 2, serve-api §11.7) — the cross-repo `status.md` aggregate's
+/// `{entries, skipped}` envelope, always returned (no `?with_skipped=1`
+/// opt-in — see `handlers::status::list_all_repo_status`'s doc comment for
+/// why this route diverges from §11.6's precedent).
+///
+/// `repo-status__populated` freezes a single well-formed workspace's
+/// `RepoStatusDto` body inside `entries[]` with an empty `skipped[]`.
+/// `repo-status__skipped` freezes both `SkippedWorkspaceDto::reason` values
+/// this route can emit in one response — `missing_or_malformed_status` for a
+/// registered workspace with no parseable `status.md`, and
+/// `unregistered_workspace` for a `?names=` entry absent from the registry —
+/// alongside a healthy entry, so the golden pins "skipped never includes a
+/// healthy repo" at the same time as the reason vocabulary.
+#[cfg(test)]
+mod repo_status_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::status::list_all_repo_status;
+
+    macro_rules! repo_status_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(
+                        web::resource("/api/repos/status")
+                            .route(web::get().to(list_all_repo_status)),
+                    ),
+            )
+            .await
+        };
+    }
+
+    const STATUS_MD: &str = r#"---
+type: ProjectStatus
+title: Fixture Status
+description: Contract-corpus fixture status.md for the repo-status goldens.
+now: "BA.ticket.batch-repo-status in progress — batch status aggregate"
+next: "n/a"
+blocked: []
+---
+
+# Status
+"#;
+
+    fn registry(entries: &[(&str, &TempDir)]) -> FileConfig {
+        FileConfig {
+            workspaces: Some(
+                entries
+                    .iter()
+                    .map(|(name, tmp)| ((*name).to_owned(), tmp.path().to_path_buf()))
+                    .collect::<HashMap<_, _>>(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn repo_status_corpus_populated() {
+        let tmp = TempDir::new("repo-status-populated");
+        write(&tmp.path().join("planning/status.md"), STATUS_MD);
+        let app = repo_status_service!(registry(&[("bastion", &tmp)]));
+        let req = actix_web::test::TestRequest::get().uri("/api/repos/status");
+        dump("repo-status", "populated", req, &app).await;
+    }
+
+    /// One healthy repo, one registered-but-malformed repo (no `status.md`
+    /// written at all — the same "missing" case §11.7 collapses with
+    /// "malformed" under one reason), and an unregistered `?names=` entry.
+    #[actix_web::test]
+    async fn repo_status_corpus_skipped() {
+        let tmp_healthy = TempDir::new("repo-status-healthy");
+        write(&tmp_healthy.path().join("planning/status.md"), STATUS_MD);
+
+        let tmp_malformed = TempDir::new("repo-status-malformed");
+        // No planning/status.md written — the file-missing branch of
+        // `read_repo_status`, which the aggregate reports identically to a
+        // present-but-unparseable file (both are `MissingOrMalformedStatus`).
+
+        let app = repo_status_service!(registry(&[
+            ("repo-healthy", &tmp_healthy),
+            ("repo-malformed", &tmp_malformed),
+        ]));
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/repos/status?names=repo-healthy,repo-malformed,repo-unregistered");
+        dump("repo-status", "skipped", req, &app).await;
     }
 }
 
@@ -3699,5 +3806,110 @@ mod actions_notify_scenarios {
         let app = notify_test_service!();
         let req = actix_web::test::TestRequest::post().uri("/api/notify/test");
         dump_with(&config, "notify-test", "unconfigured", req, &app).await;
+    }
+}
+
+/// `401` boundary corpus scenarios (Task 6, spec
+/// `BA.ticket.serve-auth-boundary-freeze`) — the golden acceptance criterion
+/// no earlier task in this spec's decomposition owned. Task 5 owned
+/// `types/contract-corpus` (the output directory) but not this generator, so
+/// the corpus had never actually gained a 401 golden even though the drift
+/// check passed (it was verifying a corpus that had none to drift from).
+///
+/// Modelled directly on `mod repo_status_scenarios` above: a `#[cfg(test)]
+/// mod`, a service-init macro building a minimal `actix_web::App`, and a
+/// call to `super::dump`. All three scenarios dispatch through the real
+/// `BearerAuthMiddleware` (with the signature tier enabled via
+/// `with_signing`) so the captured response is the middleware's real 401,
+/// never a hand-built one.
+#[cfg(test)]
+mod auth_scenarios {
+    use actix_web::{HttpResponse, web};
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::dump;
+    use crate::serve::auth::BearerAuthMiddleware;
+    use crate::serve::source_auth;
+
+    const BEARER_TOKEN: &str = "contract-corpus-bearer-token";
+    const SIGNING_KEY: &str = "contract-corpus-signing-key";
+    const SKEW_SECS: u64 = 300;
+
+    macro_rules! auth_service {
+        () => {
+            actix_web::test::init_service(
+                actix_web::App::new().service(
+                    web::scope("/api")
+                        .wrap(
+                            BearerAuthMiddleware::new(BEARER_TOKEN)
+                                .with_signing(Some(SIGNING_KEY.to_owned()), SKEW_SECS),
+                        )
+                        .route(
+                            "/ping",
+                            web::get().to(|| async { HttpResponse::Ok().finish() }),
+                        ),
+                ),
+            )
+            .await
+        };
+    }
+
+    /// Build a syntactically valid `x-timestamp`/`x-signature` pair for
+    /// `method`/`path` under `key` at `timestamp` — mirrors `auth.rs`'s own
+    /// test-only `sign` helper so a real machine-caller signature is what
+    /// gets exercised, never a hand-built header value.
+    fn sign(key: &str, timestamp: i64, method: &str, path: &str) -> String {
+        let canonical = source_auth::canonical_string(method, path, &[]);
+        let payload = source_auth::signing_payload(timestamp, &canonical);
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).unwrap();
+        mac.update(payload.as_bytes());
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// No `Authorization` header and no `x-timestamp`/`x-signature` pair at
+    /// all — the baseline unauthenticated request.
+    #[actix_web::test]
+    async fn unauthorized_no_credentials() {
+        let app = auth_service!();
+        let req = actix_web::test::TestRequest::get().uri("/api/ping");
+        dump("auth", "unauthorized-no-credentials", req, &app).await;
+    }
+
+    /// A well-formed `Authorization: Bearer <token>` header, but the wrong
+    /// token. MUST produce a byte-identical body to the no-credentials
+    /// scenario — a discriminating error body would tell an attacker which
+    /// half of the credential was wrong.
+    #[actix_web::test]
+    async fn unauthorized_bad_bearer() {
+        let app = auth_service!();
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/ping")
+            .insert_header(("authorization", "Bearer wrong-token"));
+        dump("auth", "unauthorized-bad-bearer", req, &app).await;
+    }
+
+    /// A syntactically valid `x-timestamp`/`x-signature` pair — signed under
+    /// the wrong key, at the real current time so the skew check itself
+    /// passes and only the HMAC comparison fails. MUST also produce a
+    /// byte-identical body to the other two scenarios.
+    #[actix_web::test]
+    async fn unauthorized_bad_signature() {
+        let app = auth_service!();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let sig = sign("wrong-signing-key", now, "GET", "/api/ping");
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/ping")
+            .insert_header(("x-timestamp", now.to_string()))
+            .insert_header(("x-signature", sig));
+        dump("auth", "unauthorized-bad-signature", req, &app).await;
     }
 }

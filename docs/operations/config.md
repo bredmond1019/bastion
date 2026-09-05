@@ -64,6 +64,8 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `BASTION_NOTIFY` | No | `true` | Desktop-notification toggle for `bastion monitor` (TUI and `--watch`) — opt-out, not opt-in. Parsed leniently: an unparseable value silently falls back to the default rather than erroring (unlike the budget values below). macOS-only regardless of setting — a no-op on other platforms. See [monitor.md](../workflows/monitor.md#desktop-notifications). |
 | `BASTION_SERVE_ADDR` | No | `0.0.0.0:4317` | Bind address for `bastion serve` |
 | `BASTION_SERVE_TOKEN` | Yes (for `bastion serve`) | — | Bearer token enforced on all protected routes; also settable via `--token` |
+| `BASTION_SERVE_SIGNING_KEY` | No | — (bearer-only) | HMAC-SHA256 key for the machine-caller signature tier (`x-timestamp`/`x-signature`, `BA.ticket.serve-auth-boundary-freeze`) — accepted alongside the bearer, not instead of it. Absent or empty resolves to `None`; `bastion serve` then boots exactly as it does today, bearer-only, and rejects signed requests as unauthorized rather than accepting them unsigned. No CLI flag yet — env only. |
+| `BASTION_SERVE_CLOCK_SKEW_SECS` | No | `300` | How many seconds a signed request's `v0:<unix-ts>:` prefix may drift from "now" before it is rejected — bounds how long a captured signature stays replayable. A non-numeric or absent value falls back to the default rather than erroring. No CLI flag yet — env only. |
 | `BASTION_PLANNING_ROOT` | No | `planning/` | Root directory for planning state and harnesses |
 | `BASTION_BRAIN_TOML` | No | `brain.toml` | Path to the workspace definition registry |
 | `BASTION_MAX_TOTAL_TOKENS` | No | — (no cap) | Budget cap (BA.7.C): total token ceiling. Absent-tolerant — no cap configured is a valid, unchanged config. A present-but-unparseable value is a fatal `ConfigError::MalformedBudgetValue`, never a silent default. |
@@ -429,6 +431,8 @@ DB-free configuration struct for `bastion serve`. Does not require `DATABASE_URL
 |---|---|---|
 | `addr` | `String` | Bind address (e.g. `"0.0.0.0:4317"`). Default: `0.0.0.0:4317`. |
 | `token` | `String` | Bearer token enforced by `BearerAuthMiddleware` on all protected routes. Mandatory and non-empty — absence or empty string is `ConfigError::MissingServeToken`. |
+| `signing_key` | `Option<String>` | HMAC-SHA256 key for the machine-caller signature tier. `None` when `BASTION_SERVE_SIGNING_KEY` is absent or empty — never an error; leaves `serve` bearer-only. |
+| `clock_skew_secs` | `u64` | Clock-skew window (seconds) for the signature tier's `v0:<unix-ts>:` prefix. Default: `ServeConfig::DEFAULT_CLOCK_SKEW_SECS` (300) when `BASTION_SERVE_CLOCK_SKEW_SECS` is absent or non-numeric. |
 
 ### `build_serve_config`
 
@@ -438,13 +442,21 @@ pub fn build_serve_config(
     token_flag: Option<String>,
     addr_env: Option<String>,
     token_env: Option<String>,
+    signing_key_flag: Option<String>,
+    signing_key_env: Option<String>,
+    skew_env: Option<String>,
 ) -> Result<ServeConfig, ConfigError>
 ```
 
 Pure function (no I/O). Merges CLI flags (highest precedence) over env vars (middle) over
 the built-in address default (`0.0.0.0:4317`). Returns `ConfigError::MissingServeToken`
 when neither `token_flag` nor `token_env` is provided, or when the resolved token is an
-empty string (e.g. `BASTION_SERVE_TOKEN=` in the environment).
+empty string (e.g. `BASTION_SERVE_TOKEN=` in the environment). `signing_key_flag`/
+`signing_key_env` resolve `BASTION_SERVE_SIGNING_KEY` with the same flag-over-env
+precedence — an absent or empty-string key resolves to `None`, never an error (there is
+no CLI flag for it yet). `skew_env` resolves `BASTION_SERVE_CLOCK_SKEW_SECS`; a missing or
+non-numeric value falls back to `ServeConfig::DEFAULT_CLOCK_SKEW_SECS` rather than
+erroring.
 
 ### `load_serve_config`
 
@@ -455,6 +467,7 @@ pub fn load_serve_config(
 ) -> Result<ServeConfig, ConfigError>
 ```
 
-I/O wrapper around `build_serve_config`. Reads `BASTION_SERVE_ADDR` and
-`BASTION_SERVE_TOKEN` from the environment (after loading `.env` via `dotenvy`) and
-delegates to `build_serve_config`. DB-free — does not touch `DATABASE_URL`.
+I/O wrapper around `build_serve_config`. Reads `BASTION_SERVE_ADDR`, `BASTION_SERVE_TOKEN`,
+`BASTION_SERVE_SIGNING_KEY`, and `BASTION_SERVE_CLOCK_SKEW_SECS` from the environment
+(after loading `.env` via `dotenvy`) and delegates to `build_serve_config`. DB-free — does
+not touch `DATABASE_URL`. Neither the signing key nor the skew window has a CLI flag yet.

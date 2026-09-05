@@ -115,6 +115,11 @@ fn carryover_dto(
         unmet_blocks: ranking.unmet_blocks.clone(),
         finding_id: ranking.finding_id.clone(),
         clears_when_satisfied: ranking.clears_when_satisfied,
+        // Sourced verbatim from the carryover entry's own recorded `summary` — the
+        // field okf-core documents as the row label for exactly this consumer
+        // (`bastion's AttentionCarryoverDto`). Never derived from `slug`/`text`
+        // (BA.ticket.attention-carryover-title): absent stays absent.
+        title: item.summary.clone(),
     }
 }
 

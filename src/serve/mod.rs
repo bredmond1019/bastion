@@ -43,6 +43,7 @@ pub mod notify;
 pub mod poll;
 pub mod pricescout;
 pub mod session_qa;
+pub mod source_auth;
 pub mod status;
 pub mod ws;
 
@@ -415,12 +416,18 @@ fn json_config() -> web::JsonConfig {
 /// `token` is the bearer secret enforced by [`BearerAuthMiddleware`] on all
 /// protected routes.  `/health` remains public.
 ///
+/// `signing_key` and `skew_secs` — `ServeConfig::signing_key` /
+/// `ServeConfig::clock_skew_secs` (BA.ticket.serve-auth-boundary-freeze) —
+/// admit the machine-caller HMAC signature tier as an alternative to the
+/// bearer on the same protected routes. `signing_key: None` keeps the server
+/// bearer-only, unchanged from before this tier existed.
+///
 /// `poll_secs` sets the hub's poll cadence for sessions-list and pane pushes
 /// (sourced from `BASTION_POLL_INTERVAL`, defaulting to 2).
 ///
 /// **Blocking** — run on a dedicated OS thread or via
 /// `tokio::task::spawn_blocking` to avoid stalling the tokio executor.
-pub fn run(addr: String, token: String) -> Result<()> {
+pub fn run(addr: String, token: String, signing_key: Option<String>, skew_secs: u64) -> Result<()> {
     // Read poll cadence from env (BASTION_POLL_INTERVAL), defaulting to 2s.
     let poll_secs: u64 = std::env::var("BASTION_POLL_INTERVAL")
         .ok()
@@ -429,7 +436,13 @@ pub fn run(addr: String, token: String) -> Result<()> {
 
     // Spin up the actix System on the current thread; block_on drives the
     // async server future inside the System's Arbiter-aware runtime.
-    actix_web::rt::System::new().block_on(run_server(addr, token, poll_secs))
+    actix_web::rt::System::new().block_on(run_server(
+        addr,
+        token,
+        signing_key,
+        skew_secs,
+        poll_secs,
+    ))
 }
 
 /// Inner async server setup — separated from `run` so it is independently
@@ -507,8 +520,18 @@ fn telegram_commands_allow_list(
     registry.telegram_commands.clone().unwrap_or_default()
 }
 
+/// `signing_key`/`skew_secs` are `ServeConfig`'s machine-caller signature
+/// fields (BA.ticket.serve-auth-boundary-freeze task 1), threaded straight
+/// through to both `BearerAuthMiddleware::with_signing` wrap sites below.
+///
 /// `poll_secs` is passed to the [`Hub`] to set its poll cadence.
-async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
+async fn run_server(
+    addr: String,
+    token: String,
+    signing_key: Option<String>,
+    skew_secs: u64,
+    poll_secs: u64,
+) -> Result<()> {
     // Load the workspace registry once at startup (BA.11.D) — malformed or
     // absent config degrades to an empty registry rather than failing boot,
     // matching `load_workspace_registry`'s own degradation contract.
@@ -1440,6 +1463,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         let pending_payloads = pending_payloads.clone();
         let approval_ledger = approval_ledger.clone();
         let operator_transport = operator_transport.clone();
+        let signing_key = signing_key.clone();
 
         // Protected scope — bearer auth enforced on all children.
         //
@@ -1448,7 +1472,10 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         // the HTTP method is not registered — bare `.route()` would silently
         // return 404 in that case.
         let protected = web::scope("/api")
-            .wrap(BearerAuthMiddleware::new(token.clone()))
+            .wrap(
+                BearerAuthMiddleware::new(token.clone())
+                    .with_signing(signing_key.clone(), skew_secs),
+            )
             // ── Session routes ──────────────────────────────────────────────
             // /sessions — GET (list) + POST (create)
             .service(
@@ -1479,6 +1506,15 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
             // ── Repo / workflow status routes (BA.11.D) ─────────────────────
             // /repos — GET (list workspace registry entries)
             .service(web::resource("/repos").route(web::get().to(handlers::status::list_repos)))
+            // /repos/status — GET only (cross-repo status.md aggregate,
+            // BA.ticket.batch-repo-status). Registered before the dynamic
+            // `/repos/{name}/status` below; actix-router prefers a literal
+            // segment match over a dynamic one regardless of registration
+            // order, but a regression test pins this explicitly.
+            .service(
+                web::resource("/repos/status")
+                    .route(web::get().to(handlers::status::list_all_repo_status)),
+            )
             // /repos/{name}/status — GET only
             .service(
                 web::resource("/repos/{name}/status")
@@ -1574,7 +1610,10 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         // Protected WebSocket scope — bearer auth enforced on upgrade.
         // v0.2: route backed by hub + WsConn (replaces echo actor).
         let ws_scope = web::scope("/ws")
-            .wrap(BearerAuthMiddleware::new(token.clone()))
+            .wrap(
+                BearerAuthMiddleware::new(token.clone())
+                    .with_signing(signing_key.clone(), skew_secs),
+            )
             .app_data(hub_data.clone())
             .route("", web::get().to(hub_ws_handler));
 
@@ -2152,6 +2191,10 @@ mod tests {
                     .route(web::delete().to(handlers::sessions::delete_session)),
             )
             .service(web::resource("/repos").route(web::get().to(handlers::status::list_repos)))
+            .service(
+                web::resource("/repos/status")
+                    .route(web::get().to(handlers::status::list_all_repo_status)),
+            )
             .service(
                 web::resource("/repos/{name}/status")
                     .route(web::get().to(handlers::status::get_repo_status)),
@@ -3431,6 +3474,184 @@ mod tests {
             per_repo_entries[0]["spec_slug"]
         );
         assert_eq!(agg_entries[0]["status"], per_repo_entries[0]["status"]);
+    }
+
+    // ── /api/repos/status — cross-repo status.md aggregate ─────────────────
+    // (BA.ticket.batch-repo-status)
+
+    #[actix_web::test]
+    async fn list_all_repo_status_rejects_missing_token_with_401() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/status")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/repos/status without token must return 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_all_repo_status_empty_registry_returns_200_empty_envelope() {
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/status")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body, serde_json::json!({"entries": [], "skipped": []}));
+    }
+
+    #[actix_web::test]
+    async fn list_all_repo_status_route_is_not_captured_by_dynamic_name_route() {
+        // Regression: `/repos/status` must resolve to the aggregate handler,
+        // never to `/repos/{name}/status` with `name == "status"`. An empty
+        // registry makes the two handlers' 200 bodies visibly different
+        // shapes (`{entries, skipped}` object vs. a 404), so a shadowing bug
+        // would be caught either as a 404 or as the wrong body shape.
+        let app = test::init_service(build_app(FileConfig::default())).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/status")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "must not fall through to the per-repo 404-on-unknown-name behaviour"
+        );
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(
+            body.get("entries").is_some() && body.get("skipped").is_some(),
+            "must be the aggregate envelope, not a per-repo status body; got {body}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_all_repo_status_returns_entries_for_good_repos_matching_per_repo_route() {
+        let (_tmp, registry) = registry_with_fixture_repo();
+        let app = test::init_service(build_app(registry)).await;
+
+        let agg_req = test::TestRequest::get()
+            .uri("/api/repos/status")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let agg_resp = test::call_service(&app, agg_req).await;
+        assert_eq!(agg_resp.status(), 200);
+        let agg_body: serde_json::Value = test::read_body_json(agg_resp).await;
+
+        let per_repo_req = test::TestRequest::get()
+            .uri("/api/repos/repo-x/status")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let per_repo_resp = test::call_service(&app, per_repo_req).await;
+        assert_eq!(per_repo_resp.status(), 200);
+        let per_repo_body: serde_json::Value = test::read_body_json(per_repo_resp).await;
+
+        let entries = agg_body["entries"]
+            .as_array()
+            .expect("entries must be an array");
+        assert_eq!(entries.len(), 1);
+        assert!(
+            agg_body["skipped"].as_array().unwrap().is_empty(),
+            "no repo should be skipped: {agg_body}"
+        );
+        assert_eq!(
+            entries[0], per_repo_body,
+            "aggregate entry must be byte-identical to the per-repo route's body"
+        );
+    }
+
+    #[actix_web::test]
+    async fn list_all_repo_status_malformed_repo_is_skipped_with_reason_not_entry() {
+        const STATUS_MALFORMED: &str = include_str!("status/fixtures/status_malformed.md");
+
+        let tmp_good = TempDir::new();
+        write_fixture(&tmp_good.path().join("planning/status.md"), STATUS_MD);
+        let tmp_bad = TempDir::new();
+        write_fixture(&tmp_bad.path().join("planning/status.md"), STATUS_MALFORMED);
+
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("repo-good".to_string(), tmp_good.path().to_path_buf());
+        workspaces.insert("repo-bad".to_string(), tmp_bad.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/status")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+
+        let entries = body["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["name"], "repo-good");
+
+        let skipped = body["skipped"].as_array().expect("skipped array");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0]["repo"], "repo-bad");
+        assert_eq!(skipped[0]["reason"], "missing_or_malformed_status");
+    }
+
+    #[actix_web::test]
+    async fn list_all_repo_status_names_query_scopes_and_reports_unregistered() {
+        let (_tmp, registry) = registry_with_fixture_repo();
+        let app = test::init_service(build_app(registry)).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/repos/status?names=repo-x,no-such-repo")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+
+        let entries = body["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["name"], "repo-x");
+
+        let skipped = body["skipped"].as_array().expect("skipped array");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0]["repo"], "no-such-repo");
+        assert_eq!(skipped[0]["reason"], "unregistered_workspace");
+    }
+
+    #[actix_web::test]
+    async fn get_repo_status_still_404s_on_malformed_status_after_aggregate_added() {
+        // Regression pin: the aggregate must never make `read_repo_status`
+        // degrade gracefully for its own benefit. The per-repo route's
+        // 404-on-malformed contract must be untouched.
+        const STATUS_MALFORMED: &str = include_str!("status/fixtures/status_malformed.md");
+        let tmp = TempDir::new();
+        write_fixture(&tmp.path().join("planning/status.md"), STATUS_MALFORMED);
+
+        let mut workspaces = std::collections::HashMap::new();
+        workspaces.insert("repo-bad".to_string(), tmp.path().to_path_buf());
+        let registry = FileConfig {
+            workspaces: Some(workspaces),
+            ..Default::default()
+        };
+
+        let app = test::init_service(build_app(registry)).await;
+        let req = test::TestRequest::get()
+            .uri("/api/repos/repo-bad/status")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["code"], "C002");
     }
 
     // ── /api/actions/command — route registration (BA.11.E) ────────────────
@@ -6203,6 +6424,8 @@ heading = "bastion"
         let handle = actix_web::rt::spawn(run_server(
             "127.0.0.1:0".to_string(),
             "boot-test-token".to_string(),
+            None,
+            300,
             2,
         ));
         // `run_server` serves forever once bound — give its setup path (which
@@ -6259,6 +6482,8 @@ heading = "bastion"
         let handle = actix_web::rt::spawn(run_server(
             "127.0.0.1:0".to_string(),
             "boot-test-token".to_string(),
+            None,
+            300,
             2,
         ));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -6312,6 +6537,8 @@ heading = "bastion"
         let handle = actix_web::rt::spawn(run_server(
             "127.0.0.1:0".to_string(),
             "boot-test-token".to_string(),
+            None,
+            300,
             2,
         ));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -6369,6 +6596,8 @@ heading = "bastion"
         let handle = actix_web::rt::spawn(run_server(
             "127.0.0.1:0".to_string(),
             "boot-test-token".to_string(),
+            None,
+            300,
             2,
         ));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

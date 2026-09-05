@@ -35,6 +35,18 @@
           "age_days": 0,
           "clears_when_satisfied": false,
           "created": "<TIMESTAMP>",
+          "kind": "env",
+          "lane": "aging",
+          "repo": "bastion",
+          "slug": "stale-env-with-title",
+          "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
+          "threshold_days": 3,
+          "title": "Engine mount needs an env var"
+        },
+        {
+          "age_days": 0,
+          "clears_when_satisfied": false,
+          "created": "<TIMESTAMP>",
           "kind": "known_issue",
           "lane": "aging",
           "repo": "bastion",

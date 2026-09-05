@@ -271,9 +271,16 @@ async fn dispatch(cli: Cli) -> Result<()> {
             Commands::Serve { addr, token } => {
                 let serve_cfg =
                     config::load_serve_config(addr, token).map_err(|e| anyhow::anyhow!("{e}"))?;
-                tokio::task::spawn_blocking(move || serve::run(serve_cfg.addr, serve_cfg.token))
-                    .await
-                    .map_err(|e| anyhow::anyhow!("serve thread panicked: {e}"))?
+                tokio::task::spawn_blocking(move || {
+                    serve::run(
+                        serve_cfg.addr,
+                        serve_cfg.token,
+                        serve_cfg.signing_key,
+                        serve_cfg.clock_skew_secs,
+                    )
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("serve thread panicked: {e}"))?
             }
             // Code is DB-free and synchronous — lives on the knowledge-graph surface.
             // Resolves the scan root from the workspace registry (no DATABASE_URL required).

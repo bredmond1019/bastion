@@ -151,6 +151,20 @@ export interface AttentionCarryoverDto {
 	 * (`mev::CarryoverLane::Cleared`), verbatim from `mev::CarryoverRanking`.
 	 */
 	clears_when_satisfied: boolean;
+	/**
+	 * Short human-authored headline for this entry, sourced verbatim from the
+	 * carryover entry's own recorded `summary` field
+	 * (`okf_core::state::Carryover::summary`) when one is recorded. `None` when
+	 * the entry records no such headline — never synthesized from [`Self::slug`]
+	 * or [`Self::text`]: the slug stays the operator's own identity for the row
+	 * (it is never replaced), and `text` is the full multi-paragraph finding that
+	 * bastion-web's BW.14.C deliberately stopped rendering as a title because it
+	 * read as noise. Added by `BA.ticket.attention-carryover-title` so a
+	 * carryover row is legible to a reader who did not author the slug (e.g. the
+	 * pt-BR public demo) while leaving the slug visible as identity, per the
+	 * operator's recorded position in that block's Notes.
+	 */
+	title?: string;
 }
 
 /**
@@ -1507,6 +1521,45 @@ export interface RepoStatusDto {
 }
 
 /**
+ * One registered workspace that `GET /api/workflows?with_skipped=1`
+ * could not fully report on.
+ * 
+ * Returned only inside [`WorkflowsAggregateDto::skipped`] — the default,
+ * no-query-param response of `GET /api/workflows` never includes this type.
+ * `reason` is a plain `String` on the wire (one of `"unreadable_root"` |
+ * `"no_planning_dir"` | `"malformed_flow_state"`), matching how
+ * [`RepoWorkflowStateDto::status`] carries a raw status string rather than
+ * an enum. See serve-api §11.6 for the full vocabulary, the
+ * first-match-wins precedence order, and the "empty is not skipped" rule.
+ */
+export interface SkippedWorkspaceDto {
+	/** The registered workspace name whose report is incomplete. */
+	repo: string;
+	/** One of `"unreadable_root"`, `"no_planning_dir"`, `"malformed_flow_state"`. */
+	reason: string;
+}
+
+/**
+ * The response envelope for `GET /api/repos/status` (BA.ticket.batch-repo-status).
+ * 
+ * Always returned in this shape — unlike [`WorkflowsAggregateDto`], this
+ * envelope has no `?with_skipped=1` opt-in: the route has no existing
+ * consumer to keep byte-identical, so the honest `{entries, skipped}` shape
+ * is the default rather than gated behind a flag. `entries` carries the
+ * same [`RepoStatusDto`] body the per-repo route (`GET
+ * /api/repos/{name}/status`) returns for each workspace whose `status.md`
+ * parsed; `skipped` names every workspace this request covered but could
+ * not report on, and why. Both fields always serialize, including when
+ * empty (`[]`, never an absent key) — `entries.len() + skipped.len()`
+ * always equals the number of workspaces the request covered. See
+ * serve-api §11.7.
+ */
+export interface RepoStatusAggregateDto {
+	entries: RepoStatusDto[];
+	skipped: SkippedWorkspaceDto[];
+}
+
+/**
  * JSON response element for `GET /repos` (one per workspace registry entry).
  * 
  * Wire format: `{ "name": "bastion", "now": "BA.11.D in progress", "has_handoff": false }`
@@ -1801,25 +1854,6 @@ export interface SessionDto {
 export interface SessionsPayload {
 	/** Current snapshot of all tmux sessions. */
 	sessions: SessionDto[];
-}
-
-/**
- * One registered workspace that `GET /api/workflows?with_skipped=1`
- * could not fully report on.
- * 
- * Returned only inside [`WorkflowsAggregateDto::skipped`] — the default,
- * no-query-param response of `GET /api/workflows` never includes this type.
- * `reason` is a plain `String` on the wire (one of `"unreadable_root"` |
- * `"no_planning_dir"` | `"malformed_flow_state"`), matching how
- * [`RepoWorkflowStateDto::status`] carries a raw status string rather than
- * an enum. See serve-api §11.6 for the full vocabulary, the
- * first-match-wins precedence order, and the "empty is not skipped" rule.
- */
-export interface SkippedWorkspaceDto {
-	/** The registered workspace name whose report is incomplete. */
-	repo: string;
-	/** One of `"unreadable_root"`, `"no_planning_dir"`, `"malformed_flow_state"`. */
-	reason: string;
 }
 
 /**

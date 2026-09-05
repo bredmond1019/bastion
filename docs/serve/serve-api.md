@@ -1,18 +1,18 @@
 ---
 type: Guideline
-title: "serve-api contract v0.41"
-description: "The pinned HTTP + WebSocket contract for `bastion serve` — bind address, bearer auth, the /ws hub and frame envelope, and the REST surfaces bastion-ui and bastion-web consume. Per-version deltas live in the Amendment Log at the bottom of this file, not here."
+title: "serve-api contract v1.0.0"
+description: "The pinned HTTP + WebSocket contract for `bastion serve` — bind address, the two-tier bearer/signature auth boundary, the /ws hub and frame envelope, and the REST surfaces bastion-ui and bastion-web consume. Per-version deltas live in the Amendment Log at the bottom of this file, not here."
 doc_id: serve-api
 layer: [console, surface, engine]
 project: bastion
 status: active
-keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, block-graph, reconcile_failed]
+keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, block-graph, reconcile_failed, hmac-signature, constant-time-auth]
 related: [config, observ, data-contract, abort, master-plan, "base-template:run-state-data-contract"]
 ---
 
-# serve-api — v0.41 Contract
+# serve-api — v1.0.0 Contract
 
-**Version:** v0.41  
+**Version:** v1.0.0  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26, 28–29 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -108,15 +108,17 @@ transport security on the tailnet.
 
 ## 2. Authentication
 
-All routes **except** `GET /health` under bastion's own `/api` and `/ws` scopes are protected by
-mandatory bearer-token authentication (Section 2.1–2.3). The embedded engine routes (Section 18,
-mounted only when config allows) are a **separate, unmounted-at-`/api` surface with their own
-`X-API-Key` gate** — the two auth schemes coexist side by side and are never double-applied to the
-same request:
+Bastion's own `/api`/`/ws` surface has **two auth tiers**, either of which admits a request — an
+**operator bearer tier** (Section 2.1) for interactive callers like `bastion-ui`/`bastion-web`, and
+a **machine-caller signature tier** (Section 2.2) for scripted/service callers that would rather
+hold an HMAC key than a bearer token. All routes **except** `GET /health` require one of the two.
+The embedded engine routes (Section 18, mounted only when config allows) are a wholly **separate,
+unmounted-at-`/api` surface with their own `X-API-Key` gate** — a third scheme, never mixed with
+the two below, and never double-applied to the same request:
 
-| Route family | Scheme | Header |
+| Route family | Scheme | Header(s) |
 |---|---|---|
-| `/health`, `/api/*`, `/ws` (Sections 3–13) | Bearer | `Authorization: Bearer <BASTION_SERVE_TOKEN>` |
+| `/health`, `/api/*`, `/ws` (Sections 3–13) | Bearer **OR** signature | `Authorization: Bearer <BASTION_SERVE_TOKEN>` **or** `x-timestamp` + `x-signature` |
 | Engine routes (Section 18): `/events/`, `/events/{run_id}/abort` | API key | `X-API-Key: <BASTION_ENGINE_API_KEY>` |
 | Engine routes (Section 18): `GET /health`, `GET /workflows`, `GET /workflows/{type}/graph` | None (public) | — |
 
@@ -127,7 +129,7 @@ shadowing, anything the engine's health handler reports has to be mirrored onto 
 reachable at all — which is why bastion's response, not engine-serve's, carries `engine_build_sha`
 (v0.40; Section 3).
 
-### 2.1 Scheme
+### 2.1 Bearer tier (operator callers)
 
 Clients MUST send an `Authorization` header on every protected request:
 
@@ -136,12 +138,95 @@ Authorization: Bearer <token>
 ```
 
 `<token>` is the value of `BASTION_SERVE_TOKEN` (set on the server).  The
-token is checked inside the pure `token_matches` helper (`src/serve/auth.rs`).
-The scheme prefix `Bearer ` is matched case-sensitively.
+token is checked inside the pure `token_matches` helper (`src/serve/auth.rs`),
+using a **constant-time comparison** (`subtle::ConstantTimeEq`) so response
+timing never leaks the position of the first differing byte — the classic
+timing-oracle attack against secret comparison. The scheme prefix `Bearer `
+is matched case-sensitively.
 
-### 2.2 Failure response
+### 2.2 Signature tier (machine callers)
 
-A missing, malformed, or incorrect token returns:
+A request may present a signature **instead of** a bearer token. This tier is disabled unless
+the server operator sets `BASTION_SERVE_SIGNING_KEY`; when unset, every request must use the
+bearer tier. The signature tier exists for scripted/service callers that would rather rotate an
+HMAC key than pass around the operator's own bearer secret.
+
+**Headers:**
+
+```
+x-timestamp: <unix seconds, decimal>
+x-signature: <lowercase hex HMAC-SHA256>
+```
+
+**Canonical string.** The signature covers exactly three components, joined by newlines, with no
+trimming, normalisation, or percent-decoding of any of them:
+
+```
+<METHOD>\n<path>\n<body>
+```
+
+- `<METHOD>` is the HTTP method, uppercased (`GET`, `POST`, …).
+- `<path>` is the request path verbatim (no query string re-encoding).
+- `<body>` is the raw request body.
+
+**Body-canonicalisation limitation — read this before trusting the scheme for more than it
+does.** `bastion serve`'s current middleware canonicalises `<body>` as an **empty byte slice on
+every request, regardless of what the client actually sends** — actix's `ServiceRequest` does not
+expose a buffered body at middleware level without a payload-buffering wrapper, which is out of
+scope for this contract version. **The signature therefore binds the method and the path, but does
+NOT bind the request body.** A signed `POST` with a tampered body still verifies. Do not rely on
+this scheme to detect body tampering until a future version documents buffered-body support here.
+
+**Signing payload.** The canonical string is prefixed `v0:<unix-ts>:` before hashing:
+
+```
+v0:<unix-ts>:<METHOD>\n<path>\n<body>
+```
+
+`<unix-ts>` is the same value sent in `x-timestamp`. The HMAC-SHA256 is computed over this payload
+under the shared `BASTION_SERVE_SIGNING_KEY`, then hex-encoded (lowercase) as `x-signature`. The
+comparison against the server's own computed signature uses the same constant-time primitive as
+the bearer tier (`subtle::ConstantTimeEq`), so probing the signature byte-by-byte gains nothing
+from response timing either.
+
+**Worked example.** Signing a `GET /api/board` request with no body, under
+`BASTION_SERVE_SIGNING_KEY=correct-horse-battery-staple` at unix timestamp `1735689600`:
+
+```
+canonical string:  GET\n/api/board\n
+signing payload:   v0:1735689600:GET\n/api/board\n
+HMAC-SHA256 (hex):  5981d7dddd7778a3a5614c5f2c4c67a311892a8bcb1c01c61579cca015eb62a4
+```
+
+sent as:
+
+```
+GET /api/board HTTP/1.1
+x-timestamp: 1735689600
+x-signature: 5981d7dddd7778a3a5614c5f2c4c67a311892a8bcb1c01c61579cca015eb62a4
+```
+
+**Clock-skew window.** `x-timestamp` MUST be within `BASTION_SERVE_CLOCK_SKEW_SECS` seconds of the
+server's clock, in either direction — a far-future timestamp is rejected exactly as a stale one is.
+The env var has no CLI flag; a missing or non-numeric value falls back to the built-in default of
+**300 seconds (5 minutes)**.
+
+**Either tier passes.** A request need only satisfy ONE of Section 2.1 or 2.2 — the server checks
+the bearer first, and falls back to the signature tier only when the bearer check fails (and a
+signing key is configured). Presenting neither, or presenting an invalid value for both, produces
+the identical `401` in Section 2.3 below; the response never reveals which tier (or neither) was
+attempted.
+
+**Replay limit — this scheme bounds replay, it does not prevent it.** There is no nonce store and
+no single-use enforcement: any signature accepted once is valid for every subsequent request within
+the same clock-skew window, and nothing distinguishes a legitimate retry from a captured-and-replayed
+request. A narrower `BASTION_SERVE_CLOCK_SKEW_SECS` shrinks the replay window; it does not close it.
+Do not describe this scheme elsewhere as replay-proof.
+
+### 2.3 Failure response
+
+A missing, malformed, or incorrect credential on **either** tier returns the same body — the
+response never distinguishes "bad bearer" from "bad signature" from "no credential at all":
 
 ```
 HTTP/1.1 401 Unauthorized
@@ -153,30 +238,30 @@ Content-Type: application/json
 ```
 
 The client MUST treat any `401` as a fatal auth failure and prompt the operator
-to verify the configured token.
+to verify the configured token or signing key.
 
-### 2.3 Auth policy summary
+### 2.4 Auth policy summary
 
 | Route | Auth required |
 |---|---|
 | `GET /health` | No (public) |
-| `GET /ws` (WS upgrade) | Yes — `Authorization: Bearer <token>` |
-| `GET /api/sessions` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/sessions/{name}/pane` | Yes — `Authorization: Bearer <token>` |
-| `POST /api/sessions/{name}/send` | Yes — `Authorization: Bearer <token>` |
-| `POST /api/sessions/{name}/key` | Yes — `Authorization: Bearer <token>` |
-| `POST /api/sessions` | Yes — `Authorization: Bearer <token>` |
-| `DELETE /api/sessions/{name}` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/repos` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/repos/{name}/status` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/repos/{name}/handoff` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/repos/{name}/workflows` | Yes — `Authorization: Bearer <token>` |
-| `POST /api/actions/command` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/board` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/attention` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/docs/{repo}/tree` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/docs/{repo}/file` | Yes — `Authorization: Bearer <token>` |
-| `GET /api/epics` | Yes — `Authorization: Bearer <token>` |
+| `GET /ws` (WS upgrade) | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/sessions` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/sessions/{name}/pane` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `POST /api/sessions/{name}/send` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `POST /api/sessions/{name}/key` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `POST /api/sessions` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `DELETE /api/sessions/{name}` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/repos` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/repos/{name}/status` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/repos/{name}/handoff` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/repos/{name}/workflows` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `POST /api/actions/command` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/board` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/attention` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/docs/{repo}/tree` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/docs/{repo}/file` | Yes — bearer OR signature (Section 2.1 or 2.2) |
+| `GET /api/epics` | Yes — bearer OR signature (Section 2.1 or 2.2) |
 
 ---
 
@@ -1008,7 +1093,7 @@ Error codes are from the C0xx taxonomy defined in `src/observ/errors.rs`.
 
 ---
 
-## 11. Repo / workflow status REST API (v0.3; cross-repo aggregate v0.20, A2)
+## 11. Repo / workflow status REST API (v0.3; cross-repo aggregate v0.20, A2; batch status aggregate v0.42)
 
 Four read-only routes projecting per-workspace `planning/status.md`,
 `planning/handoff.md`, and `sdlc-flow-state.json` files onto HTTP.  All routes
@@ -1364,6 +1449,106 @@ addition — it remains the endpoint to use when only one repo's flow states are
 
 ---
 
+### 11.7 `GET /api/repos/status` — cross-repo `status.md` aggregate (v0.42, `BA.ticket.batch-repo-status`)
+
+Every registered workspace's Section 11.2 `RepoStatusDto` in one response, so a caller that wants
+several repos' status stops issuing one `GET /api/repos/{name}/status` per repo. Reuses
+`read_repo_status` (Section 11.2's own I/O shell) **unchanged** — this route never asks it to
+degrade gracefully, so Section 11.2's 404-on-malformed contract is untouched by this aggregate
+existing.
+
+**DELIBERATE DIVERGENCE FROM SECTION 11.6'S PRECEDENT:** Section 11.6 gates its `{entries,
+skipped}` envelope behind an opt-in `?with_skipped=1`, purely to keep its default response
+byte-identical for an existing consumer (`bastion-web/lib/workflows.ts`). This route has **no**
+existing consumer, so there is no back-compat to preserve — the honest `{entries, skipped}`
+envelope is the unconditional default here, with no flag. Do not "harmonise" the two routes by
+adding one; that would be ceremony protecting nothing, and would let the first consumer of this
+route ship blind to skipped workspaces.
+
+**Request (no scope — every registered workspace):**
+
+```
+GET /api/repos/status HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Request (`?names=` — scoped to specific workspaces):**
+
+```
+GET /api/repos/status?names=bastion,bella HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):** `RepoStatusAggregateDto` — always the two-key envelope, never a bare array
+
+```json
+{
+  "entries": [
+    {
+      "name": "bastion",
+      "now": "BA.ticket.batch-repo-status in progress — batch status aggregate",
+      "next": "Wire the aggregate route",
+      "blocked": "[]",
+      "has_handoff": false,
+      "momentum_now": "",
+      "momentum_next": "",
+      "momentum_blocked": "",
+      "momentum_improve": "",
+      "momentum_recurring": ""
+    }
+  ],
+  "skipped": [
+    { "repo": "bella", "reason": "missing_or_malformed_status" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `entries` | `RepoStatusDto[]` | One entry per registered workspace whose `status.md` parsed — identical shape to Section 11.2's per-repo response body |
+| `skipped` | `SkippedWorkspaceDto[]` | One entry per workspace this request covered but could not report on, and why |
+
+`SkippedWorkspaceDto` fields (shared type with Section 11.6, but this route emits only two of that
+type's three wire values):
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | The workspace name whose report is incomplete |
+| `reason` | string | `"missing_or_malformed_status"` or `"unregistered_workspace"` — see below |
+
+The two `reason` values, checked in this order (first match wins — a name yields at most one
+`skipped` entry):
+
+1. **`unregistered_workspace`** — `name` is not a registered workspace. Only reachable via
+   `?names=`; the unscoped (no query param) walk only ever iterates names already known to be
+   registered, so it can never emit this reason.
+2. **`missing_or_malformed_status`** — the workspace is registered but its `planning/status.md` is
+   missing or fails to parse — the exact condition Section 11.2's per-repo route answers with `404`
+   + `C002`. This aggregate reports the same condition as a named skip instead of failing the whole
+   request.
+
+`entries.length + skipped.length` always equals the number of workspaces the request covered — the
+unscoped walk covers the full registry, and a scoped (`?names=`) walk covers exactly the
+deduplicated name list. **The route never 404s**: an empty/absent registry, or a `?names=` list
+naming only unregistered workspaces, returns `200 {entries: [], skipped: []}` /
+`200 {entries: [], skipped: [...]}` rather than failing the request — matching Section 11.6's
+degrade-gracefully contract.
+
+`?names=a,b,c` scopes the walk to exactly those (comma-separated) workspace names instead of the
+full registry. A name repeated in the list is resolved and read exactly once — the registry is
+walked exactly once per request regardless of duplicates in `?names=`. Whitespace around a name and
+empty segments (`?names=a,,b`) are trimmed/discarded; a bare `?names=` (no names at all) is treated
+as absent and falls back to the full unscoped walk.
+
+The route sits under the same bearer-auth `/api` scope as the rest of this section; a request
+without a valid token gets `401` before reaching the handler. Section 11.2's per-repo `GET
+/api/repos/{name}/status` route is entirely unchanged by this addition, including its distinct
+`C005` (unregistered name) vs. `C002` (registered, missing/malformed `status.md`) 404 codes — this
+aggregate route never returns those codes itself; a workspace that would 404 on the per-repo route
+is instead named in `skipped[]` here.
+
+---
+
 ## 12. Quick-action command API (v0.4)
 
 One route projecting `ask`'s spawn/readiness mechanics
@@ -1654,7 +1839,7 @@ the server rather than leaving it to bastion-web to re-derive.
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.3) |
 | Unrecognized `scope` value (fails `BoardScope` query deserialization) | `400 Bad Request` | Plain text — actix's default `web::Query` extractor failure. `GET /api/board` has **no** `QueryConfig` error handler installed (unlike the `web::JsonConfig` handler that gives `POST /api/actions/command` its JSON `C006` body, Section 12.3) — a bad `scope` query value returns actix's stock `text/plain` 400, not an `ErrorPayload`. |
 | `scope=epic` with a missing/blank `&epic=` param | `404 Not Found` | JSON `ErrorPayload`, code `C005`, message naming the missing param (`"scope=epic requires a non-empty &epic=<slug> query param"`). |
 | `scope=epic` with an `&epic=<slug>` value absent from the HQ `epics[]` registry | `404 Not Found` | JSON `ErrorPayload`, code `C005`, message naming the unknown slug (`"unknown epic: <slug>"`). One uniform "no such epic board" response shape for both `scope=epic` miss cases, matching Section 11's registry-miss convention. |
@@ -1864,7 +2049,7 @@ joining each tracked node's `node_runs[class]` (status/timing/error/input/usage)
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.3) |
 | Malformed `{id}` (not a valid UUID) | `400 Bad Request` | JSON `ErrorPayload`, code `C006` |
 | Unknown or no-longer-tracked run id | `404 Not Found` | JSON `ErrorPayload`, code `C002` |
 
@@ -2019,6 +2204,7 @@ applies is a rendering concern and stays in `mev`.
 | `unmet_blocks` (v0.25) | array of string \| absent | Every unmet `blocks[]` target key. Non-empty iff this entry is in the BLOCKING lane. Absent key (not `[]`) when empty. There is deliberately no `blocking: bool` field — derive it from `!unmet_blocks.is_empty()`. |
 | `finding_id` (v0.25) | string \| absent | Cross-repo finding identity, verbatim from `mev::CarryoverRanking`. Absent key when unauthored. |
 | `clears_when_satisfied` (v0.25) | boolean | Whether the source verdict's evaluated `clears_when` references are currently satisfied, verbatim from `mev::CarryoverRanking`. Always present. |
+| `title` (v0.43, `BA.ticket.attention-carryover-title`) | string \| absent | The carryover entry's own recorded `summary` (`okf_core::Carryover.summary`), verbatim. Absent key when the entry records none — **never synthesized from `slug` or `text`**: bastion-web's BW.14.C deliberately stopped rendering `text` as a title because the raw prose reads as noise, and a title derived from `slug` would be exactly that noise again under a different name. Consumers decide how (or whether) to render a row's title; this endpoint only ever passes through what the entry itself recorded. |
 
 **v0.25 behavioral change:** membership in this array no longer gates on `carryover_stale_age`
 alone — the full carryover entry set is ranked by `mev::rank_carryover` (contract §2), and
@@ -2060,7 +2246,7 @@ an absent table yields the defaults shown above.
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.3) |
 | Unrecognized `scope` value (fails `BoardScope` query deserialization) | `400 Bad Request` | Plain text — actix's default `web::Query` extractor failure, same as `GET /api/board` (Section 13.4) — no `QueryConfig` error handler is installed for this route either. |
 | Unresolvable brain root (no `brain.toml` walking up from the workspace root) or unparseable `brain.toml` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
 | `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
@@ -2197,7 +2383,7 @@ inside an allowed root.
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (Section 2.2) |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (Section 2.3) |
 | Path fails any rule in 16.3 — traversal, disallowed extension, a missing required `?path=` on the file route, or outside every allowlisted root | `403 Forbidden` | JSON `ErrorPayload`, code `C003`. **One uniform response for all four** — the API never discloses whether a path outside the allowlist exists. |
 | Unknown `{repo}` (not in the `[workspaces]` registry) | `404 Not Found` | JSON `ErrorPayload`, code `C005` (matches Section 11's convention) |
 | File absent inside an allowlisted root | `404 Not Found` | JSON `ErrorPayload`, code `C002` |
@@ -2304,7 +2490,7 @@ pair whose `kind == "brain"` **and** whose resolved [`TierScope`] is `All` (mirr
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (Section 2.2) |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (Section 2.3) |
 | Unresolvable brain root (no `brain.toml` walking up from the workspace root) or unparseable `brain.toml` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
 | `web::block` thread-pool failure | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010` |
 | No HQ `kind:"brain"`/`TierScope::All` file found | `200 OK` | `[]` — an absent registry is **not** an error; the route reports the registry it found, and an absent HQ file is an operator-config problem the board route (Section 13) already surfaces. |
@@ -2368,7 +2554,8 @@ boot) also leaves the engine routes unmounted, logged the same way.
 `X-API-Key` is required on **every route the engine mount registers except `/health`**. A request
 with no `X-API-Key` header, an empty header, or a wrong value gets **401**; the configured
 `BASTION_ENGINE_API_KEY` value gets through. This is entirely separate from bastion's own
-`BASTION_SERVE_TOKEN` Bearer check (Section 2) — neither scheme is layered on the other's routes.
+bearer/signature auth boundary (Section 2) — none of the three schemes is layered on another's
+routes.
 
 #### 18.2.1 `BA.ticket.engine-surface-auth` — reject-unauthenticated (2026-08-12)
 
@@ -2527,7 +2714,14 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v0.27**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v1.0.0**.
+
+**v1.0.0 is a freeze of the existing route shapes as of this version, not a breaking change** —
+despite the major-version-bump-means-breaking convention in the table above, this bump exists
+solely to make the header and this section agree with each other and to mark the auth boundary
+(Section 2) as pinned; every route shape from v0.43 carries forward unchanged. An operator who
+disagrees with treating this as a non-breaking freeze can reverse that call by editing this one
+sentence.
 
 ---
 
@@ -2792,7 +2986,7 @@ Authorization: Bearer <token>
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.3) |
 | Unrecognized `scope` value (fails `BoardScope` query deserialization) | `400 Bad Request` | Plain text — same actix stock extractor failure as `GET /api/board` (Section 13.4); no `QueryConfig` error handler is installed for this route either. |
 | `scope=epic` with a missing/blank `&epic=` param | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_param_missing` / `board::epic_error_response` verbatim, same message shape as Section 13.4. |
 | `scope=epic` with an `&epic=<slug>` value absent from the HQ `epics[]` registry (Section 17) | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_known` / `board::epic_error_response` verbatim, message naming the unknown slug (`"unknown epic: <slug>"`). |
@@ -2935,7 +3129,7 @@ Authorization: Bearer <token>
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) — the handler is never reached. |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.3) — the handler is never reached. |
 | Unparseable `?window=` value | `400 Bad Request` | JSON `ErrorPayload`, code `C006`, message names the bad value. |
 | `DATABASE_URL` unset (`Config::load` fails) | `503 Service Unavailable` | JSON `ErrorPayload`, code `C005` — the route is present but degrades; not a `404`. |
 | Postgres unreachable, or the `events` query fails | `503 Service Unavailable` | JSON `ErrorPayload`, code `C009`. |
@@ -3061,9 +3255,10 @@ No `serve` runtime behaviour changed as part of adding this section — the dump
 ### 25.6 Scenario inventory
 
 As of 2026-08-21 (`BA.22.A`) **every route named in the block's binding lane contract is
-frozen.** The corpus holds goldens across seventeen routes — the ten frozen by
-`ticket-costs-200-contract-golden`/`ticket-contract-corpus-uncovered-routes`, plus the seven
-`BA.22.A` adds. This table is verified against the actual filenames in
+frozen.** The corpus holds goldens across eighteen routes — the ten frozen by
+`ticket-costs-200-contract-golden`/`ticket-contract-corpus-uncovered-routes`, the seven
+`BA.22.A` adds, plus the synthetic `/api/ping` auth-401 route added by
+`BA.ticket.serve-auth-boundary-freeze`. This table is verified against the actual filenames in
 `types/contract-corpus/`, not read off the source:
 
 | Route | Scenarios (`<route>__<scenario>.json`) | Deliberately-absent success shape, and why |
@@ -3085,6 +3280,7 @@ frozen.** The corpus holds goldens across seventeen routes — the ten frozen by
 | `/api/sessions*` (`BA.22.A`, 6 routes) | `sessions__no-tmux`, `sessions-pane__no-tmux`, `sessions-create__no-tmux`, `sessions-send__no-tmux`, `sessions-key__no-tmux`, `sessions-delete__no-tmux` | The 2xx shapes (a real session list, pane capture, create/delete) are absent — they require a live tmux server, which a checked-in golden may not depend on. Every route's 503 + `C001` "tmux not installed" shape is frozen instead, reached deterministically on any machine by pointing `PATH` at an empty directory. |
 | `POST /api/actions/command` (`BA.22.A`) | `actions-command__invalid-mode` | The `AskError::UntrustedDir` → 400/`C006` branch is absent: that check lives only in `sessions::ask::ask`'s trust pre-flight, which this route's `Spawn` arm never calls (it calls `ensure_session_with_claude` directly) — no request this route can receive reaches it, so there is no real shape to freeze. |
 | `POST /api/notify/test` (`BA.22.A`) | `notify-test__unconfigured` | The configured-transport 200/202 shape is absent — freezing it would require a real Telegram bot token and sending a real message, which the corpus (run on every `cargo test`) must never do. Only the `BASTION_TELEGRAM_BOT_TOKEN`/`_CHAT_ID`-unset 503/`C005` shape is frozen, mirroring the existing `costs__no-database-url` precedent for an unconfigured-dependency error. |
+| `GET /api/ping` (auth-only probe, `BA.ticket.serve-auth-boundary-freeze`) | `auth__unauthorized-no-credentials`, `auth__unauthorized-bad-bearer`, `auth__unauthorized-bad-signature` | The 200 shape is absent — this route exists in the corpus only to exercise `BearerAuthMiddleware`'s real `401` path (Section 2.3) under all three failure modes; it carries no business logic of its own. `unauthorized-bad-signature` signs with the wrong key at the real current time so the skew check passes and only the HMAC comparison fails, isolating it from the skew-window rejection already covered by `src/serve/auth.rs`'s own unit tests. All three goldens are byte-identical, per Section 2.3's contract that the response never distinguishes which tier (or neither) was attempted. |
 
 Per-route notes for the ten pre-`BA.22.A` routes follow; the seven `BA.22.A` routes' full
 rationale (env discipline, redaction, the tmux-absence seam) lives in their module doc comments
@@ -3737,7 +3933,7 @@ Authorization: Bearer <token>
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.3) |
 | `?epic=` present but blank | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_param_missing`/`board::epic_error_response` verbatim, same message shape as Section 13.4. |
 | `?epic=<slug>` present but absent from the HQ `epics[]` registry (Section 17) | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_known`/`board::epic_error_response` verbatim, message naming the unknown slug (`"unknown epic: <slug>"`). |
 | Unresolvable brain root (no `brain.toml` walking up from the workspace root), OR `mev::lanes_brain` itself failing — missing/unreadable `brain.toml`, or the underlying block-graph export reporting `truncated: true` | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, via `board::brain_root_error_response`, message intact. A `lanes_brain` failure is never mapped to an empty `segments` list — that would read as "nothing to do" when the truth is "the corpus could not be measured". |
@@ -3895,7 +4091,7 @@ removed from disk by this read).
 
 | Condition | HTTP status | Body |
 |---|---|---|
-| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.2) |
+| Missing/invalid `Authorization` header | `401 Unauthorized` | JSON `ErrorPayload` (`{"error": "unauthorized", "code": "unauthorized"}`, Section 2.3) |
 | `?repo=` present but blank | `404 Not Found` | JSON `ErrorPayload`, code `C005` — reuses `board::epic_error_response` verbatim, same shape as Section 28.3. |
 | `?repo=<slug>` present but absent from the brain's `[[repos]]` registry | `404 Not Found` | JSON `ErrorPayload`, code `C005`, via `board::epic_error_response`, message naming the unknown slug (`"unknown repo: <slug>"`). |
 | Unresolvable brain root (no `brain.toml` walking up from the workspace root), OR a failure loading `brain.toml` when `?repo=` is present | `500 Internal Server Error` | JSON `ErrorPayload`, code `C010`, via `board::brain_root_error_response`, message intact. An unreadable `.fleet-locks` directory is NOT this path — see Section 29.3. |
@@ -3923,6 +4119,39 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-09-05 — no version bump (`BA.ticket.serve-auth-boundary-freeze`):** Froze three new
+  contract-corpus goldens (`auth__unauthorized-no-credentials`, `auth__unauthorized-bad-bearer`,
+  `auth__unauthorized-bad-signature`) against a minimal `/api/ping` scope wrapped in
+  `BearerAuthMiddleware::new(...).with_signing(...)`, closing the gap that no golden previously
+  exercised the middleware's real `401` path (Section 2.3) for any of the three failure modes.
+  Added the corresponding row to the `### 25.6 Scenario inventory` table and bumped its route
+  count from seventeen to eighteen. No DTO or handler response shape changed — the `401` body was
+  already documented in Section 2.3 and is unchanged by this entry; per the `BA.22.A` precedent
+  above, freezing an already-documented wire shape as a golden is not itself a contract change, so
+  no version bump applies.
+- **2026-09-04 — v0.42 → v0.43 (`BA.ticket.attention-carryover-title`, additive):** `AttentionCarryoverDto`
+  (Section 15.3) gains `title: Option<String>`, sourced verbatim from the carryover entry's own
+  recorded `summary` (`okf_core::Carryover.summary`) and never synthesized from `slug` or `text`.
+  Absent key (`skip_serializing_if = "Option::is_none"`) when the entry records no summary, so a
+  payload built entirely from title-less entries stays byte-identical to the pre-block shape — the
+  regression test pins this. Contract-corpus golden `attention__populated` regenerated to cover
+  both the title-bearing and title-less cases in the same `stale_carryover` lane;
+  `attention__empty` is unchanged (no entries either way). `types/serve.ts` unaffected by this doc
+  edit — regenerate separately per the standard typeshare step. bastion-web decides how (or
+  whether) to render the field; that is out of scope here (filed as
+  `BW.ticket.render-attention-title`).
+- **2026-09-04 — v0.41 → v0.42 (`BA.ticket.batch-repo-status`, additive):** New Section 11.7 route,
+  `GET /api/repos/status` — a cross-repo `status.md` aggregate so a caller wanting several repos'
+  status stops issuing one `GET /api/repos/{name}/status` per repo (shaped on Section 11.6's `GET
+  /api/workflows`). Reuses `read_repo_status` (Section 11.2) unchanged, so the per-repo route's
+  404-on-malformed contract is untouched. Returns the `{entries, skipped}` envelope
+  (`RepoStatusAggregateDto`, new DTO) as the unconditional default — deliberately **not** gated
+  behind an opt-in flag the way 11.6's is, since this route has no existing consumer to keep
+  byte-identical. Supports `?names=a,b,c` to scope the walk; an unregistered name in that list lands
+  in `skipped[]` rather than 404ing the whole request. Additive only: no existing route's behaviour
+  changed. `types/serve.ts` regenerated via `scripts/gen-types.sh` (adds `RepoStatusAggregateDto`
+  and reuses the existing `SkippedWorkspaceDto`); new contract-corpus goldens
+  `repo-status__populated` and `repo-status__skipped`.
 - **2026-09-02 — v0.40 → v0.41 (`ticket-reconcile-failed-status-surface`, additive):** Documented
   `"reconcile_failed"` as a third terminal `sdlc-flow-state.json` status alongside `"done"` and
   `"blocked"` — the upstream vocabulary is base-template's D56
@@ -4765,3 +4994,22 @@ deliberately not duplicated in this repo.
   Renumbered Embedded engine route table → Section 14 (subsections 14.1–14.3), Configuration
   reference → Section 15, Versioning policy → Section 16. Updated frontmatter title, description,
   `keywords`, `related`, and the current-contract version note.
+- **2026-09-05 — v0.43 → v1.0.0 (`BA.ticket.serve-auth-boundary-freeze` task 5):** Froze the
+  contract at v1.0.0 — a version freeze of the existing route shapes (Section 21), not a breaking
+  change, taken purely to make the header and Section 21's stated version agree with each other
+  (they had drifted to v0.43/v0.27) and to pin the newly two-tiered auth boundary. Rewrote
+  Section 2 to document both auth tiers: the existing bearer tier (now constant-time-compared,
+  `subtle::ConstantTimeEq`, closing a timing-oracle gap — `token_matches`/`api_key_matches`,
+  `BA.ticket.serve-auth-boundary-freeze` task 2) as Section 2.1, and a new machine-caller HMAC
+  signature tier as Section 2.2 (`x-timestamp`/`x-signature`, HMAC-SHA256 over
+  `v0:<unix-ts>:<method>\n<path>\n<body>` under a new `BASTION_SERVE_SIGNING_KEY`, admitted as an
+  alternative to the bearer — either tier passes; `src/serve/source_auth.rs`, tasks 1/3/4).
+  Documented the configurable clock-skew window (`BASTION_SERVE_CLOCK_SKEW_SECS`, default 300s),
+  the honest replay-within-the-window limit, and the body-canonicalisation limitation (the
+  middleware signs/verifies an always-empty body, so the signature binds method+path only, not
+  the body — task 4's documented scope cut). Renumbered the old Section 2.2 (Failure response) to
+  2.3 and the old Section 2.3 (Auth policy summary) to 2.4; historical Amendment Log entries above
+  this one were left referring to the section numbers that applied when they were written, per
+  this log's append-only convention. Registered `serve-api-version` (`scripts/check-serve-api-version.sh`)
+  as a gated harness check pinning that the header and Section 21 never drift again. No client-facing
+  route shape changed — `bastion-ui`/`bastion-web` need no update.

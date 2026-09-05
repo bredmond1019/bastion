@@ -71,6 +71,12 @@ async-trait = "0.1"
 term-core = { path = "../engine-rs/crates/term-core" }
 term-attach = { path = "../engine-rs/crates/term-attach" }
 fs4 = { version = "1.1.0", features = ["sync"] }
+# BA.ticket.serve-auth-boundary-freeze task 2/3: constant-time compare for
+# token_matches/api_key_matches, plus the HMAC-SHA256 machine-caller signature
+# tier in src/serve/source_auth.rs (task 3).
+subtle = "2.6"
+hmac = "0.12"
+sha2 = "0.10"
 
 [lib]
 name = "bastion"
