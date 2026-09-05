@@ -2176,6 +2176,101 @@ mod workflows_scenarios {
     }
 }
 
+/// `GET /api/repos/status` corpus scenarios (`BA.ticket.batch-repo-status`,
+/// task 2, serve-api §11.7) — the cross-repo `status.md` aggregate's
+/// `{entries, skipped}` envelope, always returned (no `?with_skipped=1`
+/// opt-in — see `handlers::status::list_all_repo_status`'s doc comment for
+/// why this route diverges from §11.6's precedent).
+///
+/// `repo-status__populated` freezes a single well-formed workspace's
+/// `RepoStatusDto` body inside `entries[]` with an empty `skipped[]`.
+/// `repo-status__skipped` freezes both `SkippedWorkspaceDto::reason` values
+/// this route can emit in one response — `missing_or_malformed_status` for a
+/// registered workspace with no parseable `status.md`, and
+/// `unregistered_workspace` for a `?names=` entry absent from the registry —
+/// alongside a healthy entry, so the golden pins "skipped never includes a
+/// healthy repo" at the same time as the reason vocabulary.
+#[cfg(test)]
+mod repo_status_scenarios {
+    use std::collections::HashMap;
+
+    use actix_web::web;
+
+    use super::dump;
+    use super::fixtures::{TempDir, write};
+    use crate::config::FileConfig;
+    use crate::serve::handlers::status::list_all_repo_status;
+
+    macro_rules! repo_status_service {
+        ($registry:expr) => {
+            actix_web::test::init_service(
+                actix_web::App::new()
+                    .app_data(web::Data::new($registry))
+                    .service(
+                        web::resource("/api/repos/status")
+                            .route(web::get().to(list_all_repo_status)),
+                    ),
+            )
+            .await
+        };
+    }
+
+    const STATUS_MD: &str = r#"---
+type: ProjectStatus
+title: Fixture Status
+description: Contract-corpus fixture status.md for the repo-status goldens.
+now: "BA.ticket.batch-repo-status in progress — batch status aggregate"
+next: "n/a"
+blocked: []
+---
+
+# Status
+"#;
+
+    fn registry(entries: &[(&str, &TempDir)]) -> FileConfig {
+        FileConfig {
+            workspaces: Some(
+                entries
+                    .iter()
+                    .map(|(name, tmp)| ((*name).to_owned(), tmp.path().to_path_buf()))
+                    .collect::<HashMap<_, _>>(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn repo_status_corpus_populated() {
+        let tmp = TempDir::new("repo-status-populated");
+        write(&tmp.path().join("planning/status.md"), STATUS_MD);
+        let app = repo_status_service!(registry(&[("bastion", &tmp)]));
+        let req = actix_web::test::TestRequest::get().uri("/api/repos/status");
+        dump("repo-status", "populated", req, &app).await;
+    }
+
+    /// One healthy repo, one registered-but-malformed repo (no `status.md`
+    /// written at all — the same "missing" case §11.7 collapses with
+    /// "malformed" under one reason), and an unregistered `?names=` entry.
+    #[actix_web::test]
+    async fn repo_status_corpus_skipped() {
+        let tmp_healthy = TempDir::new("repo-status-healthy");
+        write(&tmp_healthy.path().join("planning/status.md"), STATUS_MD);
+
+        let tmp_malformed = TempDir::new("repo-status-malformed");
+        // No planning/status.md written — the file-missing branch of
+        // `read_repo_status`, which the aggregate reports identically to a
+        // present-but-unparseable file (both are `MissingOrMalformedStatus`).
+
+        let app = repo_status_service!(registry(&[
+            ("repo-healthy", &tmp_healthy),
+            ("repo-malformed", &tmp_malformed),
+        ]));
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/repos/status?names=repo-healthy,repo-malformed,repo-unregistered");
+        dump("repo-status", "skipped", req, &app).await;
+    }
+}
+
 /// `GET /api/repos/{name}/handoff` corpus scenarios
 /// (`ticket-contract-corpus-uncovered-routes`, task 2) — A3's `HandoffInfoDto`
 /// (serve-api v0.18), plus **both** of the route's 404s.

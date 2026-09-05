@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.41"
+title: "serve-api contract v0.42"
 description: "The pinned HTTP + WebSocket contract for `bastion serve` — bind address, bearer auth, the /ws hub and frame envelope, and the REST surfaces bastion-ui and bastion-web consume. Per-version deltas live in the Amendment Log at the bottom of this file, not here."
 doc_id: serve-api
 layer: [console, surface, engine]
@@ -10,9 +10,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan, "base-template:run-state-data-contract"]
 ---
 
-# serve-api — v0.41 Contract
+# serve-api — v0.42 Contract
 
-**Version:** v0.41  
+**Version:** v0.42  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26, 28–29 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -1008,7 +1008,7 @@ Error codes are from the C0xx taxonomy defined in `src/observ/errors.rs`.
 
 ---
 
-## 11. Repo / workflow status REST API (v0.3; cross-repo aggregate v0.20, A2)
+## 11. Repo / workflow status REST API (v0.3; cross-repo aggregate v0.20, A2; batch status aggregate v0.42)
 
 Four read-only routes projecting per-workspace `planning/status.md`,
 `planning/handoff.md`, and `sdlc-flow-state.json` files onto HTTP.  All routes
@@ -1361,6 +1361,106 @@ The route sits under the same bearer-auth `/api` scope as the rest of this secti
 `?with_skipped=1`; a request without a valid token gets `401` before reaching the handler. Section
 11.4's per-repo `GET /api/repos/{name}/workflows` route is unchanged by either the v0.20 or v0.24
 addition — it remains the endpoint to use when only one repo's flow states are needed.
+
+---
+
+### 11.7 `GET /api/repos/status` — cross-repo `status.md` aggregate (v0.42, `BA.ticket.batch-repo-status`)
+
+Every registered workspace's Section 11.2 `RepoStatusDto` in one response, so a caller that wants
+several repos' status stops issuing one `GET /api/repos/{name}/status` per repo. Reuses
+`read_repo_status` (Section 11.2's own I/O shell) **unchanged** — this route never asks it to
+degrade gracefully, so Section 11.2's 404-on-malformed contract is untouched by this aggregate
+existing.
+
+**DELIBERATE DIVERGENCE FROM SECTION 11.6'S PRECEDENT:** Section 11.6 gates its `{entries,
+skipped}` envelope behind an opt-in `?with_skipped=1`, purely to keep its default response
+byte-identical for an existing consumer (`bastion-web/lib/workflows.ts`). This route has **no**
+existing consumer, so there is no back-compat to preserve — the honest `{entries, skipped}`
+envelope is the unconditional default here, with no flag. Do not "harmonise" the two routes by
+adding one; that would be ceremony protecting nothing, and would let the first consumer of this
+route ship blind to skipped workspaces.
+
+**Request (no scope — every registered workspace):**
+
+```
+GET /api/repos/status HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Request (`?names=` — scoped to specific workspaces):**
+
+```
+GET /api/repos/status?names=bastion,bella HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):** `RepoStatusAggregateDto` — always the two-key envelope, never a bare array
+
+```json
+{
+  "entries": [
+    {
+      "name": "bastion",
+      "now": "BA.ticket.batch-repo-status in progress — batch status aggregate",
+      "next": "Wire the aggregate route",
+      "blocked": "[]",
+      "has_handoff": false,
+      "momentum_now": "",
+      "momentum_next": "",
+      "momentum_blocked": "",
+      "momentum_improve": "",
+      "momentum_recurring": ""
+    }
+  ],
+  "skipped": [
+    { "repo": "bella", "reason": "missing_or_malformed_status" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `entries` | `RepoStatusDto[]` | One entry per registered workspace whose `status.md` parsed — identical shape to Section 11.2's per-repo response body |
+| `skipped` | `SkippedWorkspaceDto[]` | One entry per workspace this request covered but could not report on, and why |
+
+`SkippedWorkspaceDto` fields (shared type with Section 11.6, but this route emits only two of that
+type's three wire values):
+
+| Field | Type | Description |
+|---|---|---|
+| `repo` | string | The workspace name whose report is incomplete |
+| `reason` | string | `"missing_or_malformed_status"` or `"unregistered_workspace"` — see below |
+
+The two `reason` values, checked in this order (first match wins — a name yields at most one
+`skipped` entry):
+
+1. **`unregistered_workspace`** — `name` is not a registered workspace. Only reachable via
+   `?names=`; the unscoped (no query param) walk only ever iterates names already known to be
+   registered, so it can never emit this reason.
+2. **`missing_or_malformed_status`** — the workspace is registered but its `planning/status.md` is
+   missing or fails to parse — the exact condition Section 11.2's per-repo route answers with `404`
+   + `C002`. This aggregate reports the same condition as a named skip instead of failing the whole
+   request.
+
+`entries.length + skipped.length` always equals the number of workspaces the request covered — the
+unscoped walk covers the full registry, and a scoped (`?names=`) walk covers exactly the
+deduplicated name list. **The route never 404s**: an empty/absent registry, or a `?names=` list
+naming only unregistered workspaces, returns `200 {entries: [], skipped: []}` /
+`200 {entries: [], skipped: [...]}` rather than failing the request — matching Section 11.6's
+degrade-gracefully contract.
+
+`?names=a,b,c` scopes the walk to exactly those (comma-separated) workspace names instead of the
+full registry. A name repeated in the list is resolved and read exactly once — the registry is
+walked exactly once per request regardless of duplicates in `?names=`. Whitespace around a name and
+empty segments (`?names=a,,b`) are trimmed/discarded; a bare `?names=` (no names at all) is treated
+as absent and falls back to the full unscoped walk.
+
+The route sits under the same bearer-auth `/api` scope as the rest of this section; a request
+without a valid token gets `401` before reaching the handler. Section 11.2's per-repo `GET
+/api/repos/{name}/status` route is entirely unchanged by this addition, including its distinct
+`C005` (unregistered name) vs. `C002` (registered, missing/malformed `status.md`) 404 codes — this
+aggregate route never returns those codes itself; a workspace that would 404 on the per-repo route
+is instead named in `skipped[]` here.
 
 ---
 
@@ -3923,6 +4023,18 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-09-04 — v0.41 → v0.42 (`BA.ticket.batch-repo-status`, additive):** New Section 11.7 route,
+  `GET /api/repos/status` — a cross-repo `status.md` aggregate so a caller wanting several repos'
+  status stops issuing one `GET /api/repos/{name}/status` per repo (shaped on Section 11.6's `GET
+  /api/workflows`). Reuses `read_repo_status` (Section 11.2) unchanged, so the per-repo route's
+  404-on-malformed contract is untouched. Returns the `{entries, skipped}` envelope
+  (`RepoStatusAggregateDto`, new DTO) as the unconditional default — deliberately **not** gated
+  behind an opt-in flag the way 11.6's is, since this route has no existing consumer to keep
+  byte-identical. Supports `?names=a,b,c` to scope the walk; an unregistered name in that list lands
+  in `skipped[]` rather than 404ing the whole request. Additive only: no existing route's behaviour
+  changed. `types/serve.ts` regenerated via `scripts/gen-types.sh` (adds `RepoStatusAggregateDto`
+  and reuses the existing `SkippedWorkspaceDto`); new contract-corpus goldens
+  `repo-status__populated` and `repo-status__skipped`.
 - **2026-09-02 — v0.40 → v0.41 (`ticket-reconcile-failed-status-surface`, additive):** Documented
   `"reconcile_failed"` as a third terminal `sdlc-flow-state.json` status alongside `"done"` and
   `"blocked"` — the upstream vocabulary is base-template's D56

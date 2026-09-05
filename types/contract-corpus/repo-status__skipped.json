@@ -1,0 +1,29 @@
+{
+  "body": {
+    "entries": [
+      {
+        "blocked": "[]",
+        "has_handoff": false,
+        "momentum_blocked": "",
+        "momentum_improve": "",
+        "momentum_next": "",
+        "momentum_now": "",
+        "momentum_recurring": "",
+        "name": "repo-healthy",
+        "next": "n/a",
+        "now": "BA.ticket.batch-repo-status in progress — batch status aggregate"
+      }
+    ],
+    "skipped": [
+      {
+        "reason": "missing_or_malformed_status",
+        "repo": "repo-malformed"
+      },
+      {
+        "reason": "unregistered_workspace",
+        "repo": "repo-unregistered"
+      }
+    ]
+  },
+  "status_code": 200
+}

@@ -1,0 +1,20 @@
+{
+  "body": {
+    "entries": [
+      {
+        "blocked": "[]",
+        "has_handoff": false,
+        "momentum_blocked": "",
+        "momentum_improve": "",
+        "momentum_next": "",
+        "momentum_now": "",
+        "momentum_recurring": "",
+        "name": "bastion",
+        "next": "n/a",
+        "now": "BA.ticket.batch-repo-status in progress — batch status aggregate"
+      }
+    ],
+    "skipped": []
+  },
+  "status_code": 200
+}
