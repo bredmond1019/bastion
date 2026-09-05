@@ -1435,6 +1435,59 @@ mod tests {
         assert_eq!(skipped[0]["reason"], "unreadable_root");
     }
 
+    // ── get_repo_status regression: unchanged by the aggregate existing ────
+    //
+    // BA.ticket.batch-repo-status task 3: the aggregate and this handler now
+    // share `read_repo_status`. The failure mode this guards against is
+    // someone "improving" that shared function to degrade gracefully so the
+    // aggregate's `skipped[]` looks tidier — which would silently turn this
+    // route's 404-on-malformed contract into a 200 with a half-populated
+    // body. Pin both branches directly through the handler, not just through
+    // `read_repo_status` in isolation.
+
+    #[actix_web::test]
+    async fn get_repo_status_malformed_status_md_still_404s_with_c002() {
+        let tmp = TempDir::new();
+        // Missing status.md is one of the two "malformed or missing" cases
+        // `read_repo_status` answers with `None` for; present here as an
+        // empty planning/ dir (no status.md at all).
+        let registry = registry_with("repo-ghost", tmp.path());
+
+        let resp = get_repo_status(
+            web::Path::from("repo-ghost".to_string()),
+            web::Data::new(registry),
+        )
+        .await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::NOT_FOUND);
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["code"], "C002");
+    }
+
+    #[actix_web::test]
+    async fn get_repo_status_good_repo_returns_unchanged_200_body() {
+        let tmp = TempDir::new();
+        write(&tmp.path().join("planning/status.md"), STATUS_MD);
+        write(&tmp.path().join("planning/handoff.md"), HANDOFF_MD);
+        let registry = registry_with("repo-good", tmp.path());
+
+        let resp = get_repo_status(
+            web::Path::from("repo-good".to_string()),
+            web::Data::new(registry),
+        )
+        .await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+        let body = actix_web::body::to_bytes(resp.into_body()).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Same fixture and same fields task 1 recorded from the live server
+        // capture (see spec `## Notes`): name, has_handoff, momentum_next.
+        assert_eq!(value["name"], "repo-good");
+        assert_eq!(value["has_handoff"], true);
+        assert_eq!(value["momentum_next"], "Wire WS event push");
+    }
+
     // ── resolve_root ──────────────────────────────────────────────────────
 
     #[test]
