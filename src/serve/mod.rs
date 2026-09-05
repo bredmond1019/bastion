@@ -416,12 +416,18 @@ fn json_config() -> web::JsonConfig {
 /// `token` is the bearer secret enforced by [`BearerAuthMiddleware`] on all
 /// protected routes.  `/health` remains public.
 ///
+/// `signing_key` and `skew_secs` — `ServeConfig::signing_key` /
+/// `ServeConfig::clock_skew_secs` (BA.ticket.serve-auth-boundary-freeze) —
+/// admit the machine-caller HMAC signature tier as an alternative to the
+/// bearer on the same protected routes. `signing_key: None` keeps the server
+/// bearer-only, unchanged from before this tier existed.
+///
 /// `poll_secs` sets the hub's poll cadence for sessions-list and pane pushes
 /// (sourced from `BASTION_POLL_INTERVAL`, defaulting to 2).
 ///
 /// **Blocking** — run on a dedicated OS thread or via
 /// `tokio::task::spawn_blocking` to avoid stalling the tokio executor.
-pub fn run(addr: String, token: String) -> Result<()> {
+pub fn run(addr: String, token: String, signing_key: Option<String>, skew_secs: u64) -> Result<()> {
     // Read poll cadence from env (BASTION_POLL_INTERVAL), defaulting to 2s.
     let poll_secs: u64 = std::env::var("BASTION_POLL_INTERVAL")
         .ok()
@@ -430,7 +436,13 @@ pub fn run(addr: String, token: String) -> Result<()> {
 
     // Spin up the actix System on the current thread; block_on drives the
     // async server future inside the System's Arbiter-aware runtime.
-    actix_web::rt::System::new().block_on(run_server(addr, token, poll_secs))
+    actix_web::rt::System::new().block_on(run_server(
+        addr,
+        token,
+        signing_key,
+        skew_secs,
+        poll_secs,
+    ))
 }
 
 /// Inner async server setup — separated from `run` so it is independently
@@ -508,8 +520,18 @@ fn telegram_commands_allow_list(
     registry.telegram_commands.clone().unwrap_or_default()
 }
 
+/// `signing_key`/`skew_secs` are `ServeConfig`'s machine-caller signature
+/// fields (BA.ticket.serve-auth-boundary-freeze task 1), threaded straight
+/// through to both `BearerAuthMiddleware::with_signing` wrap sites below.
+///
 /// `poll_secs` is passed to the [`Hub`] to set its poll cadence.
-async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
+async fn run_server(
+    addr: String,
+    token: String,
+    signing_key: Option<String>,
+    skew_secs: u64,
+    poll_secs: u64,
+) -> Result<()> {
     // Load the workspace registry once at startup (BA.11.D) — malformed or
     // absent config degrades to an empty registry rather than failing boot,
     // matching `load_workspace_registry`'s own degradation contract.
@@ -1441,6 +1463,7 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         let pending_payloads = pending_payloads.clone();
         let approval_ledger = approval_ledger.clone();
         let operator_transport = operator_transport.clone();
+        let signing_key = signing_key.clone();
 
         // Protected scope — bearer auth enforced on all children.
         //
@@ -1449,7 +1472,10 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         // the HTTP method is not registered — bare `.route()` would silently
         // return 404 in that case.
         let protected = web::scope("/api")
-            .wrap(BearerAuthMiddleware::new(token.clone()))
+            .wrap(
+                BearerAuthMiddleware::new(token.clone())
+                    .with_signing(signing_key.clone(), skew_secs),
+            )
             // ── Session routes ──────────────────────────────────────────────
             // /sessions — GET (list) + POST (create)
             .service(
@@ -1584,7 +1610,10 @@ async fn run_server(addr: String, token: String, poll_secs: u64) -> Result<()> {
         // Protected WebSocket scope — bearer auth enforced on upgrade.
         // v0.2: route backed by hub + WsConn (replaces echo actor).
         let ws_scope = web::scope("/ws")
-            .wrap(BearerAuthMiddleware::new(token.clone()))
+            .wrap(
+                BearerAuthMiddleware::new(token.clone())
+                    .with_signing(signing_key.clone(), skew_secs),
+            )
             .app_data(hub_data.clone())
             .route("", web::get().to(hub_ws_handler));
 
@@ -6395,6 +6424,8 @@ heading = "bastion"
         let handle = actix_web::rt::spawn(run_server(
             "127.0.0.1:0".to_string(),
             "boot-test-token".to_string(),
+            None,
+            300,
             2,
         ));
         // `run_server` serves forever once bound — give its setup path (which
@@ -6451,6 +6482,8 @@ heading = "bastion"
         let handle = actix_web::rt::spawn(run_server(
             "127.0.0.1:0".to_string(),
             "boot-test-token".to_string(),
+            None,
+            300,
             2,
         ));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -6504,6 +6537,8 @@ heading = "bastion"
         let handle = actix_web::rt::spawn(run_server(
             "127.0.0.1:0".to_string(),
             "boot-test-token".to_string(),
+            None,
+            300,
             2,
         ));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -6561,6 +6596,8 @@ heading = "bastion"
         let handle = actix_web::rt::spawn(run_server(
             "127.0.0.1:0".to_string(),
             "boot-test-token".to_string(),
+            None,
+            300,
             2,
         ));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

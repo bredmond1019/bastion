@@ -14,7 +14,10 @@ use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform, forwar
 use actix_web::{Error, HttpResponse};
 use futures::future::{LocalBoxFuture, Ready, ok};
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
+
+use crate::serve::source_auth;
 
 // ── Pure helper (unit-tested) ──────────────────────────────────────────────────
 
@@ -56,20 +59,45 @@ pub fn token_matches(header_value: Option<&str>, expected_token: &str) -> bool {
 
 // ── Middleware factory ─────────────────────────────────────────────────────────
 
-/// Actix-web middleware factory that enforces bearer-token authentication.
+/// Actix-web middleware factory that enforces bearer-token authentication,
+/// optionally alongside the machine-caller HMAC signature tier
+/// ([`crate::serve::source_auth`]).
 ///
 /// Wrap a scope or resource with `BearerAuthMiddleware::new(token)` to require
 /// a valid `Authorization: Bearer <token>` on every request to that scope.
+/// Chain [`BearerAuthMiddleware::with_signing`] to additionally admit a valid
+/// `x-timestamp`/`x-signature` pair as an alternative to the bearer — a
+/// request need only satisfy ONE of the two tiers.
 #[derive(Clone)]
 pub struct BearerAuthMiddleware {
     token: Rc<String>,
+    signing_key: Option<Rc<String>>,
+    skew_secs: u64,
 }
 
 impl BearerAuthMiddleware {
     pub fn new(token: impl Into<String>) -> Self {
         Self {
             token: Rc::new(token.into()),
+            signing_key: None,
+            skew_secs: 0,
         }
+    }
+
+    /// Opt this middleware into also admitting the machine-caller signature
+    /// tier ([`crate::serve::source_auth::signature_matches`]) as an
+    /// alternative to the bearer token.
+    ///
+    /// `signing_key: None` (the default — see [`BearerAuthMiddleware::new`])
+    /// keeps the middleware bearer-only: a signed-but-unbearer'd request is
+    /// rejected exactly as it is today. This is a builder method rather than
+    /// a change to `new`'s signature so every pre-existing
+    /// `BearerAuthMiddleware::new(TOKEN)` call site keeps compiling with no
+    /// edit.
+    pub fn with_signing(mut self, key: Option<String>, skew_secs: u64) -> Self {
+        self.signing_key = key.map(Rc::new);
+        self.skew_secs = skew_secs;
+        self
     }
 }
 
@@ -88,6 +116,8 @@ where
         ok(BearerAuthService {
             service: Rc::new(service),
             token: self.token.clone(),
+            signing_key: self.signing_key.clone(),
+            skew_secs: self.skew_secs,
         })
     }
 }
@@ -97,6 +127,8 @@ where
 pub struct BearerAuthService<S> {
     service: Rc<S>,
     token: Rc<String>,
+    signing_key: Option<Rc<String>>,
+    skew_secs: u64,
 }
 
 impl<S, B> Service<ServiceRequest> for BearerAuthService<S>
@@ -112,6 +144,8 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let token = self.token.clone();
+        let signing_key = self.signing_key.clone();
+        let skew_secs = self.skew_secs;
         let svc = self.service.clone();
 
         Box::pin(async move {
@@ -122,7 +156,44 @@ where
                 .get("authorization")
                 .and_then(|v| v.to_str().ok());
 
-            let matches = token_matches(header_value, &token);
+            let mut matches = token_matches(header_value, &token);
+
+            // Only fall back to the signature tier when the bearer check
+            // failed — the bearer check stays first and unchanged. The
+            // request body is canonicalised as an EMPTY slice on BOTH the
+            // signer and verifier side: actix's `ServiceRequest` does not
+            // expose a buffered body at middleware level without a
+            // payload-buffering wrapper, which is out of scope for this
+            // block. Documenting a scheme as binding the body while
+            // verifying an empty one would be worse than no scheme at all —
+            // the method and path bindings are real and are what
+            // `source_auth`'s canonical-component tests protect.
+            if !matches && let Some(key) = signing_key.as_deref() {
+                let timestamp_header = req
+                    .headers()
+                    .get("x-timestamp")
+                    .and_then(|v| v.to_str().ok());
+                let signature_header = req
+                    .headers()
+                    .get("x-signature")
+                    .and_then(|v| v.to_str().ok());
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+
+                matches = source_auth::signature_matches(
+                    Some(key),
+                    timestamp_header,
+                    signature_header,
+                    req.method().as_str(),
+                    req.path(),
+                    &[],
+                    now,
+                    skew_secs,
+                );
+            }
+
             if matches {
                 // Map the inner body type to BoxBody so both branches unify.
                 svc.call(req).await.map(|r| r.map_into_boxed_body())
@@ -637,6 +708,323 @@ mod tests {
             401,
             "empty configured key must never accept; got {}",
             resp.status()
+        );
+    }
+
+    // ── Signature-tier admission (BA.ticket.serve-auth-boundary-freeze task 4) ─
+
+    /// Build the canonical string + HMAC hex digest for `method`/`path` under
+    /// `key` at `timestamp`, matching what a real machine caller would send.
+    fn sign(key: &str, timestamp: i64, method: &str, path: &str) -> String {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let canonical = source_auth::canonical_string(method, path, &[]);
+        let payload = source_auth::signing_payload(timestamp, &canonical);
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).unwrap();
+        mac.update(payload.as_bytes());
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    #[actix_web::test]
+    async fn valid_signature_with_no_authorization_header_is_admitted() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let signing_key = "sign-key-abc";
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/protected")
+                    .wrap(
+                        BearerAuthMiddleware::new("bearer-token")
+                            .with_signing(Some(signing_key.to_owned()), 300),
+                    )
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let sig = sign(signing_key, now, "GET", "/protected/ping");
+        let req = test::TestRequest::get()
+            .uri("/protected/ping")
+            .insert_header(("x-timestamp", now.to_string()))
+            .insert_header(("x-signature", sig))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            200,
+            "valid signature with no Authorization header must reach the route; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn valid_bearer_with_no_signature_still_admitted() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/protected")
+                    .wrap(
+                        BearerAuthMiddleware::new("bearer-token")
+                            .with_signing(Some("sign-key-abc".to_owned()), 300),
+                    )
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        let req = test::TestRequest::get()
+            .uri("/protected/ping")
+            .insert_header(("authorization", "Bearer bearer-token"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            200,
+            "valid bearer with no signature must reach the route; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn neither_bearer_nor_signature_returns_exact_401_body() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/protected")
+                    .wrap(
+                        BearerAuthMiddleware::new("bearer-token")
+                            .with_signing(Some("sign-key-abc".to_owned()), 300),
+                    )
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        let req = test::TestRequest::get().uri("/protected/ping").to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(resp.status(), 401, "neither credential must 401");
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(
+            body,
+            serde_json::json!({"error": "unauthorized", "code": "unauthorized"}),
+            "401 body must match the documented contract exactly, parsed as JSON"
+        );
+    }
+
+    #[actix_web::test]
+    async fn signature_outside_skew_window_returns_401() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let signing_key = "sign-key-abc";
+        let skew_secs = 60u64;
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/protected")
+                    .wrap(
+                        BearerAuthMiddleware::new("bearer-token")
+                            .with_signing(Some(signing_key.to_owned()), skew_secs),
+                    )
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        // Sign at t=0 but the verifier below effectively sees "now" far in
+        // the future because we hand the *stale* timestamp as the header
+        // and only need it more than skew_secs away from the true current
+        // time — simulate this by signing a timestamp far in the past.
+        let stale_ts = 1_000_000_000i64;
+        let sig = sign(signing_key, stale_ts, "GET", "/protected/ping");
+        let req = test::TestRequest::get()
+            .uri("/protected/ping")
+            .insert_header(("x-timestamp", stale_ts.to_string()))
+            .insert_header(("x-signature", sig))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(
+            resp.status(),
+            401,
+            "a signature timestamped far outside the skew window (relative to real now) must 401; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn app_without_signing_key_boots_and_rejects_signed_requests() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        // Bearer-only boot (criterion 6): with_signing is never called, so
+        // the app must boot without panicking, serve bearer requests, and
+        // 401 a signed-only request.
+        let app = test::init_service(
+            App::new().service(
+                web::scope("/protected")
+                    .wrap(BearerAuthMiddleware::new("bearer-token"))
+                    .route(
+                        "/ping",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    ),
+            ),
+        )
+        .await;
+
+        let bearer_req = test::TestRequest::get()
+            .uri("/protected/ping")
+            .insert_header(("authorization", "Bearer bearer-token"))
+            .to_request();
+        let bearer_resp = test::call_service(&app, bearer_req).await;
+        assert_eq!(
+            bearer_resp.status(),
+            200,
+            "bearer-only boot must still serve bearer requests"
+        );
+
+        let sig = sign(
+            "some-key-nobody-configured",
+            1_700_000_000,
+            "GET",
+            "/protected/ping",
+        );
+        let signed_req = test::TestRequest::get()
+            .uri("/protected/ping")
+            .insert_header(("x-timestamp", "1700000000"))
+            .insert_header(("x-signature", sig))
+            .to_request();
+        let signed_resp = test::call_service(&app, signed_req).await;
+        assert_eq!(
+            signed_resp.status(),
+            401,
+            "a signed request against a bearer-only (no signing key) app must 401"
+        );
+    }
+
+    #[actix_web::test]
+    async fn health_is_reachable_with_no_credentials_alongside_signing() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let app =
+            test::init_service(
+                App::new()
+                    .service(web::resource("/health").route(web::get().to(|| async {
+                        HttpResponse::Ok().json(serde_json::json!({"status": "ok"}))
+                    })))
+                    .service(
+                        web::scope("/protected")
+                            .wrap(
+                                BearerAuthMiddleware::new("bearer-token")
+                                    .with_signing(Some("sign-key-abc".to_owned()), 300),
+                            )
+                            .route(
+                                "/ping",
+                                web::get().to(|| async { HttpResponse::Ok().finish() }),
+                            ),
+                    ),
+            )
+            .await;
+
+        let req = test::TestRequest::get().uri("/health").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /health must stay public even when the protected scope carries signing"
+        );
+    }
+
+    #[actix_web::test]
+    async fn api_key_scheme_and_bearer_signature_scheme_do_not_leak_into_each_other() {
+        use actix_web::{App, HttpResponse, test, web};
+
+        let bearer_token = "bearer-token";
+        let signing_key = "sign-key-abc";
+        let engine_key = "engine-key-abc";
+
+        let app = test::init_service(
+            App::new()
+                .service(
+                    web::scope("/api")
+                        .wrap(
+                            BearerAuthMiddleware::new(bearer_token)
+                                .with_signing(Some(signing_key.to_owned()), 300),
+                        )
+                        .route(
+                            "/ping",
+                            web::get().to(|| async { HttpResponse::Ok().finish() }),
+                        ),
+                )
+                .service(
+                    web::scope("/engine")
+                        .wrap(ApiKeyAuthMiddleware::new(engine_key))
+                        .route(
+                            "/ping",
+                            web::get().to(|| async { HttpResponse::Ok().finish() }),
+                        ),
+                ),
+        )
+        .await;
+
+        // A valid bastion bearer must not satisfy the engine's X-API-Key scope.
+        let engine_req_with_bearer = test::TestRequest::get()
+            .uri("/engine/ping")
+            .insert_header(("authorization", format!("Bearer {bearer_token}")))
+            .to_request();
+        let resp1 = test::call_service(&app, engine_req_with_bearer).await;
+        assert_eq!(
+            resp1.status(),
+            401,
+            "a valid bastion bearer must not satisfy the engine's X-API-Key scope"
+        );
+
+        // A valid bastion signature must not satisfy the engine's X-API-Key scope.
+        let sig = sign(signing_key, 1_700_000_000, "GET", "/engine/ping");
+        let engine_req_with_sig = test::TestRequest::get()
+            .uri("/engine/ping")
+            .insert_header(("x-timestamp", "1700000000"))
+            .insert_header(("x-signature", sig))
+            .to_request();
+        let resp2 = test::call_service(&app, engine_req_with_sig).await;
+        assert_eq!(
+            resp2.status(),
+            401,
+            "a valid bastion signature must not satisfy the engine's X-API-Key scope"
+        );
+
+        // A valid X-API-Key must not satisfy the /api protected scope.
+        let api_req_with_key = test::TestRequest::get()
+            .uri("/api/ping")
+            .insert_header(("X-API-Key", engine_key))
+            .to_request();
+        let resp3 = test::call_service(&app, api_req_with_key).await;
+        assert_eq!(
+            resp3.status(),
+            401,
+            "a valid engine X-API-Key must not satisfy the bastion /api protected scope"
         );
     }
 
