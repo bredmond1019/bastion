@@ -8,6 +8,19 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-05]
 
+Re-ran /sdlc-flow on BA.ticket.serve-auth-boundary-freeze after respec: task 6 closed the AC10 gap left by the prior BAIL by adding a new `auth_scenarios` module to `src/serve/contract_corpus.rs`, emitting three real-401 goldens through `BearerAuthMiddleware` (no-credentials, bad-bearer, bad-signature) into `types/contract-corpus/`. All six tasks (1-6) passed with confirmed workAssertionPassed outcomes, and the consolidated end-of-flow review returned PASS with no findings. Net result across the full spec: `src/serve/auth.rs`'s token/API-key compares are now constant-time (`subtle::ConstantTimeEq`), a new HMAC-SHA256 machine-caller signature tier (`src/serve/source_auth.rs`) is admitted alongside bearer auth at both /api and /ws with a configurable clock-skew window, `docs/serve/serve-api.md` is frozen at v1.0.0 with a self-testing version-drift gate (`scripts/check-serve-api-version.sh`), and the contract corpus now carries real 401 goldens closing AC10. Next: pick up the next queued ticket per `planning/status.md`.
+
+```
+2df5814 docs: update docs for BA.ticket.serve-auth-boundary-freeze
+eba0ee6 feat: implement BA.ticket.serve-auth-boundary-freeze-task6
+21ebb3a chore(harness): receive the close-out doc-standard table
+5157333 chore: wrap up BA.ticket.serve-auth-boundary-freeze
+82b40a2 chore(harness): receive the close-out doc-standard routing fix
+43098d3 feat: implement BA.ticket.serve-auth-boundary-freeze-task5
+```
+
+## [run: 2026-09-05]
+
 Ran /sdlc-flow on BA.ticket.serve-auth-boundary-freeze through tasks 1-5: task 1 threaded BASTION_SERVE_SIGNING_KEY/BASTION_SERVE_CLOCK_SKEW_SECS into ServeConfig; task 2 made token_matches/api_key_matches constant-time via subtle::ConstantTimeEq; task 3 added src/serve/source_auth.rs, a pure HMAC-SHA256 machine-caller signature core (canonical string, skew check, 19 unit tests); task 4 wired the signature as an alternative to bearer auth in BearerAuthMiddleware at both /api and /ws sites; task 5 froze docs/serve/serve-api.md at v1.0.0, documented both auth tiers, and added the self-testing scripts/check-serve-api-version.sh gate to planning/harness.json. All five tasks individually passed with confirmed workAssertionPassed outcomes. The consolidated end-of-flow review returned PARTIAL and the run BAILED: AC10 requires the contract corpus to carry a new 401/unauthorized golden, but task 5 explicitly scoped src/serve/contract_corpus.rs OUT of its files[], and no task in the breakdown owns adding that scenario — scripts/check-contract-corpus-drift.sh passes only because it confirms no drift against the existing (401-less) corpus, which is a false-positive signal for AC10, not evidence the criterion is met. This is a scope mismatch between the spec (which asserts the golden must exist) and the task decomposition (which never assigned it an owner), so it needs re-planning to add an owning task/files[] entry rather than a retry of task 5. Next: re-plan the spec to add a task (or extend an existing one) that owns adding a 401 scenario to src/serve/contract_corpus.rs, regenerate the corpus, and confirm the drift check protects the new golden before re-running review.
 
 ```
