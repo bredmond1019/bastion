@@ -228,6 +228,86 @@ pub(crate) fn status_api_url(
     }
 }
 
+/// The subset of [`Config`] that `trigger()` actually needs to dispatch a
+/// workflow, resolved independently of whether `DATABASE_URL` was set.
+/// `database_url` stays `Some` only when a full [`Config`] was actually
+/// loaded — `trigger()`'s `--monitor` gate (task 2) uses its absence to
+/// decide whether the monitor attach can proceed.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TriggerConfig {
+    pub api_base_url: String,
+    pub engine_api_key: Option<String>,
+    pub budget: Option<Budget>,
+    pub database_url: Option<String>,
+}
+
+/// Resolve the config `trigger()` needs (API URL, engine key, budget caps,
+/// and whether a database URL is available) without requiring a fully
+/// loaded [`Config`]. Pure — no I/O, no process env access — so it is
+/// unit-testable without mutating `std::env` (which races across parallel
+/// test threads).
+///
+/// WHY this exists: [`Config::from_sources`] resolves `database_url`
+/// *before* `api_base_url` (and every other field) and short-circuits with
+/// `Err(MissingVar("DATABASE_URL"))` the instant it's absent — so `cfg` being
+/// `Err` does NOT mean the other fields are absent, only that they were never
+/// computed. `trigger()` itself only ever reads `api_base_url` and
+/// `engine_api_key`; `database_url` is needed solely by the optional
+/// `--monitor` attach that runs after a successful trigger.
+///
+/// - `cfg` is `Ok` → take all four fields straight from the loaded
+///   [`Config`] (identical behaviour to today; `database_url` is `Some`).
+/// - `cfg` is `Err(MissingVar(_))` → the absent-tolerant degrade: resolve
+///   `api_base_url` via [`crate::config::resolve_api_base_url`] (env over
+///   file, exactly as `status_api_url` does), `engine_api_key` via
+///   env-over-file precedence mirroring `Config::from_sources`, `budget`
+///   from whichever of the file's `max_total_tokens`/`max_cost_usd` is set
+///   (`None` if neither is), and `database_url` as `None`.
+/// - `cfg` is `Err(_)` (any other variant — e.g. a malformed workspace-registry
+///   file) → the caller must still surface that error; this function is not
+///   consulted for those fields in that case (see task 2's `trigger()`).
+pub(crate) fn trigger_config(
+    cfg: Result<&Config, &ConfigError>,
+    env_api: Option<String>,
+    env_engine_key: Option<String>,
+    file: &FileConfig,
+) -> TriggerConfig {
+    match cfg {
+        Ok(c) => TriggerConfig {
+            api_base_url: c.api_base_url.clone(),
+            engine_api_key: c.engine_api_key.clone(),
+            budget: if c.max_total_tokens.is_some() || c.max_cost_usd.is_some() {
+                Some(Budget {
+                    max_total_tokens: c.max_total_tokens,
+                    max_cost_usd: c.max_cost_usd,
+                })
+            } else {
+                None
+            },
+            database_url: Some(c.database_url.clone()),
+        },
+        Err(_) => {
+            let api_base_url =
+                crate::config::resolve_api_base_url(env_api, file.api_base_url.clone());
+            let engine_api_key = env_engine_key.or(file.engine_api_key.clone());
+            let budget = if file.max_total_tokens.is_some() || file.max_cost_usd.is_some() {
+                Some(Budget {
+                    max_total_tokens: file.max_total_tokens,
+                    max_cost_usd: file.max_cost_usd,
+                })
+            } else {
+                None
+            };
+            TriggerConfig {
+                api_base_url,
+                engine_api_key,
+                budget,
+                database_url: None,
+            }
+        }
+    }
+}
+
 /// Render a plain-text summary table for the given probe outcomes.
 /// Pure function (no I/O) so it can be unit-tested without live services.
 ///
@@ -634,5 +714,143 @@ mod tests {
             &FileConfig::default(),
         );
         assert_eq!(resolved, "http://localhost:9000");
+    }
+
+    // ─── trigger_config — DATABASE_URL requirement scoped to --monitor ────────
+    // (BA.ticket.run-trigger-requires-database-url)
+
+    #[test]
+    fn trigger_config_err_path_resolves_api_url_from_env_over_default() {
+        // DATABASE_URL absent + BASTION_API_URL present -> the env value survives,
+        // not the hardcoded default.
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let resolved = trigger_config(
+            Err(&err),
+            Some("http://localhost:18000".to_string()),
+            None,
+            &FileConfig::default(),
+        );
+        assert_eq!(resolved.api_base_url, "http://localhost:18000");
+        assert_eq!(resolved.database_url, None);
+    }
+
+    #[test]
+    fn trigger_config_err_path_falls_back_to_default_when_both_absent() {
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let resolved = trigger_config(Err(&err), None, None, &FileConfig::default());
+        assert_eq!(resolved.api_base_url, "http://localhost:8080");
+        assert_eq!(resolved.engine_api_key, None);
+        assert_eq!(resolved.budget, None);
+        assert_eq!(resolved.database_url, None);
+    }
+
+    #[test]
+    fn trigger_config_err_path_threads_non_default_file_config_through() {
+        // Proves trigger_config actually uses the `file` parameter rather than
+        // silently defaulting it — without this case a mis-wired `file` argument
+        // would pass every other Err-path test.
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let file = FileConfig {
+            api_base_url: Some("http://file-config:7777".to_string()),
+            engine_api_key: Some("file-key".to_string()),
+            max_total_tokens: Some(500_000),
+            max_cost_usd: Some(12.5),
+            ..FileConfig::default()
+        };
+        let resolved = trigger_config(Err(&err), None, None, &file);
+        assert_eq!(resolved.api_base_url, "http://file-config:7777");
+        assert_eq!(resolved.engine_api_key, Some("file-key".to_string()));
+        assert_eq!(
+            resolved.budget,
+            Some(Budget {
+                max_total_tokens: Some(500_000),
+                max_cost_usd: Some(12.5),
+            })
+        );
+        assert_eq!(resolved.database_url, None);
+    }
+
+    #[test]
+    fn trigger_config_err_path_env_engine_key_beats_file() {
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let file = FileConfig {
+            engine_api_key: Some("file-key".to_string()),
+            ..FileConfig::default()
+        };
+        let resolved = trigger_config(Err(&err), None, Some("env-key".to_string()), &file);
+        assert_eq!(resolved.engine_api_key, Some("env-key".to_string()));
+    }
+
+    #[test]
+    fn trigger_config_err_path_no_budget_when_neither_cap_set() {
+        let err = ConfigError::MissingVar("DATABASE_URL");
+        let file = FileConfig {
+            max_total_tokens: None,
+            max_cost_usd: None,
+            ..FileConfig::default()
+        };
+        let resolved = trigger_config(Err(&err), None, None, &file);
+        assert_eq!(resolved.budget, None);
+    }
+
+    #[test]
+    fn trigger_config_ok_path_uses_loaded_configs_own_values() {
+        // Identical behaviour to today when Config::load() fully succeeds --
+        // env_api/env_engine_key/file are irrelevant on the Ok path.
+        let file = FileConfig {
+            engine_api_key: Some("should-be-ignored".to_string()),
+            ..FileConfig::default()
+        };
+        let cfg = Config::from_sources(
+            (
+                Some("postgres://localhost/db".into()),
+                Some("http://localhost:9000".into()),
+                None,
+                Some("1000".into()),
+                Some("5.0".into()),
+                Some("real-key".into()),
+                None,
+            ),
+            FileConfig::default(),
+        )
+        .expect("should parse");
+        let resolved = trigger_config(
+            Ok(&cfg),
+            Some("http://should-be-ignored:1".to_string()),
+            Some("should-also-be-ignored".to_string()),
+            &file,
+        );
+        assert_eq!(resolved.api_base_url, "http://localhost:9000");
+        assert_eq!(resolved.engine_api_key, Some("real-key".to_string()));
+        assert_eq!(
+            resolved.budget,
+            Some(Budget {
+                max_total_tokens: Some(1000),
+                max_cost_usd: Some(5.0),
+            })
+        );
+        assert_eq!(
+            resolved.database_url,
+            Some("postgres://localhost/db".to_string())
+        );
+    }
+
+    #[test]
+    fn trigger_config_ok_path_no_budget_when_neither_cap_configured() {
+        let cfg = Config::from_sources(
+            (
+                Some("postgres://localhost/db".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            FileConfig::default(),
+        )
+        .expect("should parse");
+        let resolved = trigger_config(Ok(&cfg), None, None, &FileConfig::default());
+        assert_eq!(resolved.budget, None);
     }
 }
