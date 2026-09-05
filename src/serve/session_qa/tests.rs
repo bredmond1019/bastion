@@ -3300,6 +3300,7 @@ mod production_seams {
             unmet_blocks: vec![],
             finding_id: None,
             clears_when_satisfied: false,
+            title: None,
         }
     }
 

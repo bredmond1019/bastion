@@ -1544,6 +1544,19 @@ pub struct AttentionCarryoverDto {
     /// Whether every reference extracted from `clears_when` is currently satisfied
     /// (`mev::CarryoverLane::Cleared`), verbatim from `mev::CarryoverRanking`.
     pub clears_when_satisfied: bool,
+    /// Short human-authored headline for this entry, sourced verbatim from the
+    /// carryover entry's own recorded `summary` field
+    /// (`okf_core::state::Carryover::summary`) when one is recorded. `None` when
+    /// the entry records no such headline — never synthesized from [`Self::slug`]
+    /// or [`Self::text`]: the slug stays the operator's own identity for the row
+    /// (it is never replaced), and `text` is the full multi-paragraph finding that
+    /// bastion-web's BW.14.C deliberately stopped rendering as a title because it
+    /// read as noise. Added by `BA.ticket.attention-carryover-title` so a
+    /// carryover row is legible to a reader who did not author the slug (e.g. the
+    /// pt-BR public demo) while leaving the slug visible as identity, per the
+    /// operator's recorded position in that block's Notes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// One `backlog[]` node that has crossed the backlog staleness threshold — used for both the
@@ -4284,6 +4297,7 @@ mod tests {
             unmet_blocks: Vec::new(),
             finding_id: None,
             clears_when_satisfied: false,
+            title: None,
         }
     }
 
@@ -4458,6 +4472,43 @@ mod tests {
     }
 
     // ── RunStateDto / NodeTransitionDto (BA.11.M) ──────────────────────────
+    #[test]
+    fn attention_carryover_dto_title_absent_omits_key_and_matches_pre_block_payload() {
+        // D68 task 1, case A + case C: a title-less DTO must omit the `title` key
+        // entirely (not `"title": null`), and the resulting payload must be
+        // byte-identical to the pre-block shape captured before this field
+        // existed — this is the entire non-breaking claim for BA.ticket.attention-carryover-title.
+        let dto = sample_attention_carryover();
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        assert!(
+            !v.as_object().expect("object").contains_key("title"),
+            "expected 'title' to be an absent key when None, not present (possibly as null)"
+        );
+        // Pre-block payload captured via `cargo check` E0560 evidence (see spec Notes)
+        // before the `title` field existed on the struct; this is the same
+        // sample_attention_carryover() fixture serialized then, reproduced here as a
+        // literal so the comparison survives the field being added.
+        const PRE_BLOCK_PAYLOAD: &str = r#"{"repo":"bastion","slug":"engine-mount-env","kind":"env","text":"engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set","clears_when":"the engine mount is documented in .env.example","created":"2026-07-01","age_days":23,"threshold_days":3,"lane":"aging","clears_when_satisfied":false}"#;
+        assert_eq!(
+            json, PRE_BLOCK_PAYLOAD,
+            "title-less AttentionCarryoverDto payload must stay byte-identical to the pre-block shape"
+        );
+    }
+
+    #[test]
+    fn attention_carryover_dto_title_present_round_trips() {
+        // D68 task 1, case B — a title-bearing DTO round-trips its title unchanged.
+        let dto = AttentionCarryoverDto {
+            title: Some("Engine mount needs an env var".to_owned()),
+            ..sample_attention_carryover()
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let back: AttentionCarryoverDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dto, back);
+        let v = serde_json::to_value(&dto).expect("serialize to value");
+        assert_eq!(v["title"], "Engine mount needs an env var");
+    }
 
     fn sample_run_state_dto() -> RunStateDto {
         RunStateDto {
