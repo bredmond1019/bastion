@@ -598,6 +598,70 @@ impl From<crate::serve::status::repo::RepoStatus> for RepoStatusDto {
     }
 }
 
+/// The response envelope for `GET /api/repos/status` (BA.ticket.batch-repo-status).
+///
+/// Always returned in this shape — unlike [`WorkflowsAggregateDto`], this
+/// envelope has no `?with_skipped=1` opt-in: the route has no existing
+/// consumer to keep byte-identical, so the honest `{entries, skipped}` shape
+/// is the default rather than gated behind a flag. `entries` carries the
+/// same [`RepoStatusDto`] body the per-repo route (`GET
+/// /api/repos/{name}/status`) returns for each workspace whose `status.md`
+/// parsed; `skipped` names every workspace this request covered but could
+/// not report on, and why. Both fields always serialize, including when
+/// empty (`[]`, never an absent key) — `entries.len() + skipped.len()`
+/// always equals the number of workspaces the request covered. See
+/// serve-api §11.7.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoStatusAggregateDto {
+    pub entries: Vec<RepoStatusDto>,
+    pub skipped: Vec<SkippedWorkspaceDto>,
+}
+
+#[cfg(test)]
+mod repo_status_aggregate_dto_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_with_entries_and_skipped_populated() {
+        let dto = RepoStatusAggregateDto {
+            entries: vec![RepoStatusDto {
+                name: "bastion".to_string(),
+                now: "now".to_string(),
+                next: "next".to_string(),
+                blocked: "blocked".to_string(),
+                has_handoff: true,
+                momentum_now: "".to_string(),
+                momentum_next: "".to_string(),
+                momentum_blocked: "".to_string(),
+                momentum_improve: "".to_string(),
+                momentum_recurring: "".to_string(),
+            }],
+            skipped: vec![SkippedWorkspaceDto {
+                repo: "orchestrator".to_string(),
+                reason: "missing_or_malformed_status".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        let round_tripped: RepoStatusAggregateDto =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, dto);
+    }
+
+    #[test]
+    fn empty_entries_and_skipped_serialize_as_empty_arrays_not_absent_keys() {
+        let dto = RepoStatusAggregateDto {
+            entries: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let value = serde_json::to_value(&dto).expect("serialize to value");
+        assert!(value["entries"].is_array());
+        assert!(value["skipped"].is_array());
+        assert_eq!(value["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(value["skipped"].as_array().unwrap().len(), 0);
+    }
+}
+
 /// JSON response element for `GET /repos/{name}/workflows`.
 ///
 /// Serializable projection of [`crate::serve::status::flow::FlowState`].
