@@ -129,7 +129,18 @@ pub(crate) async fn query_pending_rows(pool: &sqlx::PgPool) -> Result<Vec<Value>
 ///
 /// Returns the number of records freshly drained this tick (`0` when
 /// nothing was new).
-fn drain_fresh_records(rows: &[Value], seams: &ApproveAndRunSeams, now: DateTime<Utc>) -> usize {
+///
+/// `pub(crate)` (not module-private) so `src/serve/mod.rs`'s
+/// `approve_and_run_seams_wiring_tests` can seed records through this same
+/// production entry point — the sweep's parse-and-drain step, one layer
+/// below the SQL query — rather than calling `ApproveAndRunSeams::drain`
+/// directly, which would prove nothing this block did not already have
+/// (`BA.ticket.wire-approve-and-run-drain-trigger` task 3).
+pub(crate) fn drain_fresh_records(
+    rows: &[Value],
+    seams: &ApproveAndRunSeams,
+    now: DateTime<Utc>,
+) -> usize {
     let records = parse_pending_records(rows);
     let fresh: Vec<PendingHarvestRecord> = records
         .into_iter()

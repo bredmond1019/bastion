@@ -583,11 +583,19 @@ async fn run_server(
     // router's `HttpEventsTrigger` seam is wired below only when this is
     // `Some`, so a boot with the engine routes unmounted wires no trigger
     // at all.
+    // `pending_harvest_pool` (`BA.ticket.wire-approve-and-run-drain-trigger`
+    // task 3): a clone of the same `PgPool` `spawn_durable_writer(Some(pool))`
+    // below consumes by value, carried out of this match as a 4th tuple
+    // element so the pending-harvest sweep — spawned later, alongside
+    // `approve_and_run_seams`'s construction, which sits OUTSIDE this match —
+    // can be given a real pool. Every non-`Mount` arm yields `None`, and the
+    // sweep self-skips in that case (see `pending_harvest::spawn_pending_harvest_sweep`).
     #[allow(clippy::type_complexity)]
-    let (engine_data, stream_available, engine_trigger_api_key): (
+    let (engine_data, stream_available, engine_trigger_api_key, pending_harvest_pool): (
         Option<web::Data<EngineAppState>>,
         (bool, Option<String>),
         Option<String>,
+        Option<sqlx::PgPool>,
     ) = match decide_engine_mount(
         std::env::var("DATABASE_URL").ok().as_deref(),
         std::env::var("BASTION_ENGINE_API_KEY").ok().as_deref(),
@@ -669,6 +677,16 @@ async fn run_server(
                     // or a log line). `spawn_durable_writer` is still called
                     // exactly once here -- the clone shares the SAME writer
                     // task and pool, never a second writer.
+                    //
+                    // `pending_harvest_pool`
+                    // (`BA.ticket.wire-approve-and-run-drain-trigger` task 3):
+                    // clone the pool again, the same way `reconcile_orphans`
+                    // above already does, BEFORE `spawn_durable_writer`
+                    // consumes it by value — `PgPool` is a cheap `Arc` clone.
+                    // Carried out of this match as the 4th tuple element so
+                    // the pending-harvest sweep can be spawned later,
+                    // alongside `approve_and_run_seams`'s construction.
+                    let pending_harvest_pool = Some(pool.clone());
                     let durable_handle = spawn_durable_writer(Some(pool));
                     engine_serve::journal::set_journal_durable_handle(durable_handle.clone());
                     let state = EngineAppState::builder(
@@ -749,6 +767,7 @@ async fn run_server(
                         Some(engine_data),
                         (true, None),
                         Some(engine_api_key_for_trigger),
+                        pending_harvest_pool,
                     )
                 }
                 Err(e) => {
@@ -761,14 +780,14 @@ async fn run_server(
                         "engine routes not mounted — could not connect to DATABASE_URL: {e}"
                     );
                     eprintln!("bastion serve: {reason}");
-                    (None, (false, Some(reason)), None)
+                    (None, (false, Some(reason)), None, None)
                 }
             }
         }
         EngineMountDecision::Skip { reason } => {
             tracing::warn!(target: "bastion::serve", %reason);
             eprintln!("bastion serve: {reason}");
-            (None, (false, Some(reason)), None)
+            (None, (false, Some(reason)), None, None)
         }
     };
 
@@ -1050,6 +1069,26 @@ async fn run_server(
         ),
     );
 
+    // `BA.ticket.wire-approve-and-run-drain-trigger` task 3: spawn the
+    // pending-harvest sweep against the SAME `Arc<ApproveAndRunSeams>` the
+    // notify poll loop and `lookup_pending` composition below share —
+    // `Arc::clone`, never a second `ApproveAndRunSeams::new(..)`, per this
+    // hoist's own comment above and the neighbouring `approval_ledger`
+    // hoist's warning. `pending_harvest_pool` is `None` on every non-`Mount`
+    // engine-decision arm, in which case `spawn_pending_harvest_sweep`
+    // self-skips (logs once, spawns no querying loop) — `bastion serve`
+    // still boots with the database down. The tick interval is derived from
+    // the same `OrphanPolicy` default the stale-run sweep above already
+    // uses, via the same `notify::stale_run_alarm::sweep_interval` helper,
+    // rather than a fresh magic number.
+    let _pending_harvest_sweep_handle = pending_harvest::spawn_pending_harvest_sweep(
+        pending_harvest_pool,
+        std::sync::Arc::clone(&approve_and_run_seams),
+        notify::stale_run_alarm::sweep_interval(
+            &engine_core::operator::orphan::OrphanPolicy::default(),
+        ),
+    );
+
     // ── Operator-notification transport (BA.18.B task 5) ────────────────────
     //
     // Constructed only when both `BASTION_TELEGRAM_BOT_TOKEN` and
@@ -1061,8 +1100,10 @@ async fn run_server(
     // `NotifyPollLoop::run` — never a listening socket).
     //
     // The pending-gate lookup composes two sources (`ticket-approve-and-run-
-    // seams` task 2): `approve_and_run_seams.lookup_pending` — the real
-    // source for a gate an engine run queued via `ApproveAndRunSeams::drain`
+    // seams` task 2): `approve_and_run_seams.lookup_pending` — populated by
+    // the `pending_harvest::spawn_pending_harvest_sweep` sweep spawned just
+    // above, which periodically drains records an engine run queued into
+    // the `events` table (`BA.ticket.wire-approve-and-run-drain-trigger`)
     // — tried first, falling back to `pending_payloads` — payloads this
     // process has sent via `POST /api/notify/test`
     // (`ticket-notify-send-trigger` tasks 1-3). Composed rather than
@@ -7243,6 +7284,91 @@ mod approve_and_run_seams_wiring_tests {
             resolve_pending_lookup(&seams, &test_registry, &headless_registry, "never-drained")
                 .is_none()
         );
+    }
+
+    // ── pending-harvest sweep wiring (BA.ticket.wire-approve-and-run-drain-
+    // trigger task 3) ────────────────────────────────────────────────────
+    //
+    // The point of the whole block: a stored pending record must reach
+    // `lookup_pending` through the PRODUCTION sweep path —
+    // `pending_harvest::drain_fresh_records`, the sweep's own
+    // parse-and-drain entry point — never by calling `seams.drain(..)`
+    // directly, which would prove nothing this block did not already have
+    // (see `approve_and_run_seams_wiring_tests` task 2's own fixtures and
+    // `pending_harvest.rs`'s task 2 tests for that pattern).
+
+    #[test]
+    fn a_pending_record_seeded_through_the_production_sweep_reaches_lookup_pending() {
+        let seams = seams();
+
+        // One `PersistToBrainNode` node-result row, exactly the envelope
+        // `persist_to_brain.rs`'s `Defer` arm stores — see
+        // `pending_harvest.rs`'s module doc comment for the confirmed
+        // shape.
+        let pending = pending_harvest_record(
+            "artifact-sweep-1",
+            "https://synapse.example/ingest/learning-artifact",
+            serde_json::json!({"title": "an artifact"}),
+            vec!["docs/foo.md".to_string()],
+        );
+        let row = serde_json::json!({
+            "posted": false,
+            "skipped": true,
+            "harvest_mode": "approval",
+            "status": null,
+            "artifact_id": "artifact-sweep-1",
+            "response": null,
+            "pending": pending,
+        });
+
+        let drained =
+            crate::serve::pending_harvest::drain_fresh_records(&[row], &seams, chrono::Utc::now());
+        assert_eq!(
+            drained, 1,
+            "the sweep should drain exactly the one seeded row"
+        );
+
+        let gate_id = engine_core::workflows::approve_and_run::gate_id_for("artifact-sweep-1");
+        assert!(
+            seams.lookup_pending(&gate_id).is_some(),
+            "a record seeded through the production sweep path must resolve via lookup_pending"
+        );
+    }
+
+    #[test]
+    fn the_sweep_run_twice_over_the_same_row_leaves_lookup_pending_resolving_once() {
+        let seams = seams();
+        let pending = pending_harvest_record(
+            "artifact-sweep-2",
+            "https://synapse.example/ingest/learning-artifact",
+            serde_json::json!({"title": "an artifact"}),
+            vec!["docs/foo.md".to_string()],
+        );
+        let row = serde_json::json!({
+            "posted": false,
+            "skipped": true,
+            "harvest_mode": "approval",
+            "status": null,
+            "artifact_id": "artifact-sweep-2",
+            "response": null,
+            "pending": pending,
+        });
+        let now = chrono::Utc::now();
+
+        let first = crate::serve::pending_harvest::drain_fresh_records(
+            std::slice::from_ref(&row),
+            &seams,
+            now,
+        );
+        let second = crate::serve::pending_harvest::drain_fresh_records(&[row], &seams, now);
+
+        assert_eq!(first, 1);
+        assert_eq!(
+            second, 0,
+            "a repeat sweep tick over the same row must not re-enqueue"
+        );
+        let gate_id = engine_core::workflows::approve_and_run::gate_id_for("artifact-sweep-2");
+        assert!(seams.lookup_pending(&gate_id).is_some());
     }
 
     #[test]
