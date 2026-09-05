@@ -32,6 +32,10 @@ state.json
 node_modules/
 target/
 
+# D57 (Rust SDLC iteration speed): never a committed sccache config — cold-CI opt-in only,
+# via RUSTC_WRAPPER + CARGO_INCREMENTAL=0. See README.md's sccache measurement note.
+.cargo/config.toml
+
 # Nested planning/ directories. The rule above is anchored (`/planning`), so it
 # only ever covered the repo-root symlink into the brain vault — a REAL planning
 # directory created anywhere below the root slipped straight past it and was
