@@ -3808,3 +3808,108 @@ mod actions_notify_scenarios {
         dump_with(&config, "notify-test", "unconfigured", req, &app).await;
     }
 }
+
+/// `401` boundary corpus scenarios (Task 6, spec
+/// `BA.ticket.serve-auth-boundary-freeze`) — the golden acceptance criterion
+/// no earlier task in this spec's decomposition owned. Task 5 owned
+/// `types/contract-corpus` (the output directory) but not this generator, so
+/// the corpus had never actually gained a 401 golden even though the drift
+/// check passed (it was verifying a corpus that had none to drift from).
+///
+/// Modelled directly on `mod repo_status_scenarios` above: a `#[cfg(test)]
+/// mod`, a service-init macro building a minimal `actix_web::App`, and a
+/// call to `super::dump`. All three scenarios dispatch through the real
+/// `BearerAuthMiddleware` (with the signature tier enabled via
+/// `with_signing`) so the captured response is the middleware's real 401,
+/// never a hand-built one.
+#[cfg(test)]
+mod auth_scenarios {
+    use actix_web::{HttpResponse, web};
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::dump;
+    use crate::serve::auth::BearerAuthMiddleware;
+    use crate::serve::source_auth;
+
+    const BEARER_TOKEN: &str = "contract-corpus-bearer-token";
+    const SIGNING_KEY: &str = "contract-corpus-signing-key";
+    const SKEW_SECS: u64 = 300;
+
+    macro_rules! auth_service {
+        () => {
+            actix_web::test::init_service(
+                actix_web::App::new().service(
+                    web::scope("/api")
+                        .wrap(
+                            BearerAuthMiddleware::new(BEARER_TOKEN)
+                                .with_signing(Some(SIGNING_KEY.to_owned()), SKEW_SECS),
+                        )
+                        .route(
+                            "/ping",
+                            web::get().to(|| async { HttpResponse::Ok().finish() }),
+                        ),
+                ),
+            )
+            .await
+        };
+    }
+
+    /// Build a syntactically valid `x-timestamp`/`x-signature` pair for
+    /// `method`/`path` under `key` at `timestamp` — mirrors `auth.rs`'s own
+    /// test-only `sign` helper so a real machine-caller signature is what
+    /// gets exercised, never a hand-built header value.
+    fn sign(key: &str, timestamp: i64, method: &str, path: &str) -> String {
+        let canonical = source_auth::canonical_string(method, path, &[]);
+        let payload = source_auth::signing_payload(timestamp, &canonical);
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).unwrap();
+        mac.update(payload.as_bytes());
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// No `Authorization` header and no `x-timestamp`/`x-signature` pair at
+    /// all — the baseline unauthenticated request.
+    #[actix_web::test]
+    async fn unauthorized_no_credentials() {
+        let app = auth_service!();
+        let req = actix_web::test::TestRequest::get().uri("/api/ping");
+        dump("auth", "unauthorized-no-credentials", req, &app).await;
+    }
+
+    /// A well-formed `Authorization: Bearer <token>` header, but the wrong
+    /// token. MUST produce a byte-identical body to the no-credentials
+    /// scenario — a discriminating error body would tell an attacker which
+    /// half of the credential was wrong.
+    #[actix_web::test]
+    async fn unauthorized_bad_bearer() {
+        let app = auth_service!();
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/ping")
+            .insert_header(("authorization", "Bearer wrong-token"));
+        dump("auth", "unauthorized-bad-bearer", req, &app).await;
+    }
+
+    /// A syntactically valid `x-timestamp`/`x-signature` pair — signed under
+    /// the wrong key, at the real current time so the skew check itself
+    /// passes and only the HMAC comparison fails. MUST also produce a
+    /// byte-identical body to the other two scenarios.
+    #[actix_web::test]
+    async fn unauthorized_bad_signature() {
+        let app = auth_service!();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let sig = sign("wrong-signing-key", now, "GET", "/api/ping");
+        let req = actix_web::test::TestRequest::get()
+            .uri("/api/ping")
+            .insert_header(("x-timestamp", now.to_string()))
+            .insert_header(("x-signature", sig));
+        dump("auth", "unauthorized-bad-signature", req, &app).await;
+    }
+}
