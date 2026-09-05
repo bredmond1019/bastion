@@ -43,6 +43,7 @@ pub mod notify;
 pub mod poll;
 pub mod pricescout;
 pub mod session_qa;
+pub mod source_auth;
 pub mod status;
 pub mod ws;
 
