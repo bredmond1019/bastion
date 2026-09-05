@@ -1,6 +1,6 @@
 ---
 type: Guideline
-title: "serve-api contract v0.42"
+title: "serve-api contract v0.43"
 description: "The pinned HTTP + WebSocket contract for `bastion serve` — bind address, bearer auth, the /ws hub and frame envelope, and the REST surfaces bastion-ui and bastion-web consume. Per-version deltas live in the Amendment Log at the bottom of this file, not here."
 doc_id: serve-api
 layer: [console, surface, engine]
@@ -10,9 +10,9 @@ keywords: [serve-api, websocket, bastion-ui, contract, X-API-Key, cross-brain, b
 related: [config, observ, data-contract, abort, master-plan, "base-template:run-state-data-contract"]
 ---
 
-# serve-api — v0.42 Contract
+# serve-api — v0.43 Contract
 
-**Version:** v0.42  
+**Version:** v0.43  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26, 28–29 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -2119,6 +2119,7 @@ applies is a rendering concern and stays in `mev`.
 | `unmet_blocks` (v0.25) | array of string \| absent | Every unmet `blocks[]` target key. Non-empty iff this entry is in the BLOCKING lane. Absent key (not `[]`) when empty. There is deliberately no `blocking: bool` field — derive it from `!unmet_blocks.is_empty()`. |
 | `finding_id` (v0.25) | string \| absent | Cross-repo finding identity, verbatim from `mev::CarryoverRanking`. Absent key when unauthored. |
 | `clears_when_satisfied` (v0.25) | boolean | Whether the source verdict's evaluated `clears_when` references are currently satisfied, verbatim from `mev::CarryoverRanking`. Always present. |
+| `title` (v0.43, `BA.ticket.attention-carryover-title`) | string \| absent | The carryover entry's own recorded `summary` (`okf_core::Carryover.summary`), verbatim. Absent key when the entry records none — **never synthesized from `slug` or `text`**: bastion-web's BW.14.C deliberately stopped rendering `text` as a title because the raw prose reads as noise, and a title derived from `slug` would be exactly that noise again under a different name. Consumers decide how (or whether) to render a row's title; this endpoint only ever passes through what the entry itself recorded. |
 
 **v0.25 behavioral change:** membership in this array no longer gates on `carryover_stale_age`
 alone — the full carryover entry set is ranked by `mev::rank_carryover` (contract §2), and
@@ -4023,6 +4024,17 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-09-04 — v0.42 → v0.43 (`BA.ticket.attention-carryover-title`, additive):** `AttentionCarryoverDto`
+  (Section 15.3) gains `title: Option<String>`, sourced verbatim from the carryover entry's own
+  recorded `summary` (`okf_core::Carryover.summary`) and never synthesized from `slug` or `text`.
+  Absent key (`skip_serializing_if = "Option::is_none"`) when the entry records no summary, so a
+  payload built entirely from title-less entries stays byte-identical to the pre-block shape — the
+  regression test pins this. Contract-corpus golden `attention__populated` regenerated to cover
+  both the title-bearing and title-less cases in the same `stale_carryover` lane;
+  `attention__empty` is unchanged (no entries either way). `types/serve.ts` unaffected by this doc
+  edit — regenerate separately per the standard typeshare step. bastion-web decides how (or
+  whether) to render the field; that is out of scope here (filed as
+  `BW.ticket.render-attention-title`).
 - **2026-09-04 — v0.41 → v0.42 (`BA.ticket.batch-repo-status`, additive):** New Section 11.7 route,
   `GET /api/repos/status` — a cross-repo `status.md` aggregate so a caller wanting several repos'
   status stops issuing one `GET /api/repos/{name}/status` per repo (shaped on Section 11.6's `GET

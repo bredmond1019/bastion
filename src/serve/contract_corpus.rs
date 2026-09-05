@@ -1686,11 +1686,15 @@ mod attention_scenarios {
     use crate::config::FileConfig;
     use crate::serve::handlers::attention::get_attention;
 
-    /// Build a fixture HQ brain corpus with one stale `carryover[]` entry
-    /// (`bastion`, `known_issue`, threshold 10 days — created 15 days ago,
-    /// so it trips), one aging `backlog[]` idea (threshold 7 days — created
-    /// 10 days ago), and one `origin.type == "capture"` backlog idea aged
-    /// the same way (lands in `orphaned_captures`, not `aging_backlog`).
+    /// Build a fixture HQ brain corpus with two stale `carryover[]` entries
+    /// (`bastion`, threshold 10/3 days — both created 15 days ago, so both
+    /// trip): one with no recorded `summary` (title-less, pinning
+    /// `AttentionCarryoverDto.title`'s absent-key case) and one with a
+    /// `summary` (title-bearing, pinning the present case —
+    /// `BA.ticket.attention-carryover-title`). Also one aging `backlog[]`
+    /// idea (threshold 7 days — created 10 days ago), and one
+    /// `origin.type == "capture"` backlog idea aged the same way (lands in
+    /// `orphaned_captures`, not `aging_backlog`).
     fn fixture_populated() -> TempDir {
         let tmp = TempDir::new("attention-populated");
         let root = tmp.path();
@@ -1752,6 +1756,14 @@ heading = "Bastion"
       "scope": {{"repo": "bastion"}},
       "kind": "known_issue",
       "text": "some known issue that has gone stale",
+      "created": "{created}"
+    }},
+    {{
+      "slug": "stale-env-with-title",
+      "scope": {{"repo": "bastion"}},
+      "kind": "env",
+      "text": "engine routes need DATABASE_URL + BASTION_ENGINE_API_KEY set",
+      "summary": "Engine mount needs an env var",
       "created": "{created}"
     }}
   ]
