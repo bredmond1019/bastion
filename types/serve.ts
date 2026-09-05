@@ -151,6 +151,20 @@ export interface AttentionCarryoverDto {
 	 * (`mev::CarryoverLane::Cleared`), verbatim from `mev::CarryoverRanking`.
 	 */
 	clears_when_satisfied: boolean;
+	/**
+	 * Short human-authored headline for this entry, sourced verbatim from the
+	 * carryover entry's own recorded `summary` field
+	 * (`okf_core::state::Carryover::summary`) when one is recorded. `None` when
+	 * the entry records no such headline — never synthesized from [`Self::slug`]
+	 * or [`Self::text`]: the slug stays the operator's own identity for the row
+	 * (it is never replaced), and `text` is the full multi-paragraph finding that
+	 * bastion-web's BW.14.C deliberately stopped rendering as a title because it
+	 * read as noise. Added by `BA.ticket.attention-carryover-title` so a
+	 * carryover row is legible to a reader who did not author the slug (e.g. the
+	 * pt-BR public demo) while leaving the slug visible as identity, per the
+	 * operator's recorded position in that block's Notes.
+	 */
+	title?: string;
 }
 
 /**
