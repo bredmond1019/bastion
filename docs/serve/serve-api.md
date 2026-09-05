@@ -3255,9 +3255,10 @@ No `serve` runtime behaviour changed as part of adding this section — the dump
 ### 25.6 Scenario inventory
 
 As of 2026-08-21 (`BA.22.A`) **every route named in the block's binding lane contract is
-frozen.** The corpus holds goldens across seventeen routes — the ten frozen by
-`ticket-costs-200-contract-golden`/`ticket-contract-corpus-uncovered-routes`, plus the seven
-`BA.22.A` adds. This table is verified against the actual filenames in
+frozen.** The corpus holds goldens across eighteen routes — the ten frozen by
+`ticket-costs-200-contract-golden`/`ticket-contract-corpus-uncovered-routes`, the seven
+`BA.22.A` adds, plus the synthetic `/api/ping` auth-401 route added by
+`BA.ticket.serve-auth-boundary-freeze`. This table is verified against the actual filenames in
 `types/contract-corpus/`, not read off the source:
 
 | Route | Scenarios (`<route>__<scenario>.json`) | Deliberately-absent success shape, and why |
@@ -3279,6 +3280,7 @@ frozen.** The corpus holds goldens across seventeen routes — the ten frozen by
 | `/api/sessions*` (`BA.22.A`, 6 routes) | `sessions__no-tmux`, `sessions-pane__no-tmux`, `sessions-create__no-tmux`, `sessions-send__no-tmux`, `sessions-key__no-tmux`, `sessions-delete__no-tmux` | The 2xx shapes (a real session list, pane capture, create/delete) are absent — they require a live tmux server, which a checked-in golden may not depend on. Every route's 503 + `C001` "tmux not installed" shape is frozen instead, reached deterministically on any machine by pointing `PATH` at an empty directory. |
 | `POST /api/actions/command` (`BA.22.A`) | `actions-command__invalid-mode` | The `AskError::UntrustedDir` → 400/`C006` branch is absent: that check lives only in `sessions::ask::ask`'s trust pre-flight, which this route's `Spawn` arm never calls (it calls `ensure_session_with_claude` directly) — no request this route can receive reaches it, so there is no real shape to freeze. |
 | `POST /api/notify/test` (`BA.22.A`) | `notify-test__unconfigured` | The configured-transport 200/202 shape is absent — freezing it would require a real Telegram bot token and sending a real message, which the corpus (run on every `cargo test`) must never do. Only the `BASTION_TELEGRAM_BOT_TOKEN`/`_CHAT_ID`-unset 503/`C005` shape is frozen, mirroring the existing `costs__no-database-url` precedent for an unconfigured-dependency error. |
+| `GET /api/ping` (auth-only probe, `BA.ticket.serve-auth-boundary-freeze`) | `auth__unauthorized-no-credentials`, `auth__unauthorized-bad-bearer`, `auth__unauthorized-bad-signature` | The 200 shape is absent — this route exists in the corpus only to exercise `BearerAuthMiddleware`'s real `401` path (Section 2.3) under all three failure modes; it carries no business logic of its own. `unauthorized-bad-signature` signs with the wrong key at the real current time so the skew check passes and only the HMAC comparison fails, isolating it from the skew-window rejection already covered by `src/serve/auth.rs`'s own unit tests. All three goldens are byte-identical, per Section 2.3's contract that the response never distinguishes which tier (or neither) was attempted. |
 
 Per-route notes for the ten pre-`BA.22.A` routes follow; the seven `BA.22.A` routes' full
 rationale (env discipline, redaction, the tmux-absence seam) lives in their module doc comments
@@ -4117,6 +4119,16 @@ deliberately not duplicated in this repo.
 
 ## Amendment Log
 
+- **2026-09-05 — no version bump (`BA.ticket.serve-auth-boundary-freeze`):** Froze three new
+  contract-corpus goldens (`auth__unauthorized-no-credentials`, `auth__unauthorized-bad-bearer`,
+  `auth__unauthorized-bad-signature`) against a minimal `/api/ping` scope wrapped in
+  `BearerAuthMiddleware::new(...).with_signing(...)`, closing the gap that no golden previously
+  exercised the middleware's real `401` path (Section 2.3) for any of the three failure modes.
+  Added the corresponding row to the `### 25.6 Scenario inventory` table and bumped its route
+  count from seventeen to eighteen. No DTO or handler response shape changed — the `401` body was
+  already documented in Section 2.3 and is unchanged by this entry; per the `BA.22.A` precedent
+  above, freezing an already-documented wire shape as a golden is not itself a contract change, so
+  no version bump applies.
 - **2026-09-04 — v0.42 → v0.43 (`BA.ticket.attention-carryover-title`, additive):** `AttentionCarryoverDto`
   (Section 15.3) gains `title: Option<String>`, sourced verbatim from the carryover entry's own
   recorded `summary` (`okf_core::Carryover.summary`) and never synthesized from `slug` or `text`.
