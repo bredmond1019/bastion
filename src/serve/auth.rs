@@ -14,6 +14,7 @@ use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform, forwar
 use actix_web::{Error, HttpResponse};
 use futures::future::{LocalBoxFuture, Ready, ok};
 use std::rc::Rc;
+use subtle::ConstantTimeEq;
 
 // ── Pure helper (unit-tested) ──────────────────────────────────────────────────
 
@@ -29,6 +30,16 @@ use std::rc::Rc;
 /// - Wrong scheme (anything other than `Bearer `).
 /// - Wrong token value.
 /// - Empty token in either position.
+///
+/// # Why constant-time
+/// The final comparison uses [`subtle::ConstantTimeEq`] rather than `==`. A
+/// plain byte-by-byte `PartialEq` short-circuits on the first differing
+/// byte, which leaks the position of that byte through response timing —
+/// the classic timing-oracle attack against secret comparison. The early
+/// returns above (missing header, wrong scheme, empty token on either side)
+/// are structural, not secret-dependent, and are deliberately left
+/// short-circuiting; only the final value comparison needs to run in time
+/// independent of where the mismatch occurs.
 pub fn token_matches(header_value: Option<&str>, expected_token: &str) -> bool {
     let Some(value) = header_value else {
         return false;
@@ -40,7 +51,7 @@ pub fn token_matches(header_value: Option<&str>, expected_token: &str) -> bool {
     if expected_token.is_empty() || provided.is_empty() {
         return false;
     }
-    provided == expected_token
+    bool::from(provided.as_bytes().ct_eq(expected_token.as_bytes()))
 }
 
 // ── Middleware factory ─────────────────────────────────────────────────────────
@@ -141,6 +152,13 @@ where
 /// - Empty header value.
 /// - Empty expected key (server misconfiguration guard).
 /// - Wrong key value.
+///
+/// # Why constant-time
+/// Same reasoning as [`token_matches`]: the final comparison uses
+/// [`subtle::ConstantTimeEq`] rather than `==` so response timing never
+/// leaks the position of the first differing byte. Leaving this variable-time
+/// while `token_matches` is constant-time would be a silent asymmetry
+/// between the two schemes.
 pub fn api_key_matches(header_value: Option<&str>, expected_key: &str) -> bool {
     let Some(provided) = header_value else {
         return false;
@@ -148,7 +166,7 @@ pub fn api_key_matches(header_value: Option<&str>, expected_key: &str) -> bool {
     if expected_key.is_empty() || provided.is_empty() {
         return false;
     }
-    provided == expected_key
+    bool::from(provided.as_bytes().ct_eq(expected_key.as_bytes()))
 }
 
 /// Actix-web middleware factory that enforces `X-API-Key` authentication on
@@ -318,6 +336,35 @@ mod tests {
         assert!(
             !token_matches(Some("Bearer "), "secret123"),
             "empty provided token must not match"
+        );
+    }
+
+    // ── token_matches — constant-time compare, same/different length ───────
+
+    #[test]
+    fn two_same_length_wrong_tokens_are_both_rejected() {
+        assert!(
+            !token_matches(Some("Bearer aaaaaaaa"), "secret123"),
+            "wrong token of the same length as expected must not match"
+        );
+        assert!(
+            !token_matches(Some("Bearer zzzzzzzz"), "secret123"),
+            "a different wrong token of the same length as expected must not match"
+        );
+    }
+
+    #[test]
+    fn wrong_token_of_different_length_does_not_match() {
+        // ConstantTimeEq on unequal-length slices must still reject —
+        // exercised explicitly since a length mismatch is handled before
+        // the byte-wise constant-time comparison runs.
+        assert!(
+            !token_matches(Some("Bearer short"), "a-much-longer-secret-token"),
+            "shorter provided token must not match a longer expected token"
+        );
+        assert!(
+            !token_matches(Some("Bearer a-much-longer-provided-token"), "short-secret"),
+            "longer provided token must not match a shorter expected token"
         );
     }
 
