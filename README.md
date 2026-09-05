@@ -12,10 +12,14 @@ It also carries a set of read-only "knowledge graph" queries over a Markdown doc
 and over Rust source code, a small HTTP+WebSocket server, and a Telegram-based operator-notification
 CLI. All of it is one binary: `bastion <subcommand>`.
 
-> **This crate is part of a private multi-repo workspace** and depends on sibling repos via path
-> dependency (`../mev`, `../okf-core`, `../bella/crates/bella-engine`, and several
-> `../engine-rs/crates/*` crates). It is not designed to build standalone — cloning this repo alone
-> will not compile it.
+> **This crate is part of a private multi-repo workspace.** Building it means cloning **six**
+> sibling repos as siblings of this one: `bastion` (this repo), `mev`, `okf-core`, `bella`,
+> `engine-rs`, and `claude-code-rs`. Five of them — `mev`, `okf-core`, `bella` (via
+> `bella/crates/bella-engine`), and `engine-rs` (via several `engine-rs/crates/*` crates) — appear
+> directly as `path =` dependencies in `Cargo.toml`. `claude-code-rs` does **not** appear there: it
+> is pulled in transitively, as a dependency of `engine-rs`'s `engine-core` crate, not of `bastion`
+> directly — so a clone of only the five visible repos still fails to build. It is not designed to
+> build standalone — cloning this repo alone will not compile it.
 
 ## What this is for
 
@@ -67,6 +71,35 @@ Nothing above needs a database. The workflow-observability commands (`monitor`, 
 
 There is no published crate or standalone installer — this binary is built from source inside the
 private workspace it lives in.
+
+### Build-cache note: no `rustc-wrapper` here (D57)
+
+There is deliberately **no `rustc-wrapper = "sccache"`** in this repo's `.cargo/config.toml`.
+Measured here on 2026-08-27 — and independently by `engine-rs` and `mev` on 2026-07-29:
+
+```
+$ sccache --show-stats
+Compile requests             0
+Compile requests executed    0
+Cache hits                   0
+Cache misses                 0
+```
+
+sccache refuses to cache incremental compilations, and cargo passes `-C incremental=...` for the
+dev/test profile — so every `rustc` call fell straight through to plain `rustc` plus a wrapper hop
+doing nothing. Incremental compilation wins for this repo's edit-recompile-edit loop; sccache is
+gone from the local agent loop.
+
+If you want sccache back for a **cold CI build** (no incremental state to reuse there), set it via
+the `RUSTC_WRAPPER` environment variable together with `CARGO_INCREMENTAL=0` — never as a committed
+`.cargo/config.toml`:
+
+```bash
+RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build --release
+```
+
+See `[profile.dev]` in `Cargo.toml` for the link-time fix that actually helped local build speed
+here. Ruling: [D57 — Rust SDLC iteration speed](../../docs/decisions/D57-rust-sdlc-iteration-speed.md).
 
 ## Prerequisites
 
