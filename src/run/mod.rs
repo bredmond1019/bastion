@@ -120,6 +120,26 @@ pub fn format_budget_refusal(workflow: &str, reason: &BreachReason) -> String {
     )
 }
 
+/// Whether `--monitor` can proceed given the resolved `database_url`. Pure —
+/// no I/O, no async runtime — so it is unit-testable in isolation.
+///
+/// `--monitor` attaches to the live run via the same Postgres `events` table
+/// `status`/`monitor` read, so it genuinely needs `DATABASE_URL` — unlike the
+/// trigger dispatch itself, which never touches the database. Checked BEFORE
+/// dispatch so a missing `DATABASE_URL` never leaves the operator with a
+/// workflow already running and no way to attach to it.
+pub(crate) fn monitor_requires_db(monitor: bool, database_url: Option<&str>) -> Result<(), String> {
+    if monitor && database_url.is_none() {
+        return Err(
+            "bastion run: --monitor requires DATABASE_URL (point to the Python orchestrator's \
+             PostgreSQL) to attach to the run's live status; trigger without --monitor, or set \
+             DATABASE_URL."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub async fn trigger(
     workflow: String,
     args: Option<String>,
@@ -127,40 +147,71 @@ pub async fn trigger(
     force: bool,
 ) -> Result<()> {
     let data = parse_args(args)?;
-    let config = Config::load()?;
+
+    let cfg = Config::load();
+    if let Err(e) = &cfg
+        && !matches!(e, ConfigError::MissingVar(_))
+    {
+        return Err(anyhow!("{e}"));
+    }
+    let file = crate::config::load_workspace_registry(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
+    .unwrap_or_default();
+    let resolved = trigger_config(
+        cfg.as_ref(),
+        std::env::var("BASTION_API_URL").ok(),
+        std::env::var("BASTION_ENGINE_API_KEY").ok(),
+        &file,
+    );
+
+    // Gate --monitor on DATABASE_URL BEFORE dispatching — firing a workflow
+    // and then failing to attach leaves the operator with a running job and
+    // an error, which is worse than refusing up front.
+    if let Err(msg) = monitor_requires_db(monitor, resolved.database_url.as_deref()) {
+        return Err(anyhow!(msg));
+    }
 
     // Pre-dispatch budget gate: only query spend when a cap is actually
     // configured (the absent-tolerant contract — "no extra query" when no
     // budget is set) and the operator hasn't asked to bypass it with
     // --force.
-    if !force && (config.max_total_tokens.is_some() || config.max_cost_usd.is_some()) {
-        let budget = Budget {
-            max_total_tokens: config.max_total_tokens,
-            max_cost_usd: config.max_cost_usd,
-        };
-        match db_costs::fetch_all_runs(&config.database_url).await {
-            Ok(runs) => {
-                let summary = costs::aggregate(&runs, &Window::All, Utc::now());
-                let spend = Spend::from(&summary.totals);
-                if let GateOutcome::Refuse(reason) = evaluate_gate(&budget, spend) {
-                    eprint!("{}", format_budget_refusal(&workflow, &reason));
-                    return Ok(());
+    if !force && let Some(budget) = &resolved.budget {
+        match &resolved.database_url {
+            Some(database_url) => match db_costs::fetch_all_runs(database_url).await {
+                Ok(runs) => {
+                    let summary = costs::aggregate(&runs, &Window::All, Utc::now());
+                    let spend = Spend::from(&summary.totals);
+                    if let GateOutcome::Refuse(reason) = evaluate_gate(budget, spend) {
+                        eprint!("{}", format_budget_refusal(&workflow, &reason));
+                        return Ok(());
+                    }
                 }
-            }
-            Err(e) => {
-                // Fail open: an unreachable DB means the gate can't be
-                // evaluated, not that the operator is blocked from
-                // triggering — surfaced as a warning, not a refusal.
+                Err(e) => {
+                    // Fail open: an unreachable DB means the gate can't be
+                    // evaluated, not that the operator is blocked from
+                    // triggering — surfaced as a warning, not a refusal.
+                    eprintln!(
+                        "bastion run: could not evaluate the budget gate (database \
+                             unreachable: {e}); triggering anyway"
+                    );
+                }
+            },
+            None => {
+                // Same fail-open precedent as the unreachable-DB arm above,
+                // extended to an absent DATABASE_URL: a configured cap that
+                // cannot be evaluated is not a reason to block the operator.
                 eprintln!(
-                    "bastion run: could not evaluate the budget gate (database unreachable: {e}); \
-                     triggering anyway"
+                    "bastion run: could not evaluate the budget gate (DATABASE_URL not \
+                         set); triggering anyway"
                 );
             }
         }
     }
 
     let client =
-        ApiClient::new(&config.api_base_url).with_engine_api_key(config.engine_api_key.clone());
+        ApiClient::new(&resolved.api_base_url).with_engine_api_key(resolved.engine_api_key.clone());
     let outcome = client
         .trigger_workflow(&workflow, data)
         .await
@@ -852,5 +903,35 @@ mod tests {
         .expect("should parse");
         let resolved = trigger_config(Ok(&cfg), None, None, &FileConfig::default());
         assert_eq!(resolved.budget, None);
+    }
+
+    // ─── monitor_requires_db — the --monitor-only DATABASE_URL gate (task 2) ──
+
+    #[test]
+    fn monitor_without_database_url_errors_naming_monitor() {
+        let err = monitor_requires_db(true, None).expect_err("should refuse");
+        assert!(
+            err.contains("--monitor"),
+            "error message must name --monitor as the reason: {err}"
+        );
+        assert!(
+            err.contains("DATABASE_URL"),
+            "error message must still mention DATABASE_URL: {err}"
+        );
+    }
+
+    #[test]
+    fn monitor_with_database_url_does_not_error() {
+        assert!(monitor_requires_db(true, Some("postgres://localhost/db")).is_ok());
+    }
+
+    #[test]
+    fn no_monitor_without_database_url_does_not_error() {
+        assert!(monitor_requires_db(false, None).is_ok());
+    }
+
+    #[test]
+    fn no_monitor_with_database_url_does_not_error() {
+        assert!(monitor_requires_db(false, Some("postgres://localhost/db")).is_ok());
     }
 }
