@@ -40,6 +40,7 @@ pub mod docs;
 pub mod dto;
 pub mod handlers;
 pub mod notify;
+mod pending_harvest;
 pub mod poll;
 pub mod pricescout;
 pub mod session_qa;

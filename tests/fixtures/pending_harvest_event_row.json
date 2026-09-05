@@ -1,0 +1,17 @@
+{
+  "posted": false,
+  "skipped": true,
+  "harvest_mode": "approval",
+  "status": null,
+  "artifact_id": "artifact-123",
+  "response": null,
+  "pending": {
+    "artifact_id": "artifact-123",
+    "url": "https://synapse.example/ingest/learning-artifact",
+    "payload": {
+      "title": "some artifact",
+      "body": "content"
+    },
+    "doc_paths": ["docs/foo.md"]
+  }
+}
