@@ -1529,7 +1529,11 @@ mod e2e {
     /// so every existing assertion in this file keeps passing unchanged.
     /// Task 3 adds an ordered `(session, text, with_enter)` fake for the
     /// sequence-level assertions.
-    fn inject_recording() -> (InjectFn, Arc<StdMutex<Vec<(String, String)>>>) {
+    /// The two-tuple `(session, text)` log an [`inject_recording`] fake writes.
+    /// Aliased rather than spelled inline — clippy::type_complexity.
+    type InjectLog = Arc<StdMutex<Vec<(String, String)>>>;
+
+    fn inject_recording() -> (InjectFn, InjectLog) {
         let log = Arc::new(StdMutex::new(Vec::new()));
         let log_for_closure = log.clone();
         let f: InjectFn = Box::new(move |session, text, _with_enter| {
@@ -1549,7 +1553,12 @@ mod e2e {
     /// counts or a two-tuple log alone: a call-count assertion is exactly
     /// what let the shipped `BA.20.C` defect (option 1 silently submitted
     /// under a `FreeText`/`ChatAbout` tap) through review.
-    fn inject_ordered_recording() -> (InjectFn, Arc<StdMutex<Vec<(String, String, bool)>>>) {
+    /// The three-tuple `(session, text, with_enter)` log an
+    /// [`inject_ordered_recording`] fake writes. Aliased rather than spelled
+    /// inline — clippy::type_complexity.
+    type OrderedInjectLog = Arc<StdMutex<Vec<(String, String, bool)>>>;
+
+    fn inject_ordered_recording() -> (InjectFn, OrderedInjectLog) {
         let log = Arc::new(StdMutex::new(Vec::new()));
         let log_for_closure = log.clone();
         let f: InjectFn = Box::new(move |session, text, with_enter| {

@@ -202,12 +202,13 @@ async fn operator_transport_is_object_safe_and_dispatches() {
 /// to `OperatorTransport`'s `&self` (rather than `&mut self`) shape via a
 /// `Mutex`-guarded queue. `send` is never exercised by these tests and
 /// always succeeds trivially.
+/// One scripted `poll` outcome: the responses and cursor a call returns, or
+/// the error it fails with. Named rather than spelled inline at both use
+/// sites — clippy::type_complexity, and the two spellings could drift apart.
+type ScriptedPollOutcome = Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError>;
+
 struct ScriptedTransport {
-    poll_outcomes: std::sync::Mutex<
-        std::collections::VecDeque<
-            Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError>,
-        >,
-    >,
+    poll_outcomes: std::sync::Mutex<std::collections::VecDeque<ScriptedPollOutcome>>,
     /// Scripted outcomes for `acknowledge`, one per call, in order. Empty
     /// (the default) means every call succeeds — most tests never script
     /// this and don't care about acknowledgement at all.
@@ -228,9 +229,7 @@ struct ScriptedTransport {
 }
 
 impl ScriptedTransport {
-    fn new(
-        outcomes: Vec<Result<(Vec<OperatorResponse>, Option<UpdateCursor>), NotifyError>>,
-    ) -> Self {
+    fn new(outcomes: Vec<ScriptedPollOutcome>) -> Self {
         Self {
             poll_outcomes: std::sync::Mutex::new(outcomes.into()),
             ack_outcomes: std::sync::Mutex::new(std::collections::VecDeque::new()),

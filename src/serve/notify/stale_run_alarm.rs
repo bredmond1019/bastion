@@ -292,8 +292,12 @@ mod tests {
 
     #[test]
     fn sweep_interval_is_floored_for_a_tiny_threshold() {
-        let mut policy = OrphanPolicy::default();
-        policy.stale_run_alarm_secs = 8; // 8/4 = 2, below the floor of 5
+        // 8/4 = 2, below the floor of 5. Struct-update syntax rather than a
+        // post-construction assignment — clippy::field_reassign_with_default.
+        let policy = OrphanPolicy {
+            stale_run_alarm_secs: 8,
+            ..OrphanPolicy::default()
+        };
         assert_eq!(
             sweep_interval(&policy),
             Duration::from_secs(MIN_SWEEP_INTERVAL_SECS)
@@ -302,8 +306,12 @@ mod tests {
 
     #[test]
     fn sweep_interval_is_ceilinged_for_a_huge_threshold() {
-        let mut policy = OrphanPolicy::default();
-        policy.stale_run_alarm_secs = 100_000; // /4 = 25000, above the ceiling of 300
+        // /4 = 25000, above the ceiling of 300. Struct-update syntax rather than a
+        // post-construction assignment — clippy::field_reassign_with_default.
+        let policy = OrphanPolicy {
+            stale_run_alarm_secs: 100_000,
+            ..OrphanPolicy::default()
+        };
         assert_eq!(
             sweep_interval(&policy),
             Duration::from_secs(MAX_SWEEP_INTERVAL_SECS)
