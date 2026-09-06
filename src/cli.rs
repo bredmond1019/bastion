@@ -10,7 +10,8 @@ use std::path::PathBuf;
 bastion is a personal Rust CLI that serves as the unified control panel for the agentic \
 engineering stack. It exposes two surfaces:\n\n\
   Workflow observability — live and post-mortem views of workflow execution backed by the \
-Python orchestrator's PostgreSQL database (`monitor`, `inspect`, `costs`, `run`, `status`).\n\n\
+PostgreSQL database that engine-store's durable writer populates (`monitor`, `inspect`, `costs`, \
+`run`, `status`).\n\n\
   Process / session control — tmux session management without any database dependency \
 (`sessions`, `attach`, `new`, `kill`, `send`, `capture`, `ask`).\n\n\
 Configuration is read from env vars (highest precedence), then from \

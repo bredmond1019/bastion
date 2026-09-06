@@ -97,7 +97,7 @@ pub async fn run(run_id: String) -> Result<()> {
         Ok(r) => r,
         Err(_) => {
             eprintln!("bastion inspect: no run found for '{run_id}'");
-            eprintln!("  Is the Python orchestrator stack running? (./scripts/dev.sh)");
+            eprintln!("  {}", crate::observ::DB_CONNECTION_HINT);
             return Ok(());
         }
     };

@@ -131,9 +131,9 @@ pub fn format_budget_refusal(workflow: &str, reason: &BreachReason) -> String {
 pub(crate) fn monitor_requires_db(monitor: bool, database_url: Option<&str>) -> Result<(), String> {
     if monitor && database_url.is_none() {
         return Err(
-            "bastion run: --monitor requires DATABASE_URL (point to the Python orchestrator's \
-             PostgreSQL) to attach to the run's live status; trigger without --monitor, or set \
-             DATABASE_URL."
+            "bastion run: --monitor requires DATABASE_URL (point to the Postgres instance \
+             engine-store's durable writer writes to) to attach to the run's live status; \
+             trigger without --monitor, or set DATABASE_URL."
                 .to_string(),
         );
     }

@@ -161,11 +161,48 @@ pub fn init_tracing(verbose: bool, json_logs: bool) {
     }
 }
 
+// ── Connection-failure hint ───────────────────────────────────────────────────
+
+/// Shared hint text for a `bastion` command that failed to reach the
+/// `events` table it reads (`monitor`, `inspect`, `costs`).
+///
+// AMENDED 2026-09-06 (BA.chore.monitor-error-string-names-the-retired-python-orchestrator):
+// historically this hint sent the operator to the Python orchestrator's ./scripts/dev.sh, which
+// D48 made stale — that stack no longer writes the rows these commands read when a run is
+// triggered through the embedded Engine.
+///
+/// Both the retired dev stack and the embedded Engine (`bastion serve`'s engine-serve mount, via
+/// engine-store's durable writer, per D48) can populate `events` depending on how the run was
+/// triggered — so this names the engine path first without claiming the other one never applies.
+/// See `AGENTS.md`'s Environment section.
+pub const DB_CONNECTION_HINT: &str = "Is a stack writing to this database? Runs served through \
+`bastion serve`'s engine mount are written by engine-store's durable writer — make sure \
+DATABASE_URL points at that Postgres instance.";
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- DB_CONNECTION_HINT ---
+
+    #[test]
+    fn db_connection_hint_names_engine_path_not_the_retired_stack() {
+        let stale_phrase = ["Python", "orchestrator"].join(" ");
+        assert!(
+            !DB_CONNECTION_HINT.contains(&stale_phrase),
+            "hint must not reissue the stale directive naming the retired stack"
+        );
+        assert!(
+            DB_CONNECTION_HINT.contains("engine-store"),
+            "hint must name engine-store as a writer of the rows"
+        );
+        assert!(
+            DB_CONNECTION_HINT.contains("bastion serve"),
+            "hint must name bastion serve's engine mount"
+        );
+    }
 
     // --- CommandEvent::start ---
 

@@ -4,7 +4,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ConfigError {
-    #[error("{0} must be set (point to the Python orchestrator's PostgreSQL)")]
+    #[error(
+        "{0} must be set (point to the Postgres instance engine-store's durable writer writes to)"
+    )]
     MissingVar(&'static str),
     #[error("config file is malformed: {0}")]
     MalformedFile(String),

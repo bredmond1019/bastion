@@ -288,10 +288,7 @@ pub async fn run(window: String, watch: bool) -> Result<()> {
         Ok(r) => r,
         Err(e) => {
             eprintln!("bastion costs: could not connect to database: {e}");
-            eprintln!(
-                "Make sure the Python orchestrator stack is running:\n\
-                 cd ../python-orchestration-system && ./scripts/dev.sh"
-            );
+            eprintln!("{}", crate::observ::DB_CONNECTION_HINT);
             return Ok(());
         }
     };

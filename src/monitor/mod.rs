@@ -50,7 +50,7 @@ pub async fn run(workflow_id: Option<String>) -> Result<()> {
             Ok(runs) => runs,
             Err(e) => {
                 eprintln!("bastion monitor: failed to query active runs — {e:#}");
-                eprintln!("  Is the Python orchestrator stack running? (./scripts/dev.sh)");
+                eprintln!("  {}", crate::observ::DB_CONNECTION_HINT);
                 return Ok(());
             }
         },
