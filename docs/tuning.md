@@ -69,13 +69,16 @@ Registry format: [config.md § Workspace registry](operations/config.md#workspac
 `BASTION_POLL_INTERVAL` (or `poll_interval` in the config file) sets how many seconds every live
 view waits between refreshes. **Default: 2.**
 
-Two behaviours here are not symmetric, and both have bitten people:
+Two behaviours here are worth knowing, one a guardrail and one a deliberate design choice:
 
-- **`0` is accepted.** `monitor` floors it at one second; `costs --watch` does **not**, so
-  `BASTION_POLL_INTERVAL=0 bastion costs --watch` is a busy loop against your database.
+- **`0` is accepted, and silently means 1.** The value is clamped to a minimum of one second
+  wherever it is resolved — not per-consumer — so every command that polls gets the floor for
+  free, including `costs --watch`.
 - **An unparseable value is silently ignored**, falling back to the config file and then to `2`.
-  This is the opposite of the budget caps below, where a malformed value is fatal. If a poll
-  interval "isn't taking effect", suspect a typo before suspecting the code.
+  This is a deliberate choice, not an inconsistency: a poll cadence that fails to parse degrades
+  safely to a default, whereas a budget cap that fails to parse must never silently become "no
+  cap" — see the fatal behaviour in the budget ceilings below. If a poll interval "isn't taking
+  effect", suspect a typo before suspecting the code.
 
 ## Budget ceilings
 
