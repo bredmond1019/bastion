@@ -48,7 +48,7 @@ pub mod source_auth;
 pub mod status;
 pub mod ws;
 
-use crate::config::{FileConfig, load_workspace_registry};
+use crate::config::{FileConfig, load_workspace_registry, resolve_poll_interval_secs};
 use actix::{Actor, Addr};
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
 use actix_web_actors::ws as actix_ws;
@@ -429,11 +429,12 @@ fn json_config() -> web::JsonConfig {
 /// **Blocking** — run on a dedicated OS thread or via
 /// `tokio::task::spawn_blocking` to avoid stalling the tokio executor.
 pub fn run(addr: String, token: String, signing_key: Option<String>, skew_secs: u64) -> Result<()> {
-    // Read poll cadence from env (BASTION_POLL_INTERVAL), defaulting to 2s.
-    let poll_secs: u64 = std::env::var("BASTION_POLL_INTERVAL")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2);
+    // Read poll cadence from env (BASTION_POLL_INTERVAL), defaulting to 2s and
+    // clamped to a one-second floor — same resolution helper `Config::from_sources`
+    // uses, so this independent env read can't reintroduce the busy-loop asymmetry
+    // (BA.chore.poll-interval-must-have-a-floor-on-every-path).
+    let poll_secs: u64 =
+        resolve_poll_interval_secs(std::env::var("BASTION_POLL_INTERVAL").ok(), None);
 
     // Spin up the actix System on the current thread; block_on drives the
     // async server future inside the System's Arbiter-aware runtime.

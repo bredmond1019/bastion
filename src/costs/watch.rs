@@ -95,6 +95,13 @@ pub fn alert_message(reason: &super::budget::BreachReason) -> String {
 /// `render_table` each tick until interrupted (Ctrl-C / process signal —
 /// no in-process stop condition; this loop runs until the process exits).
 ///
+/// This was the one poll consumer with no call-site `.max(1)` floor, so
+/// `BASTION_POLL_INTERVAL=0` busy-looped this call against Postgres. Fixed at
+/// the source: `Config::poll_interval_secs` is now clamped to a one-second
+/// minimum inside `config::resolve_poll_interval_secs`, so this call site
+/// needs no change of its own
+/// (BA.chore.poll-interval-must-have-a-floor-on-every-path).
+///
 /// Degrades rather than panics on a DB failure: prints a `C0xx`-coded
 /// message and keeps polling — a transient failure mid-watch does not kill
 /// the loop. Uses the same graceful posture as `costs::run`, plus the

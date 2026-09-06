@@ -608,6 +608,40 @@ pub(crate) fn resolve_api_base_url(
         .unwrap_or_else(|| DEFAULT_API_URL.to_string())
 }
 
+/// Minimum allowed poll cadence, in seconds. `BASTION_POLL_INTERVAL=0` (or a
+/// config-file `poll_interval = 0`) would otherwise busy-loop the consumer
+/// against Postgres — `src/costs/watch.rs`'s watch loop has no per-call-site
+/// `.max(1)` guard, unlike its five siblings (`monitor::watch`,
+/// `monitor::events`, `serve::attention_source`, `serve::blocked_edge::poller`,
+/// and `serve::mod`'s own hub cadence). Clamping here, at resolution, means
+/// every consumer gets the floor for free and none of those call sites need
+/// to change (BA.chore.poll-interval-must-have-a-floor-on-every-path).
+const MIN_POLL_INTERVAL_SECS: u64 = 1;
+
+/// Resolve `BASTION_POLL_INTERVAL` from an env string (highest precedence),
+/// then a config-file value, then the built-in default of 2 — clamping the
+/// result to [`MIN_POLL_INTERVAL_SECS`] so a `0` from any source can never
+/// reach a consumer.
+///
+/// **Lenient parse is deliberate, not a bug**: an env value that fails to
+/// parse as `u64` (including a negative number, which cannot be represented
+/// in `u64` at all) falls through to the file value or the default, exactly
+/// like `BASTION_NOTIFY`. This is the opposite of `BASTION_MAX_TOTAL_TOKENS`
+/// / `BASTION_MAX_COST_USD`, which are typed-error-fatal on a malformed
+/// value (see [`ConfigError::MalformedBudgetValue`]) — a poll cadence that
+/// silently degrades to a safe default is harmless, while a budget cap that
+/// silently became "no cap" is not. Both `BASTION_POLL_INTERVAL` call sites
+/// (`Config::from_sources` and `serve::mod::run`'s independent env read) call
+/// this one helper so the floor and the parse convention live in exactly one
+/// place.
+pub(crate) fn resolve_poll_interval_secs(env: Option<String>, file: Option<u64>) -> u64 {
+    let resolved = env
+        .and_then(|s| s.parse::<u64>().ok())
+        .or(file)
+        .unwrap_or(2);
+    resolved.max(MIN_POLL_INTERVAL_SECS)
+}
+
 impl Config {
     pub fn load() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
@@ -671,10 +705,7 @@ impl Config {
 
         let api_base_url = resolve_api_base_url(env_api, file.api_base_url);
 
-        let poll_interval_secs = env_poll
-            .and_then(|s| s.parse::<u64>().ok())
-            .or(file.poll_interval)
-            .unwrap_or(2);
+        let poll_interval_secs = resolve_poll_interval_secs(env_poll, file.poll_interval);
 
         let max_total_tokens = match env_max_tokens {
             Some(s) => Some(s.parse::<u64>().map_err(|_| {
@@ -1220,6 +1251,58 @@ mod tests {
     fn resolve_api_base_url_default_when_both_absent() {
         let resolved = resolve_api_base_url(None, None);
         assert_eq!(resolved, "http://localhost:8080");
+    }
+
+    // ─── resolve_poll_interval_secs: pure floor + precedence (no I/O) ─────────
+
+    #[test]
+    fn resolve_poll_interval_table_driven() {
+        // (env_str, file_value, expected) — table-driven so the busy-loop floor,
+        // the u64-unparseable fallthrough (which is also how a negative value is
+        // handled, since "-1" cannot parse as u64), and normal precedence are all
+        // asserted in one place (BA.chore.poll-interval-must-have-a-floor-on-every-path).
+        let cases: &[(Option<&str>, Option<u64>, u64)] = &[
+            // "0" from env floors to the minimum rather than reaching a consumer.
+            (Some("0"), None, 1),
+            // "-1" cannot parse as u64 — falls through to file/default, same as
+            // any other unparseable string. This is not a separate code branch.
+            (Some("-1"), None, 2),
+            (Some("-1"), Some(9), 9),
+            // Unparseable strings fall through to file, then the built-in default.
+            (Some("abc"), None, 2),
+            (Some("abc"), Some(4), 4),
+            (Some(""), None, 2),
+            // A valid env value wins over file.
+            (Some("7"), Some(3), 7),
+            // No env: file value is used.
+            (None, Some(5), 5),
+            // Neither source: built-in default of 2.
+            (None, None, 2),
+            // A config-file value of 0 is floored exactly like an env value of 0.
+            (None, Some(0), 1),
+        ];
+
+        for (env, file, expected) in cases {
+            let resolved = resolve_poll_interval_secs(env.map(|s| s.to_string()), *file);
+            assert_eq!(
+                resolved, *expected,
+                "resolve_poll_interval_secs(env={env:?}, file={file:?}) should be {expected}, was {resolved}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_poll_interval_never_zero() {
+        // Whatever the inputs, the result can never be a busy-loop-inducing 0.
+        for env in [None, Some("0"), Some("abc"), Some("-3")] {
+            for file in [None, Some(0), Some(5)] {
+                let resolved = resolve_poll_interval_secs(env.map(|s| s.to_string()), file);
+                assert!(
+                    resolved >= 1,
+                    "resolved to {resolved} for env={env:?}, file={file:?}"
+                );
+            }
+        }
     }
 
     // ─── from_sources: precedence ─────────────────────────────────────────────
