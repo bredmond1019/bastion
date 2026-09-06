@@ -160,7 +160,11 @@ pub struct FileConfig {
     pub database_url: Option<String>,
     pub api_base_url: Option<String>,
     pub poll_interval: Option<u64>,
-    /// Named workspace roots: `[workspaces]` TOML table → name → absolute path.
+    /// Named workspace roots: `[workspaces]` TOML table → name → path. May be
+    /// authored as relative in the TOML — `load_workspace_registry` canonicalizes
+    /// any relative entry against the config file's own parent directory before
+    /// handing this map back, so by the time callers see it every entry is
+    /// absolute regardless of how it was written.
     pub workspaces: Option<HashMap<String, PathBuf>>,
     /// Default workspace name — used when `--workspace` is omitted.
     pub default_workspace: Option<String>,
@@ -521,6 +525,16 @@ pub(crate) fn resolve_cli_root_from_cwd(
 /// Reads the config file identified by `config_path(xdg_config_home, home)`, parses it,
 /// and returns the resulting `FileConfig` (which carries the workspace table).
 ///
+/// **Canonicalization contract:** any `[workspaces]` entry whose `PathBuf` is
+/// relative (`PathBuf::is_relative()`) is rewritten to be relative to the
+/// config file's own parent directory — the same directory `config_path`
+/// resolved above — before this function returns, so a relative entry no
+/// longer depends on the invoking process's current working directory. This
+/// is a plain `Path::join`, not `std::fs::canonicalize`: the target need not
+/// exist on disk at config-load time. An entry that is already absolute
+/// (`is_relative()` is `false`) is left byte-for-byte unchanged — existing
+/// callers that depend on today's absolute-path values see identical output.
+///
 /// Degradation contract:
 /// - Config file absent or unreadable → returns `FileConfig::default()` (empty registry).
 /// - Config file present but malformed → returns `ConfigError::MalformedFile`.
@@ -530,7 +544,18 @@ pub fn load_workspace_registry(
 ) -> Result<FileConfig, ConfigError> {
     match config_path(xdg_config_home, home) {
         Some(path) => match std::fs::read_to_string(&path) {
-            Ok(contents) => parse_file(&contents),
+            Ok(contents) => {
+                let mut file_config = parse_file(&contents)?;
+                if let Some(workspaces) = file_config.workspaces.as_mut() {
+                    let config_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    for entry_path in workspaces.values_mut() {
+                        if entry_path.is_relative() {
+                            *entry_path = config_dir.join(&entry_path);
+                        }
+                    }
+                }
+                Ok(file_config)
+            }
             Err(_) => Ok(FileConfig::default()),
         },
         None => Ok(FileConfig::default()),
@@ -1497,6 +1522,62 @@ params = [{ key = "envelope", from = "envelope", source_kind = "not_a_real_kind"
     fn config_path_xdg_takes_precedence_over_home() {
         let path = config_path(Some("/xdg".into()), Some("/home".into()));
         assert!(path.unwrap().starts_with("/xdg"));
+    }
+
+    // ─── load_workspace_registry: relative-path canonicalization ────────────
+
+    #[test]
+    fn load_workspace_registry_canonicalizes_relative_workspace_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().join("bastion");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[workspaces]
+foo = "foo"
+"#,
+        )
+        .expect("write fixture config");
+
+        let file_config =
+            load_workspace_registry(Some(dir.path().to_string_lossy().into_owned()), None)
+                .expect("relative [workspaces] entry should load without error");
+
+        let ws = file_config
+            .workspaces
+            .expect("[workspaces] should be present");
+        // Must equal the fixture's own known temp-dir value joined with the relative
+        // segment — never asserted against or dependent on this test process's cwd.
+        assert_eq!(ws.get("foo"), Some(&config_dir.join("foo")));
+    }
+
+    #[test]
+    fn load_workspace_registry_leaves_absolute_workspace_path_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().join("bastion");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[workspaces]
+bar = "/absolute/path/to/bar"
+"#,
+        )
+        .expect("write fixture config");
+
+        let file_config =
+            load_workspace_registry(Some(dir.path().to_string_lossy().into_owned()), None)
+                .expect("absolute [workspaces] entry should load without error");
+
+        let ws = file_config
+            .workspaces
+            .expect("[workspaces] should be present");
+        // Regression control: an already-absolute entry must round-trip byte-for-byte,
+        // since ~12 existing call sites and the operator's own real config depend on it.
+        assert_eq!(ws.get("bar"), Some(&PathBuf::from("/absolute/path/to/bar")));
     }
 
     // ─── parse_file: [workspaces] table ──────────────────────────────────────
