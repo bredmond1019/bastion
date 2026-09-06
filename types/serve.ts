@@ -2025,3 +2025,29 @@ export enum KnownCarryoverNeeds {
 	Dedupe = "dedupe",
 }
 
+/**
+ * The fixed, known D80 fleet-correctness grade vocabulary (`F0`..`F3`) —
+ * the blast-radius axis alongside D43's money anchor, deliberately never
+ * blended or averaged with it (D80).
+ * 
+ * Carries the typeshare annotation itself (rather than the enclosing
+ * [`FleetCorrectness`] wrapper) per [`BlockedBy`]'s documented rule at
+ * src/state.rs:196: typeshare cannot represent an untagged algebraic enum,
+ * so the payload type is annotated and the wrapper is not.
+ * 
+ * No `#[serde(rename_all = "snake_case")]` here — D80's on-disk vocabulary
+ * is the uppercase `"F0"`..`"F3"`, and `snake_case` would serialize `F0` as
+ * `f0`. Each variant instead carries an explicit `#[serde(rename = ...)]`.
+ * 
+ * Exhaustive, for the same reason as [`KnownCarryoverNeeds`]: it is the
+ * closed reference vocabulary the wrapping [`FleetCorrectness`] already
+ * degrades unrecognized values against, so `#[non_exhaustive]` here would
+ * duplicate that degradation one layer too early.
+ */
+export enum KnownFleetCorrectness {
+	F0 = "F0",
+	F1 = "F1",
+	F2 = "F2",
+	F3 = "F3",
+}
+
