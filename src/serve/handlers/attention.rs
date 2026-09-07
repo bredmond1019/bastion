@@ -441,6 +441,12 @@ mod tests {
             // design -- false means private, never scanned -- and these
             // fixtures do not exercise it, so false is both correct and safe.
             public: false,
+            // mev's RepoEntry gained this required field in 75cf7a1
+            // (MV.ticket.repo-entry-declares-non-vaulted-planning). It is
+            // fail-closed by design -- false means the vaulted `planning/`
+            // symlink arrangement, which is what these fixtures assume --
+            // so false is both correct and safe.
+            non_vaulted_planning: false,
         }
     }
 
