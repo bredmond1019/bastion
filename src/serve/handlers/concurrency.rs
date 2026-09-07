@@ -428,12 +428,20 @@ mod tests {
     /// Write one raw `.fleet-locks/<repo>__<label>.json` entry, mirroring
     /// `fleet_concurrency_check.py`'s on-disk shape (and mev's own test
     /// fixture helper of the same name/shape).
+    /// `pid_source` is REQUIRED on `okf_core::SlotRecord` — it carries no
+    /// `#[serde(default)]`, so an entry omitting it fails to parse, falls back to
+    /// `okf_core::Coord::Legacy`, and silently drops out of every category's live
+    /// count instead of erroring. It also selects which staleness rule applies:
+    /// `"explicit"` means the pid is a real long-lived process and a dead pid reads
+    /// STALE; `"self"` means only `started_at` age governs and a dead pid within TTL
+    /// still reads LIVE (mev's MV.20.A fixed that direction deliberately).
     fn write_lock_entry(
         root: &std::path::Path,
         repo: &str,
         category: &str,
         pid: i64,
         started_at: f64,
+        pid_source: &str,
         label: &str,
     ) {
         let dir = root.join(".fleet-locks");
@@ -441,6 +449,7 @@ mod tests {
         let json = serde_json::json!({
             "repo": repo,
             "pid": pid,
+            "pid_source": pid_source,
             "category": category,
             "started_at": started_at,
         });
@@ -470,6 +479,7 @@ mod tests {
             "native-build",
             std::process::id() as i64,
             now,
+            "self",
             "p",
         );
         // (b) a stale-by-ttl entry — alive pid, started_at well past the 4h TTL.
@@ -479,6 +489,7 @@ mod tests {
             "native-build",
             std::process::id() as i64,
             now - (5.0 * 60.0 * 60.0),
+            "self",
             "p",
         );
         // (c) a dead-pid entry — an implausible pid, fresh started_at.
@@ -488,6 +499,7 @@ mod tests {
             "native-build",
             999_999_999,
             now,
+            "explicit",
             "p",
         );
 
