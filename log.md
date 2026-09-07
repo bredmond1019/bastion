@@ -6,6 +6,22 @@ timestamp: 2026-09-02T07:26:32-0300
 ---
 # Log — bastion
 
+## [run: 2026-09-07]
+
+Attempted /sdlc-flow on BA.26.A (Config-declared views, safely operable) but BAILED before any task could execute: the spec directory planning/BA.26.A/ is entirely absent from the vault — only the block record planning/blocks/BA.26.A.json exists, with no tasks.json to drive tasks 1-3 against. Verified directly in the worktree (planning/BA.26.A/sdlc/ exists only because this run's own engine state write created it; tasks.json was never present). No code changes were made and no work assertion was confirmed for any task. planning/status.md's Current focus was updated to record the block as BLOCKED pending re-planning (a /generate-tasks pass over the BA.26.A block record). Next: run /generate-tasks for BA.26.A to produce planning/BA.26.A/tasks.json, then re-run /sdlc-flow.
+
+```
+e14c811 chore: init worktree BA.26.A-flow
+27f04fa fix(serve): write pid_source into both fleet-lock test fixtures
+00a7110 chore(harness): sync base-template — engine TDZ fix: RENDER_IDENTITY_SCHEMA declared above its users (5448cb9)
+395f33b chore(harness): sync $BRAIN_ROOT-qualified open-work paths
+271d436 chore: preflight-warm auto-commit — core/bastion — 2026-09-07 11:52
+91c0a45 chore(harness): sync new-work-log.md relocation
+5c36863 chore(harness): sync write-okf-markdown created:/updated: guidance
+918d0a9 chore(harness): sync created:/updated: authoring from base-template
+```
+
+
 ## [run: 2026-09-05]
 
 Re-ran /sdlc-flow on BA.ticket.serve-auth-boundary-freeze after respec: task 6 closed the AC10 gap left by the prior BAIL by adding a new `auth_scenarios` module to `src/serve/contract_corpus.rs`, emitting three real-401 goldens through `BearerAuthMiddleware` (no-credentials, bad-bearer, bad-signature) into `types/contract-corpus/`. All six tasks (1-6) passed with confirmed workAssertionPassed outcomes, and the consolidated end-of-flow review returned PASS with no findings. Net result across the full spec: `src/serve/auth.rs`'s token/API-key compares are now constant-time (`subtle::ConstantTimeEq`), a new HMAC-SHA256 machine-caller signature tier (`src/serve/source_auth.rs`) is admitted alongside bearer auth at both /api and /ws with a configurable clock-skew window, `docs/serve/serve-api.md` is frozen at v1.0.0 with a self-testing version-drift gate (`scripts/check-serve-api-version.sh`), and the contract corpus now carries real 401 goldens closing AC10. Next: pick up the next queued ticket per `planning/status.md`.
