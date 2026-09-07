@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
@@ -189,6 +189,74 @@ pub struct FileConfig {
     /// configs, which parse unchanged. Read once at `bastion serve` boot — adding
     /// a command is a config edit plus a restart, not a hot reload.
     pub telegram_commands: Option<HashMap<String, TelegramCommandEntry>>,
+    /// Named reader-view destinations: `[views]` TOML table → name → [`ViewEntry`]
+    /// (BA.26.A). Absent entirely for existing configs, which parse unchanged.
+    /// An undeclared view, an absent table, and a declared view whose `root`
+    /// does not exist on disk are all simply not offered — never an error, see
+    /// [`offered_views`]. Relative `root` values canonicalize against the
+    /// config file's own parent directory, exactly like `[workspaces]` (see
+    /// `load_workspace_registry`'s canonicalization contract).
+    pub views: Option<HashMap<String, ViewEntry>>,
+}
+
+/// One `[views.<name>]` entry: a reader destination the session TUI's spine
+/// can offer as a sidebar entry (BA.26.A). A bare label plus a root path —
+/// nothing about a view's presence may cause boot to fail; see [`offered_views`].
+///
+/// ```toml
+/// [views.open-work]
+/// label = "Open Work"
+/// root = "planning/open-work"
+/// ```
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub struct ViewEntry {
+    /// Human-readable label shown at the view's sidebar entry.
+    pub label: String,
+    /// The reader destination's root path. May be authored as relative in the
+    /// TOML — canonicalized against the config file's own parent directory by
+    /// `load_workspace_registry`, exactly like a `[workspaces]` entry.
+    pub root: PathBuf,
+}
+
+/// One view resolved as safe to OFFER in the session TUI spine: the declared
+/// `[views]` table key (`name`) alongside its entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OfferedView {
+    /// The `[views.<name>]` table key.
+    pub name: String,
+    /// Sidebar label.
+    pub label: String,
+    /// Resolved root path (already canonicalized by `load_workspace_registry`
+    /// when loaded from a real config file).
+    pub root: PathBuf,
+}
+
+/// Resolve `file.views` into the list of views that should actually be
+/// OFFERED to the session TUI spine (BA.26.A).
+///
+/// Absence-tolerant in three ways, none of which is an error or a panic:
+/// - the whole `[views]` table absent → empty list;
+/// - a view simply not declared → nothing to omit, it was never a candidate;
+/// - a declared view whose `root` does not exist on disk → silently omitted.
+///
+/// Call this **after** `load_workspace_registry` has canonicalized any
+/// relative `root` against the config file's directory — this function does
+/// no path rewriting itself, only existence-filtering, so a relative `root`
+/// checked before canonicalization would be tested against the wrong
+/// directory (the process cwd instead of the config file's own directory).
+pub fn offered_views(file: &FileConfig) -> Vec<OfferedView> {
+    let Some(views) = file.views.as_ref() else {
+        return Vec::new();
+    };
+    views
+        .iter()
+        .filter(|(_, entry)| entry.root.exists())
+        .map(|(name, entry)| OfferedView {
+            name: name.clone(),
+            label: entry.label.clone(),
+            root: entry.root.clone(),
+        })
+        .collect()
 }
 
 /// The `[theme]` TOML table.
@@ -522,6 +590,20 @@ pub(crate) fn resolve_cli_root_from_cwd(
     Ok((root, source))
 }
 
+/// Rewrite `path` to be relative to `config_dir` when it is relative
+/// (`Path::is_relative()`); an already-absolute path is left byte-for-byte
+/// unchanged. Plain `Path::join`, not `std::fs::canonicalize` — the target
+/// need not exist on disk. Shared by `load_workspace_registry` for both the
+/// `[workspaces]` table and the `[views]` table (BA.26.A) so there is exactly
+/// one canonicalization rule, not two.
+fn canonicalize_against(path: &Path, config_dir: &Path) -> PathBuf {
+    if path.is_relative() {
+        config_dir.join(path)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 /// Load **only** the workspace registry from the config file — DB-free.
 ///
 /// Reads the config file identified by `config_path(xdg_config_home, home)`, parses it,
@@ -536,6 +618,8 @@ pub(crate) fn resolve_cli_root_from_cwd(
 /// exist on disk at config-load time. An entry that is already absolute
 /// (`is_relative()` is `false`) is left byte-for-byte unchanged — existing
 /// callers that depend on today's absolute-path values see identical output.
+/// The same rule applies to every `[views]` entry's `root` (BA.26.A), via the
+/// shared [`canonicalize_against`] helper.
 ///
 /// Degradation contract:
 /// - Config file absent or unreadable → returns `FileConfig::default()` (empty registry).
@@ -548,12 +632,15 @@ pub fn load_workspace_registry(
         Some(path) => match std::fs::read_to_string(&path) {
             Ok(contents) => {
                 let mut file_config = parse_file(&contents)?;
+                let config_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                 if let Some(workspaces) = file_config.workspaces.as_mut() {
-                    let config_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     for entry_path in workspaces.values_mut() {
-                        if entry_path.is_relative() {
-                            *entry_path = config_dir.join(&entry_path);
-                        }
+                        *entry_path = canonicalize_against(entry_path, config_dir);
+                    }
+                }
+                if let Some(views) = file_config.views.as_mut() {
+                    for entry in views.values_mut() {
+                        entry.root = canonicalize_against(&entry.root, config_dir);
                     }
                 }
                 Ok(file_config)
@@ -1663,6 +1750,184 @@ bar = "/absolute/path/to/bar"
         // Regression control: an already-absolute entry must round-trip byte-for-byte,
         // since ~12 existing call sites and the operator's own real config depend on it.
         assert_eq!(ws.get("bar"), Some(&PathBuf::from("/absolute/path/to/bar")));
+    }
+
+    // ─── [views] table (BA.26.A) ────────────────────────────────────────────
+
+    #[test]
+    fn parse_file_no_views_table_yields_none() {
+        let toml = r#"
+database_url = "postgres://views/db"
+"#;
+        let fc = parse_file(toml).expect("TOML without [views] should parse");
+        assert!(fc.views.is_none());
+    }
+
+    #[test]
+    fn parse_file_views_table_round_trips() {
+        let toml = r#"
+[views.open-work]
+label = "Open Work"
+root = "/abs/planning/open-work"
+"#;
+        let fc = parse_file(toml).expect("valid TOML with [views] should parse");
+        let views = fc.views.expect("[views] should be present");
+        let entry = views.get("open-work").expect("open-work entry present");
+        assert_eq!(entry.label, "Open Work");
+        assert_eq!(entry.root, PathBuf::from("/abs/planning/open-work"));
+    }
+
+    #[test]
+    fn offered_views_absent_table_is_empty() {
+        let fc = FileConfig::default();
+        assert!(offered_views(&fc).is_empty());
+    }
+
+    #[test]
+    fn offered_views_omits_view_whose_root_does_not_exist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        let mut views = HashMap::new();
+        views.insert(
+            "ghost".to_string(),
+            ViewEntry {
+                label: "Ghost".to_string(),
+                root: missing,
+            },
+        );
+        let fc = FileConfig {
+            views: Some(views),
+            ..FileConfig::default()
+        };
+        assert!(offered_views(&fc).is_empty());
+    }
+
+    #[test]
+    fn offered_views_includes_view_whose_root_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("open-work");
+        std::fs::create_dir_all(&root).expect("create fixture root");
+        let mut views = HashMap::new();
+        views.insert(
+            "open-work".to_string(),
+            ViewEntry {
+                label: "Open Work".to_string(),
+                root: root.clone(),
+            },
+        );
+        let fc = FileConfig {
+            views: Some(views),
+            ..FileConfig::default()
+        };
+        let offered = offered_views(&fc);
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].name, "open-work");
+        assert_eq!(offered[0].label, "Open Work");
+        assert_eq!(offered[0].root, root);
+    }
+
+    #[test]
+    fn offered_views_omits_nothing_else_when_root_exists() {
+        // Two declared views, both with existing roots: both are offered —
+        // presence of one view must not suppress another.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root_a = dir.path().join("a");
+        let root_b = dir.path().join("b");
+        std::fs::create_dir_all(&root_a).expect("create fixture root a");
+        std::fs::create_dir_all(&root_b).expect("create fixture root b");
+        let mut views = HashMap::new();
+        views.insert(
+            "a".to_string(),
+            ViewEntry {
+                label: "A".to_string(),
+                root: root_a,
+            },
+        );
+        views.insert(
+            "b".to_string(),
+            ViewEntry {
+                label: "B".to_string(),
+                root: root_b,
+            },
+        );
+        let fc = FileConfig {
+            views: Some(views),
+            ..FileConfig::default()
+        };
+        assert_eq!(offered_views(&fc).len(), 2);
+    }
+
+    #[test]
+    fn load_workspace_registry_canonicalizes_relative_view_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().join("bastion");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[views.open-work]
+label = "Open Work"
+root = "planning/open-work"
+"#,
+        )
+        .expect("write fixture config");
+
+        let file_config =
+            load_workspace_registry(Some(dir.path().to_string_lossy().into_owned()), None)
+                .expect("relative [views] root should load without error");
+
+        let views = file_config.views.expect("[views] should be present");
+        let entry = views.get("open-work").expect("open-work entry present");
+        // Canonicalized against the config file's own parent directory, never
+        // the test process's cwd.
+        assert_eq!(entry.root, config_dir.join("planning").join("open-work"));
+    }
+
+    #[test]
+    fn load_workspace_registry_leaves_absolute_view_root_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().join("bastion");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[views.open-work]
+label = "Open Work"
+root = "/absolute/planning/open-work"
+"#,
+        )
+        .expect("write fixture config");
+
+        let file_config =
+            load_workspace_registry(Some(dir.path().to_string_lossy().into_owned()), None)
+                .expect("absolute [views] root should load without error");
+
+        let views = file_config.views.expect("[views] should be present");
+        let entry = views.get("open-work").expect("open-work entry present");
+        assert_eq!(entry.root, PathBuf::from("/absolute/planning/open-work"));
+    }
+
+    #[test]
+    fn no_views_table_leaves_existing_config_parsing_unchanged() {
+        // Regression control (AC-1): an existing config with [workspaces] and
+        // [theme] but no [views] section parses exactly as it did before this
+        // field was added.
+        let toml = r#"
+database_url = "postgres://legacy/db"
+
+[workspaces]
+brain = "/abs/brain"
+
+[theme]
+name = "bastion"
+"#;
+        let fc = parse_file(toml).expect("pre-existing config shape should still parse");
+        assert!(fc.views.is_none());
+        assert_eq!(fc.database_url, Some("postgres://legacy/db".to_string()));
+        assert!(fc.workspaces.is_some());
+        assert!(fc.theme.is_some());
     }
 
     // ─── parse_file: [workspaces] table ──────────────────────────────────────
