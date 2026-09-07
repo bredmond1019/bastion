@@ -222,6 +222,13 @@ fn build_sidebar_items(app: &AppState) -> Vec<ListItem<'static>> {
             SpineRow::Space(entry) => {
                 items.push(build_space_item(app, &entry.slug));
             }
+            SpineRow::View(view) => {
+                let span = Span::styled(
+                    format!("  {} ", view.label),
+                    Style::default().fg(crate::ui_theme::text()),
+                );
+                items.push(ListItem::new(Line::from(vec![span])));
+            }
         }
     }
     items
@@ -318,8 +325,11 @@ fn draw_with_root(
             let paragraph = Paragraph::new(rendered.lines).block(tier_block);
             frame.render_widget(paragraph, content_area);
         }
-        SelectedNode::Hq | SelectedNode::Space(_) => {
-            // Browser Pane
+        SelectedNode::Hq | SelectedNode::Space(_) | SelectedNode::View(_) => {
+            // Browser Pane — a declared `[views]` entry (BA.26.A) shares this
+            // rendering path: `app.file_browser`/`planning_root` are already
+            // rooted at the view's declared `root` via `reinit_browser` /
+            // `current_space_planning_root`.
             let browser_active = app.overview_pane == crate::sessions::app::OverviewPane::Browser;
             let browser_block = crate::ui_theme::themed_block(
                 Span::styled(" file browser ", crate::ui_theme::title_style()),
@@ -566,7 +576,17 @@ pub fn run() -> Result<()> {
 
     let space_tree = crate::brain::spaces::load_space_tree(&crate::config::load_brain_toml_path())
         .unwrap_or_default();
-    let mut app = AppState::new(poll_sessions(), space_tree);
+    // Resolve the declared `[views]` table (BA.26.A) the same way the theme was
+    // just resolved above: absent/unreadable/malformed all degrade to an empty
+    // offered-list — never an error, never a panic — since `init_theme_from_config`
+    // already surfaced a malformed file via `theme_degradation`.
+    let offered_views = crate::config::load_workspace_registry(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
+    .map(|file| crate::config::offered_views(&file))
+    .unwrap_or_default();
+    let mut app = AppState::new(poll_sessions(), space_tree).with_offered_views(offered_views);
     // A malformed config file degrades to defaults above, but the operator
     // must still be told — surface it in the same footer status line other
     // degradations use (BA.26.A task 2), rather than leaving it silent.
