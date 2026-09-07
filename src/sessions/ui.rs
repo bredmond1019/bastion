@@ -524,20 +524,39 @@ fn run_inner(
 
 /// Resolve the active theme from the on-disk config (DB-free — see D4) and
 /// initialize the process-wide runtime theme so chrome and the markdown view
-/// (`render_with_edit`) share one palette. A missing/unreadable/malformed
-/// config degrades gracefully to the `bastion` default rather than panicking.
-fn init_theme_from_config() {
-    let file = crate::config::load_workspace_registry(
-        std::env::var("XDG_CONFIG_HOME").ok(),
-        std::env::var("HOME").ok(),
-    )
-    .unwrap_or_default();
-    crate::ui_theme::init_theme(crate::config::resolve_theme(&file));
+/// (`render_with_edit`) share one palette. A missing or unreadable config
+/// degrades gracefully to the `bastion` default; a **malformed** config also
+/// degrades to the default (never panics, never refuses to boot) but is no
+/// longer silently indistinguishable from an absent one — the returned
+/// `Some(message)` names the config path and the parser's own error so the
+/// caller can surface it (BA.26.A task 2; previously `.unwrap_or_default()`
+/// discarded `ConfigError::MalformedFile` here entirely).
+fn init_theme_from_config() -> Option<String> {
+    let xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    let home = std::env::var("HOME").ok();
+    let path = crate::config::config_path(xdg.clone(), home.clone());
+    match crate::config::load_workspace_registry(xdg, home) {
+        Ok(file) => {
+            crate::ui_theme::init_theme(crate::config::resolve_theme(&file));
+            None
+        }
+        Err(e) => {
+            // Still degrade to the default theme — a malformed config must
+            // never panic or block boot — but, unlike before, do not throw
+            // the error away: report it via `path` so the caller can surface
+            // it to the operator instead of silently reverting.
+            crate::ui_theme::init_theme(crate::config::resolve_theme(
+                &crate::config::FileConfig::default(),
+            ));
+            let result: Result<crate::config::FileConfig, crate::config::ConfigError> = Err(e);
+            path.and_then(|p| crate::config::describe_config_load_error(&p, &result))
+        }
+    }
 }
 
 /// Launch the interactive session dashboard (synchronous; no tokio).
 pub fn run() -> Result<()> {
-    init_theme_from_config();
+    let theme_degradation = init_theme_from_config();
 
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -548,6 +567,12 @@ pub fn run() -> Result<()> {
     let space_tree = crate::brain::spaces::load_space_tree(&crate::config::load_brain_toml_path())
         .unwrap_or_default();
     let mut app = AppState::new(poll_sessions(), space_tree);
+    // A malformed config file degrades to defaults above, but the operator
+    // must still be told — surface it in the same footer status line other
+    // degradations use (BA.26.A task 2), rather than leaving it silent.
+    if let Some(msg) = theme_degradation {
+        app.status = Some(msg);
+    }
     let result = run_inner(&mut terminal, &mut app);
 
     // Always tear down — even on the error path — so the terminal is never left

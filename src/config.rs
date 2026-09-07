@@ -398,6 +398,31 @@ pub fn parse_file(contents: &str) -> Result<FileConfig, ConfigError> {
     toml::from_str(contents).map_err(|e| ConfigError::MalformedFile(e.to_string()))
 }
 
+/// Compute the visible degradation message for a config-load `result`, naming
+/// both `path` (the config file that was read) and the underlying parser's
+/// own message. Returns `None` for `Ok` — an absent file, an empty file, and
+/// valid TOML all resolve to `Ok` via [`load_workspace_registry`]'s
+/// degradation contract, and none of those is a degradation worth reporting.
+/// Only `Err` (in practice `ConfigError::MalformedFile`) produces a message.
+///
+/// Pure — no I/O of its own; a caller passes in a `Result` it already has
+/// (from [`load_workspace_registry`] or [`parse_file`]) plus the path used
+/// only for the message text. BA.26.A task 2: this is what
+/// `init_theme_from_config` (`src/sessions/ui.rs`) uses in place of
+/// `.unwrap_or_default()`, which previously discarded `ConfigError::MalformedFile`
+/// and made a syntax error in the config file indistinguishable from an empty
+/// one — a problem specifically for `OP.bastion-tui-console-credentials`,
+/// which instructs the operator to hand-edit this exact file.
+pub fn describe_config_load_error(
+    path: &Path,
+    result: &Result<FileConfig, ConfigError>,
+) -> Option<String> {
+    result
+        .as_ref()
+        .err()
+        .map(|e| format!("config error in {}: {e}", path.display()))
+}
+
 /// Resolve `$XDG_CONFIG_HOME/bastion/config.toml`, falling back to
 /// `$HOME/.config/bastion/config.toml`. Returns `None` when neither is set.
 /// Pure function — reads only the two supplied env values, no I/O.
@@ -1526,6 +1551,49 @@ unknown_future_key = "ignored"
         let bad_toml = "database_url = [not valid toml";
         let err = parse_file(bad_toml).unwrap_err();
         assert!(matches!(err, ConfigError::MalformedFile(_)));
+    }
+
+    // ─── describe_config_load_error (BA.26.A task 2) ─────────────────────────
+
+    #[test]
+    fn describe_config_load_error_distinguishes_malformed_empty_and_valid() {
+        let path = PathBuf::from("/home/op/.config/bastion/config.toml");
+
+        // Malformed -> a named degradation carrying both the path and the
+        // parser's own message.
+        let malformed = parse_file("database_url = [not valid toml");
+        assert!(malformed.is_err(), "fixture must actually be malformed");
+        let msg = describe_config_load_error(&path, &malformed)
+            .expect("malformed config must produce a degradation message");
+        assert!(
+            msg.contains("/home/op/.config/bastion/config.toml"),
+            "message must name the config path: {msg}"
+        );
+        let raw_parse_err = match &malformed {
+            Err(ConfigError::MalformedFile(inner)) => inner.clone(),
+            other => panic!("expected MalformedFile, got {other:?}"),
+        };
+        assert!(
+            msg.contains(&raw_parse_err),
+            "message must carry the parser's own message: {msg}"
+        );
+
+        // Empty -> no degradation. Proves malformed and empty are
+        // distinguishable, not both silently "no message".
+        let empty = parse_file("");
+        assert!(empty.is_ok(), "fixture must actually be empty/valid");
+        assert!(
+            describe_config_load_error(&path, &empty).is_none(),
+            "an empty config must not be reported as a degradation"
+        );
+
+        // Valid -> no degradation either.
+        let valid = parse_file(r#"database_url = "postgres://ok/db""#);
+        assert!(valid.is_ok(), "fixture must actually be valid TOML");
+        assert!(
+            describe_config_load_error(&path, &valid).is_none(),
+            "a valid config must not be reported as a degradation"
+        );
     }
 
     // ─── parse_file: [telegram_commands] table ───────────────────────────────
