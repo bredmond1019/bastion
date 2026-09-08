@@ -327,6 +327,14 @@ pub enum Commands {
         /// refuse to write from a stale build rather than doing it silently.
         #[arg(long)]
         fail_on_drift: bool,
+        /// Writer identity passed through to mev's guarded `emit_state_as` entry point.
+        /// A write proceeds when no OTHER agent holds a live exclusive quiesce lease on
+        /// the resolved repo — a lease held by this same `--agent` never refuses (the
+        /// self-exemption). Omitting `--agent` means the write can never be
+        /// self-exempted: any live exclusive lease refuses it, including one this
+        /// process itself might have taken under a different invocation.
+        #[arg(long)]
+        agent: Option<String>,
     },
 
     /// Query the code-as-graph surface for symbol definitions, references, and dependents
@@ -1000,10 +1008,12 @@ mod tests {
                 path,
                 write,
                 fail_on_drift,
+                agent,
             }) => {
                 assert_eq!(path, PathBuf::from("."));
                 assert!(!write);
                 assert!(!fail_on_drift);
+                assert_eq!(agent, None);
             }
             other => panic!("expected EmitState, got {other:?}"),
         }
@@ -1017,10 +1027,12 @@ mod tests {
                 path,
                 write,
                 fail_on_drift,
+                agent,
             }) => {
                 assert_eq!(path, PathBuf::from("/some/root"));
                 assert!(write);
                 assert!(!fail_on_drift);
+                assert_eq!(agent, None);
             }
             other => panic!("expected EmitState, got {other:?}"),
         }
@@ -1033,6 +1045,18 @@ mod tests {
         match cli.command {
             Some(Commands::EmitState { fail_on_drift, .. }) => {
                 assert!(fail_on_drift);
+            }
+            other => panic!("expected EmitState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_state_agent_parses() {
+        let cli =
+            Cli::try_parse_from(["bastion", "emit-state", "--write", "--agent", "lane-a"]).unwrap();
+        match cli.command {
+            Some(Commands::EmitState { agent, .. }) => {
+                assert_eq!(agent.as_deref(), Some("lane-a"));
             }
             other => panic!("expected EmitState, got {other:?}"),
         }

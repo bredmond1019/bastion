@@ -253,15 +253,30 @@ pub fn guard_write_on_drift<W: std::io::Write>(
     Ok(())
 }
 
-/// Handler for `bastion emit-state [--write] [--fail-on-drift]`. Thin pass-through to
-/// `mev::emit_state` — dry-run by default, reports planned (or applied) actions via the
-/// same human summary shape used by mev's own `EmitState` command.
+/// Handler for `bastion emit-state [--write] [--fail-on-drift] [--agent <name>]`. Thin
+/// pass-through to `mev::emit_state_as` — dry-run by default, reports planned (or
+/// applied) actions via the same human summary shape used by mev's own `EmitState`
+/// command.
+///
+/// Passes `agent` straight through as the writer identity to mev's GUARDED entry
+/// point (`emit_state_as`), which itself applies mev's quiesce guard: a live
+/// exclusive lease held by another agent on the resolved repo refuses the write with
+/// `E_QUIESCE_LEASE_HELD`, while a lease held under this same `agent` is
+/// self-exempted. No guard, lease check, or refusal logic is implemented here — that
+/// decision belongs to mev's library alone (`MV.20.B`); this call site only supplies
+/// identity. `scope` and `lock_dir` are always `None` here — narrowing to one repo
+/// (`--scope`) and overriding the lock directory are out of scope for this task.
 ///
 /// Before any `write == true` run, checks build provenance drift (task 2's
 /// `buildstamp::current_verdict`) via [`guard_write_on_drift`] wired to real
-/// `std::io::stderr()`. A hard-fail there returns before `mev::emit_state` is ever called,
-/// so nothing is written.
-pub fn run_emit_state(path: std::path::PathBuf, write: bool, fail_on_drift: bool) -> Result<()> {
+/// `std::io::stderr()`. A hard-fail there returns before `mev::emit_state_as` is ever
+/// called, so nothing is written.
+pub fn run_emit_state(
+    path: std::path::PathBuf,
+    write: bool,
+    fail_on_drift: bool,
+    agent: Option<String>,
+) -> Result<()> {
     if write {
         let env_var = std::env::var("BASTION_FAIL_ON_BUILD_DRIFT").ok();
         guard_write_on_drift(
@@ -274,7 +289,7 @@ pub fn run_emit_state(path: std::path::PathBuf, write: bool, fail_on_drift: bool
 
     let root = mev::brain::config::find_brain_root(&path)
         .map_err(|e| anyhow::anyhow!("error resolving brain root: {e}"))?;
-    let report = mev::emit_state(&root, write, None)?;
+    let report = mev::emit_state_as(&root, write, None, agent.as_deref(), None, &path)?;
 
     for d in &report.diagnostics {
         println!(
@@ -635,11 +650,87 @@ heading = "bastion"
     #[test]
     fn run_emit_state_on_valid_brain_root_succeeds() {
         let dir = make_temp_brain_root("brainval-emit-state-ok");
-        let result = run_emit_state(dir.clone(), false, false);
+        let result = run_emit_state(dir.clone(), false, false, None);
         assert!(
             result.is_ok(),
             "expected Ok(()) for a valid brain root, got: {result:?}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Writes `<dir>/.fleet-locks/leases/lease-<name>.json` — an exclusive lease held by
+    /// `agent`, matching `.claude/workflows/lease.schema.json`, so `run_emit_state`'s
+    /// underlying `mev::emit_state_as` call has a foreign-agent lease to be quiesced by.
+    /// The lock dir lives entirely under the caller's mktemp brain root (never the live
+    /// `.fleet-locks/`), matching `resolve_lock_dir`'s default (`<root>/.fleet-locks`)
+    /// since task 1 always passes `lock_dir: None`.
+    fn write_exclusive_lease(dir: &std::path::Path, name: &str, agent: &str, repo: &str) {
+        let leases_dir = dir.join(".fleet-locks").join("leases");
+        std::fs::create_dir_all(&leases_dir).unwrap();
+        let acquired_at = chrono::Local::now().to_rfc3339();
+        std::fs::write(
+            leases_dir.join(format!("lease-{name}.json")),
+            format!(
+                r#"{{
+  "repo": "{repo}",
+  "lane": "{name}",
+  "agent": "{agent}",
+  "acquired_at": "{acquired_at}",
+  "kind": "exclusive"
+}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn run_emit_state_write_refused_under_a_foreign_agent_lease() {
+        // AC-1 / AC-2 (task 1): a lease held by a DIFFERENT agent makes the write return
+        // E_QUIESCE_LEASE_HELD (asserted on the returned value, over a mktemp fixture lock
+        // dir — never the live .fleet-locks/), while `--agent` matching the lease holder
+        // writes successfully (the self-exemption).
+        let dir = make_temp_brain_root("brainval-emit-state-quiesced");
+        write_exclusive_lease(&dir, "other-lane", "other-agent", "bastion");
+
+        // No identity supplied at all: refused, same as a mismatched identity — the guard
+        // never self-exempts a caller with no agent.
+        let no_identity = run_emit_state(dir.clone(), true, false, None);
+        let err = no_identity.expect_err("expected the write to be refused under a foreign lease");
+        let refusal = err
+            .downcast_ref::<mev::GuardRefusal>()
+            .unwrap_or_else(|| panic!("expected a GuardRefusal, got: {err:?}"));
+        assert_eq!(refusal.code(), mev::E_QUIESCE_LEASE_HELD);
+
+        // A DIFFERENT agent than the lease holder: also refused.
+        let mismatched_agent = run_emit_state(
+            dir.clone(),
+            true,
+            false,
+            Some("some-other-agent".to_string()),
+        );
+        let err = mismatched_agent
+            .expect_err("expected the write to be refused for a non-matching agent");
+        let refusal = err
+            .downcast_ref::<mev::GuardRefusal>()
+            .unwrap_or_else(|| panic!("expected a GuardRefusal, got: {err:?}"));
+        assert_eq!(refusal.code(), mev::E_QUIESCE_LEASE_HELD);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_emit_state_write_self_exempted_when_agent_matches_the_lease_holder() {
+        // The self-exemption path: `--agent` matching the lease holder writes successfully
+        // even though an exclusive lease is held on the same repo.
+        let dir = make_temp_brain_root("brainval-emit-state-self-exempt");
+        write_exclusive_lease(&dir, "own-lane", "own-agent", "bastion");
+
+        let result = run_emit_state(dir.clone(), true, false, Some("own-agent".to_string()));
+        assert!(
+            result.is_ok(),
+            "expected Ok(()) when --agent matches the lease holder, got: {result:?}"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -664,7 +755,7 @@ heading = "bastion"
         // anyhow error there, before mev::emit_state is ever called.
         let dir = crate::testsupport::unique_temp_dir("bastion-brainval-emit-state-test");
         std::fs::create_dir_all(&dir).unwrap();
-        let result = run_emit_state(dir.clone(), false, false);
+        let result = run_emit_state(dir.clone(), false, false, None);
         assert!(
             result.is_err(),
             "expected an error when brain.toml is unresolvable"
