@@ -11,7 +11,10 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::{List, ListItem, Paragraph, Tabs},
 };
-use std::{fs, io};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use crate::config::OfferedView;
 
@@ -228,6 +231,30 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
 /// threaded through, rather than being rebuilt fresh every frame — the bug
 /// this section exists to not repeat, since before this task
 /// `src/overview/mod.rs` had zero `bella_engine` references at all).
+/// Resolves a declared section to its markdown content: a section's `root`
+/// may be a single markdown document or a directory of them (mirrors the
+/// session TUI reader's own resolution); when it's a directory, `index.md`
+/// is the entry document — the same convention `read_document`/
+/// `render_document_markdown` apply everywhere else in this codebase for a
+/// directory-rooted view.
+///
+/// Factored out of [`render_sections`]'s content pane so [`run_sections_inner`]'s
+/// jump parsing (task 4) reads the SAME markdown the reader is looking at
+/// rather than a second, possibly-diverging read of the document.
+fn section_markdown(section: &OfferedView) -> String {
+    let doc_path = if section.root.is_dir() {
+        section.root.join("index.md")
+    } else {
+        section.root.clone()
+    };
+    let doc = crate::sessions::ui::read_document(&doc_path);
+    let raw_md = crate::sessions::ui::render_document_markdown(
+        &doc,
+        &format!("No {} found.", doc_path.display()),
+    );
+    crate::sessions::ui::strip_frontmatter(&raw_md).to_owned()
+}
+
 pub fn render_sections(
     frame: &mut Frame,
     sections: &[OfferedView],
@@ -262,23 +289,7 @@ pub fn render_sections(
     let content_area = layout[1];
     match sections.get(selected) {
         Some(section) => {
-            // A section's `root` may be a single markdown document or a
-            // directory of them (mirrors the session TUI reader's own
-            // resolution); when it's a directory, `index.md` is the entry
-            // document — the same convention `read_document`/
-            // `render_document_markdown` apply everywhere else in this
-            // codebase for a directory-rooted view.
-            let doc_path = if section.root.is_dir() {
-                section.root.join("index.md")
-            } else {
-                section.root.clone()
-            };
-            let doc = crate::sessions::ui::read_document(&doc_path);
-            let raw_md = crate::sessions::ui::render_document_markdown(
-                &doc,
-                &format!("No {} found.", doc_path.display()),
-            );
-            let md = crate::sessions::ui::strip_frontmatter(&raw_md).to_owned();
+            let md = section_markdown(section);
 
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
             // `tables` is threaded straight through from the caller — never
@@ -306,6 +317,205 @@ pub fn render_sections(
     }
 }
 
+// ── In-document jumps (BA.26.G task 4, AC-5) ────────────────────────────────
+//
+// An open-work document may declare an in-document jump using the same
+// `[[wikilink]]` convention the corpus already uses elsewhere (bastion
+// `AGENTS.md` standing rule 10 references `bastion brain`'s `[[wikilink]]`
+// graph): `[[roadmap:<slug>]]`, `[[epic:<slug>]]`, `[[repo:<slug>]]`. Three
+// kinds, three independent resolvers — a jump target that does not resolve
+// degrades to a visible, worded [`JumpResolution::Unresolved`] rather than a
+// silent no-op or a panic.
+
+/// The three jump kinds a `[[<kind>:<id>]]` reference in an open-work
+/// document may name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpKind {
+    Roadmap,
+    Epic,
+    Repo,
+}
+
+/// One in-document jump reference, parsed from a section's markdown by
+/// [`parse_jump_targets`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpTarget {
+    pub kind: JumpKind,
+    pub id: String,
+}
+
+/// The result of attempting to resolve a [`JumpTarget`] to something real on
+/// disk. `Unresolved` carries a human-readable reason — this is the type
+/// that makes a miss VISIBLE rather than a silent no-op: a caller renders
+/// the reason instead of doing nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JumpResolution {
+    /// The target resolved to a real path on disk.
+    Found(PathBuf),
+    /// The target did not resolve; the `String` is shown to the reader.
+    Unresolved(String),
+}
+
+/// Scans `markdown` for `[[roadmap:<id>]]` / `[[epic:<id>]]` / `[[repo:<id>]]`
+/// references, in source order. Any other `[[...]]` form (no recognized
+/// `<kind>:` prefix) is ignored, not an error — this parser only ever adds
+/// jump targets, it never rejects a document for containing an ordinary
+/// wikilink.
+pub fn parse_jump_targets(markdown: &str) -> Vec<JumpTarget> {
+    let mut out = Vec::new();
+    let mut rest = markdown;
+    while let Some(open) = rest.find("[[") {
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("]]") else {
+            break;
+        };
+        let inner = &after_open[..close];
+        if let Some((prefix, id)) = inner.split_once(':') {
+            let kind = match prefix {
+                "roadmap" => Some(JumpKind::Roadmap),
+                "epic" => Some(JumpKind::Epic),
+                "repo" => Some(JumpKind::Repo),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                let id = id.trim().to_string();
+                if !id.is_empty() {
+                    out.push(JumpTarget { kind, id });
+                }
+            }
+        }
+        rest = &after_open[close + 2..];
+    }
+    out
+}
+
+/// A minimal shape of HQ's `planning/state.json` — just enough to look an
+/// epic slug up by name. Deliberately NOT [`StateJson`]/[`Focus`]/
+/// [`BlockTask`] above (the parked Kanban path's types, untouched by this
+/// task, AC-4) — this is a distinct document (HQ's own `state.json`, not the
+/// per-repo focus board `run` reads) and a distinct, much smaller shape.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+struct HqEpicsFile {
+    #[serde(default)]
+    epics: Vec<HqEpicEntry>,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+struct HqEpicEntry {
+    slug: String,
+    #[serde(default)]
+    plan: Option<String>,
+}
+
+/// Resolves a `[[roadmap:<id>]]` jump: HQ's roadmaps live at
+/// `<hq_root>/planning/roadmaps/<id>/roadmap.md` (`AGENTS.md`'s
+/// `/roadmap-status` and `/generate-roadmap` both name this shape). Found
+/// only when that exact file exists on disk.
+pub fn resolve_roadmap_jump(id: &str, hq_root: &Path) -> JumpResolution {
+    let path = hq_root
+        .join("planning/roadmaps")
+        .join(id)
+        .join("roadmap.md");
+    if path.is_file() {
+        JumpResolution::Found(path)
+    } else {
+        JumpResolution::Unresolved(format!(
+            "no roadmap named '{id}' (expected {})",
+            path.display()
+        ))
+    }
+}
+
+/// Resolves an `[[epic:<id>]]` jump against HQ's `planning/state.json`
+/// `epics[]` registry (`slug` + `plan`, per `AGENTS.md`'s epics-registry
+/// description). Absent, unreadable, or malformed `state.json`; a slug with
+/// no matching entry; or an entry with no `plan` path — all degrade to
+/// [`JumpResolution::Unresolved`] with the specific reason, never a panic.
+pub fn resolve_epic_jump(id: &str, hq_root: &Path) -> JumpResolution {
+    let state_path = hq_root.join("planning/state.json");
+    let content = match fs::read_to_string(&state_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return JumpResolution::Unresolved(format!(
+                "could not read {}: {e}",
+                state_path.display()
+            ));
+        }
+    };
+    let parsed: HqEpicsFile = match serde_json::from_str(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            return JumpResolution::Unresolved(format!(
+                "could not parse {}: {e}",
+                state_path.display()
+            ));
+        }
+    };
+    match parsed.epics.into_iter().find(|e| e.slug == id) {
+        Some(HqEpicEntry {
+            plan: Some(plan), ..
+        }) => JumpResolution::Found(hq_root.join(plan)),
+        Some(HqEpicEntry { plan: None, .. }) => {
+            JumpResolution::Unresolved(format!("epic '{id}' has no plan path"))
+        }
+        None => JumpResolution::Unresolved(format!("no epic named '{id}'")),
+    }
+}
+
+/// Resolves a `[[repo:<id>]]` jump against the already-loaded
+/// [`crate::brain::spaces::SpaceTree`] (`brain.toml`'s `[[repos]]` table) —
+/// `id` matches a `SpaceEntry::slug` in any tier.
+pub fn resolve_repo_jump(id: &str, tree: &crate::brain::spaces::SpaceTree) -> JumpResolution {
+    for (_tier, repos) in &tree.tiers {
+        if let Some(entry) = repos.iter().find(|r| r.slug == id) {
+            return JumpResolution::Found(entry.repo_path.clone());
+        }
+    }
+    JumpResolution::Unresolved(format!("no repo named '{id}' in brain.toml"))
+}
+
+/// Dispatches a [`JumpTarget`] to its kind-specific resolver.
+pub fn resolve_jump(
+    target: &JumpTarget,
+    hq_root: &Path,
+    tree: &crate::brain::spaces::SpaceTree,
+) -> JumpResolution {
+    match target.kind {
+        JumpKind::Roadmap => resolve_roadmap_jump(&target.id, hq_root),
+        JumpKind::Epic => resolve_epic_jump(&target.id, hq_root),
+        JumpKind::Repo => resolve_repo_jump(&target.id, tree),
+    }
+}
+
+/// Renders the current jump status as a one-line footer: nothing selected
+/// yet, a resolved target's path, or an unresolved target's reason — always
+/// SOMETHING visible, never a blank line standing in for "nothing happened".
+pub fn render_jump_status(
+    frame: &mut Frame,
+    status: Option<&JumpResolution>,
+    area: ratatui::layout::Rect,
+) {
+    let (text, color) = match status {
+        None => (
+            "Press 'g' to jump to the next in-document roadmap/epic/repo reference.".to_string(),
+            crate::ui_theme::text(),
+        ),
+        Some(JumpResolution::Found(path)) => (
+            format!("-> Jumped to {}", path.display()),
+            crate::ui_theme::sage(),
+        ),
+        Some(JumpResolution::Unresolved(reason)) => (
+            format!("x Could not resolve jump: {reason}"),
+            crate::ui_theme::rose(),
+        ),
+    };
+    let line = Paragraph::new(ratatui::text::Span::styled(
+        text,
+        Style::default().fg(color),
+    ));
+    frame.render_widget(line, area);
+}
+
 /// Launch the interactive open-work overview (the new `bastion overview`
 /// entry point, BA.26.G task 3). Resolves the declared `[views]` table the
 /// same absence-tolerant way `sessions::ui::run` resolves it for the session
@@ -325,13 +535,26 @@ pub fn run_sections_ui() -> Result<()> {
     crate::ui_theme::init_theme(crate::config::resolve_theme(&file));
     let sections = crate::openwork::resolved_sections(&file);
 
+    // Jump resolution (task 4) resolves against HQ's own `brain.toml` +
+    // `planning/state.json`, both rooted at the same directory —
+    // `brain_toml_path`'s parent. An absent/unreadable `brain.toml` degrades
+    // to an empty `SpaceTree` (repo jumps then simply never resolve, via
+    // `resolve_repo_jump`'s own `Unresolved` path) rather than failing the
+    // whole overview.
+    let brain_toml_path = crate::config::load_brain_toml_path();
+    let hq_root = brain_toml_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let tree = crate::brain::spaces::load_space_tree(&brain_toml_path).unwrap_or_default();
+
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_sections_inner(&mut terminal, &sections);
+    let result = run_sections_inner(&mut terminal, &sections, &hq_root, &tree);
 
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
@@ -342,10 +565,15 @@ pub fn run_sections_ui() -> Result<()> {
 /// tab; Left/Right (and Tab/BackTab) cycle it, clamped into
 /// `0..sections.len()` (or fixed at 0 when `sections` is empty, matching
 /// [`render_sections`]'s own clamp), and `q` exits — the same quit key the
-/// parked Kanban loop (`run_inner`) uses.
+/// parked Kanban loop (`run_inner`) uses. `g` cycles through the current
+/// section's in-document jump targets (task 4) and resolves the newly
+/// selected one, shown in the footer [`render_jump_status`] draws every
+/// frame — switching sections resets the cycle and clears the shown status.
 fn run_sections_inner(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     sections: &[crate::config::OfferedView],
+    hq_root: &Path,
+    tree: &crate::brain::spaces::SpaceTree,
 ) -> Result<()> {
     // `TableExpansions` is `HashMap<u64, TableExpand>` (bella_engine::links) —
     // `::default()` here, not `::new()`, so this production initializer
@@ -356,11 +584,18 @@ fn run_sections_inner(
     // threaded through every draw by reference below — never rebuilt.
     let tables = bella_engine::links::TableExpansions::default();
     let mut selected: usize = 0;
+    let mut jump_index: usize = 0;
+    let mut jump_status: Option<JumpResolution> = None;
 
     loop {
         terminal.draw(|f| {
             let area = f.area();
-            render_sections(f, sections, selected, &tables, area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(area);
+            render_sections(f, sections, selected, &tables, chunks[0]);
+            render_jump_status(f, jump_status.as_ref(), chunks[1]);
         })?;
 
         #[allow(clippy::collapsible_if)]
@@ -370,9 +605,25 @@ fn run_sections_inner(
                     KeyCode::Char('q') => break,
                     KeyCode::Right | KeyCode::Tab if !sections.is_empty() => {
                         selected = (selected + 1) % sections.len();
+                        jump_index = 0;
+                        jump_status = None;
                     }
                     KeyCode::Left | KeyCode::BackTab if !sections.is_empty() => {
                         selected = (selected + sections.len() - 1) % sections.len();
+                        jump_index = 0;
+                        jump_status = None;
+                    }
+                    KeyCode::Char('g') if !sections.is_empty() => {
+                        let md = section_markdown(&sections[selected]);
+                        let targets = parse_jump_targets(&md);
+                        jump_status = if targets.is_empty() {
+                            Some(JumpResolution::Unresolved(
+                                "no in-document jump references in this section".to_string(),
+                            ))
+                        } else {
+                            jump_index = (jump_index + 1) % targets.len();
+                            Some(resolve_jump(&targets[jump_index], hq_root, tree))
+                        };
                     }
                     _ => {}
                 }
@@ -833,5 +1084,192 @@ mod tests {
         let via_config = crate::config::offered_views(&fc);
         assert_eq!(via_openwork, via_config);
         assert_eq!(via_openwork.len(), 1);
+    }
+
+    // ── In-document jumps (BA.26.G task 4, AC-5) ────────────────────────────
+
+    /// `parse_jump_targets` finds all three recognized kinds, in source
+    /// order, and ignores an ordinary `[[wikilink]]` with no `<kind>:`
+    /// prefix it recognizes.
+    #[test]
+    fn parse_jump_targets_finds_all_three_kinds_and_ignores_unrecognized_prefixes() {
+        let md = "See [[roadmap:bastion-tui]] and [[epic:fleet-integrity]], \
+                   also [[repo:bastion]] and [[not-a-kind:whatever]] and a plain [[Some Note]].";
+        let targets = parse_jump_targets(md);
+        assert_eq!(
+            targets,
+            vec![
+                JumpTarget {
+                    kind: JumpKind::Roadmap,
+                    id: "bastion-tui".to_string()
+                },
+                JumpTarget {
+                    kind: JumpKind::Epic,
+                    id: "fleet-integrity".to_string()
+                },
+                JumpTarget {
+                    kind: JumpKind::Repo,
+                    id: "bastion".to_string()
+                },
+            ]
+        );
+    }
+
+    /// AC-5, roadmap kind: `[[roadmap:<id>]]` resolves to
+    /// `<hq_root>/planning/roadmaps/<id>/roadmap.md` when that file exists.
+    #[test]
+    fn roadmap_jump_resolves_to_its_roadmap_md() {
+        let hq_root = tempfile::tempdir().expect("tempdir");
+        let roadmap_dir = hq_root.path().join("planning/roadmaps/bastion-tui");
+        std::fs::create_dir_all(&roadmap_dir).expect("create roadmap dir");
+        let roadmap_md = roadmap_dir.join("roadmap.md");
+        std::fs::write(&roadmap_md, "# Bastion TUI roadmap\n").expect("write roadmap.md");
+
+        let resolution = resolve_roadmap_jump("bastion-tui", hq_root.path());
+        assert_eq!(resolution, JumpResolution::Found(roadmap_md));
+    }
+
+    /// AC-5, epic kind: `[[epic:<id>]]` resolves via HQ's
+    /// `planning/state.json` `epics[]` registry to the matching entry's
+    /// `plan` path.
+    #[test]
+    fn epic_jump_resolves_to_its_plan_path() {
+        let hq_root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(hq_root.path().join("planning")).expect("create planning dir");
+        std::fs::write(
+            hq_root.path().join("planning/state.json"),
+            r#"{"epics":[{"slug":"fleet-integrity","title":"x","plan":"planning/epics/fleet-integrity.md"}]}"#,
+        )
+        .expect("write state.json");
+
+        let resolution = resolve_epic_jump("fleet-integrity", hq_root.path());
+        assert_eq!(
+            resolution,
+            JumpResolution::Found(hq_root.path().join("planning/epics/fleet-integrity.md"))
+        );
+    }
+
+    /// AC-5, repo kind: `[[repo:<id>]]` resolves via the loaded
+    /// `SpaceTree` (`brain.toml`'s `[[repos]]` table) to the matching
+    /// entry's `repo_path`.
+    #[test]
+    fn repo_jump_resolves_to_its_repo_path() {
+        let repo_path = std::path::PathBuf::from("/home/user/agentic-portfolio/core/bastion");
+        let tree = crate::brain::spaces::SpaceTree {
+            tiers: vec![(
+                "core".to_string(),
+                vec![crate::brain::spaces::SpaceEntry {
+                    slug: "bastion".to_string(),
+                    tier: "core".to_string(),
+                    repo_path: repo_path.clone(),
+                    heading: None,
+                }],
+            )],
+        };
+
+        let resolution = resolve_repo_jump("bastion", &tree);
+        assert_eq!(resolution, JumpResolution::Found(repo_path));
+    }
+
+    /// A jump target that does not resolve — for each of the three kinds —
+    /// degrades to a worded [`JumpResolution::Unresolved`], never a panic
+    /// and never silently nothing.
+    #[test]
+    fn unresolved_jump_targets_carry_a_worded_reason_for_every_kind() {
+        let hq_root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(hq_root.path().join("planning")).expect("create planning dir");
+        std::fs::write(
+            hq_root.path().join("planning/state.json"),
+            r#"{"epics":[]}"#,
+        )
+        .expect("write empty state.json");
+        let empty_tree = crate::brain::spaces::SpaceTree::default();
+
+        let roadmap_miss = resolve_roadmap_jump("does-not-exist", hq_root.path());
+        assert!(
+            matches!(roadmap_miss, JumpResolution::Unresolved(ref r) if r.contains("does-not-exist"))
+        );
+
+        let epic_miss = resolve_epic_jump("does-not-exist", hq_root.path());
+        assert!(
+            matches!(epic_miss, JumpResolution::Unresolved(ref r) if r.contains("does-not-exist"))
+        );
+
+        let repo_miss = resolve_repo_jump("does-not-exist", &empty_tree);
+        assert!(
+            matches!(repo_miss, JumpResolution::Unresolved(ref r) if r.contains("does-not-exist"))
+        );
+    }
+
+    /// `resolve_jump` dispatches each [`JumpKind`] to its own resolver —
+    /// proven end-to-end through the shared entry point rather than only
+    /// through the three kind-specific functions directly.
+    #[test]
+    fn resolve_jump_dispatches_to_the_matching_kind_specific_resolver() {
+        let hq_root = tempfile::tempdir().expect("tempdir");
+        let roadmap_dir = hq_root.path().join("planning/roadmaps/foo");
+        std::fs::create_dir_all(&roadmap_dir).expect("create roadmap dir");
+        std::fs::write(roadmap_dir.join("roadmap.md"), "# Foo\n").expect("write roadmap.md");
+        let tree = crate::brain::spaces::SpaceTree::default();
+
+        let target = JumpTarget {
+            kind: JumpKind::Roadmap,
+            id: "foo".to_string(),
+        };
+        let resolution = resolve_jump(&target, hq_root.path(), &tree);
+        assert_eq!(
+            resolution,
+            JumpResolution::Found(roadmap_dir.join("roadmap.md"))
+        );
+    }
+
+    /// AC-5's miss case, at the render layer: an unresolved jump status
+    /// renders VISIBLE text distinguishable from both "nothing selected yet"
+    /// and a resolved jump — never a blank line, never a panic.
+    #[test]
+    fn render_jump_status_shows_found_and_unresolved_distinguishably() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+
+        // Nothing selected yet.
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_jump_status(f, None, area);
+            })
+            .expect("render_jump_status must not panic (no status)");
+        let idle = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(idle.contains("Press"));
+
+        // Found.
+        let found = JumpResolution::Found(std::path::PathBuf::from("/tmp/roadmap.md"));
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_jump_status(f, Some(&found), area);
+            })
+            .expect("render_jump_status must not panic (found)");
+        let found_rendered = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(found_rendered.contains("Jumped to"));
+        assert!(found_rendered.contains("roadmap.md"));
+
+        // Unresolved — the miss case must degrade VISIBLY, not silently.
+        let unresolved = JumpResolution::Unresolved("no epic named 'ghost'".to_string());
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_jump_status(f, Some(&unresolved), area);
+            })
+            .expect("render_jump_status must not panic (unresolved)");
+        let unresolved_rendered = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(unresolved_rendered.contains("Could not resolve"));
+        assert!(unresolved_rendered.contains("no epic named 'ghost'"));
+
+        // All three renders must be visibly distinct from one another.
+        assert_ne!(idle, found_rendered);
+        assert_ne!(idle, unresolved_rendered);
+        assert_ne!(found_rendered, unresolved_rendered);
     }
 }
