@@ -1853,11 +1853,13 @@ mod tests {
                 path: std::path::PathBuf::from("a"),
                 display: "a".into(),
                 kind: bella_engine::browser::BrowserEntryKind::Dir,
+                ..Default::default()
             },
             bella_engine::browser::BrowserEntry {
                 path: std::path::PathBuf::from("b.md"),
                 display: "b.md".into(),
                 kind: bella_engine::browser::BrowserEntryKind::Markdown,
+                ..Default::default()
             },
         ];
         app.file_browser.selected = 0;
@@ -1881,6 +1883,7 @@ mod tests {
                 path: std::path::PathBuf::from(format!("f{i}.md")),
                 display: format!("f{i}.md"),
                 kind: bella_engine::browser::BrowserEntryKind::Markdown,
+                ..Default::default()
             })
             .collect();
         app.file_browser.selected = 5;
@@ -1904,6 +1907,7 @@ mod tests {
             path: std::path::PathBuf::from("a"),
             display: "a".into(),
             kind: bella_engine::browser::BrowserEntryKind::Dir,
+            ..Default::default()
         }];
         app.file_browser.selected = 0;
         app.on_mouse(left_click(35, 10)); // well past the single entry
@@ -2273,6 +2277,7 @@ mod tests {
                 path: std::path::PathBuf::from(format!("f{i}.md")),
                 display: format!("f{i}.md"),
                 kind: bella_engine::browser::BrowserEntryKind::Markdown,
+                ..Default::default()
             })
             .collect();
         app.file_browser.selected = 2;

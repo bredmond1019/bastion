@@ -576,6 +576,7 @@ fn draw_with_root(
                 let prefix = match entry.kind {
                     bella_engine::browser::BrowserEntryKind::ParentDir => " ⇧ ",
                     bella_engine::browser::BrowserEntryKind::Dir => " 📁 ",
+                    bella_engine::browser::BrowserEntryKind::ExpandedDir => " 📂 ",
                     bella_engine::browser::BrowserEntryKind::Markdown => " 📄 ",
                 };
                 let span = Span::raw(format!("{}{}", prefix, entry.display));
