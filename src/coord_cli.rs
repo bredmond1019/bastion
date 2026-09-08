@@ -38,10 +38,13 @@
 //! module, and no test in this file, treats a clean `Live` verdict as evidence the
 //! surface is populated or that its records are current-shape.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use engine_core::coord::write::{
+    CoordWriteError, HeartbeatRequest, RegisterOutcome, RegisterRequest,
+};
 use engine_core::coord::{CoordinationStatus, CoordinationView};
 
 /// Handler for `bastion coord status [--json]`. Resolves `brain_root` exactly as the
@@ -90,6 +93,190 @@ fn degraded_result(view: &CoordinationView) -> Result<()> {
 /// `engine_core::coord::read_coordination_view` directly — no reimplementation.
 fn view_for(brain_root: &Path) -> CoordinationView {
     engine_core::coord::read_coordination_view(brain_root)
+}
+
+// ── `register` / `heartbeat` / `release` — `bastion coord`'s write verbs (BA.25.C task 1) ──
+//
+// These three are thin CLI faces over `engine_core::coord::write::{register,heartbeat,
+// release}` — the SAME functions `engine-serve`'s `POST /api/coordination/{register,
+// heartbeat,release}` routes call (`engine-serve/src/http.rs`, `coord_register`/
+// `coord_heartbeat`/`coord_release`). No write logic — schema validation, `.prev/`
+// snapshotting, capacity enforcement — is reimplemented here; that seam is `EN.15.C`'s.
+//
+// Each public `run_*` entry point resolves the REAL lock directory (via `resolve_brain_root()`
+// then `engine_core::coord::resolve_lock_dir`, unless `--lock-dir` overrides it) and delegates
+// to a `*_at` sibling that takes the resolved directory directly — the same split `run_status`/
+// `view_for` already established, so a test can drive the write functions against a `tempdir()`
+// fixture without going through brain-root discovery at all, and the live `.fleet-locks/` is
+// never touched by anything in `#[cfg(test)]` below.
+//
+// `register`'s exit code is the one place this module's write verbs diverge from a plain
+// `Result<()>` → exit-1-on-Err contract: `fleet_concurrency_check.py register` exits 0 when
+// allowed (including the degraded-advisory case) and 3 when refused at capacity (see that
+// script's own module doc comment and `main()`'s `return 0 if result.allowed else 3`) — a
+// caller-visible contract this CLI must hold, not an internal implementation detail. Mirroring
+// `notify_cli::AskOutcome::exit_code`'s pattern: the 0/3 mapping lives in one pure, directly
+// testable function (`register_exit_code`), and the only `std::process::exit` call sits in
+// `run_register`, after the outcome's JSON has already been printed to stdout.
+//
+// `heartbeat` and `release` have no such second exit code. `release` always reports success
+// (`{"removed": bool}`) on a real seam I/O outcome, matching `fleet_concurrency_check.py
+// release`'s own always-0 contract — a genuine filesystem error is still a real failure and
+// exits 1 via the ordinary `anyhow::Result` path, same as any other bastion command's I/O
+// fault. `heartbeat` errors when `agent_name` names no existing registry claim
+// (`engine_core::coord::write::heartbeat`'s own refusal — "nothing to heartbeat"); the Python
+// oracle has NO direct `heartbeat` subcommand to compare this against (its own re-register-is-
+// a-heartbeat idiom never refuses this way — an absent claim there just becomes a fresh
+// `register`), so this case is deliberately left to bastion's ordinary exit-1 error path
+// rather than inventing a code with nothing on the other side of the parity contract to match.
+
+/// Resolve the lock directory a coord write verb writes into: `lock_dir_override` when given
+/// (mirrors `fleet_concurrency_check.py`'s own `--lock-dir`, and is how every fixture test in
+/// this module points a write verb at a `tempdir()` instead of the live tree), else the same
+/// `resolve_brain_root()` → `engine_core::coord::resolve_lock_dir` path `run_status` already
+/// uses for reads.
+fn resolve_write_lock_dir(lock_dir_override: Option<&Path>) -> Result<PathBuf> {
+    if let Some(dir) = lock_dir_override {
+        return Ok(dir.to_path_buf());
+    }
+    let brain_root =
+        engine_core::brain_root::resolve_brain_root().context("cannot resolve brain root")?;
+    Ok(engine_core::coord::resolve_lock_dir(&brain_root))
+}
+
+/// The exit code for a `register` outcome — total over both cases, mirroring
+/// `fleet_concurrency_check.py register`'s own contract: `0` when allowed, `3` when refused at
+/// capacity. Kept as its own pure function (not inlined into `run_register`) so it is testable
+/// directly, without spawning a process — same shape as `notify_cli::AskOutcome::exit_code`.
+fn register_exit_code(outcome: &RegisterOutcome) -> i32 {
+    if outcome.allowed { 0 } else { 3 }
+}
+
+/// `register` against an already-resolved `lock_dir` — the pure(ish) core `run_register`
+/// wraps, and what every fixture test in this module calls directly against a `tempdir()`.
+/// Stamps `now`/`pid` itself (mirroring `coord_register`'s own route handler) rather than
+/// trusting a caller-supplied clock; writes no `host` (single-host fleet, per
+/// `engine_core::coord::write`'s own module doc comment on Fork 1).
+#[allow(clippy::too_many_arguments)]
+fn register_at(
+    lock_dir: &Path,
+    agent_name: &str,
+    repo: &str,
+    lane: &str,
+    roadmap: &str,
+    category: Option<&str>,
+) -> Result<RegisterOutcome, CoordWriteError> {
+    let now = chrono::Utc::now();
+    let now_iso = now.to_rfc3339();
+    let now_epoch = now.timestamp() as f64 + f64::from(now.timestamp_subsec_nanos()) / 1e9;
+    let req = RegisterRequest {
+        agent_name,
+        repo,
+        lane,
+        roadmap,
+        host: None,
+        category,
+        now_iso: &now_iso,
+        now_epoch,
+        pid: std::process::id() as i64,
+    };
+    engine_core::coord::write::register(lock_dir, &req)
+}
+
+/// `bastion coord register --agent-name <n> --repo <r> --lane <l> --roadmap <rm> [--category
+/// <c>] [--lock-dir <dir>]` — write the lane-agent registry claim and, when `--category` is
+/// given, enforce and write the heavy-lane capacity slot first (`engine_core::coord::write::
+/// register`'s own all-or-nothing contract: a capacity refusal writes nothing at all).
+///
+/// Always prints the outcome as one JSON line — `{"allowed":true,"reason":null,"active":[]}`
+/// on success, `{"allowed":false,"reason":"...","active":[...]}` on refusal — then exits `0` or
+/// `3` per [`register_exit_code`]. A `CoordWriteError` (invalid record shape, I/O failure)
+/// bubbles up as an ordinary `anyhow::Result` error and exits `1`, same as any other bastion
+/// command fault.
+#[allow(clippy::too_many_arguments)]
+pub fn run_register(
+    agent_name: &str,
+    repo: &str,
+    lane: &str,
+    roadmap: &str,
+    category: Option<&str>,
+    lock_dir_override: Option<&Path>,
+) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let outcome = register_at(&lock_dir, agent_name, repo, lane, roadmap, category)
+        .with_context(|| format!("register failed for agent `{agent_name}`"))?;
+    let json = serde_json::json!({
+        "allowed": outcome.allowed,
+        "reason": outcome.reason,
+        "active": outcome.active,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&json).context("failed to serialise register outcome")?
+    );
+    let code = register_exit_code(&outcome);
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+/// `heartbeat` against an already-resolved `lock_dir` — mirrors [`register_at`]'s split.
+fn heartbeat_at(
+    lock_dir: &Path,
+    agent_name: &str,
+    current_block: Option<&str>,
+    block_started_at: Option<&str>,
+) -> Result<(), CoordWriteError> {
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let req = HeartbeatRequest {
+        agent_name,
+        host: None,
+        now_iso: &now_iso,
+        current_block,
+        block_started_at,
+    };
+    engine_core::coord::write::heartbeat(lock_dir, &req)
+}
+
+/// `bastion coord heartbeat --agent-name <n> [--current-block <b>] [--block-started-at <ts>]
+/// [--lock-dir <dir>]` — re-stamp an existing registry claim's `heartbeat` field (and, when
+/// given, `current_block`/`block_started_at`); `started_at` is left untouched, unlike
+/// `register`'s own idempotent-refresh path.
+///
+/// Prints `{"ok":true}` and exits `0` on success. Errors — including "no existing registry
+/// claim for this agent", `engine_core::coord::write::heartbeat`'s own refusal — bubble up as
+/// an ordinary `anyhow::Result` error and exit `1`; see this module's doc comment for why that
+/// case gets no invented exit code of its own.
+pub fn run_heartbeat(
+    agent_name: &str,
+    current_block: Option<&str>,
+    block_started_at: Option<&str>,
+    lock_dir_override: Option<&Path>,
+) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    heartbeat_at(&lock_dir, agent_name, current_block, block_started_at)
+        .with_context(|| format!("heartbeat failed for agent `{agent_name}`"))?;
+    println!("{}", serde_json::json!({ "ok": true }));
+    Ok(())
+}
+
+/// `release` against an already-resolved `lock_dir` — mirrors [`register_at`]'s split.
+fn release_at(lock_dir: &Path, agent_name: &str) -> Result<bool, CoordWriteError> {
+    engine_core::coord::write::release(lock_dir, agent_name)
+}
+
+/// `bastion coord release --agent-name <n> [--lock-dir <dir>]` — remove `agent_name`'s registry
+/// claim, if any. Idempotent, matching `fleet_concurrency_check.py release`'s own
+/// always-succeeds contract: prints `{"removed":true|false}` and exits `0` whether or not a
+/// claim actually existed to remove. A genuine I/O failure removing the file still bubbles up
+/// as an ordinary `anyhow::Result` error and exits `1`.
+pub fn run_release(agent_name: &str, lock_dir_override: Option<&Path>) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let removed = release_at(&lock_dir, agent_name)
+        .with_context(|| format!("release failed for agent `{agent_name}`"))?;
+    println!("{}", serde_json::json!({ "removed": removed }));
+    Ok(())
 }
 
 /// Serialise `view` exactly as `engine-serve`'s `GET /api/coordination` route does —
@@ -576,6 +763,419 @@ mod tests {
         assert_eq!(
             bastion_active, python_active_restored,
             "comparing against the unmodified fixture again must agree"
+        );
+    }
+
+    // ── BA.25.C task 1: register / heartbeat / release ──────────────────────────
+    //
+    // Every fixture below is its own `tempdir()`, matching this module's Task-3 parity tests
+    // above — none of these ever reads or writes the live shared `.fleet-locks/`.
+
+    /// `python3 <script> register --repo <r> --agent <a> --category <c> --lock-dir <dir>`'s
+    /// captured exit code and parsed JSON stdout.
+    struct PythonRegisterOutput {
+        exit_code: i32,
+        json: serde_json::Value,
+    }
+
+    fn run_python_register(
+        script: &Path,
+        lock_dir: &Path,
+        repo: &str,
+        agent: &str,
+        category: &str,
+    ) -> PythonRegisterOutput {
+        let output = Command::new("python3")
+            .arg(script)
+            .arg("register")
+            .arg("--repo")
+            .arg(repo)
+            .arg("--agent")
+            .arg(agent)
+            .arg("--category")
+            .arg(category)
+            .arg("--lock-dir")
+            .arg(lock_dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn python3 register: {e}"));
+        let exit_code = output.status.code().unwrap_or(-1);
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "register output was not valid JSON: {e}\nstdout={}\nstderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        PythonRegisterOutput { exit_code, json }
+    }
+
+    /// Parse `MAX_LANES_BY_CATEGORY`'s per-category cap out of the oracle's own source text —
+    /// e.g. the `"native-build": 4,` line — never a number copied out of this spec. Mirrors
+    /// `parse_default_ttl_seconds`'s own line-scan approach.
+    fn parse_cap_for_category(source: &str, category: &str) -> usize {
+        let needle = format!("\"{category}\":");
+        for line in source.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix(needle.as_str()) else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                return digits
+                    .parse()
+                    .unwrap_or_else(|e| panic!("cap digits '{digits}' not a usize: {e}"));
+            }
+        }
+        panic!("could not find a `\"{category}\": <int>` line in the given source text");
+    }
+
+    /// AC-1 (task 1): a category already filled to capacity by Python-registered slots makes
+    /// `register` exit 3 with the SAME message the Python emits for the identical refusal —
+    /// both captured live in this one test run, never a copied string literal. The category's
+    /// cap is parsed from the oracle's own source (`parse_cap_for_category`), not hardcoded,
+    /// since D66 made the cap vary per category and a frozen "three" from an older spec
+    /// revision would no longer describe either side's real behaviour.
+    #[test]
+    fn register_full_category_exits_3_with_pythons_own_message() {
+        let Some(script) = require_parity_environment() else {
+            return;
+        };
+        let source = std::fs::read_to_string(&script).expect("read oracle script");
+        let category = "native-build";
+        let cap = parse_cap_for_category(&source, category);
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        // Fill the category to capacity THROUGH THE PYTHON oracle itself — never via a
+        // hand-written fixture file — so the "already filled" state is genuinely
+        // Python-registered, per the AC's own wording.
+        for i in 0..cap {
+            let repo = format!("filler-repo-{i}");
+            let agent = format!("filler-agent-{i}");
+            let filler = run_python_register(&script, &lock_dir, &repo, &agent, category);
+            assert_eq!(
+                filler.exit_code, 0,
+                "python filler register #{i} into `{category}` must succeed (cap={cap}): {:?}",
+                filler.json
+            );
+        }
+
+        // A DISTINCT (repo, agent) attempting to register into the now-full category. Run
+        // through the Python oracle first, on the SAME fixture directory, to capture its
+        // actual refusal — a register refusal writes nothing (both sides' `register` is
+        // all-or-nothing), so this call leaves the fixture exactly as filled as it was.
+        let overflow_repo = "overflow-repo";
+        let overflow_agent = "overflow-agent";
+        let python_overflow =
+            run_python_register(&script, &lock_dir, overflow_repo, overflow_agent, category);
+        assert_eq!(
+            python_overflow.exit_code, 3,
+            "python register into a full `{category}` category must exit 3, got: {:?}",
+            python_overflow.json
+        );
+        assert_eq!(python_overflow.json["allowed"], serde_json::json!(false));
+        let python_message = python_overflow.json["reason"]
+            .as_str()
+            .expect("python refusal must carry a `reason` string")
+            .to_string();
+
+        // Now the RUST verb, against the SAME (still-full, untouched-by-the-refusal-above)
+        // fixture directory.
+        let outcome = register_at(
+            &lock_dir,
+            overflow_agent,
+            overflow_repo,
+            "some-lane",
+            "some-roadmap",
+            Some(category),
+        )
+        .expect("register_at must not error on an ordinary capacity refusal");
+
+        assert!(
+            !outcome.allowed,
+            "rust register must also refuse: {outcome:?}"
+        );
+        assert_eq!(
+            register_exit_code(&outcome),
+            python_overflow.exit_code,
+            "rust's exit code must match python's captured exit code, not a hardcoded 3"
+        );
+        assert_eq!(
+            outcome.reason.as_deref(),
+            Some(python_message.as_str()),
+            "rust's refusal message must byte-equal python's captured refusal message"
+        );
+    }
+
+    /// AC-5 (positive half): an ordinary, under-capacity registration exits `0` on both sides
+    /// for the identical (repo, agent, category) input, on a shared fixture directory.
+    #[test]
+    fn register_allowed_exits_0_matching_python() {
+        let Some(script) = require_parity_environment() else {
+            return;
+        };
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let python_result = run_python_register(
+            &script,
+            &lock_dir,
+            "probe-repo",
+            "probe-agent",
+            "native-build",
+        );
+        assert_eq!(python_result.exit_code, 0, "{:?}", python_result.json);
+        assert_eq!(python_result.json["allowed"], serde_json::json!(true));
+
+        // A DIFFERENT agent/repo pair, against the SAME directory the python call above just
+        // wrote one slot into — asserts the rust side's own capacity read agrees, not just
+        // that an empty directory trivially allows.
+        let outcome = register_at(
+            &lock_dir,
+            "probe-agent-2",
+            "probe-repo-2",
+            "some-lane",
+            "some-roadmap",
+            Some("native-build"),
+        )
+        .expect("register_at must succeed");
+        assert!(outcome.allowed);
+        assert_eq!(register_exit_code(&outcome), python_result.exit_code);
+    }
+
+    /// `register_exit_code` is a total function over both `RegisterOutcome` shapes — asserted
+    /// directly, with no process spawned, mirroring
+    /// `notify_cli::exit_code_is_total_over_all_four_variants`'s own style.
+    #[test]
+    fn register_exit_code_is_total_over_both_outcomes() {
+        assert_eq!(
+            register_exit_code(&RegisterOutcome {
+                allowed: true,
+                reason: None,
+                active: Vec::new(),
+            }),
+            0
+        );
+        assert_eq!(
+            register_exit_code(&RegisterOutcome {
+                allowed: false,
+                reason: Some("fleet at capacity".to_string()),
+                active: vec!["bastion".to_string()],
+            }),
+            3
+        );
+    }
+
+    /// A capacity refusal must write NOTHING — no slot, no registry claim — matching
+    /// `engine_core::coord::write::register`'s own all-or-nothing contract (mirrored from the
+    /// Python's). Fixture is a `tempdir()`; the live `.fleet-locks/` is never touched.
+    #[test]
+    fn register_refusal_writes_nothing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        for i in 0..4 {
+            let repo = format!("filler-{i}");
+            let agent = format!("filler-agent-{i}");
+            let outcome = register_at(
+                &lock_dir,
+                &agent,
+                &repo,
+                "lane",
+                "roadmap",
+                Some("native-build"),
+            )
+            .expect("filler register must succeed (native-build cap is 4)");
+            assert!(outcome.allowed, "filler #{i} must be allowed: {outcome:?}");
+        }
+
+        let before: Vec<_> = std::fs::read_dir(&lock_dir)
+            .expect("read lock_dir")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+
+        let outcome = register_at(
+            &lock_dir,
+            "overflow-agent",
+            "overflow-repo",
+            "lane",
+            "roadmap",
+            Some("native-build"),
+        )
+        .expect("refused register_at must not error");
+        assert!(!outcome.allowed);
+
+        let after: Vec<_> = std::fs::read_dir(&lock_dir)
+            .expect("read lock_dir")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "a capacity refusal must not write a new file: before={before:?} after={after:?}"
+        );
+    }
+
+    /// `heartbeat` re-stamps an existing claim's `heartbeat`/`current_block`/
+    /// `block_started_at` fields while leaving `started_at` untouched — read back through
+    /// `view_for` (the same reader `bastion coord status` uses), never a second parse path.
+    #[test]
+    fn heartbeat_updates_claim_leaves_started_at_untouched() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        register_at(
+            &lock_dir,
+            "hb-agent",
+            "hb-repo",
+            "hb-lane",
+            "hb-roadmap",
+            None,
+        )
+        .expect("initial register must succeed");
+
+        let before = view_for(root.path());
+        let claim_before = before
+            .registry
+            .iter()
+            .find_map(|e| e.claim.typed())
+            .expect("registry claim must exist after register");
+        let started_at_before = claim_before.started_at.clone();
+
+        heartbeat_at(
+            &lock_dir,
+            "hb-agent",
+            Some("BA.25.C"),
+            Some("2026-09-08T00:00:00Z"),
+        )
+        .expect("heartbeat must succeed for an existing claim");
+
+        let after = view_for(root.path());
+        let claim_after = after
+            .registry
+            .iter()
+            .find_map(|e| e.claim.typed())
+            .expect("registry claim must still exist after heartbeat");
+
+        assert_eq!(
+            claim_after.started_at, started_at_before,
+            "heartbeat must never touch started_at"
+        );
+        assert_eq!(claim_after.current_block.as_deref(), Some("BA.25.C"));
+        assert_eq!(
+            claim_after.block_started_at.as_deref(),
+            Some("2026-09-08T00:00:00Z")
+        );
+        assert_ne!(
+            claim_after.heartbeat, claim_before.heartbeat,
+            "heartbeat field itself must be re-stamped"
+        );
+    }
+
+    /// Heartbeating an agent with no existing registry claim errors rather than silently
+    /// creating one — `engine_core::coord::write::heartbeat`'s own refusal, surfaced here as
+    /// an ordinary `Err`. No Python counterpart exists for this case (see this module's doc
+    /// comment above `run_heartbeat`), so this only asserts `Err`, never a specific exit code.
+    #[test]
+    fn heartbeat_errors_when_no_existing_claim() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+        std::fs::create_dir_all(&lock_dir).expect("create lock dir");
+
+        let result = heartbeat_at(&lock_dir, "ghost-agent", None, None);
+        assert!(
+            result.is_err(),
+            "heartbeating a never-registered agent must error, not silently create a claim"
+        );
+    }
+
+    /// `release` reports `removed: true` for a real claim and `removed: false` the second time
+    /// — idempotent, matching `fleet_concurrency_check.py release`'s own always-succeeds
+    /// contract. Effect verified through `view_for`, same as the heartbeat test above.
+    #[test]
+    fn release_removes_claim_then_reports_false() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        register_at(
+            &lock_dir,
+            "release-agent",
+            "release-repo",
+            "release-lane",
+            "release-roadmap",
+            None,
+        )
+        .expect("initial register must succeed");
+
+        let before = view_for(root.path());
+        assert!(
+            before.registry.iter().any(|e| e
+                .claim
+                .typed()
+                .is_some_and(|c| c.agent_name == "release-agent")),
+            "claim must exist before release"
+        );
+
+        let removed_first = release_at(&lock_dir, "release-agent").expect("release must succeed");
+        assert!(
+            removed_first,
+            "first release of a real claim must report removed: true"
+        );
+
+        let after = view_for(root.path());
+        assert!(
+            !after.registry.iter().any(|e| e
+                .claim
+                .typed()
+                .is_some_and(|c| c.agent_name == "release-agent")),
+            "claim must be gone after release"
+        );
+
+        let removed_second =
+            release_at(&lock_dir, "release-agent").expect("second release must not error");
+        assert!(
+            !removed_second,
+            "releasing an already-absent claim must report removed: false, not error"
+        );
+    }
+
+    /// `run_register`/`run_heartbeat`/`run_release` all honour `--lock-dir`'s override rather
+    /// than falling through to `resolve_brain_root()` — the property every fixture test above
+    /// relies on to never touch the live shared `.fleet-locks/`. Exercised through the public
+    /// `run_*` entry points themselves (not just the `*_at` helpers), so a regression that
+    /// dropped the override before it reached `resolve_write_lock_dir` would be caught here.
+    #[test]
+    fn run_entry_points_honour_lock_dir_override() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        run_register(
+            "override-agent",
+            "override-repo",
+            "override-lane",
+            "override-roadmap",
+            None,
+            Some(lock_dir.as_path()),
+        )
+        .expect("run_register with --lock-dir override must succeed");
+        assert!(
+            lock_dir.join("lane-agents").exists(),
+            "register must have written under the overridden lock_dir"
+        );
+
+        run_heartbeat("override-agent", None, None, Some(lock_dir.as_path()))
+            .expect("run_heartbeat with --lock-dir override must succeed");
+
+        run_release("override-agent", Some(lock_dir.as_path()))
+            .expect("run_release with --lock-dir override must succeed");
+        let claim_path = lock_dir
+            .join("lane-agents")
+            .join("agent-override-agent.json");
+        assert!(
+            !claim_path.exists(),
+            "release must have removed the claim under the overridden lock_dir"
         );
     }
 }

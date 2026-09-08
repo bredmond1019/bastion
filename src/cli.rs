@@ -464,6 +464,78 @@ pub enum CoordMode {
         #[arg(long)]
         json: bool,
     },
+
+    /// Write the lane-agent registry claim (and, with `--category`, the heavy-lane
+    /// capacity slot) for this lane — faces `engine_core::coord::write::register`, the
+    /// same function `POST /api/coordination/register` calls (`BA.25.C` task 1).
+    ///
+    /// Prints one JSON line and exits 0 when allowed, 3 when refused at capacity —
+    /// matching `fleet_concurrency_check.py register`'s own exit-code contract exactly,
+    /// re-derived from that script at implement time.
+    Register {
+        /// This lane's `ListAgents` nickname — the identity a registry claim/slot is
+        /// keyed on.
+        #[arg(long = "agent-name")]
+        agent_name: String,
+        /// Repo slug this lane is driving, as registered in `brain.toml`.
+        #[arg(long)]
+        repo: String,
+        /// This lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// Slug of the owning roadmap directory this lane runs under.
+        #[arg(long)]
+        roadmap: String,
+        /// Heavy-lane category (`browser-automation` / `native-build`) this repo is
+        /// gated under. Omit for a light repo carrying no capacity gate — no slot is
+        /// written or enforced.
+        #[arg(long)]
+        category: Option<String>,
+        /// Override the coordination lock directory (default: the discovered
+        /// `brain.toml`'s directory joined with `.fleet-locks`, or `FLEET_LOCK_DIR` if
+        /// set) — mirrors `fleet_concurrency_check.py`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Re-stamp an existing registry claim's `heartbeat` field — faces
+    /// `engine_core::coord::write::heartbeat`, the same function
+    /// `POST /api/coordination/heartbeat` calls (`BA.25.C` task 1).
+    ///
+    /// `started_at` is left untouched, unlike `register`'s own idempotent-refresh path.
+    /// Exits 0 on success; errors (including "no existing claim for this agent" — there
+    /// is nothing to heartbeat) exit 1 via the ordinary error path, since this refusal
+    /// has no `fleet_concurrency_check.py` counterpart to hold exit-code parity with.
+    Heartbeat {
+        /// The agent identity a prior `register` call used — must name an existing
+        /// claim.
+        #[arg(long = "agent-name")]
+        agent_name: String,
+        /// The block id this lane is currently working on.
+        #[arg(long = "current-block")]
+        current_block: Option<String>,
+        /// ISO-8601 timestamp marking when `current_block` started.
+        #[arg(long = "block-started-at")]
+        block_started_at: Option<String>,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Remove `--agent-name`'s registry claim, if any — faces
+    /// `engine_core::coord::write::release`, the same function
+    /// `POST /api/coordination/release` calls (`BA.25.C` task 1).
+    ///
+    /// Idempotent: exits 0 whether or not a claim existed to remove, matching
+    /// `fleet_concurrency_check.py release`'s own always-succeeds contract.
+    Release {
+        /// The agent identity a prior `register` call used.
+        #[arg(long = "agent-name")]
+        agent_name: String,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
 }
 
 /// `bastion notify` subcommands — see [`Commands::Notify`].
