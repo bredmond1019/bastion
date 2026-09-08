@@ -88,10 +88,13 @@ on whichever spine row is selected:
   content pane directly at that view's own configured `root` (no `planning/` subpath assumed).
   You can browse the rooted directory or preview markdown files in the content pane (using the
   `bella-engine` parser with the console's active theme, selectable via the `[theme]` config
-  section — see [config.md](../operations/config.md#theme-section)). Pressing `t` opens the
-  selected markdown file as a transient full-screen overlay instead of a new tab (overlay polish
-  is deferred; tab machinery has been removed). Pane-focus and navigation keys (below) behave
-  identically whether the row is `HQ`, a space, or a view.
+  section — see [config.md](../operations/config.md#theme-section)). A wide markdown table that
+  overflows the pane is rendered clipped by default; clicking a cell (or pressing `e` once the
+  content pane has focus, which retargets the most recently clicked cell) toggles that cell
+  between clipped and fully wrapped in place — no separate overlay or dialog. There is no
+  full-screen document overlay — a markdown file always previews inline in the content pane, Enter
+  to open. Pane-focus and navigation keys (below) behave identically whether the row is `HQ`, a
+  space, or a view.
 - **Tier overview (selecting a tier header — `HQ`/`core`/`side`/`client`/`portfolio`):** Routes
   the main area to that tier's `<tier>/planning/status.md`. If the file or tier directory is
   absent, the pane degrades gracefully to an empty state instead of panicking.
@@ -118,6 +121,9 @@ comparing the click/hover coordinate against the current frame's per-pane viewpo
 - **Spine:** clicking a row selects it (same effect as navigating there with `↑`/`↓`/`j`/`k`).
 - **File Browser (Space Overview):** clicking an entry selects it and moves focus to the Browser
   pane, matching `Enter`/arrow-key navigation.
+- **Content pane table cells (Space Overview):** clicking inside a rendered markdown table's cell
+  toggles that cell between clipped and wrapped display, and remembers the click as the target for
+  a following `e` keypress. A click outside any table cell is a no-op.
 - **Agent · priority strip:** clicking a session row jumps the spine selection to the Space whose
   slug equals that session's name (v1 slug-equality rule); a session with no matching space is a
   no-op.
@@ -147,7 +153,7 @@ for the click/scroll-to-pane mapping.
 | `↑` / `↓` or `j` / `k` | Navigate the file list (when Browser is focused) |
 | `Enter` | Descend into a directory or load a markdown file into the Content pane |
 | `Backspace` | Ascend to the parent directory in the File Browser |
-| `t` | Open the selected markdown file as a full-screen overlay |
+| `e` | Toggle clip/wrap on the most recently clicked table cell in the Content pane |
 | `PageUp` / `PageDown` | Scroll the Content pane (when focused) |
 
 **Mission Control:**
