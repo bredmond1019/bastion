@@ -8,6 +8,17 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-07]
 
+Resumed /sdlc-flow on BA.26.B after the prior BAIL and closed the spec gap with two new tasks: task 7 gave both `read_to_string` call sites in `src/sessions/ui.rs` a named three-way `DocumentRead` (Absent/Failed{path,kind}/Ok) instead of collapsing a read failure or mid-rewrite race into the same "No <path> found." placeholder as an absent file, closing the previously-unwired "CONCURRENCY WITH REFRESH" acceptance criterion; task 8 added a `RenderCache` (keyed on path/content/width/a deterministic TableExpansions fingerprint) so a pure scroll is a cache hit rather than a re-parse, proven by a gated unit test counting actual `render_with_edit` calls, with an un-gateable release-profile probe against the real 267KB open-work board recording ~28.7ms cold vs ~6.6ms cached (~4x). Both tasks passed with confirmed workAssertionPassed outcomes and the consolidated end-of-flow review returned PASS. BA.26.B is now fully done (8 of 8 tasks) — table cell expansion persists across re-renders, keyboard/mouse content scrolling is unified, the footer legend is generated from one binding table, the dead overlay path was removed, and `strip_frontmatter` delegates to `bella_engine::frontmatter`. Full authoritative gate green. Next: pick up the next queued item per `planning/status.md`.
+
+```
+b902980 docs: update docs for BA.26.B
+3ea07c0 fix: review pass 1 for BA.26.B
+7b4283f feat: implement BA.26.B-task8
+e76e487 feat: implement BA.26.B-task7
+```
+
+## [run: 2026-09-07]
+
 Ran /sdlc-flow on BA.26.B tasks 1 through 6 in a worktree, all passing with confirmed workAssertionPassed outcomes: task 1 persisted a bella_engine::links::TableExpansions map on AppState so table cell expansion survives re-renders; task 2 wired content-pane clicks and a new 'e' key to a pure toggle_table_hit(hit, map) decision function via TableMap::hit; task 3 unified keyboard and mouse content-pane scrolling behind one scroll_content_view method for symmetric, guaranteed-identical viewport clamping; task 4 rebuilt the footer's Normal-mode legend from a single NORMAL_KEY_BINDINGS source of truth with a test driving every listed key through on_key; task 5 removed the dead half-built markdown_overlay path (never rendered, never advertised) rather than finishing it, recording the decision in the block record; task 6 delegated strip_frontmatter's fence detection to bella_engine::frontmatter::detect_fence while preserving bastion's blank-line leniency, with 5 pinning tests, and the full authoritative validation suite passed. The consolidated end-of-flow review returned PARTIAL and the run BAILED: acceptance criterion 'CONCURRENCY WITH REFRESH' (gateable) was never wired to a task in tasks.json (1-6) — both read_to_string call sites in src/sessions/ui.rs (line 341 tier status, line 415 content pane) still collapse a read-failure or a document being rewritten mid-read into the same 'No <path> found.' placeholder as an absent file, exactly as at baseline, with no task rendering a named refreshing/torn state. This is a spec gap, not an implementation defect in tasks 1-6 — it needs a re-plan to add a task for the missing AC, not another fix attempt against the existing task set. Next: re-plan BA.26.B to add a task covering CONCURRENCY WITH REFRESH, then resume /sdlc-flow.
 
 ```
