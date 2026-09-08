@@ -6,6 +6,120 @@ timestamp: 2026-09-02T07:26:32-0300
 ---
 # Log — bastion
 
+## [run: 2026-09-08]
+
+Ran /sdlc-flow on BA.26.D tasks 1 through 5, all passing with confirmed workAssertionPassed outcomes; consolidated review returned PASS. Task 1 fixed a live bug in `parse_task_context` (`src/db/workflows.rs`): the node-output read was pulling `nodes[ClassName]["output"]` when engine_contract's own shape is `nodes[ClassName] = output` directly, so `NodeState.output` had been `None` for essentially every node; added `NodeState.completed_at`, regenerated both fixture JSONs from a real live `events` row's structure. Task 2 added a TUI-safe file-only tracing sink (`src/observ/mod.rs`, `init_tracing_tui_safe`) so diagnostics never bleed onto the alternate screen, reusing the existing `ConsoleError::Io` (C009) taxonomy. Task 3 added bearer-token support to `ApiClient`/`Config` (`BASTION_CLIENT_BEARER_TOKEN`, env-over-file) alongside the existing X-API-Key path, wrapped in a redacting `BearerToken` newtype so the token never appears in Debug output. Task 4 added `src/runs/mod.rs`: a `deny_unknown_fields` `StreamFrame` mirror round-tripped against a real `engine_serve::stream::StreamFrame`, plus five named probe functions (not-configured / serve-unreachable / 401 / engine-routes-unmounted / genuinely-idle) composed by `classify_run_view`. Task 5 wired Mission Control's 'p' key to spawn the probe (own short-lived tokio runtime, per D5 no-tokio-coupling in `ui.rs`) and render the AC-2 diagnostics plus per-node status/model/tokens through the now-fixed parser, via new `RunViewStatus` app-local routing state (no new `SelectedNode` variant, keeping the exhaustive-match gate honest). Full authoritative validation suite green: fmt, clippy, cargo test, release build, contract-corpus + typeshare drift checks. Block `BA.26.D` flipped closed in `state.json` via `mev set-block-status --write`. `mev emit-state --write` ran but skipped derived-surface regeneration (toolchain drift: installed `mev`/`bastion` binaries stale relative to source — the authored state change already landed). Next: pick up the next queued item per `planning/status.md`.
+
+```
+9c8ea66 docs: update docs for BA.26.D
+a667414 feat: implement BA.26.D-task5
+67a0b12 feat: implement BA.26.D-task4
+3f9174c feat: implement BA.26.D-task3
+99f96a2 feat: implement BA.26.D-task2
+3ec62cf feat: implement BA.26.D-task1
+```
+
+## [run: 2026-09-08]
+
+Resumed /sdlc-flow on BA.26.J and closed out tasks 2 and 3 (task 1 already committed from a prior attempt); consolidated review PASS. Task 2's prior bail was a manifest-path/working-directory-depth issue in the manual verification command, not a code defect — re-ran with the worktree-correct path (`../../../celia/Cargo.toml`) and confirmed celia's text-tier check passes deterministically; along the way found and fixed two celia manifest bugs uncovered by task 1 (an explicit `args = []` silently overriding rather than extending `[target].args`, and bastion's own tmux session listing leaking the host's ambient sessions into the capture) by driving the capture inside a private-socket nested tmux server. Task 3 registered `capture-scenes-text`/`capture-scenes-image` in `planning/harness.json` as `gates:false` with no `perTask` (matching cargo-audit's shape), backed by a new Rust test (`tests/harness_capture_gate.rs`) with a shown-failing fixture flip, and documented the capture harness in `docs/terminal/sessions.md`. BA.26.J is now fully done (3 of 3 tasks); `planning/status.md` and `planning/state.json` (BA.26.J -> closed) updated and validated clean via `mev validate-brain`. Next: pick up the next queued item per `planning/status.md`.
+
+```
+915215d feat: implement BA.26.J-task3
+35f3c23 chore: wrap up BA.26.J
+134199d feat: implement BA.26.J-task2
+6f0981f feat: implement BA.26.J-task1
+```
+
+## [run: 2026-09-08]
+
+Ran /sdlc-flow on BA.26.J tasks 1 through 3; task 1 (celia.toml + fixture brain.toml/config.toml/open-work board for `bastion tui` captures) and task 2 (captured text goldens + fixed a Scene.args override bug and a nested-tmux-server determinism fix) both completed, but the run BAILED before task 3. Task 2's automated `task_validation_2` check still invokes a manifest path (`../celia/Cargo.toml`) that does not resolve from the worktree; attempt 2's fix summary states the mismatch was resolved only by running the check manually with a different relative path (`../../../celia/Cargo.toml`), with no change made to tasks.json or the validation command itself. Because the actual configured check was never corrected, it will keep failing on every retry and the work assertion can never receive a positive `workAssertionPassed` field — the same underlying failure recurring with no code/config change to close it. This is a validation-command configuration defect, not something a further content fix to celia.toml can resolve. Next: fix `task_validation_2`'s manifest path in tasks.json (or the check script itself) to resolve correctly from a worktree, then resume BA.26.J from task 2's work-assertion gate.
+
+```
+6f0981f feat: implement BA.26.J-task1
+134199d feat: implement BA.26.J-task2
+```
+
+## [run: 2026-09-08]
+
+Ran /sdlc-flow on BA.25.C tasks 1 through 4, all passing with confirmed workAssertionPassed outcomes; consolidated review returned PASS. `bastion coord` gains nine of its ten write verbs as thin CLI faces over `engine_core::coord::write`: task 1 added register/heartbeat/release (register's 0/3 exit code re-derived live against `fleet_concurrency_check.py`'s per-category caps, D66); task 2 added lease/unlease/drain/complete (all four have no Python counterpart, so they use the ordinary exit-0/exit-1 anyhow contract, with drain's partial-failure reporting derived by diffing the inbox/ listing before/after since engine-core's write silently skips unmovable files); task 3 added `send`, refusing any message carrying `priority`/`urgency` per D43 (fixture-tested against a hand-authored message file, since no such fixture existed); task 4 added `restore`, replaying `.fleet-locks/.prev/` snapshots via `fs::rename` and distinguishing ABSENT-.prev/ (no-op success) from EMPTY-.prev/ (refusal), leaving `emit-schema` (AC-4) explicitly deferred per D18 — schemars is not a dependency of okf-core or bastion and no single canonical schema exists to diff against. Full harness suite green. Next: pick up the next queued item per `planning/status.md`.
+
+```
+61e7973 docs: update docs for BA.25.C
+df5e865 feat: implement BA.25.C-task4
+c048f0b feat: implement BA.25.C-task3
+64fe27a feat: implement BA.25.C-task2
+83f6b9f feat: implement BA.25.C-task1
+35fb770 chore: init worktree BA.25.C-flow
+```
+
+
+## [run: 2026-09-08]
+
+Ran /sdlc-flow on BA.26.G tasks 1 through 4, all passing with confirmed workAssertionPassed outcomes; consolidated review returned PASS. `bastion overview` is repointed at the open-work reader: task 1 added a new tab-switching renderer (`render_sections`) in src/overview/mod.rs driven by `config::offered_views`, alongside the untouched parked Kanban `render`/`StateJson`; task 2 threaded the caller-held `bella_engine::links::TableExpansions` through to bella's `render_with_edit` (no per-draw `TableExpansions::new()`) and introduced `src/openwork::resolved_sections` as a thin shared wrapper over `config::offered_views` so overview and the TUI reader agree on what a section is; task 3 re-pointed `bastion overview`'s CLI dispatch in main.rs at `overview::run_sections_ui` (asserted via a fn-pointer-identity test, not by running the binary) with tab-switching and quit wired as the minimal interactive loop; task 4 added in-document `[[roadmap:id]]`/`[[epic:id]]`/`[[repo:id]]` jump syntax (pure `parse_jump_targets`, resolution against HQ's roadmap tree/epics registry/brain.toml SpaceTree, a visible-miss footer state, 'g' to cycle) reusing the same markdown read path the reader displays rather than a second read. Full harness suite green across fmt/clippy/test/release build/three drift scripts. `planning/status.md` and `planning/state.json` (BA.26.G -> closed) updated and validated clean via `mev validate-brain`. Next: pick up the next queued item per `planning/status.md`.
+
+```
+321170c docs: update docs for BA.26.G
+e6f49f9 feat: implement BA.26.G-task4
+6627836 feat: implement BA.26.G-task3
+76356b9 feat: implement BA.26.G-task2
+649b93a feat: implement BA.26.G-task1
+db34116 chore: init worktree BA.26.G-flow
+```
+
+## [run: 2026-09-08]
+
+Ran /sdlc-flow on BA.26.C tasks 1 through 5; tasks 1-4 passed with confirmed workAssertionPassed outcomes and task 5 BAILED. Task 1 added src/openwork/mod.rs with a pure refresh_args() argv builder over a closed RefreshMode enum (CheckOnly, ForceCheck) that cannot represent --commit/--emit; task 2 classified refresh.py's exit codes (0/2/other) and spawn errors into a named RefreshOutcome; task 3 added a thin spawn_argv I/O shell and refactored ui.rs's run_inner into an EventSource-generic run_inner_with_events, proving with a real spawned stand-in child that the event loop never blocks on the spawn; task 4 bound 'r' to spawn the refresh via a new Action::RefreshOpenWork, added AppState::openwork_status as pure data, and made ui.rs own the spawned Child (spawn_refresh/poll_refresh_child), with the footer showing progress and the classified result and the content pane re-reading fresh content on completion. Task 5 was validation-only — the full harness suite (fmt/clippy/full test/release build/three drift scripts) passed and the AC-6 hand smoke was run against the real cargo-installed binary via a scripted tmux session, confirming the refresh spawns off the render thread, the console stays responsive mid-refresh, and completion re-renders with the classified result — but it made no source edits this attempt, so its work-assertion check has no repo-side commit to diff against, and the terminal write recipe still requires a positive workAssertionPassed field derived from that diff. This is a structural mismatch between how validation-only tasks are specified and how the terminal write recipe verifies work, not a code defect a retry would fix. Next: resolve the validation-only work-assertion gap (either accept task 5's recorded hand-smoke evidence as the assertion, or restructure it as a task that touches a repo file) and close out BA.26.C.
+
+```
+0b0c016 feat: implement BA.26.C-task4
+bea801d feat: implement BA.26.C-task3
+9924771 feat: implement BA.26.C-task2
+e56ba8d feat: implement BA.26.C-task1
+187d77a chore: init worktree BA.26.C-flow
+```
+
+## [run: 2026-09-07]
+
+Resumed /sdlc-flow on BA.26.B after the prior BAIL and closed the spec gap with two new tasks: task 7 gave both `read_to_string` call sites in `src/sessions/ui.rs` a named three-way `DocumentRead` (Absent/Failed{path,kind}/Ok) instead of collapsing a read failure or mid-rewrite race into the same "No <path> found." placeholder as an absent file, closing the previously-unwired "CONCURRENCY WITH REFRESH" acceptance criterion; task 8 added a `RenderCache` (keyed on path/content/width/a deterministic TableExpansions fingerprint) so a pure scroll is a cache hit rather than a re-parse, proven by a gated unit test counting actual `render_with_edit` calls, with an un-gateable release-profile probe against the real 267KB open-work board recording ~28.7ms cold vs ~6.6ms cached (~4x). Both tasks passed with confirmed workAssertionPassed outcomes and the consolidated end-of-flow review returned PASS. BA.26.B is now fully done (8 of 8 tasks) — table cell expansion persists across re-renders, keyboard/mouse content scrolling is unified, the footer legend is generated from one binding table, the dead overlay path was removed, and `strip_frontmatter` delegates to `bella_engine::frontmatter`. Full authoritative gate green. Next: pick up the next queued item per `planning/status.md`.
+
+```
+b902980 docs: update docs for BA.26.B
+3ea07c0 fix: review pass 1 for BA.26.B
+7b4283f feat: implement BA.26.B-task8
+e76e487 feat: implement BA.26.B-task7
+```
+
+## [run: 2026-09-07]
+
+Ran /sdlc-flow on BA.26.B tasks 1 through 6 in a worktree, all passing with confirmed workAssertionPassed outcomes: task 1 persisted a bella_engine::links::TableExpansions map on AppState so table cell expansion survives re-renders; task 2 wired content-pane clicks and a new 'e' key to a pure toggle_table_hit(hit, map) decision function via TableMap::hit; task 3 unified keyboard and mouse content-pane scrolling behind one scroll_content_view method for symmetric, guaranteed-identical viewport clamping; task 4 rebuilt the footer's Normal-mode legend from a single NORMAL_KEY_BINDINGS source of truth with a test driving every listed key through on_key; task 5 removed the dead half-built markdown_overlay path (never rendered, never advertised) rather than finishing it, recording the decision in the block record; task 6 delegated strip_frontmatter's fence detection to bella_engine::frontmatter::detect_fence while preserving bastion's blank-line leniency, with 5 pinning tests, and the full authoritative validation suite passed. The consolidated end-of-flow review returned PARTIAL and the run BAILED: acceptance criterion 'CONCURRENCY WITH REFRESH' (gateable) was never wired to a task in tasks.json (1-6) — both read_to_string call sites in src/sessions/ui.rs (line 341 tier status, line 415 content pane) still collapse a read-failure or a document being rewritten mid-read into the same 'No <path> found.' placeholder as an absent file, exactly as at baseline, with no task rendering a named refreshing/torn state. This is a spec gap, not an implementation defect in tasks 1-6 — it needs a re-plan to add a task for the missing AC, not another fix attempt against the existing task set. Next: re-plan BA.26.B to add a task covering CONCURRENCY WITH REFRESH, then resume /sdlc-flow.
+
+```
+1bf4836 feat: implement BA.26.B-task6
+8786177 feat: implement BA.26.B-task5
+878e1ff feat: implement BA.26.B-task4
+0666358 feat: implement BA.26.B-task3
+e759ccf feat: implement BA.26.B-task2
+ba6ffb2 feat: implement BA.26.B-task1
+89330ce chore: init worktree BA.26.B-flow
+8f89126 merge: BA.26.A — config-declared views and exhaustive SelectedNode dispatch (PR #48)
+```
+
+
+## [run: 2026-09-07]
+
+Ran /sdlc-flow on BA.26.A through all five tasks: task 1 added an optional [views] table to FileConfig (ViewEntry: label + root) with a pure offered_views() resolver that drops an absent table, an undeclared view, or a missing root, sharing the canonicalize_against helper with [workspaces]; task 2 made a malformed config.toml surface a named degradation (path + parser message) on the session TUI's footer status line instead of being silently swallowed by init_theme_from_config's old unwrap_or_default(); task 3 added SelectedNode::View/SpineRow::View driven by the resolved [views] table and converted every SelectedNode matches!/== dispatch site in app.rs/ui.rs to an exhaustive match with no wildcard; task 4 added a reader-key test (Right/Left/Enter) over the declared-view variant with an in-test runtime inversion proving the exhaustiveness gate can fail, plus scripts/check-selected-node-exhaustive.sh sweeping all of src/ for non-exhaustive SelectedNode dispatch; task 5 documented [views] in .env.example and docs/operations/config.md and confirmed the full authoritative gate green (fmt, clippy, 2870 tests passed, release build, and the three drift scripts). All five tasks passed with confirmed workAssertionPassed outcomes; the consolidated end-of-flow review returned PASS after one fix pass. Next: pick up the next queued item per planning/status.md (BA.26.B, which depends on this block's spine).
+
+```
+9b600d9 docs: update docs for BA.26.A
+cc5bf6b fix: review pass 1 for BA.26.A
+28f3898 feat: implement BA.26.A-task5
+423d153 feat: implement BA.26.A-task4
+9bf81ec feat: implement BA.26.A-task3
+ecd7d58 feat: implement BA.26.A-task2
+e339bcb feat: implement BA.26.A-task1
+d4a3640 chore: init worktree BA.26.A-flow
+```
+
 ## [run: 2026-09-05]
 
 Re-ran /sdlc-flow on BA.ticket.serve-auth-boundary-freeze after respec: task 6 closed the AC10 gap left by the prior BAIL by adding a new `auth_scenarios` module to `src/serve/contract_corpus.rs`, emitting three real-401 goldens through `BearerAuthMiddleware` (no-credentials, bad-bearer, bad-signature) into `types/contract-corpus/`. All six tasks (1-6) passed with confirmed workAssertionPassed outcomes, and the consolidated end-of-flow review returned PASS with no findings. Net result across the full spec: `src/serve/auth.rs`'s token/API-key compares are now constant-time (`subtle::ConstantTimeEq`), a new HMAC-SHA256 machine-caller signature tier (`src/serve/source_auth.rs`) is admitted alongside bearer auth at both /api and /ws with a configurable clock-skew window, `docs/serve/serve-api.md` is frozen at v1.0.0 with a self-testing version-drift gate (`scripts/check-serve-api-version.sh`), and the contract corpus now carries real 401 goldens closing AC10. Next: pick up the next queued ticket per `planning/status.md`.

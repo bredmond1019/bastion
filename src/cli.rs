@@ -327,6 +327,21 @@ pub enum Commands {
         /// refuse to write from a stale build rather than doing it silently.
         #[arg(long)]
         fail_on_drift: bool,
+        /// Writer identity passed through to mev's guarded `emit_state_as` entry point.
+        /// A write proceeds when no OTHER agent holds a live exclusive quiesce lease on
+        /// the resolved repo — a lease held by this same `--agent` never refuses (the
+        /// self-exemption). Omitting `--agent` means the write can never be
+        /// self-exempted: any live exclusive lease refuses it, including one this
+        /// process itself might have taken under a different invocation.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Narrow the emit to one repo's derived surfaces — a `[[repos]]` slug from
+        /// `brain.toml` (e.g. `bastion`). Resolved through mev's own
+        /// `BrainConfig::scope_dependencies`, never hand-assembled or post-filtered.
+        /// Omitting `--scope` emits every repo's derived surfaces, unchanged from
+        /// today's behaviour.
+        #[arg(long)]
+        scope: Option<String>,
     },
 
     /// Query the code-as-graph surface for symbol definitions, references, and dependents
@@ -422,6 +437,233 @@ pub enum Commands {
     Notify {
         #[command(subcommand)]
         mode: NotifyMode,
+    },
+
+    /// Fleet coordination surface — who is live, what is leased, what is queued and
+    /// what is escalated (`BA.25.A`)
+    ///
+    /// Faces engine-core's read-only coordination reader
+    /// (`engine_core::coord::read_coordination_view`) — the same function engine-serve's
+    /// `GET /api/coordination` route calls. This subcommand adds no reader logic of its
+    /// own; see `coord_cli` for the thin CLI shell.
+    Coord {
+        #[command(subcommand)]
+        mode: CoordMode,
+    },
+}
+
+/// `bastion coord` subcommands — see [`Commands::Coord`].
+#[derive(Debug, Subcommand)]
+pub enum CoordMode {
+    /// Print the joined fleet coordination view (registry, leases, slots, messages,
+    /// heartbeats, escalations, run records) — human summary by default, or the same
+    /// JSON the `GET /api/coordination` route serves with `--json`.
+    Status {
+        /// Emit the machine-readable JSON envelope (byte-equal to the
+        /// `GET /api/coordination` route's response body) instead of a human summary.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Write the lane-agent registry claim (and, with `--category`, the heavy-lane
+    /// capacity slot) for this lane — faces `engine_core::coord::write::register`, the
+    /// same function `POST /api/coordination/register` calls (`BA.25.C` task 1).
+    ///
+    /// Prints one JSON line and exits 0 when allowed, 3 when refused at capacity —
+    /// matching `fleet_concurrency_check.py register`'s own exit-code contract exactly,
+    /// re-derived from that script at implement time.
+    Register {
+        /// This lane's `ListAgents` nickname — the identity a registry claim/slot is
+        /// keyed on.
+        #[arg(long = "agent-name")]
+        agent_name: String,
+        /// Repo slug this lane is driving, as registered in `brain.toml`.
+        #[arg(long)]
+        repo: String,
+        /// This lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// Slug of the owning roadmap directory this lane runs under.
+        #[arg(long)]
+        roadmap: String,
+        /// Heavy-lane category (`browser-automation` / `native-build`) this repo is
+        /// gated under. Omit for a light repo carrying no capacity gate — no slot is
+        /// written or enforced.
+        #[arg(long)]
+        category: Option<String>,
+        /// Override the coordination lock directory (default: the discovered
+        /// `brain.toml`'s directory joined with `.fleet-locks`, or `FLEET_LOCK_DIR` if
+        /// set) — mirrors `fleet_concurrency_check.py`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Re-stamp an existing registry claim's `heartbeat` field — faces
+    /// `engine_core::coord::write::heartbeat`, the same function
+    /// `POST /api/coordination/heartbeat` calls (`BA.25.C` task 1).
+    ///
+    /// `started_at` is left untouched, unlike `register`'s own idempotent-refresh path.
+    /// Exits 0 on success; errors (including "no existing claim for this agent" — there
+    /// is nothing to heartbeat) exit 1 via the ordinary error path, since this refusal
+    /// has no `fleet_concurrency_check.py` counterpart to hold exit-code parity with.
+    Heartbeat {
+        /// The agent identity a prior `register` call used — must name an existing
+        /// claim.
+        #[arg(long = "agent-name")]
+        agent_name: String,
+        /// The block id this lane is currently working on.
+        #[arg(long = "current-block")]
+        current_block: Option<String>,
+        /// ISO-8601 timestamp marking when `current_block` started.
+        #[arg(long = "block-started-at")]
+        block_started_at: Option<String>,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Remove `--agent-name`'s registry claim, if any — faces
+    /// `engine_core::coord::write::release`, the same function
+    /// `POST /api/coordination/release` calls (`BA.25.C` task 1).
+    ///
+    /// Idempotent: exits 0 whether or not a claim existed to remove, matching
+    /// `fleet_concurrency_check.py release`'s own always-succeeds contract.
+    Release {
+        /// The agent identity a prior `register` call used.
+        #[arg(long = "agent-name")]
+        agent_name: String,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Acquire or renew an exclusive/shared claim on `--repo`'s working tree — faces
+    /// `engine_core::coord::write::lease`, the same function `POST /api/coordination/lease`
+    /// calls (`BA.25.C` task 2).
+    ///
+    /// No `fleet_concurrency_check.py` counterpart — that script's own `acquire-exclusive`
+    /// is a pre-flight admission CHECK, never a writer. Exits 0 on success, 1 on any refusal
+    /// (including a `--window` block absent from `--lane-block`) via the ordinary error path.
+    Lease {
+        /// Repo slug this lease covers, as registered in `brain.toml`.
+        #[arg(long)]
+        repo: String,
+        /// This lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// The `ListAgents` nickname taking this lease.
+        #[arg(long = "agent-name")]
+        agent_name: String,
+        /// `exclusive` or `shared`.
+        #[arg(long)]
+        kind: String,
+        /// `repo` or `fleet`. Omit for the schema's own default (`repo`).
+        #[arg(long)]
+        scope: Option<String>,
+        /// A block id this lease's window covers. Repeat for multiple; omit entirely for a
+        /// whole-lane lease claiming no window.
+        #[arg(long = "window")]
+        window: Vec<String>,
+        /// A block id the lane actually owns — the yardstick `--window` is checked against.
+        /// Repeat for multiple.
+        #[arg(long = "lane-block")]
+        lane_block: Vec<String>,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Release the lease on `--repo`, if any — faces `engine_core::coord::write::unlease`,
+    /// the same function `POST /api/coordination/unlease` calls (`BA.25.C` task 2).
+    ///
+    /// Idempotent: exits 0 whether or not a lease existed to remove — "unleasing a lease you
+    /// do not hold" is `removed: false`, not an error. No Python counterpart.
+    Unlease {
+        /// Repo slug whose lease to release.
+        #[arg(long)]
+        repo: String,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Move every message in `--repo`/`--lane`'s inbox into `processing/` — faces
+    /// `engine_core::coord::write::drain`, the same function `POST /api/coordination/drain`
+    /// calls (`BA.25.C` task 2).
+    ///
+    /// Always prints both halves of the outcome — `{"moved":[...],"failed":[...]}` — never a
+    /// bare success; an empty inbox is a legitimate `{"moved":[],"failed":[]}`. No Python
+    /// counterpart.
+    Drain {
+        /// Repo slug of the recipient lane's queue.
+        #[arg(long)]
+        repo: String,
+        /// The recipient lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Write a message envelope (read as JSON from `--file`) into `--repo`/`--lane`'s
+    /// inbox — faces `engine_core::coord::write::send`, the same function
+    /// `POST /api/coordination/send` calls (`BA.25.C` task 3).
+    ///
+    /// A `priority` or `urgency` key anywhere in the envelope is refused before anything
+    /// else is checked — a sender-declared priority is not this fleet's rubric; D43 owns
+    /// priority. Prints `{"sent":true,"path":"..."}` and exits 0 on success, 1 on any
+    /// refusal. No Python counterpart.
+    Send {
+        /// Repo slug of the recipient lane's queue.
+        #[arg(long)]
+        repo: String,
+        /// The recipient lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// Path to a JSON file holding the message envelope to send.
+        #[arg(long)]
+        file: PathBuf,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Move `--message-id`'s file from `processing/` to `done/`, if present — faces
+    /// `engine_core::coord::write::complete`, the same function
+    /// `POST /api/coordination/complete` calls (`BA.25.C` task 2).
+    ///
+    /// Prints `{"completed":true|false}` and exits 0 either way — completing a message not
+    /// in `processing/` is a distinct, legitimate `false`, not an error. No Python
+    /// counterpart.
+    Complete {
+        /// Repo slug of the lane's queue.
+        #[arg(long)]
+        repo: String,
+        /// The lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// The message's `message_id` (the second half of its `<ts>-<uuid>.json` filename).
+        #[arg(long = "message-id")]
+        message_id: String,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Replay every snapshot under `.fleet-locks/.prev/` back to its original location,
+    /// consuming each snapshot exactly once — faces the same snapshot mechanism
+    /// `engine_core::coord::write`'s other verbs write into on every overwrite, but has
+    /// no engine-rs route and no Python counterpart (`BA.25.C` task 4).
+    ///
+    /// Prints `{"restored":[...]}` and exits 0 for both a successful replay AND an
+    /// ABSENT `.prev/` (nothing has ever been snapshotted — a legitimate no-op). Exits
+    /// non-zero when `.prev/` EXISTS but holds no files to replay — a distinct
+    /// condition from ABSENT, never collapsed into it.
+    Restore {
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
     },
 }
 
@@ -974,10 +1216,14 @@ mod tests {
                 path,
                 write,
                 fail_on_drift,
+                agent,
+                scope,
             }) => {
                 assert_eq!(path, PathBuf::from("."));
                 assert!(!write);
                 assert!(!fail_on_drift);
+                assert_eq!(agent, None);
+                assert_eq!(scope, None);
             }
             other => panic!("expected EmitState, got {other:?}"),
         }
@@ -991,10 +1237,26 @@ mod tests {
                 path,
                 write,
                 fail_on_drift,
+                agent,
+                scope,
             }) => {
                 assert_eq!(path, PathBuf::from("/some/root"));
                 assert!(write);
                 assert!(!fail_on_drift);
+                assert_eq!(agent, None);
+                assert_eq!(scope, None);
+            }
+            other => panic!("expected EmitState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_state_scope_parses() {
+        let cli = Cli::try_parse_from(["bastion", "emit-state", "--write", "--scope", "bastion"])
+            .unwrap();
+        match cli.command {
+            Some(Commands::EmitState { scope, .. }) => {
+                assert_eq!(scope.as_deref(), Some("bastion"));
             }
             other => panic!("expected EmitState, got {other:?}"),
         }
@@ -1007,6 +1269,18 @@ mod tests {
         match cli.command {
             Some(Commands::EmitState { fail_on_drift, .. }) => {
                 assert!(fail_on_drift);
+            }
+            other => panic!("expected EmitState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_state_agent_parses() {
+        let cli =
+            Cli::try_parse_from(["bastion", "emit-state", "--write", "--agent", "lane-a"]).unwrap();
+        match cli.command {
+            Some(Commands::EmitState { agent, .. }) => {
+                assert_eq!(agent.as_deref(), Some("lane-a"));
             }
             other => panic!("expected EmitState, got {other:?}"),
         }

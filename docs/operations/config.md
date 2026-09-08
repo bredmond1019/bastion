@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [configuration, environment variables, config file, workspace registry, precedence, TOML, theme]
-related: [observ, serve-api, brain, sessions, telegram-commands]
+related: [observ, serve-api, brain, sessions, telegram-commands, brainval]
 ---
 
 # Configuration
@@ -54,6 +54,29 @@ Both flags are declared `global = true` in clap, so they work before or after an
 
 The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called once at the top of `main()` before dispatch. The `RUST_LOG` environment variable overrides the level set by `--verbose` when both are present.
 
+## `emit-state` writer identity and scope (BA.25.B)
+
+`bastion emit-state [PATH] [--write] [--fail-on-drift] [--agent <name>] [--scope <repo>]` gained
+two subcommand-specific flags on top of the base pass-through described in
+[brainval.md](../knowledge/brainval.md#emit-state). Both are thin pass-throughs to `mev`'s
+guarded `emit_state_as` entry point — bastion supplies identity and scope, mev's library owns
+the quiesce guard and the actual filtering (D25: the mutation and the guard both live in mev).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--agent <name>` | unset | Writer identity passed through to `emit_state_as` as the self-exemption. With `--write`, a live exclusive quiesce lease held by another agent on the resolved repo refuses the write with `E_QUIESCE_LEASE_HELD`; a lease held under this **same** `--agent` never refuses. Omitting `--agent` means the write can never be self-exempted — any live exclusive lease refuses it, including one this same process might hold under a different invocation. |
+| `--scope <repo>` | unset (whole corpus) | Narrows the emit to one repo's derived surfaces — a `[[repos]]` slug from `brain.toml` (e.g. `bastion`). Resolved through mev's own `BrainConfig::scope_dependencies`, never hand-assembled or post-filtered. Omitting `--scope` emits every repo's derived surfaces, unchanged from the flag's absence. |
+
+Both flags only affect `--write` runs; a dry run reports the same planned actions either way.
+
+`scripts/sync/emit_state_write.sh` — the one way this session is expected to run
+`emit-state --write` (see that script's own header) — accepts `--scope <repo>` and forwards it.
+When the underlying `bastion emit-state --write` call refuses with `E_QUIESCE_LEASE_HELD`, the
+script **skips** that repo (logs it, exits 0, does not commit) rather than treating the refusal
+as a hard failure — this is what lets a per-repo driving loop (the commander's step 3) move past
+a repo another agent has leased instead of stalling on it. The script does not yet accept
+`--agent`; passing writer identity through the script is out of this task's scope.
+
 ## Environment variables
 
 | Variable | Required | Default | Description |
@@ -71,6 +94,7 @@ The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called onc
 | `BASTION_MAX_TOTAL_TOKENS` | No | — (no cap) | Budget cap (BA.7.C): total token ceiling. Absent-tolerant — no cap configured is a valid, unchanged config. A present-but-unparseable value is a fatal `ConfigError::MalformedBudgetValue`, never a silent default. |
 | `BASTION_MAX_COST_USD` | No | — (no cap) | Budget cap (BA.7.C): total USD-cost ceiling. Same absent-tolerant / malformed-is-fatal contract as `BASTION_MAX_TOTAL_TOKENS`. |
 | `BASTION_ENGINE_API_KEY` | No (required to use `bastion abort` / engine routes) | — | `X-API-Key` secret for the engine's abort endpoint. **Distinct from `BASTION_SERVE_TOKEN`** — two different secrets, two different schemes, two different route groups: this key is sent by `api::client` and checked by the embedded engine's `AppState.api_key`; `BASTION_SERVE_TOKEN` gates bastion serve's own session/status routes. Never reuse one for the other. |
+| `BASTION_CLIENT_BEARER_TOKEN` | No | — | Client-side bearer token (`BA.26.D`) sent as `Authorization: Bearer <token>` by `api::client::ApiClient` (`ApiClient::get_api`) against `bastion serve`'s own `/api/*` routes. **A THIRD, distinct secret** from both `BASTION_ENGINE_API_KEY` above (the engine's `X-API-Key`) and `BASTION_SERVE_TOKEN` (the SERVER's own enforcement value) — this is the CLIENT's copy of whatever token the target `bastion serve` enforces as `BASTION_SERVE_TOKEN`. Absent-tolerant: `None` means no client bearer token configured, not an error. |
 | `BASTION_ENGINE_HARNESS_PATH` | No | — (no schedule loop spawned) | Path to the `harness.json` whose `schedule` block configures the embedded engine's scheduled entries (`engine_serve::schedule::spawn_schedule_loop`). Absent, empty, or pointing at a path that does not exist/is not readable all resolve to `None` — the ordinary case today — and `bastion serve` starts with no schedule loop, logged at info, not error. A path that resolves but whose `schedule` block fails to parse is a distinct, louder `tracing::error!` outcome, but still does not abort startup. Env-var only — no `config.toml` key. |
 | `BASTION_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token for the operator-notification transport (`BA.18.B`, [serve-api.md](../serve/serve-api.md#26-operator-notification-transport)). **Mini-plist-only** — the real value lives in `com.brandon.engine-serve.plist` on the Mac Mini and is never written to any tracked file, `.env`, test, or fixture in this repo. Both this and `BASTION_TELEGRAM_CHAT_ID` absent leaves the transport unconfigured (`bastion serve` boots unchanged); exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
 | `BASTION_TELEGRAM_CHAT_ID` | No | — | Operator's Telegram chat id the bot delivers to. Same Mini-plist-only, absent-tolerant, paired-with-the-token contract as `BASTION_TELEGRAM_BOT_TOKEN` above. |
@@ -112,6 +136,10 @@ max_cost_usd     = 25.00
 
 # X-API-Key for the engine's abort endpoint (BA.7.C) — distinct from BASTION_SERVE_TOKEN.
 engine_api_key = "<engine-api-key>"
+
+# Client-side bearer token (BA.26.D) sent against bastion serve's own /api/* routes —
+# a THIRD secret, distinct from both engine_api_key above and BASTION_SERVE_TOKEN.
+client_bearer_token = "<client-bearer-token>"
 ```
 
 All keys are optional. Unknown keys are ignored (forward-compatible).
@@ -157,6 +185,52 @@ It has no effect on the observability track (monitor, costs, inspect).
 
 An unknown name in step 2 or 3 is a fatal error (`ConfigError::UnknownWorkspace`).
 
+## Reader views (`[views]`, BA.26.A)
+
+The `[views]` table declares named reader destinations that the session TUI's spine
+(`bastion tui`) offers as first-class sidebar entries reachable in one keypress — press `v` from
+anywhere in the spine, including boot, to jump straight to the next declared view (cycling if more
+than one is declared) — instead of navigating there through the generic browser via sequential
+Down/Up.
+
+```toml
+[views.open-work]
+label = "Open Work"
+root  = "planning/open-work"
+```
+
+| Key | Type | Description |
+|---|---|---|
+| `[views.<name>]` | table | One declared view; `<name>` is the table key, used internally, not shown in the UI. |
+| `label` | `String` | Human-readable sidebar label for this view. |
+| `root` | `PathBuf` | The view's reader destination. May be authored as relative TOML — canonicalized against the config file's own directory, exactly like a `[workspaces]` entry. |
+
+**Absence-tolerant in three ways, none of which is an error or a panic:**
+
+- **No `[views]` table at all** — no view entries are offered; the sidebar is unchanged from
+  before this feature existed.
+- **A view nobody declared** — there is nothing to omit; it was never a candidate.
+- **A declared view whose `root` does not exist on disk** — silently omitted from the offered
+  list. bastion boots and the TUI runs normally; the view just does not appear.
+
+There is no environment-variable form — `[views]` is config-file only, and env vars have no
+equivalent key to override it with.
+
+### Malformed config is a visible degradation, not a silent revert
+
+A parse error anywhere in the TOML file (not only inside `[views]`) is a different, louder case
+than the absence-tolerant rules above. bastion still boots and the TUI still runs — a malformed
+config must never panic or refuse to start — but the failure is no longer silently indistinguishable
+from an empty or absent file: the session TUI's status line names the config path and the
+underlying parser's own error message.
+
+This matters specifically because `OP.bastion-tui-console-credentials` instructs the operator to
+hand-edit this exact file — a stray unclosed quote previously made `[views]` vanish, the theme
+silently revert to `bastion`, and (once configured) other file-backed keys vanish along with it,
+with no way to tell a syntax error from an empty config. If you edit this file and the TUI's
+sidebar or theme looks unexpectedly like the defaults, check the status line for a `config error
+in <path>: ...` message before assuming the table was never declared.
+
 ## Budget caps + engine API key (BA.7.C)
 
 Three new, fully optional keys back the cost-budget-alerts-abort block:
@@ -174,6 +248,21 @@ from `ServeConfig.token` (the `Authorization: Bearer` gate `bastion serve` enfor
 session/status routes) — one authenticates operator access to bastion serve, the other
 authenticates bastion's own outbound calls to the engine's abort endpoint. Never conflate or
 reuse one for the other.
+
+## Client bearer token (`BA.26.D`)
+
+One more optional key, following `engine_api_key`'s exact precedent:
+
+| Key | Env var | Type | Description |
+|---|---|---|---|
+| `client_bearer_token` | `BASTION_CLIENT_BEARER_TOKEN` | `Option<String>` | Sent as `Authorization: Bearer <token>` by `api::client::ApiClient` (`ApiClient::get_api`) against `bastion serve`'s own `/api/*` routes. |
+
+Same env-over-file precedence, same absent-tolerant contract. This is a **third** distinct
+secret from both `engine_api_key` above (the engine's `X-API-Key`, sent to the embedded
+engine's abort/resume routes) and `ServeConfig.token` (`BASTION_SERVE_TOKEN`, the SERVER's own
+enforcement value on its `/api/*` scope) — `client_bearer_token` is the CLIENT's copy of
+whatever token the target `bastion serve` enforces as `BASTION_SERVE_TOKEN`. Never reuse one
+for another.
 
 A `BASTION_MAX_TOTAL_TOKENS` or `BASTION_MAX_COST_USD` value that is present but fails to parse
 as its numeric type (e.g. `BASTION_MAX_TOTAL_TOKENS=not-a-number`) is a fatal
@@ -378,6 +467,7 @@ Struct that mirrors the config-file keys. All fields are optional; constructed b
 | `max_total_tokens` | `Option<u64>` | Budget cap (BA.7.C): total token ceiling. |
 | `max_cost_usd` | `Option<f64>` | Budget cap (BA.7.C): total USD-cost ceiling. |
 | `engine_api_key` | `Option<String>` | `X-API-Key` secret for the engine's abort endpoint (BA.7.C). Distinct from `ServeConfig.token`. |
+| `client_bearer_token` | `Option<String>` | Client-side bearer token (BA.26.D) sent against bastion serve's own `/api/*` routes. Distinct from both `engine_api_key` and `ServeConfig.token`. |
 | `telegram_commands` | `Option<HashMap<String, TelegramCommandEntry>>` | Optional `[telegram_commands]` allow-list mapping a command name to a triggerable workflow. See [telegram-commands.md](../serve/telegram-commands.md). |
 
 ### `ThemeConfig`

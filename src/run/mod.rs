@@ -861,6 +861,7 @@ mod tests {
                 Some("5.0".into()),
                 Some("real-key".into()),
                 None,
+                None,
             ),
             FileConfig::default(),
         )
@@ -891,6 +892,7 @@ mod tests {
         let cfg = Config::from_sources(
             (
                 Some("postgres://localhost/db".into()),
+                None,
                 None,
                 None,
                 None,

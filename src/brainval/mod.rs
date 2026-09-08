@@ -253,15 +253,38 @@ pub fn guard_write_on_drift<W: std::io::Write>(
     Ok(())
 }
 
-/// Handler for `bastion emit-state [--write] [--fail-on-drift]`. Thin pass-through to
-/// `mev::emit_state` — dry-run by default, reports planned (or applied) actions via the
-/// same human summary shape used by mev's own `EmitState` command.
+/// Handler for `bastion emit-state [--write] [--fail-on-drift] [--agent <name>]`. Thin
+/// pass-through to `mev::emit_state_as` — dry-run by default, reports planned (or
+/// applied) actions via the same human summary shape used by mev's own `EmitState`
+/// command.
+///
+/// Passes `agent` straight through as the writer identity to mev's GUARDED entry
+/// point (`emit_state_as`), which itself applies mev's quiesce guard: a live
+/// exclusive lease held by another agent on the resolved repo refuses the write with
+/// `E_QUIESCE_LEASE_HELD`, while a lease held under this same `agent` is
+/// self-exempted. No guard, lease check, or refusal logic is implemented here — that
+/// decision belongs to mev's library alone (`MV.20.B`); this call site only supplies
+/// identity. `lock_dir` is always `None` here — overriding the lock directory is out
+/// of scope for this task.
+///
+/// `scope`, when `Some(<repo slug>)`, is resolved through mev's own
+/// `BrainConfig::scope_dependencies` (built via `find_brain_config` over the
+/// resolved brain root, never hand-assembled) and passed through as
+/// `emit_state_as`'s `scope` argument, narrowing the emit to that one repo's
+/// derived surfaces. `None` (the default — `--scope` omitted) emits every repo's
+/// derived surfaces, unchanged from before this flag existed.
 ///
 /// Before any `write == true` run, checks build provenance drift (task 2's
 /// `buildstamp::current_verdict`) via [`guard_write_on_drift`] wired to real
-/// `std::io::stderr()`. A hard-fail there returns before `mev::emit_state` is ever called,
-/// so nothing is written.
-pub fn run_emit_state(path: std::path::PathBuf, write: bool, fail_on_drift: bool) -> Result<()> {
+/// `std::io::stderr()`. A hard-fail there returns before `mev::emit_state_as` is ever
+/// called, so nothing is written.
+pub fn run_emit_state(
+    path: std::path::PathBuf,
+    write: bool,
+    fail_on_drift: bool,
+    agent: Option<String>,
+    scope: Option<String>,
+) -> Result<()> {
     if write {
         let env_var = std::env::var("BASTION_FAIL_ON_BUILD_DRIFT").ok();
         guard_write_on_drift(
@@ -274,7 +297,28 @@ pub fn run_emit_state(path: std::path::PathBuf, write: bool, fail_on_drift: bool
 
     let root = mev::brain::config::find_brain_root(&path)
         .map_err(|e| anyhow::anyhow!("error resolving brain root: {e}"))?;
-    let report = mev::emit_state(&root, write, None)?;
+
+    let scope_set = match &scope {
+        Some(slug) => {
+            let config = mev::brain::config::load_brain_config(&root.join("brain.toml"))
+                .map_err(|e| anyhow::anyhow!("error loading brain.toml: {e}"))?;
+            Some(
+                config
+                    .scope_dependencies(slug)
+                    .map_err(|e| anyhow::anyhow!("error resolving --scope '{slug}': {e}"))?,
+            )
+        }
+        None => None,
+    };
+
+    let report = mev::emit_state_as(
+        &root,
+        write,
+        scope_set.as_ref(),
+        agent.as_deref(),
+        None,
+        &path,
+    )?;
 
     for d in &report.diagnostics {
         println!(
@@ -635,10 +679,347 @@ heading = "bastion"
     #[test]
     fn run_emit_state_on_valid_brain_root_succeeds() {
         let dir = make_temp_brain_root("brainval-emit-state-ok");
-        let result = run_emit_state(dir.clone(), false, false);
+        let result = run_emit_state(dir.clone(), false, false, None, None);
         assert!(
             result.is_ok(),
             "expected Ok(()) for a valid brain root, got: {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Writes `<dir>/.fleet-locks/leases/lease-<name>.json` — an exclusive lease held by
+    /// `agent`, matching `.claude/workflows/lease.schema.json`, so `run_emit_state`'s
+    /// underlying `mev::emit_state_as` call has a foreign-agent lease to be quiesced by.
+    /// The lock dir lives entirely under the caller's mktemp brain root (never the live
+    /// `.fleet-locks/`), matching `resolve_lock_dir`'s default (`<root>/.fleet-locks`)
+    /// since task 1 always passes `lock_dir: None`.
+    fn write_exclusive_lease(dir: &std::path::Path, name: &str, agent: &str, repo: &str) {
+        let leases_dir = dir.join(".fleet-locks").join("leases");
+        std::fs::create_dir_all(&leases_dir).unwrap();
+        let acquired_at = chrono::Local::now().to_rfc3339();
+        std::fs::write(
+            leases_dir.join(format!("lease-{name}.json")),
+            format!(
+                r#"{{
+  "repo": "{repo}",
+  "lane": "{name}",
+  "agent": "{agent}",
+  "acquired_at": "{acquired_at}",
+  "kind": "exclusive"
+}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn run_emit_state_write_refused_under_a_foreign_agent_lease() {
+        // AC-1 / AC-2 (task 1): a lease held by a DIFFERENT agent makes the write return
+        // E_QUIESCE_LEASE_HELD (asserted on the returned value, over a mktemp fixture lock
+        // dir — never the live .fleet-locks/), while `--agent` matching the lease holder
+        // writes successfully (the self-exemption).
+        let dir = make_temp_brain_root("brainval-emit-state-quiesced");
+        write_exclusive_lease(&dir, "other-lane", "other-agent", "bastion");
+
+        // No identity supplied at all: refused, same as a mismatched identity — the guard
+        // never self-exempts a caller with no agent.
+        let no_identity = run_emit_state(dir.clone(), true, false, None, None);
+        let err = no_identity.expect_err("expected the write to be refused under a foreign lease");
+        let refusal = err
+            .downcast_ref::<mev::GuardRefusal>()
+            .unwrap_or_else(|| panic!("expected a GuardRefusal, got: {err:?}"));
+        assert_eq!(refusal.code(), mev::E_QUIESCE_LEASE_HELD);
+
+        // A DIFFERENT agent than the lease holder: also refused.
+        let mismatched_agent = run_emit_state(
+            dir.clone(),
+            true,
+            false,
+            Some("some-other-agent".to_string()),
+            None,
+        );
+        let err = mismatched_agent
+            .expect_err("expected the write to be refused for a non-matching agent");
+        let refusal = err
+            .downcast_ref::<mev::GuardRefusal>()
+            .unwrap_or_else(|| panic!("expected a GuardRefusal, got: {err:?}"));
+        assert_eq!(refusal.code(), mev::E_QUIESCE_LEASE_HELD);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_emit_state_write_self_exempted_when_agent_matches_the_lease_holder() {
+        // The self-exemption path: `--agent` matching the lease holder writes successfully
+        // even though an exclusive lease is held on the same repo.
+        let dir = make_temp_brain_root("brainval-emit-state-self-exempt");
+        write_exclusive_lease(&dir, "own-lane", "own-agent", "bastion");
+
+        let result = run_emit_state(
+            dir.clone(),
+            true,
+            false,
+            Some("own-agent".to_string()),
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "expected Ok(()) when --agent matches the lease holder, got: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_state_pre_change_path_warns_unguarded_writer_but_post_change_path_does_not() {
+        // AC-3, RE-PINNED per D18 (see the block record's amended criterion — the
+        // original "W_MEV_UNGUARDED_WRITER no longer names bastion in any log" was
+        // unfalsifiable: that warning is structurally unreachable unless a guard would
+        // ACTUALLY have refused, so it never fires in the ordinary no-lease case and
+        // bastion was already absent from it before this block, too. A foreign-agent
+        // lease is the condition where the warning genuinely fires, so it is the only
+        // fixture that can distinguish the fix from its absence.
+        //
+        // Both directions are asserted in ONE test:
+        //   - PRE-CHANGE shape: bastion's old call site, `mev::emit_state(&root, write,
+        //     None)` — no identity, no guard, downgraded by MV.20.B to a
+        //     `W_MEV_UNGUARDED_WRITER` warning naming the calling binary.
+        //   - POST-CHANGE shape: this block's `run_emit_state`, which now threads an
+        //     identity through to the guarded `mev::emit_state_as` — refused outright
+        //     (`E_QUIESCE_LEASE_HELD`) with no `Report` ever constructed, so the warning
+        //     cannot be present.
+        //
+        // Per the task's staging recipe: assert on the returned `Report`'s diagnostics
+        // locator (the preferred, rot-resistant form) rather than captured text — this
+        // call happens in-process via the Rust API, not through a spawned CLI process,
+        // so there is no separate stdout/stderr stream to pipe-capture in the first
+        // place; the `Report` (pre-change) and the downcast `GuardRefusal` (post-change,
+        // which never yields a `Report` at all) are the whole observable surface here.
+        let dir = make_temp_brain_root("brainval-emit-state-unguarded-writer");
+        write_exclusive_lease(&dir, "other-lane", "other-agent", "bastion");
+        let root = mev::brain::config::find_brain_root(&dir).unwrap();
+
+        // Pre-change: the identity-less legacy entry point still succeeds permissively
+        // under a foreign lease (MV.20.B's downgrade), but its Report carries the
+        // unguarded-writer warning.
+        let pre_change_report = mev::emit_state(&root, true, None).expect(
+            "the legacy identity-less path must still succeed (permissively) under a foreign lease",
+        );
+        let unguarded_diag = pre_change_report
+            .diagnostics
+            .iter()
+            .find(|d| d.locator == "emit-state" && d.message.contains("W_MEV_UNGUARDED_WRITER"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a W_MEV_UNGUARDED_WRITER diagnostic from the identity-less \
+                     legacy path under a foreign lease, got: {:?}",
+                    pre_change_report.diagnostics
+                )
+            });
+        assert!(
+            unguarded_diag.message.contains("bastion"),
+            "expected the unguarded-writer warning to name bastion as the calling binary \
+             (mev derives it from the running executable's file stem, and this crate's \
+             package name is `bastion`), got: {}",
+            unguarded_diag.message
+        );
+
+        // Post-change: this task's own guarded call path is refused outright under the
+        // same lease — no Report is ever produced, so the warning cannot be in it.
+        let post_change_result = run_emit_state(dir.clone(), true, false, None, None);
+        let err = post_change_result
+            .expect_err("expected the post-change path to be refused under the same foreign lease");
+        let refusal = err
+            .downcast_ref::<mev::GuardRefusal>()
+            .unwrap_or_else(|| panic!("expected a GuardRefusal, got: {err:?}"));
+        assert_eq!(refusal.code(), mev::E_QUIESCE_LEASE_HELD);
+        assert!(
+            !format!("{err:?}").contains("W_MEV_UNGUARDED_WRITER"),
+            "the post-change refusal must not carry the unguarded-writer warning: {err:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Build a temp brain root containing TWO leaf repos (`repo-a`, `repo-b`) plus an
+    /// HQ root entry, so a `--scope <repo>` emit has real siblings to leave untouched.
+    /// Each leaf carries its own `planning/state.json` (one open block, so
+    /// `plan_status_frontmatter` derives a non-empty `now` focus) and a `status.md`
+    /// with no `now:`/`next:`/`blocked:` frontmatter keys at all — `emit-state --write`
+    /// always appends them, so a write is guaranteed to change the file regardless of
+    /// what the derived focus actually contains. `cache_doc` is omitted (defaults to
+    /// `""`), so `plan_project_caches` skips it — that surface is out of scope for this
+    /// task's fixture. Returns the root dir; callers own `remove_dir_all` teardown.
+    fn make_scope_fixture_brain_root(name_prefix: &str) -> std::path::PathBuf {
+        let dir = crate::testsupport::unique_temp_dir(&format!("bastion-{name_prefix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(
+            dir.join("brain.toml"),
+            r#"[vocab]
+layer = ["console"]
+status = ["active"]
+
+[crawl]
+skip_dirs = ["target", ".git"]
+
+[[repos]]
+slug = "hq"
+tier = "_root"
+repo_path = "."
+status_file = "status.md"
+heading = "HQ"
+
+[[repos]]
+slug = "repo-a"
+tier = "core"
+repo_path = "repo-a"
+status_file = "repo-a/status.md"
+heading = "repo-a"
+
+[[repos]]
+slug = "repo-b"
+tier = "core"
+repo_path = "repo-b"
+status_file = "repo-b/status.md"
+heading = "repo-b"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.join("status.md"),
+            "---\ntitle: HQ Status\n---\n# HQ Status\n",
+        )
+        .unwrap();
+
+        for slug in ["repo-a", "repo-b"] {
+            let repo_dir = dir.join(slug);
+            let planning_dir = repo_dir.join("planning");
+            std::fs::create_dir_all(&planning_dir).unwrap();
+
+            std::fs::write(
+                planning_dir.join("state.json"),
+                format!(
+                    r#"{{
+  "repo": "{slug}",
+  "kind": "project",
+  "updated": "2026-07-04",
+  "focus": {{
+    "now": [{{ "id": "{slug_upper}.1.A", "title": "Open block", "status": "in_progress" }}],
+    "next": [],
+    "blocked": []
+  }},
+  "tracks": [
+    {{
+      "title": "Phase 1",
+      "blocks": [
+        {{ "id": "{slug_upper}.1.A", "title": "Open block", "status": "open" }}
+      ]
+    }}
+  ]
+}}"#,
+                    slug = slug,
+                    slug_upper = slug.to_uppercase().replace('-', "")
+                ),
+            )
+            .unwrap();
+
+            std::fs::write(
+                repo_dir.join("status.md"),
+                format!("---\ntitle: {slug} Status\n---\n# {slug} Status\n"),
+            )
+            .unwrap();
+        }
+
+        dir
+    }
+
+    #[test]
+    fn run_emit_state_scope_narrows_the_write_to_one_repo_leaving_siblings_untouched() {
+        // AC-4 (task 3): `--scope <repo>` is passed through as emit_state_as's scope
+        // argument, resolved through mev's own `BrainConfig::scope_dependencies` (never
+        // hand-assembled, never post-filtered). A scoped write changes only the named
+        // repo's own derived surfaces; the sibling repo's stay byte-identical.
+        //
+        // POSITIVE CONTROL, in the same test: an UNSCOPED run over an identically-built
+        // fixture DOES change the sibling's surfaces — proving the scoped run's silence
+        // is scoping, not a --scope that emits nothing at all.
+
+        // ── Scoped run: --scope repo-a ──────────────────────────────────────────
+        let scoped_dir = make_scope_fixture_brain_root("emit-state-scope-scoped");
+        let repo_a_status_before =
+            std::fs::read_to_string(scoped_dir.join("repo-a").join("status.md")).unwrap();
+        let repo_b_status_before =
+            std::fs::read_to_string(scoped_dir.join("repo-b").join("status.md")).unwrap();
+
+        let result = run_emit_state(
+            scoped_dir.clone(),
+            true,
+            false,
+            None,
+            Some("repo-a".to_string()),
+        );
+        assert!(
+            result.is_ok(),
+            "expected Ok(()) for a scoped write, got: {result:?}"
+        );
+
+        let repo_a_status_after =
+            std::fs::read_to_string(scoped_dir.join("repo-a").join("status.md")).unwrap();
+        let repo_b_status_after =
+            std::fs::read_to_string(scoped_dir.join("repo-b").join("status.md")).unwrap();
+
+        assert_ne!(
+            repo_a_status_before, repo_a_status_after,
+            "expected the SCOPED repo's own status.md to change under --scope repo-a"
+        );
+        assert_eq!(
+            repo_b_status_before, repo_b_status_after,
+            "expected the SIBLING repo's status.md to stay byte-identical under --scope repo-a"
+        );
+
+        let _ = std::fs::remove_dir_all(&scoped_dir);
+
+        // ── Positive control: an UNSCOPED run over a fresh, identically-built fixture
+        //    DOES change the sibling. Without this control, a --scope that silently
+        //    emitted nothing at all would have passed the assertions above too. ──
+        let unscoped_dir = make_scope_fixture_brain_root("emit-state-scope-control");
+        let repo_b_status_before =
+            std::fs::read_to_string(unscoped_dir.join("repo-b").join("status.md")).unwrap();
+
+        let control_result = run_emit_state(unscoped_dir.clone(), true, false, None, None);
+        assert!(
+            control_result.is_ok(),
+            "expected Ok(()) for an unscoped write, got: {control_result:?}"
+        );
+
+        let repo_b_status_after =
+            std::fs::read_to_string(unscoped_dir.join("repo-b").join("status.md")).unwrap();
+        assert_ne!(
+            repo_b_status_before, repo_b_status_after,
+            "positive control failed: an UNSCOPED run must change repo-b's status.md too, \
+             otherwise a --scope that emits nothing could pass the scoped assertions above"
+        );
+
+        let _ = std::fs::remove_dir_all(&unscoped_dir);
+    }
+
+    #[test]
+    fn run_emit_state_unknown_scope_slug_returns_an_error() {
+        // A --scope naming a slug absent from brain.toml's [[repos]] must error rather
+        // than silently emitting nothing or falling back to unscoped.
+        let dir = make_temp_brain_root("brainval-emit-state-unknown-scope");
+        let result = run_emit_state(
+            dir.clone(),
+            false,
+            false,
+            None,
+            Some("no-such-repo".to_string()),
+        );
+        assert!(
+            result.is_err(),
+            "expected an error for an unregistered --scope slug, got: {result:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -664,7 +1045,7 @@ heading = "bastion"
         // anyhow error there, before mev::emit_state is ever called.
         let dir = crate::testsupport::unique_temp_dir("bastion-brainval-emit-state-test");
         std::fs::create_dir_all(&dir).unwrap();
-        let result = run_emit_state(dir.clone(), false, false);
+        let result = run_emit_state(dir.clone(), false, false, None, None);
         assert!(
             result.is_err(),
             "expected an error when brain.toml is unresolvable"

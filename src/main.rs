@@ -9,6 +9,7 @@ mod brainval;
 mod buildstamp;
 mod cli;
 mod config;
+mod coord_cli;
 mod costs;
 mod db;
 mod docview;
@@ -19,8 +20,10 @@ mod monitor;
 mod notify;
 mod notify_cli;
 mod observ;
+mod openwork;
 mod overview;
 mod run;
+mod runs;
 mod serve;
 mod sessions;
 #[cfg(test)]
@@ -36,7 +39,7 @@ pub use term_core::detect;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Commands, NotifyMode};
+use cli::{Cli, Commands, CoordMode, NotifyMode};
 use observ::errors::{ConsoleError, ErrorCode};
 
 // ── Pure helpers (unit-tested below) ─────────────────────────────────────────
@@ -76,7 +79,21 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Edit { .. } => "edit",
         Commands::Assess { .. } => "assess",
         Commands::Notify { .. } => "notify",
+        Commands::Coord { .. } => "coord",
     }
+}
+
+/// Resolve the function `dispatch` calls for `bastion overview` (pure).
+///
+/// Returned as a bare `fn() -> Result<()>` pointer so a test can assert
+/// exactly what `dispatch`'s `Commands::Overview` arm invokes — the new
+/// open-work renderer (`overview::run_sections_ui`, BA.26.G task 3) — without
+/// running the binary or driving a real terminal. The parked Kanban entry
+/// point, `overview::run`, stays reachable as code (BA.26.I's decision D20)
+/// but this function must never return it; that is the concrete meaning of
+/// "re-pointed".
+fn overview_dispatch_target() -> fn() -> Result<()> {
+    overview::run_sections_ui
 }
 
 /// Best-effort classification of an `anyhow` error into a `C0xx` code (pure).
@@ -171,7 +188,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 }
             }
             Commands::Inspect { run_id } => inspect::run(run_id).await,
-            Commands::Overview => overview::run(),
+            Commands::Overview => overview_dispatch_target()(),
             Commands::Validate { path } => validate::run(path).await,
             Commands::Costs { last, watch } => costs::run(last, watch).await,
             Commands::Run {
@@ -265,7 +282,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 path,
                 write,
                 fail_on_drift,
-            } => brainval::run_emit_state(path, write, fail_on_drift),
+                agent,
+                scope,
+            } => brainval::run_emit_state(path, write, fail_on_drift, agent, scope),
             // Serve is DB-free — does NOT call Config::load() or require DATABASE_URL.
             // The actix System runs on a dedicated OS thread (runtime-spike outcome, Task 1).
             Commands::Serve { addr, token } => {
@@ -341,6 +360,81 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     .await
                 }
             },
+            // Coord is DB-free and synchronous — a thin CLI shell over engine-core's
+            // read-only coordination reader (BA.25.A). No reader logic lives here.
+            Commands::Coord { mode } => match mode {
+                CoordMode::Status { json } => coord_cli::run_status(json),
+                CoordMode::Register {
+                    agent_name,
+                    repo,
+                    lane,
+                    roadmap,
+                    category,
+                    lock_dir,
+                } => coord_cli::run_register(
+                    &agent_name,
+                    &repo,
+                    &lane,
+                    &roadmap,
+                    category.as_deref(),
+                    lock_dir.as_deref(),
+                ),
+                CoordMode::Heartbeat {
+                    agent_name,
+                    current_block,
+                    block_started_at,
+                    lock_dir,
+                } => coord_cli::run_heartbeat(
+                    &agent_name,
+                    current_block.as_deref(),
+                    block_started_at.as_deref(),
+                    lock_dir.as_deref(),
+                ),
+                CoordMode::Release {
+                    agent_name,
+                    lock_dir,
+                } => coord_cli::run_release(&agent_name, lock_dir.as_deref()),
+                CoordMode::Lease {
+                    repo,
+                    lane,
+                    agent_name,
+                    kind,
+                    scope,
+                    window,
+                    lane_block,
+                    lock_dir,
+                } => coord_cli::run_lease(
+                    &repo,
+                    &lane,
+                    &agent_name,
+                    &kind,
+                    scope.as_deref(),
+                    &window,
+                    &lane_block,
+                    lock_dir.as_deref(),
+                ),
+                CoordMode::Unlease { repo, lock_dir } => {
+                    coord_cli::run_unlease(&repo, lock_dir.as_deref())
+                }
+                CoordMode::Drain {
+                    repo,
+                    lane,
+                    lock_dir,
+                } => coord_cli::run_drain(&repo, &lane, lock_dir.as_deref()),
+                CoordMode::Send {
+                    repo,
+                    lane,
+                    file,
+                    lock_dir,
+                } => coord_cli::run_send(&repo, &lane, &file, lock_dir.as_deref()),
+                CoordMode::Complete {
+                    repo,
+                    lane,
+                    message_id,
+                    lock_dir,
+                } => coord_cli::run_complete(&repo, &lane, &message_id, lock_dir.as_deref()),
+                CoordMode::Restore { lock_dir } => coord_cli::run_restore(lock_dir.as_deref()),
+            },
         },
     }
 }
@@ -397,6 +491,29 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // ── `bastion overview` dispatch target (BA.26.G task 3, AC-2) ─────────────
+
+    /// `dispatch`'s `Commands::Overview` arm must call the new open-work
+    /// renderer, not the parked Kanban entry point — asserted over the
+    /// dispatch itself (function-pointer identity), never by invoking the
+    /// binary. Fails at compile time already if either symbol is renamed or
+    /// removed; fails at runtime if `overview_dispatch_target` is ever
+    /// re-pointed back at the parked path.
+    #[test]
+    fn overview_dispatches_to_the_new_renderer_not_the_parked_kanban_path() {
+        let target = overview_dispatch_target() as *const () as usize;
+        assert_eq!(
+            target,
+            overview::run_sections_ui as *const () as usize,
+            "bastion overview must dispatch to overview::run_sections_ui"
+        );
+        assert_ne!(
+            target,
+            overview::run as *const () as usize,
+            "bastion overview must no longer dispatch to the parked Kanban entry point overview::run"
+        );
+    }
 
     // ── command_name resolver — every variant ─────────────────────────────────
 
@@ -618,6 +735,8 @@ mod tests {
                 path: PathBuf::from("."),
                 write: false,
                 fail_on_drift: false,
+                agent: None,
+                scope: None,
             }),
             "emit-state"
         );

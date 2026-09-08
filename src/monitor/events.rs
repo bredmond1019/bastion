@@ -278,6 +278,7 @@ mod tests {
                 tokens_out: None,
                 model: None,
                 started_at: None,
+                completed_at: None,
                 elapsed_secs: None,
             })
             .collect();

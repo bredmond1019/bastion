@@ -133,6 +133,21 @@ Installs the process-global `tracing-subscriber`. Call exactly once at startup (
 - `json_logs = true` → JSON lines on stderr; `false` → human-readable text.
 - Honours `RUST_LOG` when set (via `EnvFilter`).
 
+### TUI-safe diagnostics sink
+
+`init_tracing`'s subscriber writes to stderr, which is unsafe inside a `crossterm` alternate
+screen (`src/sessions/ui.rs`) — a `tracing::warn!`/`error!` there would corrupt the render or be
+invisible. `init_tracing_tui_safe(verbose: bool, path: &Path) -> Result<(), ConsoleError>` installs
+a subscriber that writes **exclusively** to a file, never stderr, opening (and creating parent
+directories for) `path` first. Call at most once per process, and never alongside `init_tracing`.
+A failure to prepare or open the file maps onto `ConsoleError::Io` (`C009`) — the same variant
+every other file I/O failure in this crate already uses, not a new taxonomy entry.
+
+`tui_diagnostics_path(xdg_state_home: Option<String>, home: Option<String>) -> Option<PathBuf>` is
+the pure helper that resolves the default sink path: `$XDG_STATE_HOME/bastion/tui-diagnostics.log`,
+falling back to `$HOME/.local/state/bastion/tui-diagnostics.log`, or `None` if neither env var is
+set.
+
 ---
 
 ## Dispatch instrumentation (`src/main.rs`)

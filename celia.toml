@@ -1,0 +1,140 @@
+# celia.toml — bastion's celia manifest (BA.26.J task 1).
+#
+# bastion becomes celia's THIRD consumer, the same way bella became its second
+# (`core/bella/Cargo.toml:7-10`). This is NOT a port of bella's deleted
+# `scripts/vhs/scenes.toml` (that harness is gone — CE.1.D, `core/bella@9b9b24b` — and bella
+# itself no longer uses it): celia owns the two-tier text/PNG capture machinery entirely, and
+# this file is the whole of bastion's own configuration surface for it, modelled on
+# `core/bella/celia.toml`'s shape (read in full before editing this file — target/settle/scene
+# tables below follow it field for field).
+#
+# [target].program drives the SESSION TUI (`bastion tui`, BA.26.A/B/C/G) — never
+# `bastion --help`. Two env vars are set via the `env` wrapper rather than a bare binary
+# invocation, because celia's `Target` has no per-manifest env-var field (celia-core's
+# `manifest::Target` is `program`/`args`/`cwd` only):
+#   - XDG_CONFIG_HOME points at a fixture config (tests/fixtures/celia-tui/xdg/) instead of the
+#     operator's real ~/.config/bastion/config.toml — a capture must never read (or risk
+#     leaking secrets from, e.g. `[client].token`) the real config.
+#   - BASTION_BRAIN_TOML points at a fixture, empty-repos brain.toml instead of walking up to
+#     the real fleet-wide one — keeps the session TUI's spine to exactly
+#     [Mission Control, Open Work] regardless of what repos exist on the machine that runs the
+#     capture, which is what makes the byte-for-byte determinism AC-3 demands possible at all.
+# The fixture's single `[views.open-work]` entry (tests/fixtures/celia-tui/xdg/bastion/config.toml)
+# points at tests/fixtures/celia-tui/open-work/ — a small, committed, hand-authored fixture
+# board — NEVER a live `planning/open-work/` board. A live one is rewritten nightly by cron and
+# by BA.26.C's own refresh action, which would make a byte-identical golden rot by construction
+# (this task's own description names exactly this trap).
+#
+# THE SECOND NONDETERMINISM SOURCE, found task 2, 2026-09-08 (the first was `args = []`
+# below the [[scene]] tables, see that comment): `bastion tui`'s own "agents · priority" strip
+# (src/sessions/ui.rs, BA.13.1.2/.3) is a live, unfilterable `tmux list-sessions` view — it is
+# NOT scoped to bastion's own child sessions, so it lists every session on the tmux SERVER it is
+# running inside, INCLUDING the very session celia created to host this capture, and on this
+# machine, EVERY OTHER CONCURRENT LANE'S celia sessions too (confirmed live: bella's own
+# `wide_reader_*`/`wide_browser_*` scenes were captured on the shared default tmux server, on
+# the same socket, WHILE this task ran — this repo's tests must never depend on being the only
+# tmux user on the machine). celia-core names its own hosting session
+# `celia-scene-<pid>-<scene name>` (`celia_core::driver::session_name`) deliberately, for
+# collision-safety across concurrent captures — so the pane's content embeds this process's PID
+# and differs on every run, and a real concurrent lane's own sessions would show up too even if
+# it didn't. celia's manifest has no field to override session naming, and even if it did,
+# renaming celia's OWN hosting session mid-flight was tried and REJECTED: celia's driver
+# addresses the session by the name IT created (`celia-scene-<pid>-...`) for every subsequent
+# step (`send-keys` for `Down`, `capture-pane`, `kill-session`), so renaming it out from under
+# celia breaks celia's own next call with "can't find pane" — confirmed by hand, the capture run
+# after wiring in a rename errored exactly there.
+#
+# THE FIX: isolate bastion's OWN view of the world instead of touching celia's session. `[target]`
+# spins up a SEPARATE, privately-socketed tmux server (`-L bastion-capture-socket`, a name no
+# other lane in this fleet uses) holding exactly one, fixed-named session ("bastion-capture"),
+# launches bastion INSIDE that nested session (so bastion's own `tmux list-sessions` call — which
+# resolves against `$TMUX`, the socket of the server it is actually running under, same as any
+# tmux-aware process — sees only that private server's one session, never the default server's
+# real, variable, concurrently-populated session list), then makes celia's own outer pane an
+# `attach` CLIENT onto that nested session so what celia captures is exactly what's rendered
+# inside it. `kill-server` on the private socket first makes a leftover session from an
+# interrupted prior run harmless rather than a stale collision. Verified by hand end to end
+# (rename-based fix in place, then this nested-socket fix): the agents strip in the captured pane
+# now reads exactly `bastion-capture`, unchanged across reruns, regardless of what else is
+# running on the shared default socket — see this spec's tasks.json task 2 Notes.
+
+golden_dir = "tests/scenes"
+
+[target]
+program = "/bin/sh"
+# celia's driver joins `program` and every `args` element with a single space and TYPES the
+# result into the pane's own interactive shell (zsh, not a fresh `sh -c` subprocess) — there is
+# no argv-level separation, so quoting is load-bearing throughout this one-liner: the OUTER
+# single quotes keep the whole `-c` script as one token reaching `/bin/sh` (an earlier,
+# unquoted attempt had zsh split it into separate commands at the bare `;`s before `sh -c` ever
+# saw them), and the INNER double quotes keep the nested session's own launch command
+# (env-vars + `bastion tui`, itself containing spaces) as one token reaching `tmux new-session`.
+# `set-option -g status off` on the private server is not cosmetic: tmux's default status line
+# renders a live clock (`12:34 08-Sep-26`-shaped), which is exactly the kind of per-run-varying
+# content AC-3's byte-identical requirement forbids, AND it consumes a terminal row the target
+# app would otherwise render into — leaving it on shifted bastion's own UI up by one row too.
+# Found and fixed the same way as the rest of this file: captured, read the diff, traced it to
+# the newly-nested server's own status bar, not to anything bastion's TUI itself renders.
+args = [
+  "-c",
+  "'tmux -L bastion-capture-socket kill-server 2>/dev/null; tmux -L bastion-capture-socket new-session -d -s bastion-capture \"XDG_CONFIG_HOME=tests/fixtures/celia-tui/xdg BASTION_BRAIN_TOML=tests/fixtures/celia-tui/brain.toml ./target/release/bastion tui\"; tmux -L bastion-capture-socket set-option -g status off; exec tmux -L bastion-capture-socket attach -t bastion-capture'",
+]
+cwd = "."
+
+[settle]
+# Carried from bella's celia.toml — proven-safe defaults for a ratatui app booting cold.
+launch_settle = 2.0
+key_settle = 0.4
+
+# --- The three widths the bastion-tui assessment measured -----------------
+#
+# All three scenes press one `Down` to move the spine selection off
+# `Mission Control` onto the fixture's single declared `[views]` entry
+# ("Open Work") — the one-keypress reachability BA.26.A built, and the
+# surface BA.26.C/G's refresh action and open-work renderer actually
+# populate. Measured byte counts below are from a verified-good tmux TEXT
+# capture of each scene on this machine (`tmux capture-pane -p | wc -c`,
+# 2026-09-08); `min_bytes` is the IMAGE tier's per-scene byte floor
+# (`celia_core::manifest::Scene::min_bytes` — inert until a `[image]` table
+# is added, out of scope for this block per its task breakdown, which
+# declares no VHS tape files), set here at roughly 90% of the measured TEXT
+# byte count as a documented placeholder derived from a real capture of
+# THAT scene, never a single global number — the same discipline the
+# manifest's own doc comments demand of a genuine image floor. A future
+# block wiring the `[image]` tier must re-derive these from real PNG
+# captures; they are not carried over unchanged.
+#
+# No per-scene `args` here, deliberately: `celia_core::driver::resolved_target`
+# treats `Scene::args` as an OVERRIDE, not an addition — `Some(vec![])` (what an
+# explicit `args = []` deserializes to, per `#[serde(default)]` on an
+# `Option<Vec<String>>`) replaces `[target].args` wholesale rather than leaving it
+# alone, which silently strips the `env` wrapper's `XDG_CONFIG_HOME`/
+# `BASTION_BRAIN_TOML` assignments and the `./target/release/bastion tui` command
+# itself, leaving `/usr/bin/env` invoked with no arguments — it just dumps the
+# ambient shell environment instead of launching the TUI. Caught task 2, 2026-09-08:
+# every text golden captured as a raw `env` dump until `args = []` was removed from
+# each scene below so `args` stays `None` and inherits `[target].args` unchanged.
+
+[[scene]]
+name = "session_tui_open_work_200x55"
+keys = ["Down"]
+width = 200
+height = 55
+min_bytes = 12000
+tape = "scripts/vhs/session-tui.tape"
+
+[[scene]]
+name = "session_tui_open_work_120x40"
+keys = ["Down"]
+width = 120
+height = 40
+min_bytes = 5800
+tape = "scripts/vhs/session-tui.tape"
+
+[[scene]]
+name = "session_tui_open_work_80x24"
+keys = ["Down"]
+width = 80
+height = 24
+min_bytes = 2400
+tape = "scripts/vhs/session-tui.tape"

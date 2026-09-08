@@ -2788,6 +2788,7 @@ mod costs_scenarios {
             tokens_out: Some(tokens_out),
             model: Some(model.to_owned()),
             started_at: Some("2026-06-20T09:00:00Z".to_owned()),
+            completed_at: None,
             elapsed_secs: None,
         }
     }
@@ -3486,6 +3487,10 @@ heading = "Fixture Repo"
         let json = serde_json::json!({
             "repo": repo,
             "pid": std::process::id(),
+            // REQUIRED on okf_core::SlotRecord (no serde default). Omitting it makes
+            // the record parse as Coord::Legacy and drop out of the live count
+            // entirely, which silently empties this golden's active_repos.
+            "pid_source": "self",
             "category": category,
             "started_at": now,
         });

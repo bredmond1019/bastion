@@ -7,7 +7,7 @@ layer: [console, engine]
 project: bastion
 status: active
 keywords: [data contract, orchestrator, node_runs, field mappings, v1.7.0, cancellation, budget gate]
-related: [monitor, costs, inspect, run]
+related: [monitor, costs, inspect, run, brain:D91-post-split-database-names]
 ---
 
 # Data Contract (Consumer View)
@@ -42,6 +42,20 @@ silently describes a newer contract than the pin claims is the failure this file
 prevent.
 
 ---
+
+## Connection
+
+bastion reads `events` from a single configured `DATABASE_URL` (`src/config.rs:374`), consumed by
+`src/serve/mod.rs:543` and `src/serve/handlers/costs.rs:258`. That database is `orchestration_dev`
+— the **engine's** database — and it stays `orchestration_dev` after the brain/engine split; only
+the Brain's own tables move, to a new `synapse_dev`
+(`brain:D91-post-split-database-names`).
+
+**bastion needs no change for the split.** `AGENTS.md:128` defines `DATABASE_URL` by *content*
+("whichever Postgres holds the `events` contract"), not by name, so bastion follows `events`
+wherever it lives — and `events` is not moving. The three `FROM events` sites
+(`src/db/costs.rs:21`, `src/db/workflows.rs:36`, `:65`) are column-compatible as measured and are
+left unedited by this pin.
 
 ---
 
@@ -102,9 +116,13 @@ There is no indexed status column in v1.0.0 — scan + parse.
 | `node_runs[name].usage.output_tokens` | `NodeState.tokens_out` |
 | `node_runs[name].usage.model` | `NodeState.model` |
 | `node_runs[name].started_at` | `NodeState.started_at` |
+| `node_runs[name].completed_at` | `NodeState.completed_at` |
 | derived (completed_at − started_at) | `NodeState.elapsed_secs` |
-| `nodes[name]` (output; look for `output` key) | `NodeState.output` |
+| `nodes[name]` (the map value itself IS the output — not a nested `{"output": ...}` object) | `NodeState.output` |
 | edges from `GET /workflows/{type}/graph` | `NodeState.depends_on` |
+
+A class with no entry at all in `nodes` (rather than an explicit `null`) reads the same way as a
+null entry — `NodeState.output = None` either way; a node that never executed simply has no key.
 
 `RunStatus` must `#[serde(rename_all = "lowercase")]` (or per-variant rename) to deserialize the
 contract's lowercase status strings. `usage` is **null** for non-LLM nodes → `tokens_*` / `model`

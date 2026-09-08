@@ -72,20 +72,29 @@ on whichever spine row is selected:
   (`src/brain/spaces.rs`) over the `brain.toml` workspace tree: `◆ Mission Control` is pinned
   first, followed by the `HQ` header and its children (`learn-ai`, `base-template` — the old
   standalone `brain` leaf is collapsed into `HQ`), then the `core`/`side`/`client`/`portfolio`
-  tier headers and their spaces. Tier headers and `HQ` are selectable rows, not just section
-  labels. `↑`/`↓`/`j`/`k` move through the spine and **wrap** at both ends.
+  tier headers and their spaces, then one row per declared `[views]` entry from `config.toml`
+  (see [Reader views](../operations/config.md#reader-views-views-ba26a) — appended last, absent
+  entirely when no `[views]` table is configured or a declared view's root doesn't resolve on
+  disk). Tier headers and `HQ` are selectable rows, not just section labels. `↑`/`↓`/`j`/`k` move
+  through the spine and **wrap** at both ends.
 - **Mission Control (selecting `◆ Mission Control`):** A unified "active work" view in the main
   area. The left pane lists all live tmux sessions alongside running orchestrator workflow DAGs.
   Selecting a session displays its agent state (`Working`, `Idle`, or `Blocked`), foreground
   command, and recent output in the right detail pane. Selecting a run displays its node
   progression. All session management (attach, new, kill, send) happens here.
-- **Space Overview (selecting `HQ` or a space row):** A split-pane layout with a built-in file
-  browser on the left and a scrollable content pane on the right. By default, it opens the
-  space's `planning/status.md`. You can browse the space's directories or preview markdown files
-  in the content pane (using the `bella-engine` parser with the console's active theme, selectable
-  via the `[theme]` config section — see [config.md](../operations/config.md#theme-section)). Pressing `t` opens the
-  selected markdown file as a transient full-screen overlay instead of a new tab (overlay polish
-  is deferred; tab machinery has been removed).
+- **Space Overview (selecting `HQ`, a space row, or a declared view row):** A split-pane layout
+  with a built-in file browser on the left and a scrollable content pane on the right. `HQ`/space
+  rows open the space's `planning/status.md` by default; a view row instead roots the browser and
+  content pane directly at that view's own configured `root` (no `planning/` subpath assumed).
+  You can browse the rooted directory or preview markdown files in the content pane (using the
+  `bella-engine` parser with the console's active theme, selectable via the `[theme]` config
+  section — see [config.md](../operations/config.md#theme-section)). A wide markdown table that
+  overflows the pane is rendered clipped by default; clicking a cell (or pressing `e` once the
+  content pane has focus, which retargets the most recently clicked cell) toggles that cell
+  between clipped and fully wrapped in place — no separate overlay or dialog. There is no
+  full-screen document overlay — a markdown file always previews inline in the content pane, Enter
+  to open. Pane-focus and navigation keys (below) behave identically whether the row is `HQ`, a
+  space, or a view.
 - **Tier overview (selecting a tier header — `HQ`/`core`/`side`/`client`/`portfolio`):** Routes
   the main area to that tier's `<tier>/planning/status.md`. If the file or tier directory is
   absent, the pane degrades gracefully to an empty state instead of panicking.
@@ -112,6 +121,9 @@ comparing the click/hover coordinate against the current frame's per-pane viewpo
 - **Spine:** clicking a row selects it (same effect as navigating there with `↑`/`↓`/`j`/`k`).
 - **File Browser (Space Overview):** clicking an entry selects it and moves focus to the Browser
   pane, matching `Enter`/arrow-key navigation.
+- **Content pane table cells (Space Overview):** clicking inside a rendered markdown table's cell
+  toggles that cell between clipped and wrapped display, and remembers the click as the target for
+  a following `e` keypress. A click outside any table cell is a no-op.
 - **Agent · priority strip:** clicking a session row jumps the spine selection to the Space whose
   slug equals that session's name (v1 slug-equality rule); a session with no matching space is a
   no-op.
@@ -134,14 +146,14 @@ for the click/scroll-to-pane mapping.
 | `↑`/`↓` or `j`/`k` | Move selection through the spine (wraps at both ends) |
 | `q` / `Esc` | Quit the dashboard |
 
-**Space Overview (`HQ` / space rows):**
+**Space Overview (`HQ` / space rows / view rows):**
 | Key | Action |
 |---|---|
 | `←` / `→` | Switch focus between the file Browser and the Content pane |
 | `↑` / `↓` or `j` / `k` | Navigate the file list (when Browser is focused) |
 | `Enter` | Descend into a directory or load a markdown file into the Content pane |
 | `Backspace` | Ascend to the parent directory in the File Browser |
-| `t` | Open the selected markdown file as a full-screen overlay |
+| `e` | Toggle clip/wrap on the most recently clicked table cell in the Content pane |
 | `PageUp` / `PageDown` | Scroll the Content pane (when focused) |
 
 **Mission Control:**
@@ -152,8 +164,18 @@ for the click/scroll-to-pane mapping.
 | `n` | Create a new named session (prompts for name inline) |
 | `s` | Send a command to the selected session (prompts for command inline) |
 | `k` | Kill the selected session |
+| `p` | Probe why the run pane is empty (see below) |
 
 Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without making any change.
+
+When Mission Control's run pane has nothing to show, it no longer just sits blank — it prints
+`press 'p' to check why this pane is empty`. Pressing `p` (Mission-Control-scoped; a no-op
+elsewhere in the spine) spawns a short-lived background probe that resolves the console's own
+`/api/*` reachability plus the embedded engine's routes, landing on one of five states:
+`NotConfigured` (no `BASTION_API_URL`/bearer token set), `ServeUnreachable`, `Unauthorized`,
+`EngineRoutesUnmounted`, or `GenuinelyIdle` (reachable, authorized, and there's just nothing
+running). The pane shows `checking reachability…` while the probe is in flight; a second `p`
+press during that window is a no-op rather than starting a duplicate probe.
 
 tmux errors (missing tmux, no server, unknown session) surface as a status message inside the
 TUI rather than crashing the loop.
@@ -424,6 +446,67 @@ The surface degrades gracefully rather than panicking:
 | No tmux server running | Prints `no tmux server running` and exits successfully. |
 | Unknown session (`attach` / `kill` / `send` / `capture`) | Prints `error: session '<name>' not found` and exits non-zero. |
 | Session already exists (`new`) | Prints `error creating session '<name>': <tmux stderr>` and exits non-zero. |
+
+---
+
+## Capture harness (BA.26.J)
+
+The unified console TUI has a screenshot harness so polish and layout can be judged against
+`polish-standard.md` (the `bastion-tui` initiative's polish standard, `planning/`) from a
+captured frame instead of argued about from a description. It is driven by
+[celia](https://github.com/bredmond1019/celia) (`../celia` — a sibling repo, not vendored here)
+via `celia.toml` at the bastion repo root, the same tool `../bella` uses for its own TUI captures.
+**Out-of-band by design** — see the [harness gate](#harness-gate) note below.
+
+Two tiers, one manifest:
+
+- **Text (deterministic).** A `tmux capture-pane` TEXT scene of the console, diffed byte-for-byte
+  against a committed golden under `tests/scenes/`. This is the tier that can actually fail on a
+  real regression.
+- **Image (non-deterministic).** A VHS-style PNG, held to a per-scene byte-size floor plus a
+  freshness check rather than a pixel diff — font rendering and capture timing are not
+  deterministic across machines/runs, so a pixel-identical PNG can never be a reliable pass/fail
+  signal. No `[image]` table is configured in `celia.toml` yet; that tier is currently a no-op and
+  is wired for a later block.
+
+Three scenes, matching the three widths the `bastion-tui` polish assessment measured:
+
+| Width | Height | Why |
+|---|---|---|
+| `200x55` | Wide desktop terminal | Upper bound the assessment measured. |
+| `120x40` | Mid-size terminal | Common working width. |
+| `80x24` | Classic terminal | **The width `polish-standard.md` T1 was written for**, and the one the `BA.26.H` review gate asserts against — this is the frame that must be kept working. |
+
+Each scene drives `bastion tui` (never `bastion --help`) against a fixture, not a live board:
+`XDG_CONFIG_HOME`/`BASTION_BRAIN_TOML` point the captured process at
+`tests/fixtures/celia-tui/` — a small, committed, hand-authored config + brain.toml + open-work
+board. A live `planning/open-work/` board is rewritten nightly by cron and by the console's own
+refresh action, so a golden keyed to one would rot by construction; the fixture is what makes the
+text tier's byte-for-byte determinism possible at all.
+
+Run it by hand:
+
+```bash
+cargo build --release
+cargo run --quiet --release --manifest-path ../celia/Cargo.toml -p celia-cli -- \
+  check --manifest celia.toml --tier text     # diffs the three text goldens
+cargo run --quiet --release --manifest-path ../celia/Cargo.toml -p celia-cli -- \
+  check --manifest celia.toml --tier image    # byte-floor + freshness (no-op until [image] exists)
+```
+
+`celia` is not installed on `PATH` on this machine, so each invocation compiles `celia-cli` fresh
+— the same cost `../bella`'s equivalent checks accept today. See `celia.toml`'s own header
+comment for the full provenance (bella's now-deleted scene scripts, why bastion ports from celia
+rather than from bella directly, and the nested-tmux-server fix that keeps the agents-priority
+strip's live session list from leaking into a capture).
+
+### Harness gate
+
+`capture-scenes-text` / `capture-scenes-image` are registered in `planning/harness.json` with
+`gates: false` and no `perTask` key — deliberately never able to block a task or a push. Capture
+is expensive and slow by nature (it drives a real terminal), so it runs out-of-band, the same
+reasoning that keeps this repo's `tripwires` and `conformance` checks non-gating. A red capture
+check is a prompt for a human to look at the new frame, never a build error.
 
 ---
 

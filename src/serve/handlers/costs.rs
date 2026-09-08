@@ -438,6 +438,7 @@ mod tests {
             tokens_out: Some(tokens_out),
             model: Some(model.to_owned()),
             started_at: Some("2026-06-20T09:00:00Z".to_owned()),
+            completed_at: None,
             elapsed_secs: None,
         }
     }
