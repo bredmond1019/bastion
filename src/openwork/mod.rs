@@ -26,7 +26,9 @@
 //! lines failed) while every other test in the module stayed green. The
 //! variant was then removed; no red test was committed.
 
+use std::io;
 use std::path::Path;
+use std::process::{Child, Command};
 
 /// The path to HQ's open-work refresh script, relative to the HQ root
 /// (`agentic-portfolio/`). Bastion executes this script; it never writes to
@@ -141,6 +143,29 @@ pub fn classify_spawn_error(err: &std::io::Error) -> RefreshOutcome {
     RefreshOutcome::SpawnFailed {
         reason: err.to_string(),
     }
+}
+
+/// The thin I/O shell (task 3, AC-3) over [`refresh_args`]: spawns the given
+/// argv as a child process OFF the caller's thread of control.
+///
+/// `Command::spawn` itself is already non-blocking — it returns as soon as
+/// the OS has forked/exec'd the child, without waiting for it to run or
+/// exit — so this function adds no synchronization of its own; it exists so
+/// callers (the ui.rs event loop, and this module's own non-blocking test)
+/// have one narrow seam to call instead of constructing a `Command` inline.
+///
+/// Generic over any argv, not tied to [`refresh_args`]'s output, so a test
+/// proving the non-blocking property can spawn a `sleep`-style stand-in
+/// binary instead of the real (measured 21.7 s) `refresh.py`.
+///
+/// Returns the spawn `io::Error` on failure (e.g. the program is not on
+/// `PATH`) rather than panicking, so a caller can classify it with
+/// [`classify_spawn_error`].
+pub fn spawn_argv(argv: &[String]) -> io::Result<Child> {
+    let (program, args) = argv
+        .split_first()
+        .expect("argv must contain at least the program name");
+    Command::new(program).args(args).spawn()
 }
 
 #[cfg(test)]
@@ -282,5 +307,40 @@ mod tests {
         assert_ne!(spawn_outcome, RefreshOutcome::Current);
         assert_ne!(spawn_outcome, RefreshOutcome::StaleOrChanged);
         assert_ne!(spawn_outcome, RefreshOutcome::Failed { code: 1 });
+    }
+
+    // -- task 3: thin spawn shell (AC-3) --------------------------------
+
+    /// `spawn_argv` returns a live `Child` without waiting for it, and the
+    /// classifier round-trips the eventual exit status correctly. Uses
+    /// `true`/`false` (not `refresh.py`) as the stand-in — see the ui.rs
+    /// non-blocking event-loop test for the "spawn returns before a
+    /// long-lived child exits" ordering assertion this AC actually cares
+    /// about.
+    #[test]
+    fn spawn_argv_runs_the_given_program_and_exit_code_round_trips() {
+        let mut child = spawn_argv(&["true".to_string()]).expect("spawn 'true'");
+        let status = child.wait().expect("wait on spawned child");
+        assert_eq!(
+            classify_exit_code(status.code().expect("exit code")),
+            RefreshOutcome::Current
+        );
+
+        let mut child = spawn_argv(&["false".to_string()]).expect("spawn 'false'");
+        let status = child.wait().expect("wait on spawned child");
+        assert_eq!(
+            classify_exit_code(status.code().expect("exit code")),
+            RefreshOutcome::Failed { code: 1 }
+        );
+    }
+
+    /// A program that does not exist on `PATH` is a spawn failure, not a
+    /// process that ran and exited non-zero.
+    #[test]
+    fn spawn_argv_missing_program_is_a_spawn_error() {
+        let err = spawn_argv(&["definitely-not-a-real-binary-xyz".to_string()])
+            .expect_err("spawning a nonexistent program must error");
+        let outcome = classify_spawn_error(&err);
+        assert!(matches!(outcome, RefreshOutcome::SpawnFailed { .. }));
     }
 }

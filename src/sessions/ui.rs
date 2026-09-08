@@ -694,9 +694,48 @@ fn execute_action(action: Action, app: &mut AppState) {
 
 // ── Event loop ────────────────────────────────────────────────────────────────
 
+/// Where `run_inner`'s event loop gets its next input event from.
+///
+/// Production wires [`CrosstermEvents`], which polls the real terminal.
+/// Task 3's non-blocking-spawn test wires a synthetic queue instead, so it
+/// can drive the ACTUAL `run_inner_with_events` loop — not a stand-in — while
+/// a real child process runs alongside it, proving the non-blocking property
+/// belongs to this event loop (AC-3) rather than only to `AppState::on_key`.
+trait EventSource {
+    /// Poll for the next event, waiting at most `timeout`. `Ok(None)` means
+    /// the timeout elapsed with nothing available — the loop's tick path.
+    fn poll_next(&mut self, timeout: Duration) -> io::Result<Option<Event>>;
+}
+
+/// The real event source: crossterm's terminal input.
+struct CrosstermEvents;
+
+impl EventSource for CrosstermEvents {
+    fn poll_next(&mut self, timeout: Duration) -> io::Result<Option<Event>> {
+        if event::poll(timeout)? {
+            Ok(Some(event::read()?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 fn run_inner(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut AppState,
+) -> Result<()> {
+    run_inner_with_events(terminal, app, &mut CrosstermEvents)
+}
+
+/// The actual event loop body, generic over its [`EventSource`] so it can be
+/// driven by tests without a real terminal attached to stdin. `run_inner`
+/// (production) and the task-3 non-blocking test both go through this same
+/// function — there is no separate "test loop" that could pass while the
+/// real one blocks.
+fn run_inner_with_events<E: EventSource>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut AppState,
+    events: &mut E,
 ) -> Result<()> {
     let mut list_state = ListState::default();
     let mut render_cache = RenderCache::default();
@@ -704,11 +743,11 @@ fn run_inner(
     loop {
         terminal.draw(|f| draw(f, app, &mut list_state, &mut render_cache))?;
 
-        if event::poll(Duration::from_millis(REFRESH_MS))? {
+        if let Some(event) = events.poll_next(Duration::from_millis(REFRESH_MS))? {
             // Click-to-select and wheel-scroll routing (BA.13.2) share the same
             // action-handling path as key events below; sub-tab-bar click
             // routing is deferred to BA.13.4.
-            let action = match event::read()? {
+            let action = match event {
                 Event::Key(k) => Some(app.on_key(k.code)),
                 Event::Mouse(m) => Some(app.on_mouse(m)),
                 _ => None,
@@ -861,6 +900,91 @@ pub fn draw_for_test(
 mod tests {
     use super::*;
     use crate::sessions::model::SessionState;
+
+    // ── task 3: non-blocking spawn, asserted against the REAL ui.rs event
+    // loop (AC-3) ────────────────────────────────────────────────────────
+
+    /// A synthetic `EventSource` that yields a fixed queue of events. Every
+    /// test using it queues a quitting key, so the loop it drives always
+    /// terminates on its own rather than relying on the exhausted-queue
+    /// (timeout) path looping forever.
+    struct QueueEvents(std::collections::VecDeque<Event>);
+
+    impl EventSource for QueueEvents {
+        fn poll_next(&mut self, _timeout: Duration) -> io::Result<Option<Event>> {
+            Ok(self.0.pop_front())
+        }
+    }
+
+    /// AC-3, and the AC is explicit about how this must be tested: a faked
+    /// in-flight boolean proves only that the key handler is reachable when
+    /// a bool is set, and passes IDENTICALLY if the real spawn blocks. This
+    /// test instead spawns a REAL stand-in child (`sleep`, never
+    /// `refresh.py` — whose measured no-op `--check` path is 21.7 s) that
+    /// outlives the render tick, and drives the ACTUAL
+    /// `run_inner_with_events` event loop (not `app.rs`'s `on_key` in
+    /// isolation — `run_inner` at src/sessions/ui.rs is the event loop this
+    /// AC's non-blocking property belongs to) through a synthetic
+    /// `EventSource` while that child is still alive.
+    ///
+    /// Two ordering assertions, never a wall-clock duration:
+    /// 1. `spawn_argv` returns before the long-lived stand-in child has
+    ///    exited.
+    /// 2. The event loop processes a key (and quits) while that same child
+    ///    is STILL running — proving the loop never blocked on the spawn.
+    #[test]
+    fn run_inner_event_loop_stays_responsive_while_a_real_child_is_in_flight() {
+        // The child must outlive the render tick (`REFRESH_MS`); give it
+        // comfortable headroom above it.
+        let sleep_secs = (REFRESH_MS / 1000) + 2;
+        let mut child = crate::openwork::spawn_argv(&["sleep".to_string(), sleep_secs.to_string()])
+            .expect("spawn stand-in 'sleep' child");
+
+        // Assertion 1: the spawning call already returned — prove the child
+        // has not exited yet (it cannot have: it sleeps for several seconds).
+        assert!(
+            child
+                .try_wait()
+                .expect("try_wait on freshly spawned child")
+                .is_none(),
+            "stand-in child must still be running immediately after spawn_argv returns"
+        );
+
+        // Drive the REAL event loop with one synthetic key event that quits
+        // — this exercises `run_inner_with_events` end to end, including
+        // `terminal.draw`, exactly as `run_inner` does in production.
+        let mut app = make_app(&[]);
+        let backend = CrosstermBackend::new(io::stdout());
+        let mut terminal = Terminal::new(backend).expect("crossterm terminal for test");
+        let mut events = QueueEvents(std::collections::VecDeque::from([Event::Key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        )]));
+
+        run_inner_with_events(&mut terminal, &mut app, &mut events)
+            .expect("run_inner_with_events must not error");
+
+        assert!(app.should_quit, "the 'q' key must have been processed");
+
+        // Assertion 2: the app already finished processing the key (the
+        // loop above returned) while the stand-in child is STILL running —
+        // proving the loop never blocked waiting on the child.
+        assert!(
+            child
+                .try_wait()
+                .expect("try_wait after the event loop returns")
+                .is_none(),
+            "stand-in child must still be running after the event loop processed a key \
+             and quit — the loop must not have blocked on the spawn"
+        );
+
+        // Clean up the stand-in child rather than leaving it sleeping out
+        // its full duration as an orphan.
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     // ── read_document / render_document_markdown (BA.26.B task 7,
     // "CONCURRENCY WITH REFRESH") ───────────────────────────────────────────
