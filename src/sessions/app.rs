@@ -497,23 +497,19 @@ impl AppState {
                         }
                         OverviewPane::Content => match key {
                             KeyCode::PageUp => {
-                                self.space_overview_scroll =
-                                    self.space_overview_scroll.saturating_sub(10);
+                                self.scroll_content_view(-10);
                                 return Action::None;
                             }
                             KeyCode::PageDown => {
-                                self.space_overview_scroll =
-                                    self.space_overview_scroll.saturating_add(10);
+                                self.scroll_content_view(10);
                                 return Action::None;
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                self.space_overview_scroll =
-                                    self.space_overview_scroll.saturating_sub(1);
+                                self.scroll_content_view(-1);
                                 return Action::None;
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                self.space_overview_scroll =
-                                    self.space_overview_scroll.saturating_add(1);
+                                self.scroll_content_view(1);
                                 return Action::None;
                             }
                             _ => {}
@@ -759,16 +755,13 @@ impl AppState {
     }
 
     /// Route a wheel event by which pane the pointer is hovering over.
-    /// Content scrolls `space_overview_scroll`; browser moves the file-browser
+    /// Content scrolls `space_overview_scroll` (via `scroll_content_view`, the
+    /// same reconciled path the keyboard uses); browser moves the file-browser
     /// cursor; spine moves the primary-navigation selection. Anywhere else is
     /// a no-op.
     fn handle_scroll(&mut self, col: u16, row: u16, up: bool) {
         if bella_engine::geometry::point_in(self.pane_areas.content, col, row) {
-            self.space_overview_scroll = if up {
-                self.space_overview_scroll.saturating_sub(1)
-            } else {
-                self.space_overview_scroll.saturating_add(1)
-            };
+            self.scroll_content_view(if up { -1 } else { 1 });
         } else if bella_engine::geometry::point_in(self.pane_areas.browser, col, row) {
             // Two rows of border consumed top+bottom of the browser block.
             let viewport_h = self.pane_areas.browser.height.saturating_sub(2);
@@ -781,6 +774,28 @@ impl AppState {
                 self.select_next();
             }
         }
+    }
+
+    /// Apply `delta` to the content pane's viewport offset — the ONE
+    /// representation both the keyboard (`on_key`'s `OverviewPane::Content`
+    /// arm) and the mouse (`handle_scroll`'s content branch) read and write
+    /// (BA.26.B task 3). Before this, both paths hand-rolled the same
+    /// saturating add/sub against `space_overview_scroll` independently —
+    /// two call sites doing identical arithmetic is exactly where a future
+    /// edit to one and not the other would make keyboard and mouse scrolling
+    /// disagree. Routing both through this single method makes that
+    /// structurally impossible rather than merely coincidentally true today.
+    ///
+    /// A negative `delta` scrolls up, a positive `delta` scrolls down.
+    /// Clamped at the top to `0` (never underflows) and at the bottom to
+    /// `u16::MAX` (never overflows) — the same saturating bound for both
+    /// directions regardless of which path drove it, so a keyboard scroll
+    /// and a mouse scroll that both run past either boundary land on the
+    /// identical clamped value.
+    fn scroll_content_view(&mut self, delta: i32) {
+        let current = i32::from(self.space_overview_scroll);
+        let next = current.saturating_add(delta).clamp(0, i32::from(u16::MAX));
+        self.space_overview_scroll = next as u16;
     }
 }
 
@@ -1956,6 +1971,80 @@ mod tests {
         app.space_overview_scroll = 0;
         app.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
         assert_eq!(app.space_overview_scroll, 0); // saturating, not underflowing
+    }
+
+    /// BA.26.B task 3 — keyboard and mouse scroll must land on the identical
+    /// `space_overview_scroll` value for the same logical movement, because
+    /// both now route through the single `scroll_content_view` method rather
+    /// than duplicating the saturating math. Drives both paths to the same
+    /// position from the same starting point and asserts equality, including
+    /// the top and past-bottom clamp boundaries — the disagreement the AC
+    /// calls out would only be visible by comparing both, never by
+    /// exercising one path alone.
+    #[test]
+    fn keyboard_and_mouse_scroll_reach_identical_viewport_state() {
+        // Content pane must be focused for the keyboard path to route there.
+        let mut via_keyboard = make_full_app_with_panes();
+        via_keyboard.selected_spine = 1;
+        via_keyboard.reinit_browser();
+        via_keyboard.overview_pane = OverviewPane::Content;
+
+        let mut via_mouse = make_full_app_with_panes();
+        via_mouse.selected_spine = 1;
+        via_mouse.reinit_browser();
+        // Mouse scroll routes purely off pointer position, not pane focus.
+
+        // Same logical movement: down 1, down 1, down 10 (PageDown / 12 wheel
+        // ticks), up 1. Mouse scroll steps by 1 per tick, so PageDown's 10 is
+        // reproduced as ten ScrollDown events.
+        via_keyboard.on_key(KeyCode::Down);
+        via_keyboard.on_key(KeyCode::Down);
+        via_keyboard.on_key(KeyCode::PageDown);
+        via_keyboard.on_key(KeyCode::Up);
+
+        for _ in 0..2 {
+            via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        }
+        for _ in 0..10 {
+            via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        }
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
+
+        assert_eq!(
+            via_keyboard.space_overview_scroll,
+            via_mouse.space_overview_scroll
+        );
+        assert_eq!(via_keyboard.space_overview_scroll, 11);
+
+        // Top clamp: from 0, scrolling up via either path lands on the same
+        // clamped value (0), never underflowing.
+        via_keyboard.space_overview_scroll = 0;
+        via_mouse.space_overview_scroll = 0;
+        via_keyboard.on_key(KeyCode::Up);
+        via_keyboard.on_key(KeyCode::PageUp);
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
+        assert_eq!(via_keyboard.space_overview_scroll, 0);
+        assert_eq!(via_mouse.space_overview_scroll, 0);
+        assert_eq!(
+            via_keyboard.space_overview_scroll,
+            via_mouse.space_overview_scroll
+        );
+
+        // Past-bottom clamp: from one below the maximum, scrolling down via
+        // either path lands on the same clamped value (u16::MAX), never
+        // overflowing or diverging between the two paths.
+        via_keyboard.space_overview_scroll = u16::MAX - 1;
+        via_mouse.space_overview_scroll = u16::MAX - 1;
+        via_keyboard.on_key(KeyCode::PageDown);
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        assert_eq!(via_keyboard.space_overview_scroll, u16::MAX);
+        assert_eq!(via_mouse.space_overview_scroll, u16::MAX);
+        assert_eq!(
+            via_keyboard.space_overview_scroll,
+            via_mouse.space_overview_scroll
+        );
     }
 
     #[test]
