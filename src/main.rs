@@ -82,6 +82,19 @@ fn command_name(cmd: &Commands) -> &'static str {
     }
 }
 
+/// Resolve the function `dispatch` calls for `bastion overview` (pure).
+///
+/// Returned as a bare `fn() -> Result<()>` pointer so a test can assert
+/// exactly what `dispatch`'s `Commands::Overview` arm invokes — the new
+/// open-work renderer (`overview::run_sections_ui`, BA.26.G task 3) — without
+/// running the binary or driving a real terminal. The parked Kanban entry
+/// point, `overview::run`, stays reachable as code (BA.26.I's decision D20)
+/// but this function must never return it; that is the concrete meaning of
+/// "re-pointed".
+fn overview_dispatch_target() -> fn() -> Result<()> {
+    overview::run_sections_ui
+}
+
 /// Best-effort classification of an `anyhow` error into a `C0xx` code (pure).
 ///
 /// First attempts a typed downcast to `ConsoleError`; falls back to
@@ -174,7 +187,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 }
             }
             Commands::Inspect { run_id } => inspect::run(run_id).await,
-            Commands::Overview => overview::run(),
+            Commands::Overview => overview_dispatch_target()(),
             Commands::Validate { path } => validate::run(path).await,
             Commands::Costs { last, watch } => costs::run(last, watch).await,
             Commands::Run {
@@ -407,6 +420,29 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // ── `bastion overview` dispatch target (BA.26.G task 3, AC-2) ─────────────
+
+    /// `dispatch`'s `Commands::Overview` arm must call the new open-work
+    /// renderer, not the parked Kanban entry point — asserted over the
+    /// dispatch itself (function-pointer identity), never by invoking the
+    /// binary. Fails at compile time already if either symbol is renamed or
+    /// removed; fails at runtime if `overview_dispatch_target` is ever
+    /// re-pointed back at the parked path.
+    #[test]
+    fn overview_dispatches_to_the_new_renderer_not_the_parked_kanban_path() {
+        let target = overview_dispatch_target() as *const () as usize;
+        assert_eq!(
+            target,
+            overview::run_sections_ui as *const () as usize,
+            "bastion overview must dispatch to overview::run_sections_ui"
+        );
+        assert_ne!(
+            target,
+            overview::run as *const () as usize,
+            "bastion overview must no longer dispatch to the parked Kanban entry point overview::run"
+        );
+    }
 
     // ── command_name resolver — every variant ─────────────────────────────────
 

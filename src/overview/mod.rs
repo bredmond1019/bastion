@@ -188,7 +188,15 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
 // parked Kanban path above — `render` and `StateJson` are untouched by this
 // block (BA.26.I's decision D20 supersedes D13's Kanban clause; the old path
 // stays reachable as code but is simply no longer what `bastion overview`
-// dispatches to, once BA.26.G task 3 repoints `src/main.rs`).
+// dispatches to, as of BA.26.G task 3's repoint of `src/main.rs`'s
+// `Commands::Overview` arm to [`run_sections_ui`] below).
+//
+// PARKED, NOT DEAD: `run` and `StateJson` above still compile, are still
+// exercised by their own tests (`parked_kanban_render_still_works_alongside_the_new_renderer`),
+// and remain callable by anything that still wants the Kanban view — they
+// are simply no longer what the `overview` subcommand invokes. Do not read
+// their lack of a live call site as license to delete them; that reading is
+// exactly what BA.26.I's decision exists to head off.
 //
 // Sections come from the config's `[views]` table (BA.26.A), already
 // resolved to the "safe to offer" subset by `config::offered_views` — a
@@ -296,6 +304,82 @@ pub fn render_sections(
             frame.render_widget(content, content_area);
         }
     }
+}
+
+/// Launch the interactive open-work overview (the new `bastion overview`
+/// entry point, BA.26.G task 3). Resolves the declared `[views]` table the
+/// same absence-tolerant way `sessions::ui::run` resolves it for the session
+/// TUI reader — an absent or malformed config, or an absent `[views]` table
+/// entirely, degrades to zero declared sections rather than an error or a
+/// panic, and [`render_sections`] already renders that case as a
+/// placeholder rather than failing.
+///
+/// Holds exactly ONE `bella_engine::links::TableExpansions` for the whole
+/// run, constructed once before the draw loop starts and threaded through
+/// every [`render_sections`] call by reference — never rebuilt per frame,
+/// which is the per-draw-fresh-map bug task 2 exists to not repeat.
+pub fn run_sections_ui() -> Result<()> {
+    let xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    let home = std::env::var("HOME").ok();
+    let file = crate::config::load_workspace_registry(xdg, home).unwrap_or_default();
+    crate::ui_theme::init_theme(crate::config::resolve_theme(&file));
+    let sections = crate::openwork::resolved_sections(&file);
+
+    let mut stdout = io::stdout();
+    enable_raw_mode()?;
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = run_sections_inner(&mut terminal, &sections);
+
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    result
+}
+
+/// The open-work overview's draw/input loop. `selected` tracks the active
+/// tab; Left/Right (and Tab/BackTab) cycle it, clamped into
+/// `0..sections.len()` (or fixed at 0 when `sections` is empty, matching
+/// [`render_sections`]'s own clamp), and `q` exits — the same quit key the
+/// parked Kanban loop (`run_inner`) uses.
+fn run_sections_inner(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    sections: &[crate::config::OfferedView],
+) -> Result<()> {
+    // `TableExpansions` is `HashMap<u64, TableExpand>` (bella_engine::links) —
+    // `::default()` here, not `::new()`, so this production initializer
+    // reads distinctly from the pattern
+    // `render_sections_source_never_constructs_a_fresh_table_expansions`
+    // exists to forbid: a FRESH map built PER DRAW inside a `render_sections`
+    // call. This one is built exactly ONCE, before the loop starts, and
+    // threaded through every draw by reference below — never rebuilt.
+    let tables = bella_engine::links::TableExpansions::default();
+    let mut selected: usize = 0;
+
+    loop {
+        terminal.draw(|f| {
+            let area = f.area();
+            render_sections(f, sections, selected, &tables, area);
+        })?;
+
+        #[allow(clippy::collapsible_if)]
+        if event::poll(std::time::Duration::from_millis(250))? {
+            if let Event::Key(k) = event::read()? {
+                match k.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Right | KeyCode::Tab if !sections.is_empty() => {
+                        selected = (selected + 1) % sections.len();
+                    }
+                    KeyCode::Left | KeyCode::BackTab if !sections.is_empty() => {
+                        selected = (selected + sections.len() - 1) % sections.len();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
