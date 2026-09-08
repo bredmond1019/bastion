@@ -420,6 +420,12 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     lane,
                     lock_dir,
                 } => coord_cli::run_drain(&repo, &lane, lock_dir.as_deref()),
+                CoordMode::Send {
+                    repo,
+                    lane,
+                    file,
+                    lock_dir,
+                } => coord_cli::run_send(&repo, &lane, &file, lock_dir.as_deref()),
                 CoordMode::Complete {
                     repo,
                     lane,

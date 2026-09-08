@@ -606,6 +606,29 @@ pub enum CoordMode {
         lock_dir: Option<PathBuf>,
     },
 
+    /// Write a message envelope (read as JSON from `--file`) into `--repo`/`--lane`'s
+    /// inbox — faces `engine_core::coord::write::send`, the same function
+    /// `POST /api/coordination/send` calls (`BA.25.C` task 3).
+    ///
+    /// A `priority` or `urgency` key anywhere in the envelope is refused before anything
+    /// else is checked — a sender-declared priority is not this fleet's rubric; D43 owns
+    /// priority. Prints `{"sent":true,"path":"..."}` and exits 0 on success, 1 on any
+    /// refusal. No Python counterpart.
+    Send {
+        /// Repo slug of the recipient lane's queue.
+        #[arg(long)]
+        repo: String,
+        /// The recipient lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// Path to a JSON file holding the message envelope to send.
+        #[arg(long)]
+        file: PathBuf,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
     /// Move `--message-id`'s file from `processing/` to `done/`, if present — faces
     /// `engine_core::coord::write::complete`, the same function
     /// `POST /api/coordination/complete` calls (`BA.25.C` task 2).

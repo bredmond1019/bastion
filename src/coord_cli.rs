@@ -514,6 +514,72 @@ pub fn run_complete(
     Ok(())
 }
 
+// ── `send` — BA.25.C task 3 ──────────────────────────────────────────────────────────
+//
+// Thin CLI face over `engine_core::coord::write::send`, same shape as `lease`/`drain`/
+// `complete` above: no write logic reimplemented here, no Python counterpart (`send` has
+// no `fleet_concurrency_check.py` analogue either).
+//
+// ## Where the `priority` refusal actually lives, and against which schema
+//
+// `engine_core::coord::write::send` scans the raw envelope for a forbidden key (`priority`
+// or `urgency`) BEFORE any typed deserialisation runs, and the refusal text it returns
+// already names D43 as the owner of priority — see that function's own
+// `forbidden_message_key_reason`. This module adds no second check and no second message:
+// duplicating the refusal text here would be exactly the "two documents can drift" failure
+// this block exists to prevent (module doc comment, top of file).
+//
+// The schema that check mirrors is `base-template/.claude/workflows/message.schema.json`
+// — the canonical, current copy (its own description states the `priority`-forbidding
+// intent verbatim). It is NOT this repo's own `.claude/workflows/message.schema.json`:
+// that copy is pre-BT.8.A and five lines shorter (missing the `host` field BT.8.A added),
+// per the block record's F-67. Neither copy is read as a file at runtime here or in
+// `engine_core` — `MessageRecord` (`okf-core`'s `coord::message` module) is the typed,
+// compiled mirror of base-template's schema, kept in sync by hand today (`emit-schema`,
+// which would generate it mechanically, is this block's AC-4 and is deferred — see the
+// block record). A test in this module's own suite authors its fixtures against
+// base-template's field set, never bastion's stale copy, so a `priority`-carrying file is
+// refused for the schema's actual, current reason.
+fn send_at(
+    lock_dir: &Path,
+    repo: &str,
+    lane: &str,
+    value: serde_json::Value,
+) -> Result<PathBuf, CoordWriteError> {
+    engine_core::coord::write::send(lock_dir, repo, lane, value, None)
+}
+
+/// `bastion coord send --repo <r> --lane <l> --file <path> [--lock-dir <dir>]` — read a
+/// message envelope as JSON from `file` and write it into `repo`/`lane`'s inbox.
+///
+/// Prints `{"sent":true,"path":"..."}` and exits `0` on success. A refusal — a forbidden
+/// key (`priority`/`urgency`), a missing required field, or any other
+/// [`CoordWriteError::Invalid`] — bubbles up as an ordinary `anyhow::Result` error and
+/// exits `1`. The full refusal text (including the D43 citation for a `priority`/
+/// `urgency` key) is [`CoordWriteError`]'s own `Display`, preserved in this error's
+/// source chain; this module's own tests assert it directly against [`send_at`]'s typed
+/// `Err`, the same split `run_register`/`run_lease` above already use. No Python
+/// counterpart.
+pub fn run_send(
+    repo: &str,
+    lane: &str,
+    file: &Path,
+    lock_dir_override: Option<&Path>,
+) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("could not read message file {}", file.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("message file {} is not valid JSON", file.display()))?;
+    let path = send_at(&lock_dir, repo, lane, value)
+        .with_context(|| format!("send failed for {repo}/{lane}: {}", file.display()))?;
+    println!(
+        "{}",
+        serde_json::json!({ "sent": true, "path": path.display().to_string() })
+    );
+    Ok(())
+}
+
 /// Serialise `view` exactly as `engine-serve`'s `GET /api/coordination` route does —
 /// `HttpResponse::Ok().json(view)`, which is `serde_json`'s default (compact)
 /// serialisation of the same `CoordinationView` type. Pure and independently testable
@@ -1733,6 +1799,191 @@ mod tests {
         assert!(
             done_dir.join("20260101T000000Z-override-msg.json").exists(),
             "complete must have moved the message under the overridden lock_dir"
+        );
+    }
+
+    // ── BA.25.C task 3: `send` and the `priority` refusal ───────────────────────
+    //
+    // Every field here mirrors base-template's `message.schema.json` required set
+    // (`message_id`, `sender{agent_name,repo,lane,roadmap}`, `sent_at`, `kind`,
+    // `subject{repo}`, `body`, `durable_home{channel,ref}`, `verified_by`) — never
+    // bastion's own stale pre-BT.8.A copy under `.claude/workflows/`, which is missing
+    // only the optional `host` field these fixtures don't set anyway. See this module's
+    // `send_at` doc comment and the block record's F-67.
+
+    /// A message envelope valid in every respect against `message.schema.json`'s
+    /// required fields — the control fixture task 3's AC pairs against a `priority`-
+    /// carrying variant of the same file.
+    fn valid_message_fixture(message_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "message_id": message_id,
+            "sender": {
+                "agent_name": "bastion-probe",
+                "repo": "bastion",
+                "lane": "coordination-layer-port",
+                "roadmap": "coordination-layer-port",
+            },
+            "sent_at": "2026-09-08T00:00:00Z",
+            "kind": "FINDING",
+            "subject": {
+                "repo": "bastion",
+            },
+            "body": "task 3 fixture message.",
+            "durable_home": {
+                "channel": "run-record",
+                "ref": "bastion/planning/BA.25.C/tasks.json#3",
+            },
+            "verified_by": "UNVERIFIED: BA.25.C task 3 fixture",
+        })
+    }
+
+    /// The AC-2 pair, asserted in one test: a message identical to
+    /// [`valid_message_fixture`] except carrying a `priority` property is REFUSED, and
+    /// the SAME message without `priority` is ACCEPTED — so the refusal is provably
+    /// about that property, not about being malformed generally. The refusal names D43
+    /// as the owner of priority rather than reporting a bare schema failure.
+    #[test]
+    fn send_refuses_priority_and_accepts_the_same_message_without_it() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        // The known-bad artifact: valid in every respect except a hand-authored
+        // `priority` property, per D68's gate-shape requirement (a real fixture, not a
+        // missing subcommand).
+        let mut with_priority = valid_message_fixture("priority-msg");
+        with_priority["priority"] = serde_json::json!("urgent");
+
+        let err = send_at(&lock_dir, "send-repo", "send-lane", with_priority)
+            .expect_err("a message carrying `priority` must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("priority"),
+            "refusal must name the offending key `priority`, got: {msg}"
+        );
+        assert!(
+            msg.contains("D43"),
+            "refusal must name D43 as the owner of priority rather than a bare schema \
+             failure, got: {msg}"
+        );
+
+        let inbox_dir = queue_inbox_dir(&lock_dir, "send-repo", "send-lane");
+        assert!(
+            !inbox_dir.exists() || list_json_filenames(&inbox_dir).is_empty(),
+            "a refused send must write nothing to inbox/"
+        );
+
+        // The control: the identical message minus `priority` must be accepted.
+        let without_priority = valid_message_fixture("priority-msg");
+        let written_path = send_at(&lock_dir, "send-repo", "send-lane", without_priority)
+            .expect("the same message without `priority` must be accepted");
+        assert!(
+            written_path.exists(),
+            "an accepted send must write the envelope to inbox/"
+        );
+        assert!(
+            written_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.contains("priority-msg")),
+            "the written filename must carry the message_id"
+        );
+    }
+
+    /// `urgency` is refused exactly like `priority` — both are in
+    /// `engine_core::coord::write`'s `FORBIDDEN_MESSAGE_KEYS`, and this module adds no
+    /// second, divergent list of its own.
+    #[test]
+    fn send_refuses_urgency_too() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let mut with_urgency = valid_message_fixture("urgency-msg");
+        with_urgency["urgency"] = serde_json::json!("high");
+
+        let err = send_at(&lock_dir, "send-repo", "send-lane", with_urgency)
+            .expect_err("a message carrying `urgency` must be refused");
+        assert!(err.to_string().contains("D43"));
+    }
+
+    /// A `priority` nested inside another object (not top-level) is refused exactly like
+    /// a top-level one — mirrors `check_messages.py`'s own whole-envelope scan.
+    #[test]
+    fn send_refuses_nested_priority() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let mut nested = valid_message_fixture("nested-priority-msg");
+        nested["sender"]["priority"] = serde_json::json!("urgent");
+
+        let err = send_at(&lock_dir, "send-repo", "send-lane", nested)
+            .expect_err("a nested `priority` must be refused just like a top-level one");
+        assert!(err.to_string().contains("D43"));
+    }
+
+    /// `run_send` reads the envelope from `--file`, honours `--lock-dir`, and prints the
+    /// written path on success — mirrors `task2_run_entry_points_honour_lock_dir_override`
+    /// above.
+    #[test]
+    fn run_send_reads_file_and_honours_lock_dir_override() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let message_path = root.path().join("message.json");
+        std::fs::write(
+            &message_path,
+            serde_json::to_string(&valid_message_fixture("run-send-msg")).unwrap(),
+        )
+        .expect("write fixture message file");
+
+        run_send(
+            "override-repo",
+            "override-lane",
+            &message_path,
+            Some(lock_dir.as_path()),
+        )
+        .expect("run_send with --lock-dir override must succeed");
+
+        let inbox_dir = queue_inbox_dir(&lock_dir, "override-repo", "override-lane");
+        let files = list_json_filenames(&inbox_dir);
+        assert_eq!(
+            files.len(),
+            1,
+            "run_send must have written exactly one file under the overridden lock_dir"
+        );
+        assert!(files[0].contains("run-send-msg"));
+    }
+
+    /// `run_send` against a `--file` carrying `priority` refuses and writes nothing —
+    /// the CLI entry point's own refusal path, not just [`send_at`]'s.
+    #[test]
+    fn run_send_refuses_priority_file_and_writes_nothing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let mut with_priority = valid_message_fixture("run-send-priority-msg");
+        with_priority["priority"] = serde_json::json!("urgent");
+        let message_path = root.path().join("bad-message.json");
+        std::fs::write(
+            &message_path,
+            serde_json::to_string(&with_priority).unwrap(),
+        )
+        .expect("write fixture message file");
+
+        let result = run_send(
+            "override-repo",
+            "override-lane",
+            &message_path,
+            Some(lock_dir.as_path()),
+        );
+        assert!(
+            result.is_err(),
+            "run_send must refuse a message carrying `priority`"
+        );
+
+        let inbox_dir = queue_inbox_dir(&lock_dir, "override-repo", "override-lane");
+        assert!(
+            !inbox_dir.exists() || list_json_filenames(&inbox_dir).is_empty(),
+            "a refused run_send must write nothing to inbox/"
         );
     }
 }
