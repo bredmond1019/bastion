@@ -72,6 +72,46 @@ pub async fn get_run_state(db_url: &str, run_id: &str) -> Result<WorkflowRun> {
     parse_event_row(row)
 }
 
+// ── database-URL helpers (BA.24.A task 1: prove events read survives the split) ──
+//
+// D91 settles that `events` is not moving — bastion's `database_url` does not
+// change (see `notes` on `planning/blocks/BA.24.A.json`). These helpers exist
+// only to point the SAME query used at the three `FROM events` sites at a
+// scratch/empty database, so the "returns zero against an absent-rows
+// database" half of the acceptance criteria can be shown capable of failing
+// (D64) without waiting on an irreversible production split. Pure string
+// manipulation, no I/O — unit-tested directly below.
+
+/// Rewrite a Postgres connection URL's path segment (the database name) to
+/// `postgres`, the maintenance database every Postgres install carries, so a
+/// pool connected via this URL can issue `CREATE DATABASE` / `DROP DATABASE`.
+pub(crate) fn admin_url_from(db_url: &str) -> String {
+    replace_db_name(db_url, "postgres")
+}
+
+/// Rewrite a Postgres connection URL's path segment (the database name) to
+/// `scratch_name`, producing a URL that points at a scratch database created
+/// via `admin_url_from`'s connection.
+pub(crate) fn scratch_url_from(db_url: &str, scratch_name: &str) -> String {
+    replace_db_name(db_url, scratch_name)
+}
+
+/// Replace everything after the last `/` in a `postgres://…/dbname[?query]`
+/// URL with `new_name`, preserving any trailing `?query` string and leaving a
+/// URL with no path segment (no `/` after the scheme's `//`) unchanged aside
+/// from appending `/new_name`.
+fn replace_db_name(db_url: &str, new_name: &str) -> String {
+    let (scheme_and_host, path_and_query) = match db_url.rsplit_once('/') {
+        Some((head, tail)) => (head, tail),
+        None => return format!("{db_url}/{new_name}"),
+    };
+    let query = path_and_query
+        .find('?')
+        .map(|idx| &path_and_query[idx..])
+        .unwrap_or("");
+    format!("{scheme_and_host}/{new_name}{query}")
+}
+
 // ── internal helpers ──────────────────────────────────────────────────────────
 
 /// Raw columns fetched from the `events` table.
@@ -1007,6 +1047,48 @@ mod tests {
         }
     }
 
+    // ── database-URL helpers (pure, no I/O — BA.24.A task 1) ─────────────────
+
+    #[test]
+    fn admin_url_from_replaces_trailing_db_name() {
+        assert_eq!(
+            admin_url_from("postgres://postgres:postgres@localhost:5432/orchestration_dev"),
+            "postgres://postgres:postgres@localhost:5432/postgres"
+        );
+    }
+
+    #[test]
+    fn scratch_url_from_replaces_trailing_db_name() {
+        assert_eq!(
+            scratch_url_from(
+                "postgres://postgres:postgres@localhost:5432/orchestration_dev",
+                "bastion_test_scratch_123"
+            ),
+            "postgres://postgres:postgres@localhost:5432/bastion_test_scratch_123"
+        );
+    }
+
+    #[test]
+    fn replace_db_name_preserves_trailing_query_string() {
+        assert_eq!(
+            replace_db_name(
+                "postgres://user:pw@host/orchestration_dev?sslmode=require",
+                "postgres"
+            ),
+            "postgres://user:pw@host/postgres?sslmode=require"
+        );
+    }
+
+    #[test]
+    fn replace_db_name_appends_when_url_has_no_path_segment() {
+        // No `/` after the scheme's host:port at all — degrade to appending
+        // rather than panicking on an unwrap.
+        assert_eq!(
+            replace_db_name("not-a-url-with-no-slash", "postgres"),
+            "not-a-url-with-no-slash/postgres"
+        );
+    }
+
     // ── integration stubs (require a live DB; skipped in CI) ─────────────────
     //
     // Run with:
@@ -1050,6 +1132,116 @@ mod tests {
         assert!(
             result.is_err(),
             "get_run_state should return Err for an unknown id"
+        );
+    }
+
+    /// BA.24.A task 1: prove the exact `FROM events` query used at all three
+    /// sites (`src/db/workflows.rs:36`, `:65` and `src/db/costs.rs:21`) returns
+    /// rows against a populated database and ZERO against an empty one, both
+    /// asserted in the same test so the two are provably distinguishable
+    /// (D64's "shown capable of failing" requirement).
+    ///
+    /// The negative half uses a scratch database created and dropped inline —
+    /// it does not wait on `synapse_dev` (D91), which does not exist. D91
+    /// settles that `events` itself is not moving, so this is confirm-only:
+    /// no connection string, config field, or SQL query is touched.
+    #[tokio::test]
+    #[ignore]
+    async fn integration_events_read_present_vs_absent() {
+        if std::env::var("BASTION_INTEGRATION_TEST").is_err() {
+            return;
+        }
+        // See the matching comment above: read `.env` the way `Config::load`
+        // does, or the documented `--ignored` recipe panics `NotPresent`
+        // against a fully populated file.
+        dotenvy::dotenv().ok();
+        let populated_db_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
+
+        // ── positive half: the populated database returns rows ───────────────
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&populated_db_url)
+            .await
+            .expect("failed to connect to the populated DATABASE_URL");
+        let populated_rows: Vec<EventRow> =
+            sqlx::query_as("SELECT id::text, workflow_type, task_context FROM events")
+                .fetch_all(&pool)
+                .await
+                .expect("query against the populated database should not error");
+        assert!(
+            !populated_rows.is_empty(),
+            "expected the populated database to have at least one events row"
+        );
+        pool.close().await;
+
+        // ── negative half: a scratch database returns zero rows ──────────────
+        let admin_url = admin_url_from(&populated_db_url);
+        let admin_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&admin_url)
+            .await
+            .expect("failed to connect to the admin/maintenance database");
+
+        let scratch_name = format!("bastion_test_scratch_{}", std::process::id());
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS {scratch_name}"
+        )))
+        .execute(&admin_pool)
+        .await
+        .expect("failed to drop any pre-existing scratch database");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE {scratch_name}"
+        )))
+        .execute(&admin_pool)
+        .await
+        .expect("failed to create scratch database");
+
+        let scratch_url = scratch_url_from(&admin_url, &scratch_name);
+        let scratch_result: Result<Vec<EventRow>> = async {
+            let scratch_pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&scratch_url)
+                .await
+                .context("failed to connect to scratch database")?;
+            sqlx::query(
+                "CREATE TABLE events (
+                    id uuid PRIMARY KEY,
+                    workflow_type varchar(150) NOT NULL,
+                    data json,
+                    task_context json,
+                    created_at timestamp,
+                    updated_at timestamp
+                )",
+            )
+            .execute(&scratch_pool)
+            .await
+            .context("failed to create scratch events table")?;
+
+            let rows: Vec<EventRow> =
+                sqlx::query_as("SELECT id::text, workflow_type, task_context FROM events")
+                    .fetch_all(&scratch_pool)
+                    .await
+                    .context("query against the scratch database should not error")?;
+            scratch_pool.close().await;
+            Ok(rows)
+        }
+        .await;
+
+        // Always drop the scratch database, even if the assertion above panics
+        // or the connection/query failed, so a failing run doesn't leak state.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS {scratch_name}"
+        )))
+        .execute(&admin_pool)
+        .await
+        .expect("failed to drop scratch database");
+
+        let scratch_rows = scratch_result.expect("scratch database round trip should not error");
+        assert!(
+            scratch_rows.is_empty(),
+            "expected the scratch (empty) database to have zero events rows, got {}",
+            scratch_rows.len()
         );
     }
 }
