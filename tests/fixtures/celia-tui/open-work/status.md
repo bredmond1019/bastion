@@ -1,0 +1,18 @@
+# Open Work — Fixture Board
+
+**FIXTURE — committed for BA.26.J's capture harness.** Never edited by cron or a refresh
+action; a real `planning/open-work/` board is regenerated nightly and by `BA.26.C`'s refresh,
+which would make a byte-identical golden capture rot by construction.
+
+## Startable now
+
+| P | Block | Roadmap | Title |
+|---|---|---|---|
+| P1 | `example:EX.1.A` | `example-roadmap` | Wire the example subsystem to the fixture bus |
+| -- | `example:EX.1.B` | `example-roadmap` | Add the second example scene |
+
+## Notes
+
+This board exists only to give BA.26.J's tmux/VHS scenes something legible to render — headings,
+a table, and a couple of paragraphs — the same shapes a real open-work board carries, without
+ever pointing a golden at content that changes underneath it.

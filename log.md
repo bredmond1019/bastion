@@ -8,6 +8,26 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-08]
 
+Resumed /sdlc-flow on BA.26.J and closed out tasks 2 and 3 (task 1 already committed from a prior attempt); consolidated review PASS. Task 2's prior bail was a manifest-path/working-directory-depth issue in the manual verification command, not a code defect — re-ran with the worktree-correct path (`../../../celia/Cargo.toml`) and confirmed celia's text-tier check passes deterministically; along the way found and fixed two celia manifest bugs uncovered by task 1 (an explicit `args = []` silently overriding rather than extending `[target].args`, and bastion's own tmux session listing leaking the host's ambient sessions into the capture) by driving the capture inside a private-socket nested tmux server. Task 3 registered `capture-scenes-text`/`capture-scenes-image` in `planning/harness.json` as `gates:false` with no `perTask` (matching cargo-audit's shape), backed by a new Rust test (`tests/harness_capture_gate.rs`) with a shown-failing fixture flip, and documented the capture harness in `docs/terminal/sessions.md`. BA.26.J is now fully done (3 of 3 tasks); `planning/status.md` and `planning/state.json` (BA.26.J -> closed) updated and validated clean via `mev validate-brain`. Next: pick up the next queued item per `planning/status.md`.
+
+```
+915215d feat: implement BA.26.J-task3
+35f3c23 chore: wrap up BA.26.J
+134199d feat: implement BA.26.J-task2
+6f0981f feat: implement BA.26.J-task1
+```
+
+## [run: 2026-09-08]
+
+Ran /sdlc-flow on BA.26.J tasks 1 through 3; task 1 (celia.toml + fixture brain.toml/config.toml/open-work board for `bastion tui` captures) and task 2 (captured text goldens + fixed a Scene.args override bug and a nested-tmux-server determinism fix) both completed, but the run BAILED before task 3. Task 2's automated `task_validation_2` check still invokes a manifest path (`../celia/Cargo.toml`) that does not resolve from the worktree; attempt 2's fix summary states the mismatch was resolved only by running the check manually with a different relative path (`../../../celia/Cargo.toml`), with no change made to tasks.json or the validation command itself. Because the actual configured check was never corrected, it will keep failing on every retry and the work assertion can never receive a positive `workAssertionPassed` field — the same underlying failure recurring with no code/config change to close it. This is a validation-command configuration defect, not something a further content fix to celia.toml can resolve. Next: fix `task_validation_2`'s manifest path in tasks.json (or the check script itself) to resolve correctly from a worktree, then resume BA.26.J from task 2's work-assertion gate.
+
+```
+6f0981f feat: implement BA.26.J-task1
+134199d feat: implement BA.26.J-task2
+```
+
+## [run: 2026-09-08]
+
 Ran /sdlc-flow on BA.25.C tasks 1 through 4, all passing with confirmed workAssertionPassed outcomes; consolidated review returned PASS. `bastion coord` gains nine of its ten write verbs as thin CLI faces over `engine_core::coord::write`: task 1 added register/heartbeat/release (register's 0/3 exit code re-derived live against `fleet_concurrency_check.py`'s per-category caps, D66); task 2 added lease/unlease/drain/complete (all four have no Python counterpart, so they use the ordinary exit-0/exit-1 anyhow contract, with drain's partial-failure reporting derived by diffing the inbox/ listing before/after since engine-core's write silently skips unmovable files); task 3 added `send`, refusing any message carrying `priority`/`urgency` per D43 (fixture-tested against a hand-authored message file, since no such fixture existed); task 4 added `restore`, replaying `.fleet-locks/.prev/` snapshots via `fs::rename` and distinguishing ABSENT-.prev/ (no-op success) from EMPTY-.prev/ (refusal), leaving `emit-schema` (AC-4) explicitly deferred per D18 — schemars is not a dependency of okf-core or bastion and no single canonical schema exists to diff against. Full harness suite green. Next: pick up the next queued item per `planning/status.md`.
 
 ```

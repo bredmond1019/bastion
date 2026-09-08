@@ -1,0 +1,10 @@
+# tests/fixtures/celia-tui/brain.toml — fixture brain.toml for BA.26.J's capture harness.
+#
+# Points `bastion tui`'s space-tree loader (`load_space_tree`, which walks up from cwd for a
+# real `brain.toml` by default) at an EMPTY repo table via BASTION_BRAIN_TOML, so a capture
+# never depends on — or leaks — the operator's real fleet layout (workspace paths, tokens in
+# the real ~/.config/bastion/config.toml would otherwise still be independent of this file, but
+# the real brain.toml's repo list is not). `repos` defaults to `[]` when omitted
+# (src/brain/spaces.rs's `BrainToml`), so the session TUI's spine renders just
+# `[MissionControl, View(open-work)]` — small and deterministic, per AC-3's byte-identical
+# requirement for the text tier.
