@@ -8,6 +8,22 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-07]
 
+Ran /sdlc-flow on BA.26.B tasks 1 through 6 in a worktree, all passing with confirmed workAssertionPassed outcomes: task 1 persisted a bella_engine::links::TableExpansions map on AppState so table cell expansion survives re-renders; task 2 wired content-pane clicks and a new 'e' key to a pure toggle_table_hit(hit, map) decision function via TableMap::hit; task 3 unified keyboard and mouse content-pane scrolling behind one scroll_content_view method for symmetric, guaranteed-identical viewport clamping; task 4 rebuilt the footer's Normal-mode legend from a single NORMAL_KEY_BINDINGS source of truth with a test driving every listed key through on_key; task 5 removed the dead half-built markdown_overlay path (never rendered, never advertised) rather than finishing it, recording the decision in the block record; task 6 delegated strip_frontmatter's fence detection to bella_engine::frontmatter::detect_fence while preserving bastion's blank-line leniency, with 5 pinning tests, and the full authoritative validation suite passed. The consolidated end-of-flow review returned PARTIAL and the run BAILED: acceptance criterion 'CONCURRENCY WITH REFRESH' (gateable) was never wired to a task in tasks.json (1-6) — both read_to_string call sites in src/sessions/ui.rs (line 341 tier status, line 415 content pane) still collapse a read-failure or a document being rewritten mid-read into the same 'No <path> found.' placeholder as an absent file, exactly as at baseline, with no task rendering a named refreshing/torn state. This is a spec gap, not an implementation defect in tasks 1-6 — it needs a re-plan to add a task for the missing AC, not another fix attempt against the existing task set. Next: re-plan BA.26.B to add a task covering CONCURRENCY WITH REFRESH, then resume /sdlc-flow.
+
+```
+1bf4836 feat: implement BA.26.B-task6
+8786177 feat: implement BA.26.B-task5
+878e1ff feat: implement BA.26.B-task4
+0666358 feat: implement BA.26.B-task3
+e759ccf feat: implement BA.26.B-task2
+ba6ffb2 feat: implement BA.26.B-task1
+89330ce chore: init worktree BA.26.B-flow
+8f89126 merge: BA.26.A — config-declared views and exhaustive SelectedNode dispatch (PR #48)
+```
+
+
+## [run: 2026-09-07]
+
 Ran /sdlc-flow on BA.26.A through all five tasks: task 1 added an optional [views] table to FileConfig (ViewEntry: label + root) with a pure offered_views() resolver that drops an absent table, an undeclared view, or a missing root, sharing the canonicalize_against helper with [workspaces]; task 2 made a malformed config.toml surface a named degradation (path + parser message) on the session TUI's footer status line instead of being silently swallowed by init_theme_from_config's old unwrap_or_default(); task 3 added SelectedNode::View/SpineRow::View driven by the resolved [views] table and converted every SelectedNode matches!/== dispatch site in app.rs/ui.rs to an exhaustive match with no wildcard; task 4 added a reader-key test (Right/Left/Enter) over the declared-view variant with an in-test runtime inversion proving the exhaustiveness gate can fail, plus scripts/check-selected-node-exhaustive.sh sweeping all of src/ for non-exhaustive SelectedNode dispatch; task 5 documented [views] in .env.example and docs/operations/config.md and confirmed the full authoritative gate green (fmt, clippy, 2870 tests passed, release build, and the three drift scripts). All five tasks passed with confirmed workAssertionPassed outcomes; the consolidated end-of-flow review returned PASS after one fix pass. Next: pick up the next queued item per planning/status.md (BA.26.B, which depends on this block's spine).
 
 ```
