@@ -515,6 +515,11 @@ fn draw_with_root(
                 &theme,
                 &app.table_expansions,
             );
+            // Feed the just-rendered table geometry back onto `AppState` so
+            // `handle_click`'s `content_table_map.hit(line, col)` resolves
+            // against what is actually on screen, not the empty default
+            // (BA.26.B review fix — see task 2's deviation note).
+            app.content_table_map = rendered.table_map.clone();
             let tier_block = crate::ui_theme::themed_block(
                 Span::styled(format!(" {tier_name} "), crate::ui_theme::title_style()),
                 false,
@@ -589,6 +594,10 @@ fn draw_with_root(
                 &theme,
                 &app.table_expansions,
             );
+            // See the matching Tier-branch comment above: without this,
+            // `content_table_map` stays `TableMap::default()` for the life of
+            // the app and click-to-expand can never resolve a real hit.
+            app.content_table_map = rendered.table_map.clone();
             let paragraph = Paragraph::new(rendered.lines)
                 .block(content_block)
                 .scroll((app.space_overview_scroll, 0));
@@ -1663,6 +1672,60 @@ mod tests {
         assert_eq!(
             render_cache.parses, 2,
             "a genuine content change must invalidate the cache and re-parse"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review fix (AC-3): a real `draw_with_root` over a document containing
+    /// a markdown table must leave `AppState::content_table_map` populated
+    /// with that table's hit-test geometry — not the `TableMap::default()`
+    /// it starts as. Before this fix, neither content-pane call site wrote
+    /// `render_cache.get_or_render(...)`'s `Rendered::table_map` back onto
+    /// `app.content_table_map`, so `handle_click`'s `content_table_map.hit`
+    /// could never resolve a real hit in production (only in tests that hand
+    /// it a synthetic `sample_table_map()` directly). Covers both content-pane
+    /// call sites: the `Hq`/`Space`/`View` branch (asserted here) and the
+    /// `Tier` branch (asserted via the second draw below).
+    #[test]
+    fn draw_populates_content_table_map_from_a_real_render() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = crate::testsupport::unique_temp_dir("bastion-ui-content-table-map-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let table_md = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
+        std::fs::write(dir.join("status.md"), table_md).expect("write status.md");
+
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+        assert!(
+            app.content_table_map.regions.is_empty(),
+            "content_table_map must start empty (TableMap::default())"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        let mut render_cache = RenderCache::default();
+
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir, &mut render_cache);
+            })
+            .expect("draw must not panic");
+
+        assert!(
+            !app.content_table_map.regions.is_empty(),
+            "draw_with_root over a document with a real table must populate \
+             app.content_table_map from Rendered::table_map, not leave it \
+             at TableMap::default()"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
