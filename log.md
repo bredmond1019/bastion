@@ -8,6 +8,20 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-08]
 
+Ran /sdlc-flow on BA.25.C tasks 1 through 4, all passing with confirmed workAssertionPassed outcomes; consolidated review returned PASS. `bastion coord` gains nine of its ten write verbs as thin CLI faces over `engine_core::coord::write`: task 1 added register/heartbeat/release (register's 0/3 exit code re-derived live against `fleet_concurrency_check.py`'s per-category caps, D66); task 2 added lease/unlease/drain/complete (all four have no Python counterpart, so they use the ordinary exit-0/exit-1 anyhow contract, with drain's partial-failure reporting derived by diffing the inbox/ listing before/after since engine-core's write silently skips unmovable files); task 3 added `send`, refusing any message carrying `priority`/`urgency` per D43 (fixture-tested against a hand-authored message file, since no such fixture existed); task 4 added `restore`, replaying `.fleet-locks/.prev/` snapshots via `fs::rename` and distinguishing ABSENT-.prev/ (no-op success) from EMPTY-.prev/ (refusal), leaving `emit-schema` (AC-4) explicitly deferred per D18 — schemars is not a dependency of okf-core or bastion and no single canonical schema exists to diff against. Full harness suite green. Next: pick up the next queued item per `planning/status.md`.
+
+```
+61e7973 docs: update docs for BA.25.C
+df5e865 feat: implement BA.25.C-task4
+c048f0b feat: implement BA.25.C-task3
+64fe27a feat: implement BA.25.C-task2
+83f6b9f feat: implement BA.25.C-task1
+35fb770 chore: init worktree BA.25.C-flow
+```
+
+
+## [run: 2026-09-08]
+
 Ran /sdlc-flow on BA.26.G tasks 1 through 4, all passing with confirmed workAssertionPassed outcomes; consolidated review returned PASS. `bastion overview` is repointed at the open-work reader: task 1 added a new tab-switching renderer (`render_sections`) in src/overview/mod.rs driven by `config::offered_views`, alongside the untouched parked Kanban `render`/`StateJson`; task 2 threaded the caller-held `bella_engine::links::TableExpansions` through to bella's `render_with_edit` (no per-draw `TableExpansions::new()`) and introduced `src/openwork::resolved_sections` as a thin shared wrapper over `config::offered_views` so overview and the TUI reader agree on what a section is; task 3 re-pointed `bastion overview`'s CLI dispatch in main.rs at `overview::run_sections_ui` (asserted via a fn-pointer-identity test, not by running the binary) with tab-switching and quit wired as the minimal interactive loop; task 4 added in-document `[[roadmap:id]]`/`[[epic:id]]`/`[[repo:id]]` jump syntax (pure `parse_jump_targets`, resolution against HQ's roadmap tree/epics registry/brain.toml SpaceTree, a visible-miss footer state, 'g' to cycle) reusing the same markdown read path the reader displays rather than a second read. Full harness suite green across fmt/clippy/test/release build/three drift scripts. `planning/status.md` and `planning/state.json` (BA.26.G -> closed) updated and validated clean via `mev validate-brain`. Next: pick up the next queued item per `planning/status.md`.
 
 ```
