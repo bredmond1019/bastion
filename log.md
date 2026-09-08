@@ -6,6 +6,21 @@ timestamp: 2026-09-02T07:26:32-0300
 ---
 # Log — bastion
 
+## [run: 2026-09-07]
+
+Ran /sdlc-flow on BA.26.A through all five tasks: task 1 added an optional [views] table to FileConfig (ViewEntry: label + root) with a pure offered_views() resolver that drops an absent table, an undeclared view, or a missing root, sharing the canonicalize_against helper with [workspaces]; task 2 made a malformed config.toml surface a named degradation (path + parser message) on the session TUI's footer status line instead of being silently swallowed by init_theme_from_config's old unwrap_or_default(); task 3 added SelectedNode::View/SpineRow::View driven by the resolved [views] table and converted every SelectedNode matches!/== dispatch site in app.rs/ui.rs to an exhaustive match with no wildcard; task 4 added a reader-key test (Right/Left/Enter) over the declared-view variant with an in-test runtime inversion proving the exhaustiveness gate can fail, plus scripts/check-selected-node-exhaustive.sh sweeping all of src/ for non-exhaustive SelectedNode dispatch; task 5 documented [views] in .env.example and docs/operations/config.md and confirmed the full authoritative gate green (fmt, clippy, 2870 tests passed, release build, and the three drift scripts). All five tasks passed with confirmed workAssertionPassed outcomes; the consolidated end-of-flow review returned PASS after one fix pass. Next: pick up the next queued item per planning/status.md (BA.26.B, which depends on this block's spine).
+
+```
+9b600d9 docs: update docs for BA.26.A
+cc5bf6b fix: review pass 1 for BA.26.A
+28f3898 feat: implement BA.26.A-task5
+423d153 feat: implement BA.26.A-task4
+9bf81ec feat: implement BA.26.A-task3
+ecd7d58 feat: implement BA.26.A-task2
+e339bcb feat: implement BA.26.A-task1
+d4a3640 chore: init worktree BA.26.A-flow
+```
+
 ## [run: 2026-09-05]
 
 Re-ran /sdlc-flow on BA.ticket.serve-auth-boundary-freeze after respec: task 6 closed the AC10 gap left by the prior BAIL by adding a new `auth_scenarios` module to `src/serve/contract_corpus.rs`, emitting three real-401 goldens through `BearerAuthMiddleware` (no-credentials, bad-bearer, bad-signature) into `types/contract-corpus/`. All six tasks (1-6) passed with confirmed workAssertionPassed outcomes, and the consolidated end-of-flow review returned PASS with no findings. Net result across the full spec: `src/serve/auth.rs`'s token/API-key compares are now constant-time (`subtle::ConstantTimeEq`), a new HMAC-SHA256 machine-caller signature tier (`src/serve/source_auth.rs`) is admitted alongside bearer auth at both /api and /ws with a configurable clock-skew window, `docs/serve/serve-api.md` is frozen at v1.0.0 with a self-testing version-drift gate (`scripts/check-serve-api-version.sh`), and the contract corpus now carries real 401 goldens closing AC10. Next: pick up the next queued ticket per `planning/status.md`.
