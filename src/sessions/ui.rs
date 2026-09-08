@@ -133,6 +133,68 @@ pub fn strip_frontmatter(md: &str) -> &str {
     }
 }
 
+/// Outcome of reading a markdown document off disk (BA.26.B AC "CONCURRENCY
+/// WITH REFRESH").
+///
+/// Before this type, both content-reading call sites collapsed EVERY
+/// `read_to_string` error into the same "No <path> found." placeholder,
+/// which is indistinguishable from the file simply not existing yet. That
+/// is wrong for a real, non-hypothetical race: BA.26.C's refresh performs
+/// non-atomic truncating writes to exactly these files, and HQ's
+/// `routine.sh` regenerates them by cron at 03:00 — so a reader can observe
+/// a torn or momentarily-unreadable file with nobody at the keyboard. A
+/// torn document must never render as if it were ordinary content, and it
+/// must not be reported as absent either — both are misleading in
+/// different ways.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentRead {
+    /// The file does not exist — the ordinary, expected "nothing here yet"
+    /// case (`io::ErrorKind::NotFound`).
+    Absent,
+    /// The file exists but the read did not succeed cleanly — permission
+    /// error, or a read racing a concurrent non-atomic writer. Carries the
+    /// path and the `io::ErrorKind` (as its `Debug` name) so the rendered
+    /// state names the failure instead of silently degrading to "not
+    /// found".
+    Failed {
+        path: std::path::PathBuf,
+        kind: String,
+    },
+    /// The read succeeded; contents follow.
+    Ok(String),
+}
+
+/// Read a markdown document, splitting `std::fs::read_to_string`'s single
+/// `Result` into the three outcomes a reader must render differently: file
+/// absent, read failed/torn, or read succeeded. Pure I/O shell — the
+/// three-way split itself is the testable decision (see
+/// `read_document_distinguishes_absent_from_failed` below).
+pub fn read_document(path: &std::path::Path) -> DocumentRead {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => DocumentRead::Ok(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentRead::Absent,
+        Err(e) => DocumentRead::Failed {
+            path: path.to_path_buf(),
+            kind: format!("{:?}", e.kind()),
+        },
+    }
+}
+
+/// Render a `DocumentRead` to the markdown string handed to `strip_frontmatter`
+/// / `render_with_edit`. `absent_message` preserves each call site's existing
+/// "No <path> found." wording for the ordinary absent case; a failed/torn
+/// read renders its own named state instead, never the absent-file text and
+/// never partially-read content.
+pub fn render_document_markdown(read: &DocumentRead, absent_message: &str) -> String {
+    match read {
+        DocumentRead::Ok(contents) => contents.clone(),
+        DocumentRead::Absent => absent_message.to_string(),
+        DocumentRead::Failed { path, kind } => {
+            format!("**Read failed:** `{}` ({kind})", path.display())
+        }
+    }
+}
+
 /// Preferred (`MIN_HEIGHT`..=`MAX_HEIGHT`) total height (borders + rows) for the
 /// always-on bottom "agents · priority" strip, given how many sessions it needs
 /// to show and the full frame height. Grows with `row_count` up to `MAX_HEIGHT`,
@@ -338,8 +400,9 @@ fn draw_with_root(
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             let file_path = tier_status_path(&brain_root, &tier_name);
 
-            let raw_md = std::fs::read_to_string(&file_path)
-                .unwrap_or_else(|_| format!("No {} found.", file_path.display()));
+            let doc = read_document(&file_path);
+            let raw_md =
+                render_document_markdown(&doc, &format!("No {} found.", file_path.display()));
             let status_md = strip_frontmatter(&raw_md).to_owned();
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
             let rendered = bella_engine::render_with_edit(
@@ -412,8 +475,8 @@ fn draw_with_root(
                 None => planning_root.join("status.md"),
             };
 
-            let raw_md = std::fs::read_to_string(&file_path)
-                .unwrap_or_else(|_| "No planning/status.md found.".to_string());
+            let doc = read_document(&file_path);
+            let raw_md = render_document_markdown(&doc, "No planning/status.md found.");
             // Strip YAML frontmatter before handing to bella.
             let status_md = strip_frontmatter(&raw_md).to_owned();
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
@@ -671,6 +734,82 @@ pub fn draw_for_test(
 mod tests {
     use super::*;
     use crate::sessions::model::SessionState;
+
+    // ── read_document / render_document_markdown (BA.26.B task 7,
+    // "CONCURRENCY WITH REFRESH") ───────────────────────────────────────────
+    // Asserts on the `DocumentRead` state VALUE, not on rendered placeholder
+    // text — a string assertion would keep passing after someone edits the
+    // wording, which is exactly the failure mode this criterion exists to
+    // prevent. Absent and failed are exercised in the SAME test so the two
+    // are provably distinguishable rather than merely each individually
+    // non-panicking.
+
+    #[test]
+    fn read_document_distinguishes_absent_from_failed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Absent: the ordinary "nothing here yet" case.
+        let absent_path = tmp.path().join("does-not-exist.md");
+        assert_eq!(read_document(&absent_path), DocumentRead::Absent);
+
+        // Failed/torn: a real io error that is NOT "not found". A directory
+        // can't be read as a file, so `read_to_string` errors with a
+        // platform io::ErrorKind other than NotFound — standing in for the
+        // torn/racing-writer read this AC targets, without depending on
+        // actually winning a real race in a unit test.
+        let dir_path = tmp.path().join("a-directory");
+        std::fs::create_dir(&dir_path).expect("create_dir");
+        match read_document(&dir_path) {
+            DocumentRead::Failed { path, kind } => {
+                assert_eq!(path, dir_path);
+                assert_ne!(kind, "NotFound");
+            }
+            other => panic!("expected DocumentRead::Failed for a directory path, got {other:?}"),
+        }
+
+        // The two outcomes must be distinct states, not the same value
+        // reached two different ways.
+        assert_ne!(read_document(&absent_path), read_document(&dir_path));
+    }
+
+    #[test]
+    fn read_document_ok_on_successful_read() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file_path = tmp.path().join("status.md");
+        std::fs::write(&file_path, "# Hello\n").expect("write");
+        assert_eq!(
+            read_document(&file_path),
+            DocumentRead::Ok("# Hello\n".to_string())
+        );
+    }
+
+    #[test]
+    fn render_document_markdown_absent_uses_the_absent_message_only() {
+        let rendered = render_document_markdown(&DocumentRead::Absent, "No status.md found.");
+        assert_eq!(rendered, "No status.md found.");
+    }
+
+    #[test]
+    fn render_document_markdown_failed_never_uses_absent_message_or_content() {
+        let failed = DocumentRead::Failed {
+            path: std::path::PathBuf::from("/planning/status.md"),
+            kind: "Other".to_string(),
+        };
+        let rendered = render_document_markdown(&failed, "No status.md found.");
+        // Must not collapse to the absent-file placeholder...
+        assert_ne!(rendered, "No status.md found.");
+        // ...and must name the path and the error kind, so a torn read is
+        // never silently rendered as ordinary content either.
+        assert!(rendered.contains("/planning/status.md"));
+        assert!(rendered.contains("Other"));
+    }
+
+    #[test]
+    fn render_document_markdown_ok_renders_the_content_verbatim() {
+        let ok = DocumentRead::Ok("# Real content\n".to_string());
+        let rendered = render_document_markdown(&ok, "No status.md found.");
+        assert_eq!(rendered, "# Real content\n");
+    }
 
     // ── strip_frontmatter (AC-7, BA.26.B task 6) ──────────────────────────
     // Pins the two behaviours bastion keeps on top of delegating fence
