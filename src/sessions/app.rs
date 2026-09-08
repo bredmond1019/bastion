@@ -145,6 +145,15 @@ pub struct AppState {
     /// (BA.26.A) — empty unless [`AppState::with_offered_views`] was called.
     /// Appended to `spine_rows()`'s output after every tier/space row.
     pub offered_views: Vec<OfferedView>,
+    /// Persisted click-to-expand table state (BA.26.B task 1), keyed by each
+    /// table's source byte offset — bella's `TableExpansions`. Held here
+    /// deliberately: bella's `render_table_row` already implements the wrap
+    /// branch and its byte-offset keying already survives a re-render on its
+    /// own, but a `TableExpansions::new()` constructed fresh inside a draw
+    /// call (the bug this field fixes) throws that state away every frame.
+    /// Both `render_with_edit` call sites in `sessions/ui.rs` must read this
+    /// field, never construct their own map.
+    pub table_expansions: bella_engine::links::TableExpansions,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -168,6 +177,7 @@ impl AppState {
             markdown_overlay: None,
             pane_areas: PaneAreas::default(),
             offered_views: Vec::new(),
+            table_expansions: bella_engine::links::TableExpansions::new(),
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.

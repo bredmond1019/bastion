@@ -309,14 +309,13 @@ fn draw_with_root(
                 .unwrap_or_else(|_| format!("No {} found.", file_path.display()));
             let status_md = strip_frontmatter(&raw_md).to_owned();
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
-            let tables = bella_engine::links::TableExpansions::new();
             let rendered = bella_engine::render_with_edit(
                 &status_md,
                 None,
                 content_area.width.saturating_sub(2), // account for borders
                 &theme,
                 None,
-                &tables,
+                &app.table_expansions,
             );
             let tier_block = crate::ui_theme::themed_block(
                 Span::styled(format!(" {tier_name} "), crate::ui_theme::title_style()),
@@ -373,14 +372,13 @@ fn draw_with_root(
             // Strip YAML frontmatter before handing to bella.
             let status_md = strip_frontmatter(&raw_md).to_owned();
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
-            let tables = bella_engine::links::TableExpansions::new();
             let rendered = bella_engine::render_with_edit(
                 &status_md,
                 None,
                 content_area.width.saturating_sub(2), // account for borders
                 &theme,
                 None,
-                &tables,
+                &app.table_expansions,
             );
             let paragraph = Paragraph::new(rendered.lines)
                 .block(content_block)
@@ -956,6 +954,183 @@ mod tests {
             text.contains("sentinel-guarded"),
             "expected the surrounding Momentum bullet text to render: {text}"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Table expansion persistence (BA.26.B task 1) ────────────────────────
+    //
+    // The defect: `bella_engine::links::TableExpansions::new()` was constructed
+    // fresh inside the draw call at both `render_with_edit` call sites, so
+    // `expanded(i)` was always false and every cell took the truncate branch
+    // forever. bella already implements the wrap branch and hit-test geometry
+    // (`render_table_row`, `TableMap::hit`) — the bug is entirely on bastion's
+    // side: it never held the map anywhere that survives a redraw.
+
+    /// Flatten a `Vec<Line>` (as returned by `bella_engine::render_with_edit`)
+    /// to plain text for substring assertions, without needing a `Frame`.
+    fn rendered_lines_to_string(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A markdown source with one table whose single cell is far wider than an
+    /// 80-column pane can show untruncated, so the wrap-vs-clip branches are
+    /// actually exercised at the width this repo renders at.
+    const WIDE_TABLE_MD: &str = "# T\n\n\
+        | Col |\n\
+        | --- |\n\
+        | This cell holds a long run of prose text that is deliberately wider \
+          than an eighty column pane so that truncation or wrapping has \
+          something real to do once the table is laid out at that width |\n";
+
+    /// AC-1, SHOWN FAILING pattern: render the same table twice at the same
+    /// 80-column-pane width — once through a freshly-constructed
+    /// `TableExpansions` (the pre-change behaviour: always clips with an
+    /// ellipsis) and once through a map with that table's one cell marked
+    /// expanded (wraps to multiple lines instead). Asserting both directions
+    /// in one test is what proves the test can actually tell them apart.
+    #[test]
+    fn expanded_cell_wraps_fresh_map_clips() {
+        let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
+        let width: u16 = 78; // matches an 80-col pane minus the 2-col border allowance
+
+        let fresh = bella_engine::links::TableExpansions::new();
+        let clipped =
+            bella_engine::render_with_edit(WIDE_TABLE_MD, None, width, &theme, None, &fresh);
+        let clipped_text = rendered_lines_to_string(&clipped.lines);
+        assert!(
+            clipped_text.contains('…'),
+            "a freshly-constructed TableExpansions (pre-change behaviour) must still clip \
+             with an ellipsis at this width: {clipped_text}"
+        );
+
+        let id = clipped
+            .table_map
+            .regions
+            .first()
+            .expect("WIDE_TABLE_MD must lay out exactly one table region")
+            .id;
+        let mut expanded_map = bella_engine::links::TableExpansions::new();
+        expanded_map.insert(
+            id,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: Default::default(),
+                cells: std::iter::once((0usize, 0usize)).collect(),
+            },
+        );
+        let wrapped =
+            bella_engine::render_with_edit(WIDE_TABLE_MD, None, width, &theme, None, &expanded_map);
+        let wrapped_text = rendered_lines_to_string(&wrapped.lines);
+        assert!(
+            !wrapped_text.contains('…'),
+            "an expanded cell must wrap rather than clip: {wrapped_text}"
+        );
+        assert!(
+            wrapped.lines.len() > clipped.lines.len(),
+            "wrapping an expanded cell must add display lines versus the clipped render \
+             (clipped={}, wrapped={})",
+            clipped.lines.len(),
+            wrapped.lines.len()
+        );
+    }
+
+    /// AC-2 (the actual defect this task fixes): expand a cell through the
+    /// `AppState`-held map, force `draw_with_root` to re-render twice, and
+    /// assert the expansion is still in effect both times. A test that builds
+    /// its own `TableExpansions` locally does not exercise this — bella's
+    /// byte-offset keying already survives a re-render; what did not survive
+    /// is bastion discarding the map inside the draw call.
+    #[test]
+    fn table_expansion_survives_rerender_via_app_state() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = crate::testsupport::unique_temp_dir("bastion-ui-table-expand-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("status.md"), WIDE_TABLE_MD).expect("write status.md");
+
+        // A `"_root"`-tagged tier routes to the `Hq` spine row, whose content
+        // pane reads `<planning_root>/status.md` (mirrors the sentinel test
+        // above).
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+
+        // First draw: no expansion set yet — must clip (pre-change behaviour),
+        // and it also gives us the exact content-pane width `draw_with_root`
+        // computed, so the table id we key off matches production exactly.
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir);
+            })
+            .expect("draw must not panic");
+        let first_buf = terminal.backend().buffer().clone();
+        assert!(
+            buf_to_string(&first_buf).contains('…'),
+            "unexpanded first draw must clip"
+        );
+
+        let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
+        let content_width = app.pane_areas.content.width.saturating_sub(2);
+        let stripped = strip_frontmatter(WIDE_TABLE_MD).to_owned();
+        let baseline = bella_engine::render_with_edit(
+            &stripped,
+            None,
+            content_width,
+            &theme,
+            None,
+            &bella_engine::links::TableExpansions::new(),
+        );
+        let id = baseline
+            .table_map
+            .regions
+            .first()
+            .expect("WIDE_TABLE_MD must lay out exactly one table region")
+            .id;
+        app.table_expansions.insert(
+            id,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: Default::default(),
+                cells: std::iter::once((0usize, 0usize)).collect(),
+            },
+        );
+
+        // Re-render TWICE with no further mutation of `table_expansions` —
+        // proving the map is read from persisted `AppState`, not rebuilt.
+        for attempt in 0..2 {
+            terminal
+                .draw(|f| {
+                    let mut list_state = ratatui::widgets::ListState::default();
+                    draw_with_root(f, &mut app, &mut list_state, &dir);
+                })
+                .expect("draw must not panic");
+            let buf = terminal.backend().buffer().clone();
+            let text = buf_to_string(&buf);
+            assert!(
+                !text.contains('…'),
+                "expansion must still be in effect on re-render #{attempt}: {text}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
