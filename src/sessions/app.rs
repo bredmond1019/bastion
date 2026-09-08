@@ -117,6 +117,58 @@ pub enum Action {
     None,
 }
 
+/// One Normal-mode global keybinding advertised in the footer (BA.26.B task
+/// 4). `label`'s first character MUST equal `key` — `sessions::ui::footer_hint`
+/// renders each entry as `[key]rest-of-label` (e.g. `key: 'a', label:
+/// "attach"` -> `"[a]ttach"`), so a mismatched pair renders wrong rather than
+/// failing loudly; the render-side debug_assert catches it in tests/debug
+/// builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyBinding {
+    pub key: char,
+    pub label: &'static str,
+}
+
+/// Single source of truth for the Normal-mode key legend. `sessions::ui::footer_hint`
+/// renders exactly this list rather than a hand-maintained string, so the
+/// footer can never advertise a key this list doesn't carry. The matching
+/// half of the contract — that every key listed here actually resolves to a
+/// bound handler in `on_key`, not the catch-all `_ => Action::None` — is
+/// asserted by `tests::footer_normal_key_bindings_each_resolve_to_a_bound_handler`
+/// below, which walks this exact list.
+pub const NORMAL_KEY_BINDINGS: &[KeyBinding] = &[
+    KeyBinding {
+        key: 'a',
+        label: "attach",
+    },
+    KeyBinding {
+        key: 'n',
+        label: "new",
+    },
+    KeyBinding {
+        key: 's',
+        label: "send",
+    },
+    KeyBinding {
+        key: 'k',
+        label: "kill",
+    },
+    KeyBinding {
+        key: 'v',
+        label: "view",
+    },
+    KeyBinding {
+        key: 'q',
+        label: "quit",
+    },
+    // The one new keybinding this block introduces (task 2) — content-pane
+    // only, but still advertised globally in the footer legend.
+    KeyBinding {
+        key: 'e',
+        label: "expand cell",
+    },
+];
+
 /// State for the interactive session dashboard.
 pub struct AppState {
     pub sessions: Vec<Session>,
@@ -134,10 +186,6 @@ pub struct AppState {
     pub space_overview_scroll: u16,
     pub overview_pane: OverviewPane,
     pub space_overview_file: Option<std::path::PathBuf>,
-    /// Transient full-screen markdown overlay flag, set by the `t` ("open") key in the
-    /// file browser. Replaces the old tab-push behaviour; overlay rendering/close-key
-    /// polish is deferred to a later block.
-    pub markdown_overlay: Option<std::path::PathBuf>,
     /// Per-pane viewport `Rect`s from the most recent draw (BA.13.2). Zeroed
     /// (all-default) until the first draw runs.
     pub pane_areas: PaneAreas,
@@ -145,6 +193,32 @@ pub struct AppState {
     /// (BA.26.A) — empty unless [`AppState::with_offered_views`] was called.
     /// Appended to `spine_rows()`'s output after every tier/space row.
     pub offered_views: Vec<OfferedView>,
+    /// Persisted click-to-expand table state (BA.26.B task 1), keyed by each
+    /// table's source byte offset — bella's `TableExpansions`. Held here
+    /// deliberately: bella's `render_table_row` already implements the wrap
+    /// branch and its byte-offset keying already survives a re-render on its
+    /// own, but a `TableExpansions::new()` constructed fresh inside a draw
+    /// call (the bug this field fixes) throws that state away every frame.
+    /// Both `render_with_edit` call sites in `sessions/ui.rs` must read this
+    /// field, never construct their own map.
+    pub table_expansions: bella_engine::links::TableExpansions,
+    /// Hit-test geometry for whichever table-bearing document the content
+    /// pane rendered most recently (BA.26.B task 2), produced by
+    /// `bella_engine::render_with_edit`'s `Rendered::table_map` and copied
+    /// here by `sessions/ui.rs` after every draw of the Tier / Space-overview
+    /// content pane. Held on `AppState` — not `PaneAreas` — because it keys
+    /// clicks to table *cells*, not panes; `handle_click`'s content arm reads
+    /// it to resolve `(line, col)` to a `TableHit` via `TableMap::hit`.
+    /// Default (empty) before the first draw and whenever the content pane is
+    /// showing something with no table map (Mission Control), so a stray
+    /// click there cannot resolve a stale hit.
+    pub content_table_map: bella_engine::links::TableMap,
+    /// The most recent table hit resolved by a content-pane click (BA.26.B
+    /// task 2) — the "selected cell" the expand/collapse key re-targets.
+    /// Only updated on a hit (never cleared by a miss), so scrolling or
+    /// clicking a stray non-table part of the content pane does not lose
+    /// the toggle target the key press repeats.
+    pub selected_table_hit: Option<(u64, bella_engine::links::TableHit)>,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -165,9 +239,11 @@ impl AppState {
             space_overview_scroll: 0,
             overview_pane: OverviewPane::Sidebar,
             space_overview_file: None,
-            markdown_overlay: None,
             pane_areas: PaneAreas::default(),
             offered_views: Vec::new(),
+            table_expansions: bella_engine::links::TableExpansions::new(),
+            content_table_map: bella_engine::links::TableMap::default(),
+            selected_table_hit: None,
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.
@@ -442,19 +518,6 @@ impl AppState {
                                     }
                                     return Action::None;
                                 }
-                                KeyCode::Char('t') => {
-                                    if let Some(entry) = self.file_browser.selected_entry() {
-                                        let is_md = entry.kind
-                                            == bella_engine::browser::BrowserEntryKind::Markdown;
-                                        if is_md {
-                                            // Transient full-screen overlay flag — replaces
-                                            // the old tab-push. Overlay rendering/close-key
-                                            // polish is deferred.
-                                            self.markdown_overlay = Some(entry.path.clone());
-                                        }
-                                    }
-                                    return Action::None;
-                                }
                                 KeyCode::Backspace => {
                                     if let Some(parent) = self.file_browser.ascend_target() {
                                         let mut b = bella_engine::browser::Browser::new(parent);
@@ -468,23 +531,19 @@ impl AppState {
                         }
                         OverviewPane::Content => match key {
                             KeyCode::PageUp => {
-                                self.space_overview_scroll =
-                                    self.space_overview_scroll.saturating_sub(10);
+                                self.scroll_content_view(-10);
                                 return Action::None;
                             }
                             KeyCode::PageDown => {
-                                self.space_overview_scroll =
-                                    self.space_overview_scroll.saturating_add(10);
+                                self.scroll_content_view(10);
                                 return Action::None;
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                self.space_overview_scroll =
-                                    self.space_overview_scroll.saturating_sub(1);
+                                self.scroll_content_view(-1);
                                 return Action::None;
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                self.space_overview_scroll =
-                                    self.space_overview_scroll.saturating_add(1);
+                                self.scroll_content_view(1);
                                 return Action::None;
                             }
                             _ => {}
@@ -564,6 +623,20 @@ impl AppState {
                         // declared `[views]` destination in ONE keypress from anywhere
                         // in the spine, including boot — see `jump_to_next_view`.
                         self.jump_to_next_view();
+                        Action::None
+                    }
+                    // Expand/collapse the selected table cell (BA.26.B task 2) — the
+                    // one new keybinding this block introduces. Guarded on the
+                    // content pane being focused (matching where a click can set
+                    // `selected_table_hit` in the first place); a global binding
+                    // would fire the same toggle from the sidebar/browser, where
+                    // there is no content-pane table to target. Re-targets whatever
+                    // `selected_table_hit` last resolved to — `None` before any
+                    // click has hit a table is a no-op via `toggle_table_hit`, not
+                    // a special case here.
+                    KeyCode::Char('e') if self.overview_pane == OverviewPane::Content => {
+                        self.table_expansions =
+                            toggle_table_hit(self.selected_table_hit, &self.table_expansions);
                         Action::None
                     }
                     _ => Action::None,
@@ -683,22 +756,46 @@ impl AppState {
             }
         } else if bella_engine::geometry::point_in(self.pane_areas.content, col, row) {
             self.overview_pane = OverviewPane::Content;
+            // Map the click to the content pane's rendered (line, col) —
+            // subtracting the block's one-row/one-col top-left border and
+            // adding the vertical scroll offset — then resolve it against
+            // `content_table_map`, the hit-test geometry `sessions/ui.rs`
+            // copied from the last render (BA.26.B task 2). Guard the
+            // border subtraction explicitly: `row`/`col` land inside
+            // `pane_areas.content` (the `point_in` check above), but that
+            // still includes the border rows/cols themselves, and a bare
+            // `row - inner_top` there would underflow (u16) and panic.
+            let inner_top = self.pane_areas.content.y + 1;
+            let inner_left = self.pane_areas.content.x + 1;
+            let hit = if row >= inner_top && col >= inner_left {
+                let line = (row - inner_top) as usize + self.space_overview_scroll as usize;
+                let hit_col = (col - inner_left) as usize;
+                self.content_table_map.hit(line, hit_col)
+            } else {
+                None
+            };
+            if hit.is_some() {
+                self.selected_table_hit = hit;
+            }
+            // Thin shell over the pure decision (`toggle_table_hit`): a miss
+            // (`hit` is `None`, whether from a border click or a click that
+            // lands inside the pane but outside every table region) leaves
+            // `table_expansions` unchanged rather than panicking or no-oping
+            // ambiguously.
+            self.table_expansions = toggle_table_hit(hit, &self.table_expansions);
         }
         // Click outside every stored pane (including all-zero default areas
         // before the first draw): no-op.
     }
 
     /// Route a wheel event by which pane the pointer is hovering over.
-    /// Content scrolls `space_overview_scroll`; browser moves the file-browser
+    /// Content scrolls `space_overview_scroll` (via `scroll_content_view`, the
+    /// same reconciled path the keyboard uses); browser moves the file-browser
     /// cursor; spine moves the primary-navigation selection. Anywhere else is
     /// a no-op.
     fn handle_scroll(&mut self, col: u16, row: u16, up: bool) {
         if bella_engine::geometry::point_in(self.pane_areas.content, col, row) {
-            self.space_overview_scroll = if up {
-                self.space_overview_scroll.saturating_sub(1)
-            } else {
-                self.space_overview_scroll.saturating_add(1)
-            };
+            self.scroll_content_view(if up { -1 } else { 1 });
         } else if bella_engine::geometry::point_in(self.pane_areas.browser, col, row) {
             // Two rows of border consumed top+bottom of the browser block.
             let viewport_h = self.pane_areas.browser.height.saturating_sub(2);
@@ -712,6 +809,68 @@ impl AppState {
             }
         }
     }
+
+    /// Apply `delta` to the content pane's viewport offset — the ONE
+    /// representation both the keyboard (`on_key`'s `OverviewPane::Content`
+    /// arm) and the mouse (`handle_scroll`'s content branch) read and write
+    /// (BA.26.B task 3). Before this, both paths hand-rolled the same
+    /// saturating add/sub against `space_overview_scroll` independently —
+    /// two call sites doing identical arithmetic is exactly where a future
+    /// edit to one and not the other would make keyboard and mouse scrolling
+    /// disagree. Routing both through this single method makes that
+    /// structurally impossible rather than merely coincidentally true today.
+    ///
+    /// A negative `delta` scrolls up, a positive `delta` scrolls down.
+    /// Clamped at the top to `0` (never underflows) and at the bottom to
+    /// `u16::MAX` (never overflows) — the same saturating bound for both
+    /// directions regardless of which path drove it, so a keyboard scroll
+    /// and a mouse scroll that both run past either boundary land on the
+    /// identical clamped value.
+    fn scroll_content_view(&mut self, delta: i32) {
+        let current = i32::from(self.space_overview_scroll);
+        let next = current.saturating_add(delta).clamp(0, i32::from(u16::MAX));
+        self.space_overview_scroll = next as u16;
+    }
+}
+
+/// Pure hit→toggle decision for click-to-expand tables (BA.26.B task 2).
+/// Given what a click/key resolved to (`hit`, from `TableMap::hit`) and the
+/// current persisted expansion map, returns the map with that target's
+/// expansion flipped — the whole table for `TableHit::All`, one column for
+/// `TableHit::Column`, one cell for `TableHit::Cell`. `hit` being `None` (a
+/// miss — the click landed outside every table region) returns a clone of
+/// `map` unchanged, never panics. Kept free of any `AppState`/`Frame`
+/// dependency so both `handle_click` and the expand/collapse key are thin
+/// shells that call straight through to this, and so a direct unit test can
+/// assert the resulting map element-by-element without a render pass.
+fn toggle_table_hit(
+    hit: Option<(u64, bella_engine::links::TableHit)>,
+    map: &bella_engine::links::TableExpansions,
+) -> bella_engine::links::TableExpansions {
+    use bella_engine::links::TableHit;
+
+    let Some((id, hit)) = hit else {
+        return map.clone();
+    };
+    let mut next = map.clone();
+    let entry = next.entry(id).or_default();
+    match hit {
+        TableHit::All => entry.all = !entry.all,
+        TableHit::Column(c) => {
+            if !entry.cols.remove(&c) {
+                entry.cols.insert(c);
+            }
+        }
+        TableHit::Cell(r, c) => {
+            if !entry.cells.remove(&(r, c)) {
+                entry.cells.insert((r, c));
+            }
+        }
+    }
+    if entry.is_empty() {
+        next.remove(&id);
+    }
+    next
 }
 
 /// Map a click row to an in-list index, accounting for the enclosing block's
@@ -1208,27 +1367,97 @@ mod tests {
         assert!(app.should_quit);
     }
 
-    #[test]
-    fn t_key_sets_markdown_overlay_on_markdown_entry() {
-        // Land on a Space row so `is_space_overview` gates the browser keys.
-        let mut app = make_app(&make_sessions(&["alpha"]));
-        app.selected_spine = 2;
-        app.reinit_browser();
-        app.overview_pane = OverviewPane::Browser;
-        app.file_browser.entries = vec![bella_engine::browser::BrowserEntry {
-            path: std::path::PathBuf::from("alpha/README.md"),
-            display: "README.md".to_string(),
-            kind: bella_engine::browser::BrowserEntryKind::Markdown,
-        }];
-        app.file_browser.selected = 0;
-        assert!(app.markdown_overlay.is_none());
+    // ── footer legend / bound-key contract (BA.26.B task 4) ────────────────────
 
-        let action = app.on_key(KeyCode::Char('t'));
-        assert_eq!(action, Action::None);
-        assert_eq!(
-            app.markdown_overlay,
-            Some(std::path::PathBuf::from("alpha/README.md"))
-        );
+    #[test]
+    fn footer_normal_key_bindings_each_resolve_to_a_bound_handler() {
+        // `sessions::ui::footer_hint` renders NORMAL_KEY_BINDINGS directly
+        // (single source of truth), so a key can only be advertised in the
+        // footer if it is listed there. This is the other half of that
+        // contract: walk the SAME list and drive each key through `on_key`,
+        // asserting it lands on ITS OWN handler rather than the catch-all
+        // `_ => Action::None` fallthrough — over the pure key set, not by
+        // reading the rendered footer string.
+        for binding in NORMAL_KEY_BINDINGS {
+            match binding.key {
+                'a' => {
+                    let mut app = make_app(&make_sessions(&["s1"]));
+                    app.selected_spine = 2;
+                    app.reinit_browser();
+                    let action = app.on_key(KeyCode::Char('a'));
+                    assert_eq!(
+                        action,
+                        Action::Attach("s1".into()),
+                        "footer key 'a' did not resolve to a bound handler"
+                    );
+                }
+                'n' => {
+                    let mut app = make_empty_app();
+                    app.on_key(KeyCode::Char('n'));
+                    assert_eq!(
+                        app.mode,
+                        Mode::Input(InputKind::New),
+                        "footer key 'n' did not resolve to a bound handler"
+                    );
+                }
+                's' => {
+                    let mut app = make_app(&make_sessions(&["s1"]));
+                    app.selected_spine = 2;
+                    app.reinit_browser();
+                    app.on_key(KeyCode::Char('s'));
+                    assert_eq!(
+                        app.mode,
+                        Mode::Input(InputKind::Send),
+                        "footer key 's' did not resolve to a bound handler"
+                    );
+                }
+                'k' => {
+                    let mut app = make_app(&make_sessions(&["victim"]));
+                    app.selected_spine = 2;
+                    app.reinit_browser();
+                    let action = app.on_key(KeyCode::Char('k'));
+                    assert_eq!(
+                        action,
+                        Action::Kill("victim".into()),
+                        "footer key 'k' did not resolve to a bound handler"
+                    );
+                }
+                'v' => {
+                    let (mut app, view_index) = make_full_app_with_view();
+                    app.on_key(KeyCode::Char('v'));
+                    assert_eq!(
+                        app.selected_spine, view_index,
+                        "footer key 'v' did not resolve to a bound handler"
+                    );
+                }
+                'q' => {
+                    let mut app = make_empty_app();
+                    app.on_key(KeyCode::Char('q'));
+                    assert!(
+                        app.should_quit,
+                        "footer key 'q' did not resolve to a bound handler"
+                    );
+                }
+                'e' => {
+                    let mut app = make_full_app_with_panes();
+                    app.overview_pane = OverviewPane::Content;
+                    app.selected_table_hit = Some((42, bella_engine::links::TableHit::All));
+                    app.on_key(KeyCode::Char('e'));
+                    assert!(
+                        app.table_expansions
+                            .get(&42)
+                            .map(|e| e.all)
+                            .unwrap_or(false),
+                        "footer key 'e' did not resolve to a bound handler"
+                    );
+                }
+                other => panic!(
+                    "footer advertises key '{other}' with no bound-handler assertion \
+                     registered in this test — add one before shipping the binding, so an \
+                     entry can never be advertised without also being tested as wired"
+                ),
+            }
+        }
     }
 
     // ── on_key: Input mode ────────────────────────────────────────────────────
@@ -1614,6 +1843,197 @@ mod tests {
         assert_eq!(app.overview_pane, OverviewPane::Content);
     }
 
+    // -- click-to-expand tables (BA.26.B task 2) --------------------------------------
+
+    /// One table region at display lines 0..5 inside the content pane's own
+    /// (unscrolled) coordinate space: line 0/2/4 border, line 1 header
+    /// (col_x-mapped), line 3 the single body row. Two columns, `col_x`
+    /// `[(1,5),(6,10)]`, so a hit at local col 2 lands in column 0 and a hit
+    /// at local col 7 lands in column 1.
+    fn sample_table_map() -> bella_engine::links::TableMap {
+        use bella_engine::links::{TableMap, TableRegion};
+        TableMap {
+            regions: vec![TableRegion {
+                id: 42,
+                line_start: 0,
+                line_end: 5,
+                border_lines: vec![0, 2, 4],
+                header_start: 1,
+                header_end: 2,
+                col_x: vec![(1, 5), (6, 10)],
+                border_x: vec![0, 5, 10],
+                body_rows: vec![(3, 4)],
+            }],
+        }
+    }
+
+    #[test]
+    fn toggle_table_hit_none_is_a_noop_clone() {
+        let map = bella_engine::links::TableExpansions::new();
+        let next = toggle_table_hit(None, &map);
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn toggle_table_hit_all_flips_and_untoggling_removes_the_entry() {
+        let map = bella_engine::links::TableExpansions::new();
+        let on = toggle_table_hit(Some((7, bella_engine::links::TableHit::All)), &map);
+        assert!(on.get(&7).expect("entry created").all);
+        let off = toggle_table_hit(Some((7, bella_engine::links::TableHit::All)), &on);
+        assert!(
+            !off.contains_key(&7),
+            "an all-empty entry is dropped, not left as a false-everything struct"
+        );
+    }
+
+    #[test]
+    fn toggle_table_hit_column_is_independent_of_other_columns() {
+        let map = bella_engine::links::TableExpansions::new();
+        let step1 = toggle_table_hit(Some((3, bella_engine::links::TableHit::Column(2))), &map);
+        assert!(step1.get(&3).unwrap().cols.contains(&2));
+        let step2 = toggle_table_hit(Some((3, bella_engine::links::TableHit::Column(5))), &step1);
+        let entry = step2.get(&3).unwrap();
+        assert!(entry.cols.contains(&2));
+        assert!(entry.cols.contains(&5));
+        let step3 = toggle_table_hit(Some((3, bella_engine::links::TableHit::Column(2))), &step2);
+        let entry = step3.get(&3).unwrap();
+        assert!(!entry.cols.contains(&2));
+        assert!(entry.cols.contains(&5));
+    }
+
+    #[test]
+    fn toggle_table_hit_cell_leaves_the_rest_of_the_entry_untouched() {
+        let mut map = bella_engine::links::TableExpansions::new();
+        let existing = bella_engine::links::TableExpand {
+            all: true,
+            ..Default::default()
+        };
+        map.insert(9, existing);
+        let next = toggle_table_hit(Some((9, bella_engine::links::TableHit::Cell(1, 2))), &map);
+        let entry = next.get(&9).unwrap();
+        assert!(entry.all, "unrelated `all` flag must survive a cell toggle");
+        assert!(entry.cells.contains(&(1, 2)));
+    }
+
+    #[test]
+    fn click_on_table_body_cell_toggles_it_and_records_the_selection() {
+        let mut app = make_full_app_with_panes();
+        app.content_table_map = sample_table_map();
+        app.overview_pane = OverviewPane::Sidebar;
+
+        // content area is Rect::new(60, 0, 20, 16); inner top/left border is
+        // at (61, 1). Local (line, col) = (3, 2) -> screen (63, 4).
+        let action = app.on_mouse(left_click(63, 4));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(app.overview_pane, OverviewPane::Content);
+        assert_eq!(
+            app.selected_table_hit,
+            Some((42, bella_engine::links::TableHit::Cell(0, 0)))
+        );
+        assert!(
+            app.table_expansions
+                .get(&42)
+                .expect("cell hit creates the table's entry")
+                .cells
+                .contains(&(0, 0))
+        );
+    }
+
+    #[test]
+    fn click_on_table_header_cell_toggles_the_column() {
+        let mut app = make_full_app_with_panes();
+        app.content_table_map = sample_table_map();
+
+        // Local (line, col) = (1, 7) -> screen (68, 2); col 7 falls in
+        // col_x[1] = (6, 10) -> column index 1.
+        app.on_mouse(left_click(68, 2));
+
+        assert_eq!(
+            app.selected_table_hit,
+            Some((42, bella_engine::links::TableHit::Column(1)))
+        );
+        assert!(app.table_expansions.get(&42).unwrap().cols.contains(&1));
+    }
+
+    #[test]
+    fn click_missing_every_table_region_leaves_the_map_unchanged_and_keeps_the_selection() {
+        let mut app = make_full_app_with_panes();
+        app.content_table_map = sample_table_map();
+        app.table_expansions.insert(42, {
+            let mut e = bella_engine::links::TableExpand::default();
+            e.cols.insert(1);
+            e
+        });
+        app.selected_table_hit = Some((42, bella_engine::links::TableHit::Column(1)));
+
+        // Local line = row(10) - inner_top(1) = 9, past `line_end` (5) — a
+        // click inside the content pane but outside every table region.
+        let action = app.on_mouse(left_click(63, 10));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(app.overview_pane, OverviewPane::Content);
+        let entry = app.table_expansions.get(&42).unwrap();
+        assert!(entry.cols.contains(&1) && entry.cols.len() == 1 && entry.cells.is_empty());
+        // A miss does not clear whatever the last real hit was — the key
+        // toggle should still repeat it.
+        assert_eq!(
+            app.selected_table_hit,
+            Some((42, bella_engine::links::TableHit::Column(1)))
+        );
+    }
+
+    #[test]
+    fn click_on_content_pane_border_is_a_safe_miss_no_panic() {
+        let mut app = make_full_app_with_panes();
+        app.content_table_map = sample_table_map();
+        // (60, 0) is the content block's top-left border corner — inside
+        // `pane_areas.content` per `point_in`, but before the border-adjusted
+        // inner top/left used for line/col mapping. Must not underflow/panic.
+        let action = app.on_mouse(left_click(60, 0));
+        assert_eq!(action, Action::None);
+        assert!(app.table_expansions.is_empty());
+        assert_eq!(app.selected_table_hit, None);
+    }
+
+    #[test]
+    fn expand_key_repeats_the_toggle_for_the_selected_hit() {
+        let mut app = make_full_app_with_panes();
+        app.overview_pane = OverviewPane::Content;
+        app.selected_table_hit = Some((42, bella_engine::links::TableHit::All));
+
+        app.on_key(KeyCode::Char('e'));
+        assert!(app.table_expansions.get(&42).unwrap().all);
+
+        // Pressing it again toggles the same target back off.
+        app.on_key(KeyCode::Char('e'));
+        assert!(!app.table_expansions.contains_key(&42));
+    }
+
+    #[test]
+    fn expand_key_with_no_selection_yet_is_a_noop() {
+        let mut app = make_full_app_with_panes();
+        app.overview_pane = OverviewPane::Content;
+        assert_eq!(app.selected_table_hit, None);
+
+        app.on_key(KeyCode::Char('e'));
+        assert!(app.table_expansions.is_empty());
+    }
+
+    #[test]
+    fn expand_key_outside_the_content_pane_does_not_fire() {
+        let mut app = make_full_app_with_panes();
+        app.overview_pane = OverviewPane::Sidebar;
+        app.selected_table_hit = Some((42, bella_engine::links::TableHit::All));
+
+        app.on_key(KeyCode::Char('e'));
+
+        assert!(
+            app.table_expansions.is_empty(),
+            "the expand key is scoped to the content pane, not global"
+        );
+    }
+
     // -- click: outside every pane / before first draw -------------------------------
 
     #[test]
@@ -1655,6 +2075,80 @@ mod tests {
         app.space_overview_scroll = 0;
         app.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
         assert_eq!(app.space_overview_scroll, 0); // saturating, not underflowing
+    }
+
+    /// BA.26.B task 3 — keyboard and mouse scroll must land on the identical
+    /// `space_overview_scroll` value for the same logical movement, because
+    /// both now route through the single `scroll_content_view` method rather
+    /// than duplicating the saturating math. Drives both paths to the same
+    /// position from the same starting point and asserts equality, including
+    /// the top and past-bottom clamp boundaries — the disagreement the AC
+    /// calls out would only be visible by comparing both, never by
+    /// exercising one path alone.
+    #[test]
+    fn keyboard_and_mouse_scroll_reach_identical_viewport_state() {
+        // Content pane must be focused for the keyboard path to route there.
+        let mut via_keyboard = make_full_app_with_panes();
+        via_keyboard.selected_spine = 1;
+        via_keyboard.reinit_browser();
+        via_keyboard.overview_pane = OverviewPane::Content;
+
+        let mut via_mouse = make_full_app_with_panes();
+        via_mouse.selected_spine = 1;
+        via_mouse.reinit_browser();
+        // Mouse scroll routes purely off pointer position, not pane focus.
+
+        // Same logical movement: down 1, down 1, down 10 (PageDown / 12 wheel
+        // ticks), up 1. Mouse scroll steps by 1 per tick, so PageDown's 10 is
+        // reproduced as ten ScrollDown events.
+        via_keyboard.on_key(KeyCode::Down);
+        via_keyboard.on_key(KeyCode::Down);
+        via_keyboard.on_key(KeyCode::PageDown);
+        via_keyboard.on_key(KeyCode::Up);
+
+        for _ in 0..2 {
+            via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        }
+        for _ in 0..10 {
+            via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        }
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
+
+        assert_eq!(
+            via_keyboard.space_overview_scroll,
+            via_mouse.space_overview_scroll
+        );
+        assert_eq!(via_keyboard.space_overview_scroll, 11);
+
+        // Top clamp: from 0, scrolling up via either path lands on the same
+        // clamped value (0), never underflowing.
+        via_keyboard.space_overview_scroll = 0;
+        via_mouse.space_overview_scroll = 0;
+        via_keyboard.on_key(KeyCode::Up);
+        via_keyboard.on_key(KeyCode::PageUp);
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollUp, 65, 2));
+        assert_eq!(via_keyboard.space_overview_scroll, 0);
+        assert_eq!(via_mouse.space_overview_scroll, 0);
+        assert_eq!(
+            via_keyboard.space_overview_scroll,
+            via_mouse.space_overview_scroll
+        );
+
+        // Past-bottom clamp: from one below the maximum, scrolling down via
+        // either path lands on the same clamped value (u16::MAX), never
+        // overflowing or diverging between the two paths.
+        via_keyboard.space_overview_scroll = u16::MAX - 1;
+        via_mouse.space_overview_scroll = u16::MAX - 1;
+        via_keyboard.on_key(KeyCode::PageDown);
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        via_mouse.on_mouse(mouse_event(MouseEventKind::ScrollDown, 65, 2));
+        assert_eq!(via_keyboard.space_overview_scroll, u16::MAX);
+        assert_eq!(via_mouse.space_overview_scroll, u16::MAX);
+        assert_eq!(
+            via_keyboard.space_overview_scroll,
+            via_mouse.space_overview_scroll
+        );
     }
 
     #[test]

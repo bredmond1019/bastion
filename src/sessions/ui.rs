@@ -7,7 +7,7 @@
 use crate::brain::spaces::{SelectedNode, SpineRow};
 use crate::detect::AgentState;
 use crate::sessions::agent_panel::{AgentPanelRow, agent_panel_rows};
-use crate::sessions::app::{Action, AppState, InputKind, Mode};
+use crate::sessions::app::{Action, AppState, InputKind, Mode, NORMAL_KEY_BINDINGS};
 use crate::sessions::commands::{Degraded, degrade_tmux_error};
 use crate::sessions::model::{Pane, Session, parse_sessions};
 use crate::sessions::tmux::{self, TmuxError};
@@ -53,10 +53,32 @@ pub fn session_row(s: &Session) -> String {
 }
 
 /// Render the footer key legend (Normal mode) or the active input prompt.
+///
+/// Normal mode is rendered from `NORMAL_KEY_BINDINGS` (BA.26.B task 4) —
+/// the single source of truth for which keys the footer advertises — rather
+/// than a hand-maintained string, so a key can only appear here if it is
+/// listed there. See `AppState`'s `footer_normal_key_bindings_each_resolve_to_a_bound_handler`
+/// test for the other half of the contract: every listed key actually
+/// resolves to a bound `on_key` handler.
 pub fn footer_hint(mode: &Mode) -> String {
     match mode {
         Mode::Normal => {
-            "[a]ttach [n]ew [s]end [k]ill [v]iew [q]uit  ↑/j ↓/k move spine (wraps)".to_string()
+            let legend: Vec<String> = NORMAL_KEY_BINDINGS
+                .iter()
+                .map(|b| {
+                    let mut chars = b.label.chars();
+                    let first = chars
+                        .next()
+                        .expect("KeyBinding.label must be non-empty");
+                    debug_assert_eq!(
+                        first, b.key,
+                        "KeyBinding.label must start with its own key so `[x]abel` renders correctly: key={:?} label={:?}",
+                        b.key, b.label
+                    );
+                    format!("[{}]{}", b.key, chars.as_str())
+                })
+                .collect();
+            format!("{}  ↑/j ↓/k move spine (wraps)", legend.join(" "))
         }
         Mode::Input(InputKind::New) => "new session name (Enter=create, Esc=cancel): ".to_string(),
         Mode::Input(InputKind::Send) => "send to selected (Enter=send, Esc=cancel): ".to_string(),
@@ -81,22 +103,95 @@ pub fn tier_status_path(brain_root: &std::path::Path, tier: &str) -> std::path::
 
 /// Strip YAML frontmatter (`---` delimited block) from a markdown string.
 /// If no frontmatter is found the original string is returned unchanged.
+///
+/// AC-7 (BA.26.B task 6) reconciliation: fence *detection* delegates to
+/// `bella_engine::frontmatter::detect_fence` — the module bella owns since
+/// BE.7.A — rather than re-implementing it by hand. bastion keeps exactly
+/// two behaviours on top of that delegation, both real leniency this shell
+/// depends on for files read straight off disk, not legacy accidents.
+///
+/// First, leading whitespace/blank lines before the opening fence are
+/// trimmed before detection runs, so a file with a stray leading blank line
+/// still has its frontmatter recognized. Second, every blank line
+/// immediately after the closing fence is consumed
+/// (`trim_start_matches('\n')`), not just one, so multiple trailing blank
+/// lines in the frontmatter block don't leak into the rendered body.
+///
+/// `detect_fence` itself is stricter than the old hand-rolled search — it
+/// requires the closing line to be *exactly* `---`, where the previous
+/// bastion code matched the substring `"\n---"` anywhere (which could
+/// false-match a closing fence followed immediately by more text on the
+/// same line). That tightening is a correctness improvement inherited for
+/// free. A future bella change to fence detection therefore surfaces here
+/// as a test failure (see `strip_frontmatter_*` tests below) rather than as
+/// a silently different render.
 pub fn strip_frontmatter(md: &str) -> &str {
     let trimmed = md.trim_start();
-    if !trimmed.starts_with("---") {
-        return md;
+    match bella_engine::frontmatter::detect_fence(trimmed) {
+        Some(range) => trimmed[range.end..].trim_start_matches('\n'),
+        None => md,
     }
-    // Skip the opening `---` line.
-    let after_fence = &trimmed[3..];
-    // Find the closing `---`.
-    if let Some(pos) = after_fence.find("\n---") {
-        // Skip past `\n---` plus the newline that follows it.
-        let end = 3 + pos + 4; // 3 (opening) + pos + 4 ("\n---")
-        let rest = &trimmed[end..];
-        // Consume one optional newline after the closing fence.
-        rest.trim_start_matches('\n')
-    } else {
-        md
+}
+
+/// Outcome of reading a markdown document off disk (BA.26.B AC "CONCURRENCY
+/// WITH REFRESH").
+///
+/// Before this type, both content-reading call sites collapsed EVERY
+/// `read_to_string` error into the same "No <path> found." placeholder,
+/// which is indistinguishable from the file simply not existing yet. That
+/// is wrong for a real, non-hypothetical race: BA.26.C's refresh performs
+/// non-atomic truncating writes to exactly these files, and HQ's
+/// `routine.sh` regenerates them by cron at 03:00 — so a reader can observe
+/// a torn or momentarily-unreadable file with nobody at the keyboard. A
+/// torn document must never render as if it were ordinary content, and it
+/// must not be reported as absent either — both are misleading in
+/// different ways.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentRead {
+    /// The file does not exist — the ordinary, expected "nothing here yet"
+    /// case (`io::ErrorKind::NotFound`).
+    Absent,
+    /// The file exists but the read did not succeed cleanly — permission
+    /// error, or a read racing a concurrent non-atomic writer. Carries the
+    /// path and the `io::ErrorKind` (as its `Debug` name) so the rendered
+    /// state names the failure instead of silently degrading to "not
+    /// found".
+    Failed {
+        path: std::path::PathBuf,
+        kind: String,
+    },
+    /// The read succeeded; contents follow.
+    Ok(String),
+}
+
+/// Read a markdown document, splitting `std::fs::read_to_string`'s single
+/// `Result` into the three outcomes a reader must render differently: file
+/// absent, read failed/torn, or read succeeded. Pure I/O shell — the
+/// three-way split itself is the testable decision (see
+/// `read_document_distinguishes_absent_from_failed` below).
+pub fn read_document(path: &std::path::Path) -> DocumentRead {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => DocumentRead::Ok(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentRead::Absent,
+        Err(e) => DocumentRead::Failed {
+            path: path.to_path_buf(),
+            kind: format!("{:?}", e.kind()),
+        },
+    }
+}
+
+/// Render a `DocumentRead` to the markdown string handed to `strip_frontmatter`
+/// / `render_with_edit`. `absent_message` preserves each call site's existing
+/// "No <path> found." wording for the ordinary absent case; a failed/torn
+/// read renders its own named state instead, never the absent-file text and
+/// never partially-read content.
+pub fn render_document_markdown(read: &DocumentRead, absent_message: &str) -> String {
+    match read {
+        DocumentRead::Ok(contents) => contents.clone(),
+        DocumentRead::Absent => absent_message.to_string(),
+        DocumentRead::Failed { path, kind } => {
+            format!("**Read failed:** `{}` ({kind})", path.display())
+        }
     }
 }
 
@@ -234,6 +329,108 @@ fn build_sidebar_items(app: &AppState) -> Vec<ListItem<'static>> {
     items
 }
 
+/// Deterministic fingerprint of a `TableExpansions` map's expand/collapse
+/// state, used as part of `RenderCacheKey` so a table toggle still
+/// invalidates the cache even though `TableExpansions` (a bare
+/// `HashMap<u64, TableExpand>` from bella) implements neither `Hash` nor
+/// `PartialEq`. Iteration order over a `HashMap` is not stable, so the keys
+/// are sorted before hashing — two maps with the same entries in a different
+/// insertion/iteration order must fingerprint identically.
+fn table_expansions_fingerprint(tables: &bella_engine::links::TableExpansions) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut keys: Vec<&u64> = tables.keys().collect();
+    keys.sort_unstable();
+
+    let mut hasher = DefaultHasher::new();
+    for key in keys {
+        let expand = &tables[key];
+        key.hash(&mut hasher);
+        expand.all.hash(&mut hasher);
+        let mut cols: Vec<&usize> = expand.cols.iter().collect();
+        cols.sort_unstable();
+        cols.hash(&mut hasher);
+        let mut cells: Vec<&(usize, usize)> = expand.cells.iter().collect();
+        cells.sort_unstable();
+        cells.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Identity of one cached `render_with_edit` output: which document (by
+/// path), what its raw content was, the width it was laid out at, and the
+/// table-expansion state it was rendered under. A pure scroll changes none
+/// of these — only `AppState::space_overview_scroll`, which `draw_with_root`
+/// applies via `Paragraph::scroll` after the fact — so a `RenderCacheKey`
+/// unchanged between two frames means the previous frame's `Rendered` is
+/// still exactly correct and does not need re-parsing.
+#[derive(PartialEq, Eq)]
+struct RenderCacheKey {
+    path: std::path::PathBuf,
+    content: String,
+    width: u16,
+    expansions_fingerprint: u64,
+}
+
+/// Single-slot cache for the markdown parse/layout pass
+/// (`bella_engine::render_with_edit`) shared by both `draw_with_root` content
+/// call sites (the Tier status pane and the Hq/Space overview content pane).
+/// `read_document` + `strip_frontmatter` + `render_with_edit` walks the whole
+/// document through `pulldown-cmark` and re-runs the full wrap/layout pass —
+/// on every frame, that is a full re-parse of the entire document, even on a
+/// frame whose only change is the scroll offset. This block replaced
+/// table-cell clipping with wrapping (strictly more layout work) on exactly
+/// the files this initiative makes one-keypress-reachable, so a pure scroll
+/// paying for a full re-parse is the concern task 8 exists to close. Held by
+/// `run_inner` and threaded through `draw`/`draw_with_root` so it survives
+/// across frames — never reconstructed per-draw, which would defeat it the
+/// same way task 1 found `TableExpansions::new()` defeated table expansion.
+///
+/// Only the Tier/Hq/Space branches use it — `SelectedNode::MissionControl`
+/// has no markdown document to cache.
+#[derive(Default)]
+struct RenderCache {
+    entry: Option<(RenderCacheKey, bella_engine::Rendered)>,
+    /// Incremented only on an actual `render_with_edit` call (a cache miss).
+    /// Exists so a test can assert *zero* re-parses across a pure scroll by
+    /// counting, rather than inferring it from output shape alone.
+    parses: usize,
+}
+
+impl RenderCache {
+    /// Return the cached `Rendered` for `(path, content, width, tables)` if
+    /// the previous call's key matches exactly, otherwise run
+    /// `bella_engine::render_with_edit` (bumping `parses`) and cache the
+    /// fresh result before returning it.
+    fn get_or_render(
+        &mut self,
+        path: &std::path::Path,
+        content: &str,
+        width: u16,
+        theme: &bella_engine::Theme,
+        tables: &bella_engine::links::TableExpansions,
+    ) -> bella_engine::Rendered {
+        let key = RenderCacheKey {
+            path: path.to_path_buf(),
+            content: content.to_string(),
+            width,
+            expansions_fingerprint: table_expansions_fingerprint(tables),
+        };
+
+        if let Some((cached_key, cached)) = &self.entry
+            && *cached_key == key
+        {
+            return cached.clone();
+        }
+
+        let rendered = bella_engine::render_with_edit(content, None, width, theme, None, tables);
+        self.parses += 1;
+        self.entry = Some((key, rendered.clone()));
+        rendered
+    }
+}
+
 /// Core frame-builder. Takes an explicit `planning_root` so tests can inject a
 /// tempdir path without touching the process environment.
 fn draw_with_root(
@@ -241,6 +438,7 @@ fn draw_with_root(
     app: &mut AppState,
     list_state: &mut ListState,
     planning_root: &std::path::Path,
+    render_cache: &mut RenderCache,
 ) {
     // The bottom "agents · priority" strip (BA.13.1.3) is always reserved,
     // regardless of `SelectedNode` — it renders under Mission Control, HQ,
@@ -305,19 +503,23 @@ fn draw_with_root(
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             let file_path = tier_status_path(&brain_root, &tier_name);
 
-            let raw_md = std::fs::read_to_string(&file_path)
-                .unwrap_or_else(|_| format!("No {} found.", file_path.display()));
+            let doc = read_document(&file_path);
+            let raw_md =
+                render_document_markdown(&doc, &format!("No {} found.", file_path.display()));
             let status_md = strip_frontmatter(&raw_md).to_owned();
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
-            let tables = bella_engine::links::TableExpansions::new();
-            let rendered = bella_engine::render_with_edit(
+            let rendered = render_cache.get_or_render(
+                &file_path,
                 &status_md,
-                None,
                 content_area.width.saturating_sub(2), // account for borders
                 &theme,
-                None,
-                &tables,
+                &app.table_expansions,
             );
+            // Feed the just-rendered table geometry back onto `AppState` so
+            // `handle_click`'s `content_table_map.hit(line, col)` resolves
+            // against what is actually on screen, not the empty default
+            // (BA.26.B review fix — see task 2's deviation note).
+            app.content_table_map = rendered.table_map.clone();
             let tier_block = crate::ui_theme::themed_block(
                 Span::styled(format!(" {tier_name} "), crate::ui_theme::title_style()),
                 false,
@@ -357,6 +559,18 @@ fn draw_with_root(
             frame.render_stateful_widget(browser_list, browser_area, &mut list_state);
 
             // Content Pane
+            //
+            // The browser's `t` ("open") key formerly set a transient
+            // `AppState::markdown_overlay` field with no reader anywhere in
+            // this module — it was never drawn, never cleared, and the key
+            // was never advertised in the footer legend (`NORMAL_KEY_BINDINGS`
+            // has no 't' entry). BA.26.B task 5 removed the field, its setter
+            // in `AppState::on_key`, and its test rather than finish the
+            // wiring: finishing it would need a new close keybinding, which
+            // this block's scope explicitly excludes ("New keybindings beyond
+            // the expansion toggle..."). The single content pane below —
+            // driven by `space_overview_file`, Enter to open — is the only
+            // markdown-viewing path; there is no full-screen overlay.
             let content_active = app.overview_pane == crate::sessions::app::OverviewPane::Content;
             let content_block = crate::ui_theme::themed_block(
                 Span::styled(" content ", crate::ui_theme::title_style()),
@@ -368,20 +582,22 @@ fn draw_with_root(
                 None => planning_root.join("status.md"),
             };
 
-            let raw_md = std::fs::read_to_string(&file_path)
-                .unwrap_or_else(|_| "No planning/status.md found.".to_string());
+            let doc = read_document(&file_path);
+            let raw_md = render_document_markdown(&doc, "No planning/status.md found.");
             // Strip YAML frontmatter before handing to bella.
             let status_md = strip_frontmatter(&raw_md).to_owned();
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
-            let tables = bella_engine::links::TableExpansions::new();
-            let rendered = bella_engine::render_with_edit(
+            let rendered = render_cache.get_or_render(
+                &file_path,
                 &status_md,
-                None,
                 content_area.width.saturating_sub(2), // account for borders
                 &theme,
-                None,
-                &tables,
+                &app.table_expansions,
             );
+            // See the matching Tier-branch comment above: without this,
+            // `content_table_map` stays `TableMap::default()` for the life of
+            // the app and click-to-expand can never resolve a real hit.
+            app.content_table_map = rendered.table_map.clone();
             let paragraph = Paragraph::new(rendered.lines)
                 .block(content_block)
                 .scroll((app.space_overview_scroll, 0));
@@ -412,10 +628,17 @@ fn draw_with_root(
 }
 
 /// Thin real-world wrapper: resolves the planning root from the environment,
-/// then delegates to `draw_with_root`.
-fn draw(frame: &mut Frame, app: &mut AppState, list_state: &mut ListState) {
+/// then delegates to `draw_with_root`. `render_cache` is owned by
+/// `run_inner` and threaded through here so it survives across the whole
+/// event loop rather than being rebuilt every frame.
+fn draw(
+    frame: &mut Frame,
+    app: &mut AppState,
+    list_state: &mut ListState,
+    render_cache: &mut RenderCache,
+) {
     let root = app.current_space_planning_root();
-    draw_with_root(frame, app, list_state, &root);
+    draw_with_root(frame, app, list_state, &root, render_cache);
 }
 
 // ── tmux poll → Vec<Session> ──────────────────────────────────────────────────
@@ -476,9 +699,10 @@ fn run_inner(
     app: &mut AppState,
 ) -> Result<()> {
     let mut list_state = ListState::default();
+    let mut render_cache = RenderCache::default();
 
     loop {
-        terminal.draw(|f| draw(f, app, &mut list_state))?;
+        terminal.draw(|f| draw(f, app, &mut list_state, &mut render_cache))?;
 
         if event::poll(Duration::from_millis(REFRESH_MS))? {
             // Click-to-select and wheel-scroll routing (BA.13.2) share the same
@@ -611,7 +835,10 @@ pub fn run() -> Result<()> {
 
 /// Thin wrapper over `draw_with_root`, exposed only in test builds so that
 /// `tui_tests.rs` can drive a `TestBackend` frame with an injected planning root
-/// without touching the process environment.
+/// without touching the process environment. Builds a fresh `RenderCache` per
+/// call — `tui_tests.rs` exercises single-frame draws, not the persist-across-
+/// frames behaviour, which the `RenderCache` unit tests below cover directly
+/// against `draw_with_root`.
 #[cfg(test)]
 pub fn draw_for_test(
     frame: &mut ratatui::Frame,
@@ -619,7 +846,13 @@ pub fn draw_for_test(
     list_state: &mut ratatui::widgets::ListState,
     planning_root: &std::path::Path,
 ) {
-    draw_with_root(frame, app, list_state, planning_root);
+    draw_with_root(
+        frame,
+        app,
+        list_state,
+        planning_root,
+        &mut RenderCache::default(),
+    );
 }
 
 // ── Unit tests for pure helpers ───────────────────────────────────────────────
@@ -628,6 +861,128 @@ pub fn draw_for_test(
 mod tests {
     use super::*;
     use crate::sessions::model::SessionState;
+
+    // ── read_document / render_document_markdown (BA.26.B task 7,
+    // "CONCURRENCY WITH REFRESH") ───────────────────────────────────────────
+    // Asserts on the `DocumentRead` state VALUE, not on rendered placeholder
+    // text — a string assertion would keep passing after someone edits the
+    // wording, which is exactly the failure mode this criterion exists to
+    // prevent. Absent and failed are exercised in the SAME test so the two
+    // are provably distinguishable rather than merely each individually
+    // non-panicking.
+
+    #[test]
+    fn read_document_distinguishes_absent_from_failed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Absent: the ordinary "nothing here yet" case.
+        let absent_path = tmp.path().join("does-not-exist.md");
+        assert_eq!(read_document(&absent_path), DocumentRead::Absent);
+
+        // Failed/torn: a real io error that is NOT "not found". A directory
+        // can't be read as a file, so `read_to_string` errors with a
+        // platform io::ErrorKind other than NotFound — standing in for the
+        // torn/racing-writer read this AC targets, without depending on
+        // actually winning a real race in a unit test.
+        let dir_path = tmp.path().join("a-directory");
+        std::fs::create_dir(&dir_path).expect("create_dir");
+        match read_document(&dir_path) {
+            DocumentRead::Failed { path, kind } => {
+                assert_eq!(path, dir_path);
+                assert_ne!(kind, "NotFound");
+            }
+            other => panic!("expected DocumentRead::Failed for a directory path, got {other:?}"),
+        }
+
+        // The two outcomes must be distinct states, not the same value
+        // reached two different ways.
+        assert_ne!(read_document(&absent_path), read_document(&dir_path));
+    }
+
+    #[test]
+    fn read_document_ok_on_successful_read() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file_path = tmp.path().join("status.md");
+        std::fs::write(&file_path, "# Hello\n").expect("write");
+        assert_eq!(
+            read_document(&file_path),
+            DocumentRead::Ok("# Hello\n".to_string())
+        );
+    }
+
+    #[test]
+    fn render_document_markdown_absent_uses_the_absent_message_only() {
+        let rendered = render_document_markdown(&DocumentRead::Absent, "No status.md found.");
+        assert_eq!(rendered, "No status.md found.");
+    }
+
+    #[test]
+    fn render_document_markdown_failed_never_uses_absent_message_or_content() {
+        let failed = DocumentRead::Failed {
+            path: std::path::PathBuf::from("/planning/status.md"),
+            kind: "Other".to_string(),
+        };
+        let rendered = render_document_markdown(&failed, "No status.md found.");
+        // Must not collapse to the absent-file placeholder...
+        assert_ne!(rendered, "No status.md found.");
+        // ...and must name the path and the error kind, so a torn read is
+        // never silently rendered as ordinary content either.
+        assert!(rendered.contains("/planning/status.md"));
+        assert!(rendered.contains("Other"));
+    }
+
+    #[test]
+    fn render_document_markdown_ok_renders_the_content_verbatim() {
+        let ok = DocumentRead::Ok("# Real content\n".to_string());
+        let rendered = render_document_markdown(&ok, "No status.md found.");
+        assert_eq!(rendered, "# Real content\n");
+    }
+
+    // ── strip_frontmatter (AC-7, BA.26.B task 6) ──────────────────────────
+    // Pins the two behaviours bastion keeps on top of delegating fence
+    // detection to `bella_engine::frontmatter::detect_fence`: leading
+    // blank-line tolerance before the opening fence, and multi-blank-line
+    // consumption after the closing fence. A future bella change to fence
+    // detection semantics should surface as a failure here.
+
+    #[test]
+    fn strip_frontmatter_removes_fenced_block() {
+        let md = "---\ntype: Doc\ntitle: T\n---\n# Body\n";
+        assert_eq!(strip_frontmatter(md), "# Body\n");
+    }
+
+    #[test]
+    fn strip_frontmatter_no_fence_returns_unchanged() {
+        let md = "# Body\nNo frontmatter here.\n";
+        assert_eq!(strip_frontmatter(md), md);
+    }
+
+    #[test]
+    fn strip_frontmatter_tolerates_leading_blank_lines() {
+        // bastion-specific leniency: real files occasionally carry a stray
+        // leading blank line before the fence; `detect_fence` alone would
+        // require the very first line to be `---` and miss this.
+        let md = "\n\n---\ntype: Doc\n---\nBody text\n";
+        assert_eq!(strip_frontmatter(md), "Body text\n");
+    }
+
+    #[test]
+    fn strip_frontmatter_consumes_multiple_trailing_blank_lines() {
+        // bastion-specific leniency: consume every blank line right after
+        // the closing fence, not just one, so it never leaks into the body.
+        let md = "---\ntype: Doc\n---\n\n\n\nBody text\n";
+        assert_eq!(strip_frontmatter(md), "Body text\n");
+    }
+
+    #[test]
+    fn strip_frontmatter_requires_exact_closing_fence_line() {
+        // detect_fence is stricter than the old hand-rolled search: a line
+        // that merely CONTAINS "---" as a substring (not the whole line) is
+        // not a closing fence, so nothing is stripped and the whole string
+        // (unchanged) is returned.
+        let md = "---\ntype: Doc\n---not-a-real-fence\nBody\n";
+        assert_eq!(strip_frontmatter(md), md);
+    }
 
     fn make_session(name: &str, state: SessionState, last_line: &str) -> Session {
         Session {
@@ -710,6 +1065,10 @@ mod tests {
         assert!(hint.contains("[k]"), "hint: {hint}");
         assert!(hint.contains("[v]"), "hint: {hint}");
         assert!(hint.contains("[q]"), "hint: {hint}");
+        // The expand/collapse toggle (BA.26.B task 2) is the one new
+        // keybinding this block introduces — the footer must stay honest
+        // about it.
+        assert!(hint.contains("[e]"), "hint: {hint}");
         // The top tab bar + Tab/Shift+Tab cycling is gone (spine is now the single
         // primary navigator) — the hint must not reference it.
         assert!(!hint.contains("Tab"), "hint: {hint}");
@@ -832,7 +1191,13 @@ mod tests {
         terminal
             .draw(|f| {
                 let mut list_state = ratatui::widgets::ListState::default();
-                draw_with_root(f, &mut app, &mut list_state, &dir);
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                );
             })
             .expect("draw must not panic");
         let buf = terminal.backend().buffer().clone();
@@ -930,7 +1295,13 @@ mod tests {
         terminal
             .draw(|f| {
                 let mut list_state = ratatui::widgets::ListState::default();
-                draw_with_root(f, &mut app, &mut list_state, &dir);
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                );
             })
             .expect("draw must not panic");
 
@@ -955,6 +1326,406 @@ mod tests {
         assert!(
             text.contains("sentinel-guarded"),
             "expected the surrounding Momentum bullet text to render: {text}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Table expansion persistence (BA.26.B task 1) ────────────────────────
+    //
+    // The defect: `bella_engine::links::TableExpansions::new()` was constructed
+    // fresh inside the draw call at both `render_with_edit` call sites, so
+    // `expanded(i)` was always false and every cell took the truncate branch
+    // forever. bella already implements the wrap branch and hit-test geometry
+    // (`render_table_row`, `TableMap::hit`) — the bug is entirely on bastion's
+    // side: it never held the map anywhere that survives a redraw.
+
+    /// Flatten a `Vec<Line>` (as returned by `bella_engine::render_with_edit`)
+    /// to plain text for substring assertions, without needing a `Frame`.
+    fn rendered_lines_to_string(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A markdown source with one table whose single cell is far wider than an
+    /// 80-column pane can show untruncated, so the wrap-vs-clip branches are
+    /// actually exercised at the width this repo renders at.
+    const WIDE_TABLE_MD: &str = "# T\n\n\
+        | Col |\n\
+        | --- |\n\
+        | This cell holds a long run of prose text that is deliberately wider \
+          than an eighty column pane so that truncation or wrapping has \
+          something real to do once the table is laid out at that width |\n";
+
+    /// AC-1, SHOWN FAILING pattern: render the same table twice at the same
+    /// 80-column-pane width — once through a freshly-constructed
+    /// `TableExpansions` (the pre-change behaviour: always clips with an
+    /// ellipsis) and once through a map with that table's one cell marked
+    /// expanded (wraps to multiple lines instead). Asserting both directions
+    /// in one test is what proves the test can actually tell them apart.
+    #[test]
+    fn expanded_cell_wraps_fresh_map_clips() {
+        let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
+        let width: u16 = 78; // matches an 80-col pane minus the 2-col border allowance
+
+        let fresh = bella_engine::links::TableExpansions::new();
+        let clipped =
+            bella_engine::render_with_edit(WIDE_TABLE_MD, None, width, &theme, None, &fresh);
+        let clipped_text = rendered_lines_to_string(&clipped.lines);
+        assert!(
+            clipped_text.contains('…'),
+            "a freshly-constructed TableExpansions (pre-change behaviour) must still clip \
+             with an ellipsis at this width: {clipped_text}"
+        );
+
+        let id = clipped
+            .table_map
+            .regions
+            .first()
+            .expect("WIDE_TABLE_MD must lay out exactly one table region")
+            .id;
+        let mut expanded_map = bella_engine::links::TableExpansions::new();
+        expanded_map.insert(
+            id,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: Default::default(),
+                cells: std::iter::once((0usize, 0usize)).collect(),
+            },
+        );
+        let wrapped =
+            bella_engine::render_with_edit(WIDE_TABLE_MD, None, width, &theme, None, &expanded_map);
+        let wrapped_text = rendered_lines_to_string(&wrapped.lines);
+        assert!(
+            !wrapped_text.contains('…'),
+            "an expanded cell must wrap rather than clip: {wrapped_text}"
+        );
+        assert!(
+            wrapped.lines.len() > clipped.lines.len(),
+            "wrapping an expanded cell must add display lines versus the clipped render \
+             (clipped={}, wrapped={})",
+            clipped.lines.len(),
+            wrapped.lines.len()
+        );
+    }
+
+    /// AC-2 (the actual defect this task fixes): expand a cell through the
+    /// `AppState`-held map, force `draw_with_root` to re-render twice, and
+    /// assert the expansion is still in effect both times. A test that builds
+    /// its own `TableExpansions` locally does not exercise this — bella's
+    /// byte-offset keying already survives a re-render; what did not survive
+    /// is bastion discarding the map inside the draw call.
+    #[test]
+    fn table_expansion_survives_rerender_via_app_state() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = crate::testsupport::unique_temp_dir("bastion-ui-table-expand-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("status.md"), WIDE_TABLE_MD).expect("write status.md");
+
+        // A `"_root"`-tagged tier routes to the `Hq` spine row, whose content
+        // pane reads `<planning_root>/status.md` (mirrors the sentinel test
+        // above).
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+
+        // First draw: no expansion set yet — must clip (pre-change behaviour),
+        // and it also gives us the exact content-pane width `draw_with_root`
+        // computed, so the table id we key off matches production exactly.
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                );
+            })
+            .expect("draw must not panic");
+        let first_buf = terminal.backend().buffer().clone();
+        assert!(
+            buf_to_string(&first_buf).contains('…'),
+            "unexpanded first draw must clip"
+        );
+
+        let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
+        let content_width = app.pane_areas.content.width.saturating_sub(2);
+        let stripped = strip_frontmatter(WIDE_TABLE_MD).to_owned();
+        let baseline = bella_engine::render_with_edit(
+            &stripped,
+            None,
+            content_width,
+            &theme,
+            None,
+            &bella_engine::links::TableExpansions::new(),
+        );
+        let id = baseline
+            .table_map
+            .regions
+            .first()
+            .expect("WIDE_TABLE_MD must lay out exactly one table region")
+            .id;
+        app.table_expansions.insert(
+            id,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: Default::default(),
+                cells: std::iter::once((0usize, 0usize)).collect(),
+            },
+        );
+
+        // Re-render TWICE with no further mutation of `table_expansions` —
+        // proving the map is read from persisted `AppState`, not rebuilt.
+        for attempt in 0..2 {
+            terminal
+                .draw(|f| {
+                    let mut list_state = ratatui::widgets::ListState::default();
+                    draw_with_root(
+                        f,
+                        &mut app,
+                        &mut list_state,
+                        &dir,
+                        &mut RenderCache::default(),
+                    );
+                })
+                .expect("draw must not panic");
+            let buf = terminal.backend().buffer().clone();
+            let text = buf_to_string(&buf);
+            assert!(
+                !text.contains('…'),
+                "expansion must still be in effect on re-render #{attempt}: {text}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── RenderCache: pure scroll must not re-parse (BA.26.B task 8) ────────
+
+    /// Two `TableExpansions` built with the same entries inserted in a
+    /// different order must fingerprint identically — `HashMap` iteration
+    /// order is not stable, so a naive "hash whatever order `.iter()` gives"
+    /// implementation would flap between runs and defeat the cache on pure
+    /// noise.
+    #[test]
+    fn table_expansions_fingerprint_is_order_independent() {
+        let mut a = bella_engine::links::TableExpansions::new();
+        a.insert(
+            1,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: [2usize, 5usize].into_iter().collect(),
+                cells: Default::default(),
+            },
+        );
+        a.insert(
+            9,
+            bella_engine::links::TableExpand {
+                all: true,
+                cols: Default::default(),
+                cells: [(0usize, 0usize)].into_iter().collect(),
+            },
+        );
+
+        let mut b = bella_engine::links::TableExpansions::new();
+        b.insert(
+            9,
+            bella_engine::links::TableExpand {
+                all: true,
+                cols: Default::default(),
+                cells: [(0usize, 0usize)].into_iter().collect(),
+            },
+        );
+        b.insert(
+            1,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: [5usize, 2usize].into_iter().collect(),
+                cells: Default::default(),
+            },
+        );
+
+        assert_eq!(
+            table_expansions_fingerprint(&a),
+            table_expansions_fingerprint(&b),
+            "same entries inserted in a different order must fingerprint the same"
+        );
+    }
+
+    /// A fingerprint must actually change when the expansion state changes —
+    /// otherwise `RenderCache` would silently serve a stale render across a
+    /// table toggle, which is worse than never caching at all.
+    #[test]
+    fn table_expansions_fingerprint_changes_with_expansion_state() {
+        let empty = bella_engine::links::TableExpansions::new();
+        let mut expanded = bella_engine::links::TableExpansions::new();
+        expanded.insert(
+            1,
+            bella_engine::links::TableExpand {
+                all: true,
+                cols: Default::default(),
+                cells: Default::default(),
+            },
+        );
+
+        assert_ne!(
+            table_expansions_fingerprint(&empty),
+            table_expansions_fingerprint(&expanded),
+            "toggling a table's expansion must change the fingerprint"
+        );
+    }
+
+    /// AC-8's gated stand-in: render the same document at the same width
+    /// through the same `RenderCache` twice, with only
+    /// `AppState::space_overview_scroll` different between the two draws — a
+    /// pure scroll, exactly what `Paragraph::scroll` exists to handle without
+    /// touching the underlying `Rendered` at all. Asserts `RenderCache::parses`
+    /// is `1` after both draws: the second draw is a cache hit, not a second
+    /// `bella_engine::render_with_edit` call, so the document is not
+    /// re-parsed.
+    #[test]
+    fn pure_scroll_does_not_reparse_the_document() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = crate::testsupport::unique_temp_dir("bastion-ui-render-cache-scroll-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        // A document with enough lines that a scroll is a meaningful, distinct
+        // viewport rather than a no-op against a document shorter than the pane.
+        let long_md: String = (0..200)
+            .map(|i| format!("- line {i}\n"))
+            .collect::<String>();
+        std::fs::write(dir.join("status.md"), &long_md).expect("write status.md");
+
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        let mut render_cache = RenderCache::default();
+
+        // First draw at scroll=0.
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir, &mut render_cache);
+            })
+            .expect("draw must not panic");
+        assert_eq!(
+            render_cache.parses, 1,
+            "the first draw of a never-before-seen document must parse exactly once"
+        );
+
+        // A pure scroll: nothing else about the document, width, or table
+        // expansion state changes.
+        app.space_overview_scroll = 5;
+
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir, &mut render_cache);
+            })
+            .expect("draw must not panic");
+        assert_eq!(
+            render_cache.parses, 1,
+            "a pure scroll (space_overview_scroll changed, nothing else) must be a cache \
+             hit — the document must not be re-parsed a second time"
+        );
+
+        // Sanity: a genuine content change (a different document) DOES bump
+        // the cache — proves `parses == 1` above is a real hit, not a broken
+        // counter that never increments.
+        std::fs::write(dir.join("status.md"), format!("{long_md}- one more line\n"))
+            .expect("rewrite status.md");
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir, &mut render_cache);
+            })
+            .expect("draw must not panic");
+        assert_eq!(
+            render_cache.parses, 2,
+            "a genuine content change must invalidate the cache and re-parse"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review fix (AC-3): a real `draw_with_root` over a document containing
+    /// a markdown table must leave `AppState::content_table_map` populated
+    /// with that table's hit-test geometry — not the `TableMap::default()`
+    /// it starts as. Before this fix, neither content-pane call site wrote
+    /// `render_cache.get_or_render(...)`'s `Rendered::table_map` back onto
+    /// `app.content_table_map`, so `handle_click`'s `content_table_map.hit`
+    /// could never resolve a real hit in production (only in tests that hand
+    /// it a synthetic `sample_table_map()` directly). Covers both content-pane
+    /// call sites: the `Hq`/`Space`/`View` branch (asserted here) and the
+    /// `Tier` branch (asserted via the second draw below).
+    #[test]
+    fn draw_populates_content_table_map_from_a_real_render() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = crate::testsupport::unique_temp_dir("bastion-ui-content-table-map-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let table_md = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
+        std::fs::write(dir.join("status.md"), table_md).expect("write status.md");
+
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+        assert!(
+            app.content_table_map.regions.is_empty(),
+            "content_table_map must start empty (TableMap::default())"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        let mut render_cache = RenderCache::default();
+
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir, &mut render_cache);
+            })
+            .expect("draw must not panic");
+
+        assert!(
+            !app.content_table_map.regions.is_empty(),
+            "draw_with_root over a document with a real table must populate \
+             app.content_table_map from Rendered::table_map, not leave it \
+             at TableMap::default()"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
