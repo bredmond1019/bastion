@@ -379,6 +379,7 @@ fn node_states_for_status(ctx: &TaskContext) -> Vec<NodeState> {
             tokens_out: None,
             model: None,
             started_at: None,
+            completed_at: None,
             elapsed_secs: None,
         })
         .collect()

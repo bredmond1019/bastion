@@ -23,6 +23,7 @@ mod observ;
 mod openwork;
 mod overview;
 mod run;
+mod runs;
 mod serve;
 mod sessions;
 #[cfg(test)]

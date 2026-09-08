@@ -6,6 +6,8 @@
 pub mod errors;
 
 use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 // ── Event phase ──────────────────────────────────────────────────────────────
 
@@ -161,6 +163,128 @@ pub fn init_tracing(verbose: bool, json_logs: bool) {
     }
 }
 
+// ── TUI-safe diagnostics sink ─────────────────────────────────────────────────
+
+/// Resolve the default TUI-safe diagnostics log path:
+/// `$XDG_STATE_HOME/bastion/tui-diagnostics.log`, falling back to
+/// `$HOME/.local/state/bastion/tui-diagnostics.log`. Returns `None` when
+/// neither is set.
+///
+/// Pure function — reads only the two supplied env values, no I/O — mirroring
+/// `blocked_edge::sink::default_sink_path`'s XDG-first/`HOME`-fallback
+/// precedence and directory convention (`src/serve/blocked_edge/sink.rs`).
+pub fn tui_diagnostics_path(
+    xdg_state_home: Option<String>,
+    home: Option<String>,
+) -> Option<PathBuf> {
+    if let Some(xdg) = xdg_state_home {
+        Some(
+            PathBuf::from(xdg)
+                .join("bastion")
+                .join("tui-diagnostics.log"),
+        )
+    } else {
+        home.map(|h| {
+            PathBuf::from(h)
+                .join(".local")
+                .join("state")
+                .join("bastion")
+                .join("tui-diagnostics.log")
+        })
+    }
+}
+
+/// A cloneable `Write` handle over a shared file.
+///
+/// `tracing-subscriber`'s `MakeWriter` trait is implemented for any
+/// `Fn() -> W where W: Write`, so this lets [`tui_safe_subscriber`] hand out a
+/// fresh, cheap handle onto the same underlying file for every event without
+/// reopening it — the standard zero-extra-dependency pattern for a
+/// `tracing-subscriber` file sink (no `tracing-appender` in `Cargo.toml`).
+#[derive(Clone)]
+struct SharedFileWriter(Arc<Mutex<std::fs::File>>);
+
+impl std::io::Write for SharedFileWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .flush()
+    }
+}
+
+/// Build a TUI-safe `tracing` subscriber that writes **exclusively** to
+/// `file` — never to stderr.
+///
+/// Used when a `bastion` command is rendering inside the alternate screen
+/// (`src/sessions/ui.rs`, `crossterm`): a `tracing::warn!`/`error!` call on
+/// [`init_tracing`]'s existing stderr writer would either corrupt the render
+/// or be invisible, since the alternate screen owns the terminal.
+///
+/// Does not install itself as the process-global default — callers reach it
+/// through [`init_tracing_tui_safe`] (which does), or, in tests, through
+/// `tracing::subscriber::with_default` to scope it to one closure.
+/// [`init_tracing`]'s behavior, signature, and every existing non-TUI caller
+/// (`monitor`, `inspect`, `costs`, `validate`, `run`, `status`) are unchanged
+/// by this function's existence.
+fn tui_safe_subscriber(
+    verbose: bool,
+    file: std::fs::File,
+) -> impl tracing::Subscriber + Send + Sync {
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    let level = if verbose { "debug" } else { "info" };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let writer = SharedFileWriter(Arc::new(Mutex::new(file)));
+
+    fmt()
+        .with_env_filter(filter)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish()
+}
+
+/// Install the TUI-safe subscriber as the process-global default, opening
+/// (creating, including parent directories, if needed) the diagnostics file
+/// at `path`.
+///
+/// Mirrors [`init_tracing`]'s single-installation contract — call at most
+/// once per process, and never in the same process as [`init_tracing`].
+/// Selects the TUI-safe sink instead of the stderr one; it does not change
+/// what [`init_tracing`] does for its own callers.
+///
+/// Any failure to prepare or open the diagnostics file is a **new** failure
+/// mode this sink introduces. It maps onto the existing C0xx taxonomy
+/// (`src/observ/errors.rs`) via `ConsoleError::Io` (`C009`) — the same
+/// variant every other "could not read/write a file" failure in this crate
+/// already uses — rather than inventing a parallel error scheme.
+pub fn init_tracing_tui_safe(verbose: bool, path: &Path) -> Result<(), errors::ConsoleError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| errors::ConsoleError::Io(format!("{}: {e}", parent.display())))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| errors::ConsoleError::Io(format!("{}: {e}", path.display())))?;
+
+    let subscriber = tui_safe_subscriber(verbose, file);
+    tracing::subscriber::set_global_default(subscriber).map_err(|e| {
+        errors::ConsoleError::Io(format!(
+            "failed to install TUI-safe tracing subscriber: {e}"
+        ))
+    })?;
+    Ok(())
+}
+
 // ── Connection-failure hint ───────────────────────────────────────────────────
 
 /// Shared hint text for a `bastion` command that failed to reach the
@@ -304,5 +428,166 @@ mod tests {
         assert_eq!(ev.phase, EventPhase::Start);
         assert_eq!(ev.command, "sessions");
         assert!(ev.duration_ms.is_none());
+    }
+
+    // --- tui_diagnostics_path ---
+
+    #[test]
+    fn tui_diagnostics_path_prefers_xdg_state_home() {
+        let path = tui_diagnostics_path(
+            Some("/custom/state".to_string()),
+            Some("/home/user".to_string()),
+        );
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/custom/state/bastion/tui-diagnostics.log"))
+        );
+    }
+
+    #[test]
+    fn tui_diagnostics_path_falls_back_to_home() {
+        let path = tui_diagnostics_path(None, Some("/home/user".to_string()));
+        assert_eq!(
+            path,
+            Some(PathBuf::from(
+                "/home/user/.local/state/bastion/tui-diagnostics.log"
+            ))
+        );
+    }
+
+    #[test]
+    fn tui_diagnostics_path_none_when_neither_env_set() {
+        assert_eq!(tui_diagnostics_path(None, None), None);
+    }
+
+    // --- tui_safe_subscriber: event reaches the file sink, and only that sink ---
+
+    fn temp_log_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "bastion-observ-test-{}-{}-{}.log",
+            std::process::id(),
+            name,
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn tui_safe_sink_receives_event() {
+        let log_path = temp_log_path("receives");
+        let file = std::fs::File::create(&log_path).expect("create temp log file");
+        let subscriber = tui_safe_subscriber(false, file);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("tui-diag-marker-present");
+        });
+
+        let contents = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&log_path);
+
+        assert!(
+            contents.contains("tui-diag-marker-present"),
+            "event must reach the TUI-safe file sink, got: {contents:?}"
+        );
+    }
+
+    #[test]
+    fn tui_safe_sink_writes_only_to_its_own_writer_not_a_second_sink() {
+        // Two independent file-backed sinks stand in for "the TUI-safe sink"
+        // and "what the stderr writer would be": under tracing's per-thread
+        // dispatch, an event reaches exactly the currently-active default
+        // subscriber's writer and no other. Activating only the first sink
+        // and asserting the second stays untouched is exactly the property
+        // that guarantees this sink never bleeds onto stderr in production,
+        // since `tui_safe_subscriber` never references `std::io::stderr` at
+        // all (see its construction above).
+        let active_log_path = temp_log_path("active");
+        let other_log_path = temp_log_path("other-untouched");
+        let active_file = std::fs::File::create(&active_log_path).expect("create active log");
+        let other_file = std::fs::File::create(&other_log_path).expect("create other log");
+
+        let active_subscriber = tui_safe_subscriber(false, active_file);
+        // Built but never installed as the default — mirrors "the stderr
+        // writer exists in the process but is not the active sink".
+        let _other_subscriber = tui_safe_subscriber(false, other_file);
+
+        tracing::subscriber::with_default(active_subscriber, || {
+            tracing::info!("tui-diag-marker-isolated");
+        });
+
+        let active_contents = std::fs::read_to_string(&active_log_path).unwrap_or_default();
+        let other_contents = std::fs::read_to_string(&other_log_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&active_log_path);
+        let _ = std::fs::remove_file(&other_log_path);
+
+        assert!(
+            active_contents.contains("tui-diag-marker-isolated"),
+            "event must reach the active TUI-safe sink, got: {active_contents:?}"
+        );
+        assert!(
+            other_contents.is_empty(),
+            "a sink that was not made the active default must receive nothing \
+             (stand-in for: stderr must not be written while the TUI-safe \
+             sink is active), got: {other_contents:?}"
+        );
+    }
+
+    // --- init_tracing_tui_safe: file preparation + error mapping ---
+
+    #[test]
+    fn init_tracing_tui_safe_creates_parent_directories() {
+        let dir = std::env::temp_dir().join(format!(
+            "bastion-observ-test-init-dir-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let path = dir.join("nested").join("tui-diagnostics.log");
+        assert!(!dir.exists());
+
+        let file = {
+            // Exercise only the file-preparation half (parent-dir creation +
+            // open) without calling `set_global_default`, which can only
+            // succeed once per process and would make this test order- and
+            // concurrency-sensitive alongside every other test in this
+            // binary.
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dirs");
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+        };
+
+        assert!(file.is_ok(), "diagnostics file must open once dirs exist");
+        assert!(path.parent().unwrap().is_dir());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn init_tracing_tui_safe_maps_open_failure_to_console_error_io() {
+        use errors::ConsoleError;
+
+        // A path whose parent is a FILE (not a directory) cannot have a
+        // child created under it — `create_dir_all` fails, which is the new
+        // failure mode this sink introduces (D... "could not open the
+        // diagnostics file"). It must map onto the existing C009 IoError
+        // variant, not a bespoke error type.
+        let blocking_file = temp_log_path("blocking-parent");
+        std::fs::write(&blocking_file, b"not a directory").expect("write blocking file");
+        let bad_path = blocking_file.join("tui-diagnostics.log");
+
+        let result = init_tracing_tui_safe(false, &bad_path);
+        let _ = std::fs::remove_file(&blocking_file);
+
+        match result {
+            Err(ConsoleError::Io(msg)) => {
+                assert!(
+                    msg.contains(&blocking_file.display().to_string()),
+                    "error message should name the offending path: {msg}"
+                );
+            }
+            other => panic!("expected ConsoleError::Io, got {other:?}"),
+        }
     }
 }

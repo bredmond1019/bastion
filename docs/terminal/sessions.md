@@ -164,8 +164,18 @@ for the click/scroll-to-pane mapping.
 | `n` | Create a new named session (prompts for name inline) |
 | `s` | Send a command to the selected session (prompts for command inline) |
 | `k` | Kill the selected session |
+| `p` | Probe why the run pane is empty (see below) |
 
 Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without making any change.
+
+When Mission Control's run pane has nothing to show, it no longer just sits blank — it prints
+`press 'p' to check why this pane is empty`. Pressing `p` (Mission-Control-scoped; a no-op
+elsewhere in the spine) spawns a short-lived background probe that resolves the console's own
+`/api/*` reachability plus the embedded engine's routes, landing on one of five states:
+`NotConfigured` (no `BASTION_API_URL`/bearer token set), `ServeUnreachable`, `Unauthorized`,
+`EngineRoutesUnmounted`, or `GenuinelyIdle` (reachable, authorized, and there's just nothing
+running). The pane shows `checking reachability…` while the probe is in flight; a second `p`
+press during that window is a no-op rather than starting a duplicate probe.
 
 tmux errors (missing tmux, no server, unknown session) surface as a status message inside the
 TUI rather than crashing the loop.

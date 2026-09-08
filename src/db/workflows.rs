@@ -209,11 +209,18 @@ pub(crate) fn parse_task_context(task_context: &serde_json::Value) -> Result<Vec
             .and_then(|v| v.as_str())
             .map(str::to_string);
 
-        // output comes from the parallel `nodes[name]` map, not from node_runs
+        let completed_at = run_val
+            .get("completed_at")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        // engine_contract's `nodes` map is `{<ClassName>: output}` — the value
+        // found for this node's class name IS the output directly, not a
+        // nested `{"output": ...}` object to descend into.
         let output = nodes_map
             .and_then(|m| m.get(name.as_str()))
-            .and_then(|node| node.get("output"))
-            .and_then(|v| if v.is_null() { None } else { Some(v.clone()) });
+            .cloned()
+            .filter(|v| !v.is_null());
 
         result.push(NodeState {
             id: name.clone(),
@@ -227,6 +234,7 @@ pub(crate) fn parse_task_context(task_context: &serde_json::Value) -> Result<Vec
             tokens_out,
             model,
             started_at,
+            completed_at,
             elapsed_secs: None, // derived from timestamps; not stored in contract v1.0.0
         });
     }
@@ -454,6 +462,7 @@ pub struct NodeState {
     pub tokens_out: Option<u64>,
     pub model: Option<String>,
     pub started_at: Option<String>,
+    pub completed_at: Option<String>,
     pub elapsed_secs: Option<u64>,
 }
 
@@ -702,6 +711,40 @@ mod tests {
 
         let output = llm_node.output.as_ref().expect("should have output");
         assert!(output["summary"].is_string());
+    }
+
+    /// AC-1 (BA.26.D task 1): `nodes[ClassName]` in engine_contract's shape IS
+    /// the output value directly — there is no nested `"output"` key to
+    /// descend into (task_context.rs's own doc comment: `nodes: {<ClassName>:
+    /// output}`). This fixture was regenerated from a real `events` row's
+    /// shape to encode that directly (measured live 2026-09-08: only 68 of
+    /// 30738 rows even contain the substring `"output":` in task_context —
+    /// the old fixture's nested `{"output": ...}` wrapper was itself the bug,
+    /// made invisible by a fixture that happened to match the buggy parser).
+    /// Also asserts `completed_at` is populated from `node_runs[name]`, the
+    /// same way `started_at` already is.
+    #[test]
+    fn completed_fixture_output_is_direct_value_and_completed_at_present() {
+        let tc: serde_json::Value = serde_json::from_str(COMPLETED_FIXTURE).unwrap();
+        let nodes = parse_task_context(&tc).unwrap();
+
+        let llm_node = nodes
+            .iter()
+            .find(|n| n.name == "LLMSummaryNode")
+            .expect("LLMSummaryNode should be present");
+
+        assert!(
+            llm_node.output.is_some(),
+            "output must be read directly from nodes[ClassName], not nodes[ClassName][\"output\"]"
+        );
+        assert!(
+            llm_node.completed_at.is_some(),
+            "completed_at must be populated from node_runs[name].completed_at"
+        );
+        assert_eq!(
+            llm_node.completed_at.as_deref(),
+            Some("2026-06-20T09:00:17Z")
+        );
     }
 
     // ── derive_run_status edge cases ──────────────────────────────────────────
@@ -1043,6 +1086,7 @@ mod tests {
             tokens_out: None,
             model: None,
             started_at: None,
+            completed_at: None,
             elapsed_secs: None,
         }
     }
