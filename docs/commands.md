@@ -142,6 +142,28 @@ Read files on disk. Never write back — `/log-work` owns the writes (decision D
 | `bastion edit <path>` | Open a markdown file in bella's editor. Currently the same invocation as `view` — bella exposes no distinct edit flag yet. | [docview.md](knowledge/docview.md) |
 | `bastion man [--out <dir>]` | Generate the roff man page. Hidden from `--help`; kept for packaging. | — |
 
+## Fleet coordination — lane registry, leases, message queue
+
+Thin CLI faces over `engine_core::coord::{read_coordination_view, write::*}` — the same functions
+the `GET`/`POST /api/coordination/*` routes call, operating directly on the `.fleet-locks/`
+directory on disk (found by walking up from `cwd` for `brain.toml`, or `FLEET_LOCK_DIR`, or
+overridden per-call with `--lock-dir`). No dedicated doc page yet — see the doc comments on each
+variant in [`src/cli.rs`](../src/cli.rs) for the full contract, including which verbs have a
+`fleet_concurrency_check.py` counterpart and which exit codes are held in parity with it.
+
+| Command | What it does |
+|---|---|
+| `bastion coord status [--json]` | Joined fleet coordination view — registry, leases, slots, messages, heartbeats, escalations, run records. `--json` is byte-equal to `GET /api/coordination`. |
+| `bastion coord register --agent-name <n> --repo <r> --lane <l> --roadmap <rm> [--category <c>] [--lock-dir <p>]` | Write this lane's registry claim (and, with `--category`, its heavy-lane capacity slot). Exits 0 allowed, 3 refused at capacity — matches `fleet_concurrency_check.py register`. |
+| `bastion coord heartbeat --agent-name <n> [--current-block <b>] [--block-started-at <ts>] [--lock-dir <p>]` | Re-stamp an existing registry claim's `heartbeat` field. No Python counterpart; errors (including "no existing claim") exit 1. |
+| `bastion coord release --agent-name <n> [--lock-dir <p>]` | Remove a registry claim. Idempotent — exits 0 whether or not one existed, matching `fleet_concurrency_check.py release`. |
+| `bastion coord lease --repo <r> --lane <l> --agent-name <n> --kind exclusive\|shared [--scope repo\|fleet] [--window <block>]... [--lane-block <block>]... [--lock-dir <p>]` | Acquire or renew an exclusive/shared claim on a repo's working tree. No Python counterpart. |
+| `bastion coord unlease --repo <r> [--lock-dir <p>]` | Release the lease on `--repo`, if any. Idempotent — `removed: false` is not an error. |
+| `bastion coord drain --repo <r> --lane <l> [--lock-dir <p>]` | Move every message in the lane's inbox into `processing/`. Always prints `{"moved":[...],"failed":[...]}`. |
+| `bastion coord send --repo <r> --lane <l> --file <path> [--lock-dir <p>]` | Write a message envelope (read as JSON from `--file`) into the lane's inbox. Refuses any `priority`/`urgency` key up front — D43 owns priority, not the sender. |
+| `bastion coord complete --repo <r> --lane <l> --message-id <id> [--lock-dir <p>]` | Move a message's file from `processing/` to `done/`, if present. Prints `{"completed":true\|false}` either way. |
+| `bastion coord restore [--lock-dir <p>]` | Replay every snapshot under `.fleet-locks/.prev/` back to its original location, consuming each once. Exits 0 for both a successful replay and an ABSENT `.prev/` (no-op); exits non-zero when `.prev/` exists but is empty. |
+
 ### What reaches the phone from the attention board (BA.21.D)
 
 `bastion serve` mounts a poller (`src/serve/attention_source/`) that shells out to `mev
