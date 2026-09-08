@@ -56,7 +56,7 @@ pub fn session_row(s: &Session) -> String {
 pub fn footer_hint(mode: &Mode) -> String {
     match mode {
         Mode::Normal => {
-            "[a]ttach [n]ew [s]end [k]ill [q]uit  ↑/j ↓/k move spine (wraps)".to_string()
+            "[a]ttach [n]ew [s]end [k]ill [v]iew [q]uit  ↑/j ↓/k move spine (wraps)".to_string()
         }
         Mode::Input(InputKind::New) => "new session name (Enter=create, Esc=cancel): ".to_string(),
         Mode::Input(InputKind::Send) => "send to selected (Enter=send, Esc=cancel): ".to_string(),
@@ -708,6 +708,7 @@ mod tests {
         assert!(hint.contains("[n]"), "hint: {hint}");
         assert!(hint.contains("[s]"), "hint: {hint}");
         assert!(hint.contains("[k]"), "hint: {hint}");
+        assert!(hint.contains("[v]"), "hint: {hint}");
         assert!(hint.contains("[q]"), "hint: {hint}");
         // The top tab bar + Tab/Shift+Tab cycling is gone (spine is now the single
         // primary navigator) — the hint must not reference it.

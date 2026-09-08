@@ -283,6 +283,34 @@ impl AppState {
         self.reinit_browser();
     }
 
+    /// Jump directly to a declared `[views]` reader destination in ONE keypress,
+    /// from anywhere in the spine — including boot (AC-4, BA.26.A). Unlike
+    /// `select_next`/`select_prev`'s sequential Down/Up walk, this does not
+    /// depend on how many tier/space rows sit between the current selection
+    /// and the first view row: it finds every `SpineRow::View` index directly
+    /// and jumps to the next one after the current selection, wrapping to the
+    /// first view row (and cycling through further views on repeat presses).
+    /// A no-op (selection unchanged) when no view is declared/offered.
+    pub fn jump_to_next_view(&mut self) {
+        let rows = self.spine_rows();
+        let view_indices: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row, SpineRow::View(_)))
+            .map(|(i, _)| i)
+            .collect();
+        if view_indices.is_empty() {
+            return;
+        }
+        let next = view_indices
+            .iter()
+            .find(|&&i| i > self.selected_spine)
+            .copied()
+            .unwrap_or(view_indices[0]);
+        self.selected_spine = next;
+        self.reinit_browser();
+    }
+
     pub fn selected_session(&self) -> Option<&Session> {
         match self.selected_node() {
             SelectedNode::Space(entry) => self.sessions.iter().find(|s| s.name == entry.slug),
@@ -529,6 +557,13 @@ impl AppState {
                     }
                     KeyCode::Char('q') => {
                         self.should_quit = true;
+                        Action::None
+                    }
+                    KeyCode::Char('v') => {
+                        // Dedicated jump-to-view keybinding (AC-4, BA.26.A): reaches a
+                        // declared `[views]` destination in ONE keypress from anywhere
+                        // in the spine, including boot — see `jump_to_next_view`.
+                        self.jump_to_next_view();
                         Action::None
                     }
                     _ => Action::None,
@@ -887,6 +922,84 @@ mod tests {
         let app = make_full_app().with_offered_views(vec![make_view_fixture()]);
         let view_index = app.spine_rows().len() - 1;
         (app, view_index)
+    }
+
+    /// A large, multi-tier spine approximating the real fleet's `brain.toml`
+    /// (24 registered repos across `core`/`side`/`client`/`portfolio` plus the
+    /// `_root` tier) with one declared view appended last — the scale the
+    /// review flagged as requiring ~25-30 sequential Down presses to reach.
+    fn make_large_fleet_app_with_view() -> (AppState, usize) {
+        fn tier(name: &str, n: usize) -> (String, Vec<crate::brain::spaces::SpaceEntry>) {
+            (
+                name.to_string(),
+                (0..n)
+                    .map(|i| crate::brain::spaces::SpaceEntry {
+                        slug: format!("{name}-repo-{i}"),
+                        tier: name.to_string(),
+                        repo_path: std::path::PathBuf::from(format!("{name}-repo-{i}")),
+                        heading: None,
+                    })
+                    .collect(),
+            )
+        }
+        let tree = SpaceTree {
+            tiers: vec![
+                tier("_root", 2),
+                tier("core", 12),
+                tier("side", 5),
+                tier("client", 3),
+                tier("portfolio", 2),
+            ],
+        };
+        let app = AppState::new(vec![], tree).with_offered_views(vec![make_view_fixture()]);
+        let view_index = app.spine_rows().len() - 1;
+        (app, view_index)
+    }
+
+    #[test]
+    fn jump_to_next_view_reaches_a_declared_view_in_one_keypress_from_boot() {
+        // Drives on_key(KeyCode::Char('v')) from selected_spine == 0 (boot,
+        // Mission Control) against a realistic multi-tier/multi-space corpus
+        // (24 repos + 2 _root entries), exactly the scenario the review found
+        // ungated: reaching the declared view via sequential Down/Up alone
+        // would take ~25-30 keypresses here.
+        let (mut app, view_index) = make_large_fleet_app_with_view();
+        assert_eq!(app.selected_spine, 0);
+        // Sanity: the view row really does sit far from boot, so a pass here
+        // is not accidentally trivial.
+        assert!(
+            view_index > 20,
+            "fixture must place the view row far from boot; view_index={view_index}"
+        );
+
+        app.on_key(KeyCode::Char('v'));
+
+        assert_eq!(
+            app.selected_spine, view_index,
+            "expected a single 'v' press from boot to land on the view row"
+        );
+        match app.selected_node() {
+            SelectedNode::View(view) => assert_eq!(view.name, "open-work"),
+            other => panic!("expected View(open-work) after one 'v' press, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jump_to_next_view_cycles_and_wraps_on_repeat_presses() {
+        // With only one declared view, pressing 'v' again (already on the
+        // view row) wraps back to the same view rather than getting stuck.
+        let (mut app, view_index) = make_full_app_with_view();
+        app.selected_spine = view_index;
+        app.jump_to_next_view();
+        assert_eq!(app.selected_spine, view_index);
+    }
+
+    #[test]
+    fn jump_to_next_view_is_a_noop_when_no_view_is_declared() {
+        let mut app = make_full_app();
+        let before = app.selected_spine;
+        app.on_key(KeyCode::Char('v'));
+        assert_eq!(app.selected_spine, before);
     }
 
     #[test]

@@ -160,8 +160,10 @@ An unknown name in step 2 or 3 is a fatal error (`ConfigError::UnknownWorkspace`
 ## Reader views (`[views]`, BA.26.A)
 
 The `[views]` table declares named reader destinations that the session TUI's spine
-(`bastion tui`) offers as first-class sidebar entries reachable in one keypress, instead of
-navigating there through the generic browser.
+(`bastion tui`) offers as first-class sidebar entries reachable in one keypress — press `v` from
+anywhere in the spine, including boot, to jump straight to the next declared view (cycling if more
+than one is declared) — instead of navigating there through the generic browser via sequential
+Down/Up.
 
 ```toml
 [views.open-work]
