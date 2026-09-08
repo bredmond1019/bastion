@@ -220,7 +220,7 @@ pub(crate) fn parse_task_context(task_context: &serde_json::Value) -> Result<Vec
         let output = nodes_map
             .and_then(|m| m.get(name.as_str()))
             .cloned()
-            .and_then(|v| if v.is_null() { None } else { Some(v) });
+            .filter(|v| !v.is_null());
 
         result.push(NodeState {
             id: name.clone(),
