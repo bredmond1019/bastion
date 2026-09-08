@@ -9,9 +9,11 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
-    widgets::{List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph, Tabs},
 };
 use std::{fs, io};
+
+use crate::config::OfferedView;
 
 /// Height of the "In Progress" Kanban column as a percentage of the columns row.
 const NOW_COLUMN_PCT: u16 = 33;
@@ -180,6 +182,77 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
     frame.render_widget(blocked_list, columns[2]);
 }
 
+// ── Open-work renderer (BA.26.G) ─────────────────────────────────────────────
+//
+// This is a NEW front end for `bastion overview`, rendered ALONGSIDE the
+// parked Kanban path above — `render` and `StateJson` are untouched by this
+// block (BA.26.I's decision D20 supersedes D13's Kanban clause; the old path
+// stays reachable as code but is simply no longer what `bastion overview`
+// dispatches to, once BA.26.G task 3 repoints `src/main.rs`).
+//
+// Sections come from the config's `[views]` table (BA.26.A), already
+// resolved to the "safe to offer" subset by `config::offered_views` — a
+// declared view whose `root` does not exist on disk has already been
+// dropped there, so this module does no existence-checking of its own and
+// cannot re-derive a different answer than the TUI reader's spine does.
+
+/// Renders the config-declared open-work sections as a tab strip (fast
+/// section switching) plus a content pane for the currently selected
+/// section, into `area`.
+///
+/// `sections` MUST be the already-resolved output of
+/// [`crate::config::offered_views`] — a declared section whose `root` does
+/// not exist has already been filtered out there, so a caller that passes
+/// the raw `[views]` table instead would silently re-offer an absent
+/// section; this function does not re-check existence itself (single
+/// resolver, not two).
+///
+/// `selected` is clamped into range; an empty `sections` list renders a
+/// single "no sections declared" placeholder rather than panicking on an
+/// out-of-bounds `Tabs::select`.
+///
+/// The content pane here is a placeholder (label + root path) — task 2 wires
+/// it to bella's markdown renderer sharing the TUI reader's persisted
+/// `TableExpansions`, and task 4 adds the in-document jumps. This task's
+/// job is the section resolution and the tab-switching skeleton only.
+pub fn render_sections(
+    frame: &mut Frame,
+    sections: &[OfferedView],
+    selected: usize,
+    area: ratatui::layout::Rect,
+) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    let titles: Vec<ratatui::text::Line> = sections
+        .iter()
+        .map(|s| ratatui::text::Line::from(s.label.clone()))
+        .collect();
+
+    let tabs = Tabs::new(titles)
+        .select(if sections.is_empty() {
+            0
+        } else {
+            selected.min(sections.len() - 1)
+        })
+        .highlight_style(
+            Style::default()
+                .fg(crate::ui_theme::accent())
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(crate::ui_theme::themed_block(" Open Work ", true));
+    frame.render_widget(tabs, layout[0]);
+
+    let content = match sections.get(selected) {
+        Some(section) => Paragraph::new(format!("{}\n{}", section.label, section.root.display())),
+        None => Paragraph::new("No open-work sections declared."),
+    }
+    .block(crate::ui_theme::themed_block("", false));
+    frame.render_widget(content, layout[1]);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -285,5 +358,178 @@ mod tests {
                 render(f, &state, area);
             })
             .expect("render must not panic on empty columns");
+    }
+
+    // ── render_sections (BA.26.G task 1) ────────────────────────────────────
+
+    fn buf_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area;
+        (0..area.height)
+            .flat_map(|y| {
+                (0..area.width).map(move |x| {
+                    buf.cell((x, y))
+                        .map(|c| c.symbol().to_string())
+                        .unwrap_or_default()
+                })
+            })
+            .collect()
+    }
+
+    /// AC-1 (shown-failing half) + AC-3 (derived count, no literal): three
+    /// views declared in the `[views]` table, two with an existing `root`
+    /// and one whose `root` is absent from disk. `config::offered_views`
+    /// resolves that down to the two present sections — this test asserts
+    /// the RENDER agrees: the two present sections' labels appear in the
+    /// buffer, distinguishable from the absent one, which appears nowhere
+    /// (not as an error, not as an empty pane — simply not offered), and
+    /// the count driving the tab strip is `sections.len()`, never a
+    /// literal `2`.
+    #[test]
+    fn render_sections_offers_only_sections_with_an_existing_root() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::collections::HashMap;
+
+        let dir_alpha = tempfile::tempdir().expect("tempdir alpha");
+        let dir_beta = tempfile::tempdir().expect("tempdir beta");
+
+        let mut views = HashMap::new();
+        views.insert(
+            "alpha".to_string(),
+            crate::config::ViewEntry {
+                label: "Alpha Section".to_string(),
+                root: dir_alpha.path().to_path_buf(),
+            },
+        );
+        views.insert(
+            "beta".to_string(),
+            crate::config::ViewEntry {
+                label: "Beta Section".to_string(),
+                root: dir_beta.path().to_path_buf(),
+            },
+        );
+        // Declared, but its source path does not exist on disk — must not
+        // be offered at all (SHOWN FAILING half of AC-1: a renderer that
+        // shows this as an error pane or an empty pane fails this test).
+        views.insert(
+            "gamma".to_string(),
+            crate::config::ViewEntry {
+                label: "Gamma Section".to_string(),
+                root: std::path::PathBuf::from("/definitely/does/not/exist/BA-26-G-absent-fixture"),
+            },
+        );
+
+        let fc = crate::config::FileConfig {
+            views: Some(views),
+            ..crate::config::FileConfig::default()
+        };
+
+        let sections = crate::config::offered_views(&fc);
+
+        // AC-3: derived from the resolved table, never a literal count.
+        let declared_with_existing_root = 2;
+        assert_eq!(sections.len(), declared_with_existing_root);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_sections(f, &sections, 0, area);
+            })
+            .expect("render_sections must not panic");
+
+        let rendered = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(
+            rendered.contains("Alpha Section"),
+            "present section 'Alpha Section' must be offered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Beta Section"),
+            "present section 'Beta Section' must be offered:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Gamma Section"),
+            "absent-source section 'Gamma Section' must NOT be offered:\n{rendered}"
+        );
+    }
+
+    /// AC-1 for a single declared section with an existing root: it is
+    /// offered as its own tab, distinct from the empty-table case.
+    #[test]
+    fn render_sections_offers_a_single_present_section() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut views = HashMap::new();
+        views.insert(
+            "solo".to_string(),
+            crate::config::ViewEntry {
+                label: "Solo Section".to_string(),
+                root: dir.path().to_path_buf(),
+            },
+        );
+        let fc = crate::config::FileConfig {
+            views: Some(views),
+            ..crate::config::FileConfig::default()
+        };
+        let sections = crate::config::offered_views(&fc);
+        assert_eq!(sections.len(), 1);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_sections(f, &sections, 0, area);
+            })
+            .expect("render_sections must not panic");
+
+        let rendered = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(rendered.contains("Solo Section"));
+    }
+
+    /// No `[views]` table declared at all: zero sections, and
+    /// `render_sections` degrades to a placeholder rather than panicking on
+    /// an out-of-range `Tabs::select`.
+    #[test]
+    fn render_sections_handles_zero_declared_sections_without_panicking() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let fc = crate::config::FileConfig::default();
+        let sections = crate::config::offered_views(&fc);
+        assert_eq!(sections.len(), 0);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_sections(f, &sections, 0, area);
+            })
+            .expect("render_sections must not panic on zero declared sections");
+
+        let rendered = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(rendered.contains("No open-work sections declared."));
+    }
+
+    /// `render` and `StateJson` are untouched by this task (AC-4 of task 1)
+    /// — the parked Kanban path keeps working exactly as before, proven by
+    /// re-running its own existing render test alongside the new renderer's.
+    #[test]
+    fn parked_kanban_render_still_works_alongside_the_new_renderer() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let state: StateJson =
+            serde_json::from_str(REPRESENTATIVE).expect("representative fixture should parse");
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render(f, &state, area);
+            })
+            .expect("parked Kanban render must still work");
     }
 }
