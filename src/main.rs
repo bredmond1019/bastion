@@ -20,6 +20,7 @@ mod monitor;
 mod notify;
 mod notify_cli;
 mod observ;
+mod openwork;
 mod overview;
 mod run;
 mod serve;

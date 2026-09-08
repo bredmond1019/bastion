@@ -6,6 +6,18 @@ timestamp: 2026-09-02T07:26:32-0300
 ---
 # Log — bastion
 
+## [run: 2026-09-08]
+
+Ran /sdlc-flow on BA.26.C tasks 1 through 5; tasks 1-4 passed with confirmed workAssertionPassed outcomes and task 5 BAILED. Task 1 added src/openwork/mod.rs with a pure refresh_args() argv builder over a closed RefreshMode enum (CheckOnly, ForceCheck) that cannot represent --commit/--emit; task 2 classified refresh.py's exit codes (0/2/other) and spawn errors into a named RefreshOutcome; task 3 added a thin spawn_argv I/O shell and refactored ui.rs's run_inner into an EventSource-generic run_inner_with_events, proving with a real spawned stand-in child that the event loop never blocks on the spawn; task 4 bound 'r' to spawn the refresh via a new Action::RefreshOpenWork, added AppState::openwork_status as pure data, and made ui.rs own the spawned Child (spawn_refresh/poll_refresh_child), with the footer showing progress and the classified result and the content pane re-reading fresh content on completion. Task 5 was validation-only — the full harness suite (fmt/clippy/full test/release build/three drift scripts) passed and the AC-6 hand smoke was run against the real cargo-installed binary via a scripted tmux session, confirming the refresh spawns off the render thread, the console stays responsive mid-refresh, and completion re-renders with the classified result — but it made no source edits this attempt, so its work-assertion check has no repo-side commit to diff against, and the terminal write recipe still requires a positive workAssertionPassed field derived from that diff. This is a structural mismatch between how validation-only tasks are specified and how the terminal write recipe verifies work, not a code defect a retry would fix. Next: resolve the validation-only work-assertion gap (either accept task 5's recorded hand-smoke evidence as the assertion, or restructure it as a task that touches a repo file) and close out BA.26.C.
+
+```
+0b0c016 feat: implement BA.26.C-task4
+bea801d feat: implement BA.26.C-task3
+9924771 feat: implement BA.26.C-task2
+e56ba8d feat: implement BA.26.C-task1
+187d77a chore: init worktree BA.26.C-flow
+```
+
 ## [run: 2026-09-07]
 
 Resumed /sdlc-flow on BA.26.B after the prior BAIL and closed the spec gap with two new tasks: task 7 gave both `read_to_string` call sites in `src/sessions/ui.rs` a named three-way `DocumentRead` (Absent/Failed{path,kind}/Ok) instead of collapsing a read failure or mid-rewrite race into the same "No <path> found." placeholder as an absent file, closing the previously-unwired "CONCURRENCY WITH REFRESH" acceptance criterion; task 8 added a `RenderCache` (keyed on path/content/width/a deterministic TableExpansions fingerprint) so a pure scroll is a cache hit rather than a re-parse, proven by a gated unit test counting actual `render_with_edit` calls, with an un-gateable release-profile probe against the real 267KB open-work board recording ~28.7ms cold vs ~6.6ms cached (~4x). Both tasks passed with confirmed workAssertionPassed outcomes and the consolidated end-of-flow review returned PASS. BA.26.B is now fully done (8 of 8 tasks) — table cell expansion persists across re-renders, keyboard/mouse content scrolling is unified, the footer legend is generated from one binding table, the dead overlay path was removed, and `strip_frontmatter` delegates to `bella_engine::frontmatter`. Full authoritative gate green. Next: pick up the next queued item per `planning/status.md`.
