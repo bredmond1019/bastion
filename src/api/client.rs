@@ -261,6 +261,36 @@ fn body_error_message(body: &str) -> Option<String> {
         .map(|b| b.error)
 }
 
+/// A client-side bearer token (task 3, BA.26.D) sent as
+/// `Authorization: Bearer <token>` against `bastion serve`'s own `/api/*`
+/// routes. A THIRD, distinct secret from both [`ApiClient::engine_api_key`]
+/// (the engine's `X-API-Key`) and `ServeConfig.token` (the SERVER's own
+/// enforcement value, `src/config.rs:52`) — this is the CLIENT's copy of
+/// whatever token the target `bastion serve` enforces as
+/// `BASTION_SERVE_TOKEN`.
+///
+/// Wraps the raw `String` so the value can never be printed by accident:
+/// `Debug` is hand-written to always render `BearerToken(<redacted>)`,
+/// mirroring `config::BotToken`'s pattern verbatim (the token must never
+/// appear in a `Display`, `Debug`, or log line).
+#[derive(Clone, PartialEq, Eq)]
+struct BearerToken(String);
+
+impl BearerToken {
+    /// The raw token value, for use only at the point a request is actually
+    /// built (interpolated into the `Authorization` header). Callers must
+    /// never log or `Debug`-print the returned `&str`.
+    fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for BearerToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BearerToken(<redacted>)")
+    }
+}
+
 pub struct ApiClient {
     base_url: String,
     client: reqwest::Client,
@@ -269,6 +299,11 @@ pub struct ApiClient {
     /// orchestrator-facing methods (`health`, `trigger_workflow`,
     /// `workflow_graph`), which never touch the engine, are unaffected.
     engine_api_key: Option<String>,
+    /// The client-side bearer token (task 3), used only by
+    /// [`ApiClient::get_api`] to authenticate against `bastion serve`'s own
+    /// `/api/*` routes. `None` by default so existing call sites, which
+    /// never touch `/api/*`, are unaffected.
+    bearer_token: Option<BearerToken>,
 }
 
 impl ApiClient {
@@ -277,6 +312,7 @@ impl ApiClient {
             base_url: base_url.to_string(),
             client: reqwest::Client::new(),
             engine_api_key: None,
+            bearer_token: None,
         }
     }
 
@@ -287,6 +323,16 @@ impl ApiClient {
     /// unaffected.
     pub fn with_engine_api_key(mut self, key: Option<String>) -> Self {
         self.engine_api_key = key;
+        self
+    }
+
+    /// Attach the client bearer token (task 3) for [`ApiClient::get_api`] to
+    /// send as `Authorization: Bearer <token>`. A separate builder (rather
+    /// than a `new` parameter) so existing `ApiClient::new(base_url)` call
+    /// sites — which never touch `/api/*` — are unaffected, mirroring
+    /// [`ApiClient::with_engine_api_key`]'s exact shape.
+    pub fn with_bearer_token(mut self, token: Option<String>) -> Self {
+        self.bearer_token = token.map(BearerToken);
         self
     }
 
@@ -479,6 +525,31 @@ impl ApiClient {
         // No orchestrator re-run endpoint exists today — this is a future
         // contract ADDITION the Python side must make first (data contract §7).
         anyhow::bail!("Phase 4: requires a new orchestrator re-run endpoint")
+    }
+
+    /// Perform a `GET` request against one of `bastion serve`'s own `/api/*`
+    /// routes, attaching the client bearer token (task 3, BA.26.D) as an
+    /// `Authorization: Bearer <token>` header when configured. `path` is the
+    /// full path to request (e.g. `/api/runs`) — joined onto `base_url`
+    /// exactly like [`ApiClient::abort_url`]/[`ApiClient::resume_url`].
+    ///
+    /// Returns the raw `reqwest::Response` so callers (e.g. `src/runs/`'s
+    /// unreachability probes, task 4) can classify by status code
+    /// themselves — 404/401/200 mean different things to those probes, and
+    /// this method does no interpretation of the body or status. A missing
+    /// `bearer_token` is NOT a hard client-side refusal (unlike
+    /// [`ApiClient::abort_run`]'s missing `engine_api_key`): some routes may
+    /// be reachable unauthenticated, and the caller's own probe logic is
+    /// what decides how to classify a resulting 401.
+    pub async fn get_api(&self, path: &str) -> Result<reqwest::Response, ConsoleError> {
+        let url = format!("{}{path}", self.base_url.trim_end_matches('/'));
+        let mut req = self.client.get(&url).timeout(Duration::from_secs(5));
+        if let Some(token) = &self.bearer_token {
+            req = req.header("Authorization", format!("Bearer {}", token.expose()));
+        }
+        req.send()
+            .await
+            .map_err(|e| ConsoleError::Io(format!("connecting to {url}: {e}")))
     }
 
     pub async fn health(&self) -> ApiStatus {
@@ -947,5 +1018,148 @@ mod tests {
             .await
             .expect_err("connection failure should be a typed error");
         assert_eq!(err.code(), ErrorCode::IoError);
+    }
+
+    // ── BearerToken — redaction (task 3, BA.26.D) ───────────────────────────
+    // CLAUDE.md non-negotiable: the client bearer token must never appear in
+    // a Display, Debug, or log line. Mirrors config::BotToken's own
+    // redaction test.
+
+    #[test]
+    fn bearer_token_debug_never_reveals_the_token() {
+        let token = BearerToken("super-secret-bearer-value".to_string());
+        let debug_output = format!("{token:?}");
+        assert!(
+            !debug_output.contains("super-secret-bearer-value"),
+            "Debug output leaked the token: {debug_output}"
+        );
+        assert_eq!(debug_output, "BearerToken(<redacted>)");
+    }
+
+    // ── with_bearer_token — builder (task 3) ────────────────────────────────
+
+    #[test]
+    fn with_bearer_token_sets_field() {
+        let client = ApiClient::new("http://localhost:8080")
+            .with_bearer_token(Some("client-bearer-secret".to_string()));
+        assert_eq!(
+            client.bearer_token.as_ref().map(BearerToken::expose),
+            Some("client-bearer-secret")
+        );
+    }
+
+    #[test]
+    fn with_bearer_token_none_leaves_field_none() {
+        let client = ApiClient::new("http://localhost:8080").with_bearer_token(None);
+        assert!(client.bearer_token.is_none());
+    }
+
+    #[test]
+    fn api_client_new_defaults_bearer_token_to_none() {
+        let client = ApiClient::new("http://localhost:8080");
+        assert!(client.bearer_token.is_none());
+    }
+
+    // ── get_api — /api/* Bearer support (task 3) ────────────────────────────
+
+    #[tokio::test]
+    async fn get_api_without_bearer_token_is_io_error_on_connection_failure() {
+        // Port 1 refuses connections on any dev/CI machine (no listener) —
+        // a deterministic transport failure without a live server, exactly
+        // like trigger_workflow's own connection-failure tests above.
+        let client = ApiClient::new("http://127.0.0.1:1");
+        let err = client
+            .get_api("/api/runs")
+            .await
+            .expect_err("connection failure should be a typed IO error");
+        assert_eq!(err.code(), ErrorCode::IoError);
+    }
+
+    #[tokio::test]
+    async fn get_api_with_bearer_token_still_attempts_request() {
+        // A bearer-bearing client attaches the header before sending, so
+        // this pins that construction with a token doesn't change the
+        // connection-failure path — the header is present but the
+        // transport still fails against a closed port.
+        let client =
+            ApiClient::new("http://127.0.0.1:1").with_bearer_token(Some("token".to_string()));
+        let err = client
+            .get_api("/api/runs")
+            .await
+            .expect_err("connection failure should be a typed IO error");
+        assert_eq!(err.code(), ErrorCode::IoError);
+    }
+
+    #[tokio::test]
+    async fn get_api_sends_authorization_bearer_header_when_configured() {
+        // No mock-HTTP crate is a dev-dependency of this crate — spin up a
+        // real, minimal TCP listener on an ephemeral port and read the raw
+        // request bytes off the wire, exactly what `get_api` would send to a
+        // real `bastion serve`. This is the only way to assert the actual
+        // `Authorization` header value reqwest puts on the wire, not just
+        // that a call was attempted.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                let _ = tx.send(request);
+            }
+        });
+
+        let client = ApiClient::new(&format!("http://{addr}"))
+            .with_bearer_token(Some("secret-bearer-value".to_string()));
+        let _ = client.get_api("/api/runs").await;
+
+        let request = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("server thread should have received a request");
+        assert!(
+            request
+                .to_lowercase()
+                .contains("authorization: bearer secret-bearer-value"),
+            "request did not carry the expected Authorization header: {request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_api_sends_no_authorization_header_when_unconfigured() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                let _ = tx.send(request);
+            }
+        });
+
+        let client = ApiClient::new(&format!("http://{addr}"));
+        let _ = client.get_api("/api/runs").await;
+
+        let request = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("server thread should have received a request");
+        assert!(
+            !request.to_lowercase().contains("authorization:"),
+            "request should carry no Authorization header when unconfigured: {request}"
+        );
     }
 }

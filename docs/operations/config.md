@@ -94,6 +94,7 @@ a repo another agent has leased instead of stalling on it. The script does not y
 | `BASTION_MAX_TOTAL_TOKENS` | No | — (no cap) | Budget cap (BA.7.C): total token ceiling. Absent-tolerant — no cap configured is a valid, unchanged config. A present-but-unparseable value is a fatal `ConfigError::MalformedBudgetValue`, never a silent default. |
 | `BASTION_MAX_COST_USD` | No | — (no cap) | Budget cap (BA.7.C): total USD-cost ceiling. Same absent-tolerant / malformed-is-fatal contract as `BASTION_MAX_TOTAL_TOKENS`. |
 | `BASTION_ENGINE_API_KEY` | No (required to use `bastion abort` / engine routes) | — | `X-API-Key` secret for the engine's abort endpoint. **Distinct from `BASTION_SERVE_TOKEN`** — two different secrets, two different schemes, two different route groups: this key is sent by `api::client` and checked by the embedded engine's `AppState.api_key`; `BASTION_SERVE_TOKEN` gates bastion serve's own session/status routes. Never reuse one for the other. |
+| `BASTION_CLIENT_BEARER_TOKEN` | No | — | Client-side bearer token (`BA.26.D`) sent as `Authorization: Bearer <token>` by `api::client::ApiClient` (`ApiClient::get_api`) against `bastion serve`'s own `/api/*` routes. **A THIRD, distinct secret** from both `BASTION_ENGINE_API_KEY` above (the engine's `X-API-Key`) and `BASTION_SERVE_TOKEN` (the SERVER's own enforcement value) — this is the CLIENT's copy of whatever token the target `bastion serve` enforces as `BASTION_SERVE_TOKEN`. Absent-tolerant: `None` means no client bearer token configured, not an error. |
 | `BASTION_ENGINE_HARNESS_PATH` | No | — (no schedule loop spawned) | Path to the `harness.json` whose `schedule` block configures the embedded engine's scheduled entries (`engine_serve::schedule::spawn_schedule_loop`). Absent, empty, or pointing at a path that does not exist/is not readable all resolve to `None` — the ordinary case today — and `bastion serve` starts with no schedule loop, logged at info, not error. A path that resolves but whose `schedule` block fails to parse is a distinct, louder `tracing::error!` outcome, but still does not abort startup. Env-var only — no `config.toml` key. |
 | `BASTION_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token for the operator-notification transport (`BA.18.B`, [serve-api.md](../serve/serve-api.md#26-operator-notification-transport)). **Mini-plist-only** — the real value lives in `com.brandon.engine-serve.plist` on the Mac Mini and is never written to any tracked file, `.env`, test, or fixture in this repo. Both this and `BASTION_TELEGRAM_CHAT_ID` absent leaves the transport unconfigured (`bastion serve` boots unchanged); exactly one present is a typed `ConfigError::IncompleteTelegramConfig`. |
 | `BASTION_TELEGRAM_CHAT_ID` | No | — | Operator's Telegram chat id the bot delivers to. Same Mini-plist-only, absent-tolerant, paired-with-the-token contract as `BASTION_TELEGRAM_BOT_TOKEN` above. |
@@ -135,6 +136,10 @@ max_cost_usd     = 25.00
 
 # X-API-Key for the engine's abort endpoint (BA.7.C) — distinct from BASTION_SERVE_TOKEN.
 engine_api_key = "<engine-api-key>"
+
+# Client-side bearer token (BA.26.D) sent against bastion serve's own /api/* routes —
+# a THIRD secret, distinct from both engine_api_key above and BASTION_SERVE_TOKEN.
+client_bearer_token = "<client-bearer-token>"
 ```
 
 All keys are optional. Unknown keys are ignored (forward-compatible).
@@ -243,6 +248,21 @@ from `ServeConfig.token` (the `Authorization: Bearer` gate `bastion serve` enfor
 session/status routes) — one authenticates operator access to bastion serve, the other
 authenticates bastion's own outbound calls to the engine's abort endpoint. Never conflate or
 reuse one for the other.
+
+## Client bearer token (`BA.26.D`)
+
+One more optional key, following `engine_api_key`'s exact precedent:
+
+| Key | Env var | Type | Description |
+|---|---|---|---|
+| `client_bearer_token` | `BASTION_CLIENT_BEARER_TOKEN` | `Option<String>` | Sent as `Authorization: Bearer <token>` by `api::client::ApiClient` (`ApiClient::get_api`) against `bastion serve`'s own `/api/*` routes. |
+
+Same env-over-file precedence, same absent-tolerant contract. This is a **third** distinct
+secret from both `engine_api_key` above (the engine's `X-API-Key`, sent to the embedded
+engine's abort/resume routes) and `ServeConfig.token` (`BASTION_SERVE_TOKEN`, the SERVER's own
+enforcement value on its `/api/*` scope) — `client_bearer_token` is the CLIENT's copy of
+whatever token the target `bastion serve` enforces as `BASTION_SERVE_TOKEN`. Never reuse one
+for another.
 
 A `BASTION_MAX_TOTAL_TOKENS` or `BASTION_MAX_COST_USD` value that is present but fails to parse
 as its numeric type (e.g. `BASTION_MAX_TOTAL_TOKENS=not-a-number`) is a fatal
@@ -447,6 +467,7 @@ Struct that mirrors the config-file keys. All fields are optional; constructed b
 | `max_total_tokens` | `Option<u64>` | Budget cap (BA.7.C): total token ceiling. |
 | `max_cost_usd` | `Option<f64>` | Budget cap (BA.7.C): total USD-cost ceiling. |
 | `engine_api_key` | `Option<String>` | `X-API-Key` secret for the engine's abort endpoint (BA.7.C). Distinct from `ServeConfig.token`. |
+| `client_bearer_token` | `Option<String>` | Client-side bearer token (BA.26.D) sent against bastion serve's own `/api/*` routes. Distinct from both `engine_api_key` and `ServeConfig.token`. |
 | `telegram_commands` | `Option<HashMap<String, TelegramCommandEntry>>` | Optional `[telegram_commands]` allow-list mapping a command name to a triggerable workflow. See [telegram-commands.md](../serve/telegram-commands.md). |
 
 ### `ThemeConfig`

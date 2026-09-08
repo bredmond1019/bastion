@@ -184,6 +184,16 @@ pub struct FileConfig {
     /// `ServeConfig.token` (bastion serve's own `Authorization: Bearer` gate) —
     /// two different secrets, two different schemes, two different route groups.
     pub engine_api_key: Option<String>,
+    /// Client-side bearer token (task 3, BA.26.D) sent as `Authorization: Bearer
+    /// <token>` by `api::client::ApiClient` against `bastion serve`'s own
+    /// `/api/*` routes. A THIRD, distinct secret from both `engine_api_key`
+    /// above (the engine's `X-API-Key`) and `ServeConfig.token` (the SERVER's
+    /// own enforcement value, `src/config.rs:52`) — this is the CLIENT's copy
+    /// of whatever token the target `bastion serve` enforces as
+    /// `BASTION_SERVE_TOKEN`. Absent-tolerant, mirroring `engine_api_key`'s
+    /// exact contract: `None` means no client bearer token configured, not an
+    /// error.
+    pub client_bearer_token: Option<String>,
     /// The `[telegram_commands]` allow-list table (BA.ticket.telegram-command-router),
     /// keyed by command NAME with no leading `/`. Absent entirely for existing
     /// configs, which parse unchanged. Read once at `bastion serve` boot — adding
@@ -692,6 +702,9 @@ pub struct Config {
     /// `ServeConfig.token`; used by both `api::client` (sender) and the embedded
     /// engine's `AppState.api_key` (verifier).
     pub engine_api_key: Option<String>,
+    /// Client-side bearer token (task 3, BA.26.D) — see [`FileConfig::client_bearer_token`]
+    /// for the full contract. Threaded through unchanged by [`Config::from_sources`].
+    pub client_bearer_token: Option<String>,
     /// Desktop-notification toggle (Part B) — `BASTION_NOTIFY`. Opt-out, not
     /// opt-in: defaults to `true` since the notification feature only exists
     /// because it was asked for. Checked at the `monitor::events` /
@@ -773,6 +786,7 @@ impl Config {
                 std::env::var("BASTION_MAX_COST_USD").ok(),
                 std::env::var("BASTION_ENGINE_API_KEY").ok(),
                 std::env::var("BASTION_NOTIFY").ok(),
+                std::env::var("BASTION_CLIENT_BEARER_TOKEN").ok(),
             ),
             file_config,
         )
@@ -783,7 +797,7 @@ impl Config {
     ///
     /// `env` is `(DATABASE_URL, BASTION_API_URL, BASTION_POLL_INTERVAL,
     /// BASTION_MAX_TOTAL_TOKENS, BASTION_MAX_COST_USD, BASTION_ENGINE_API_KEY,
-    /// BASTION_NOTIFY)`.
+    /// BASTION_NOTIFY, BASTION_CLIENT_BEARER_TOKEN)`.
     ///
     /// The three budget/key fields are absent-tolerant: `None` from both env and file is a
     /// valid, unchanged configuration (no gate, no alert). A present-but-unparseable
@@ -805,11 +819,20 @@ impl Config {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
         ),
         file: FileConfig,
     ) -> Result<Self, ConfigError> {
-        let (env_db, env_api, env_poll, env_max_tokens, env_max_cost, env_engine_key, env_notify) =
-            env;
+        let (
+            env_db,
+            env_api,
+            env_poll,
+            env_max_tokens,
+            env_max_cost,
+            env_engine_key,
+            env_notify,
+            env_client_bearer_token,
+        ) = env;
 
         let database_url = env_db
             .or(file.database_url)
@@ -843,6 +866,8 @@ impl Config {
 
         let engine_api_key = env_engine_key.or(file.engine_api_key);
 
+        let client_bearer_token = env_client_bearer_token.or(file.client_bearer_token);
+
         let notify_enabled = env_notify
             .and_then(|s| s.parse::<bool>().ok())
             .unwrap_or(true);
@@ -854,6 +879,7 @@ impl Config {
             max_total_tokens,
             max_cost_usd,
             engine_api_key,
+            client_bearer_token,
             notify_enabled,
         })
     }
@@ -870,6 +896,7 @@ impl Config {
                 database_url,
                 api_base_url,
                 poll_interval,
+                None,
                 None,
                 None,
                 None,
@@ -1436,6 +1463,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             file,
         )
@@ -1453,7 +1481,7 @@ mod tests {
             poll_interval: Some(15),
             ..Default::default()
         };
-        let c = Config::from_sources((None, None, None, None, None, None, None), file)
+        let c = Config::from_sources((None, None, None, None, None, None, None, None), file)
             .expect("should parse");
         assert_eq!(c.database_url, "postgres://file/db");
         assert_eq!(c.api_base_url, "http://file:7777");
@@ -1468,7 +1496,7 @@ mod tests {
             poll_interval: None,
             ..Default::default()
         };
-        let c = Config::from_sources((None, None, None, None, None, None, None), file)
+        let c = Config::from_sources((None, None, None, None, None, None, None, None), file)
             .expect("should parse");
         assert_eq!(c.api_base_url, "http://localhost:8080");
         assert_eq!(c.poll_interval_secs, 2);
@@ -1482,7 +1510,7 @@ mod tests {
             poll_interval: None,
             ..Default::default()
         };
-        let c = Config::from_sources((None, None, None, None, None, None, None), file)
+        let c = Config::from_sources((None, None, None, None, None, None, None, None), file)
             .expect("should parse");
         assert_eq!(c.database_url, "postgres://file-only/db");
     }
@@ -1490,7 +1518,7 @@ mod tests {
     #[test]
     fn missing_database_url_from_both_sources_is_error() {
         let err = Config::from_sources(
-            (None, None, None, None, None, None, None),
+            (None, None, None, None, None, None, None, None),
             FileConfig::default(),
         )
         .unwrap_err();
@@ -3061,6 +3089,7 @@ brain = "/Users/alice/brain"
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
     ) {
         (
             Some("postgres://localhost/db".into()),
@@ -3069,6 +3098,7 @@ brain = "/Users/alice/brain"
             max_total_tokens.map(String::from),
             max_cost_usd.map(String::from),
             engine_api_key.map(String::from),
+            None,
             None,
         )
     }
@@ -3201,6 +3231,106 @@ brain = "/Users/alice/brain"
         assert_ne!(c.engine_api_key.as_deref(), Some(sc.token.as_str()));
     }
 
+    // ─── client_bearer_token (BA.26.D task 3) ────────────────────────────────
+    //
+    // Mirrors engine_api_key's own absent-tolerant, env-over-file precedent
+    // tests above (`budget_file_only_is_used` / `budget_env_wins_over_file`).
+
+    #[allow(clippy::type_complexity)]
+    fn client_bearer_env(
+        token: Option<&str>,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
+        (
+            Some("postgres://localhost/db".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            token.map(String::from),
+        )
+    }
+
+    #[test]
+    fn client_bearer_token_absent_from_both_sources_is_none() {
+        let c = Config::from_sources(client_bearer_env(None), FileConfig::default())
+            .expect("should parse");
+        assert_eq!(c.client_bearer_token, None);
+    }
+
+    #[test]
+    fn client_bearer_token_file_only_is_used() {
+        let file = FileConfig {
+            client_bearer_token: Some("file-bearer-token".into()),
+            ..Default::default()
+        };
+        let c = Config::from_sources(client_bearer_env(None), file).expect("should parse");
+        assert_eq!(c.client_bearer_token.as_deref(), Some("file-bearer-token"));
+    }
+
+    #[test]
+    fn client_bearer_token_env_wins_over_file() {
+        let file = FileConfig {
+            client_bearer_token: Some("file-bearer-token".into()),
+            ..Default::default()
+        };
+        let c = Config::from_sources(client_bearer_env(Some("env-bearer-token")), file)
+            .expect("should parse");
+        assert_eq!(c.client_bearer_token.as_deref(), Some("env-bearer-token"));
+    }
+
+    #[test]
+    fn client_bearer_token_distinct_from_engine_api_key_and_serve_token() {
+        // Three separate secrets: the client bearer token (this field), the
+        // engine's X-API-Key (`engine_api_key`), and the server's own
+        // enforcement value (`ServeConfig.token`). Constructing one must
+        // never populate or influence the others.
+        let (db, api, poll, max_tokens, max_cost, _engine_key, notify, _client_bearer) =
+            client_bearer_env(Some("client-bearer-secret"));
+        let c = Config::from_sources(
+            (
+                db,
+                api,
+                poll,
+                max_tokens,
+                max_cost,
+                Some("engine-secret".into()),
+                notify,
+                Some("client-bearer-secret".into()),
+            ),
+            FileConfig::default(),
+        )
+        .expect("should parse");
+        assert_eq!(
+            c.client_bearer_token.as_deref(),
+            Some("client-bearer-secret")
+        );
+        assert_eq!(c.engine_api_key.as_deref(), Some("engine-secret"));
+        assert_ne!(c.client_bearer_token, c.engine_api_key);
+
+        let sc = build_serve_config(
+            None,
+            Some("serve-secret".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_ne!(c.client_bearer_token.as_deref(), Some(sc.token.as_str()));
+    }
+
     // ─── notify_enabled (BASTION_NOTIFY, Part B) ─────────────────────────────
     //
     // Mirrors `poll_interval_secs`'s own parsing tests: opt-out (defaults to
@@ -3212,6 +3342,7 @@ brain = "/Users/alice/brain"
         let c = Config::from_sources(
             (
                 Some("postgres://localhost/db".into()),
+                None,
                 None,
                 None,
                 None,
@@ -3236,6 +3367,7 @@ brain = "/Users/alice/brain"
                 None,
                 None,
                 Some("false".into()),
+                None,
             ),
             FileConfig::default(),
         )
@@ -3254,6 +3386,7 @@ brain = "/Users/alice/brain"
                 None,
                 None,
                 Some("true".into()),
+                None,
             ),
             FileConfig::default(),
         )
@@ -3274,6 +3407,7 @@ brain = "/Users/alice/brain"
                 None,
                 None,
                 Some("not-a-bool".into()),
+                None,
             ),
             FileConfig::default(),
         )
@@ -3385,5 +3519,27 @@ engine_api_key = "toml-engine-key"
         assert!(fc.max_total_tokens.is_none());
         assert!(fc.max_cost_usd.is_none());
         assert!(fc.engine_api_key.is_none());
+    }
+
+    // ─── parse_file: client_bearer_token TOML key (BA.26.D task 3) ───────────
+
+    #[test]
+    fn parse_file_client_bearer_token_round_trips() {
+        let toml = r#"
+database_url = "postgres://bearer-test/db"
+client_bearer_token = "toml-client-bearer-token"
+"#;
+        let fc = parse_file(toml).expect("valid TOML with client_bearer_token should parse");
+        assert_eq!(
+            fc.client_bearer_token.as_deref(),
+            Some("toml-client-bearer-token")
+        );
+    }
+
+    #[test]
+    fn parse_file_without_client_bearer_token_yields_none() {
+        let toml = r#"database_url = "postgres://no-bearer/db""#;
+        let fc = parse_file(toml).expect("TOML without client_bearer_token should parse");
+        assert!(fc.client_bearer_token.is_none());
     }
 }
