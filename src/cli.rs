@@ -650,6 +650,21 @@ pub enum CoordMode {
         #[arg(long = "lock-dir")]
         lock_dir: Option<PathBuf>,
     },
+
+    /// Replay every snapshot under `.fleet-locks/.prev/` back to its original location,
+    /// consuming each snapshot exactly once — faces the same snapshot mechanism
+    /// `engine_core::coord::write`'s other verbs write into on every overwrite, but has
+    /// no engine-rs route and no Python counterpart (`BA.25.C` task 4).
+    ///
+    /// Prints `{"restored":[...]}` and exits 0 for both a successful replay AND an
+    /// ABSENT `.prev/` (nothing has ever been snapshotted — a legitimate no-op). Exits
+    /// non-zero when `.prev/` EXISTS but holds no files to replay — a distinct
+    /// condition from ABSENT, never collapsed into it.
+    Restore {
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
 }
 
 /// `bastion notify` subcommands — see [`Commands::Notify`].

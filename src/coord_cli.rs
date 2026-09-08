@@ -580,6 +580,166 @@ pub fn run_send(
     Ok(())
 }
 
+// ── `restore` — BA.25.C task 4 ───────────────────────────────────────────────────────
+//
+// `restore` has NO `engine_core::coord::write` counterpart and NO route — `EN.15.C` shipped
+// eight write routes (register/heartbeat/release/lease/unlease/send/drain/complete;
+// `../engine-rs/crates/engine-serve/src/http.rs:357+`) and `restore` is not among them. The
+// snapshot mechanism it replays IS engine-core's: every `write_coord_json`/
+// `write_heartbeat_file` call there copies whatever file it is about to overwrite to
+// `<lock_dir>/.prev/<relative path>` first (`coord/write.rs`'s `snapshot_existing`, module doc
+// comment step 3). `restore` is the read-and-replay side of that same mechanism, owned here
+// because nothing in engine-core exposes it — undoing a write is a CLI-operator concern, not
+// a route engine-serve needs to answer.
+//
+// `restore` PULLS a snapshot back rather than copying it: each file under `.prev/` is moved
+// (not copied) to its original location relative to `lock_dir`, so a snapshot is consumed
+// exactly once — a second `restore` immediately after a successful one sees an EMPTY `.prev/`
+// and is refused (see below), rather than silently re-applying a stale snapshot forever.
+//
+// ## ABSENT vs. EMPTY `.prev/` — two different conditions, two different outcomes
+//
+// `.prev/` not existing at all means no coordination write has ever snapshotted anything on
+// this host — there is nothing to undo, and that is exactly as legitimate as an absent
+// `.fleet-locks/` tree being read as `Live` with zero entries (this module's top-level doc
+// comment, "What 'Live' does and does not mean here"). `restore` against an ABSENT `.prev/`
+// is therefore a no-op success: `{"restored":[]}`, exit 0.
+//
+// `.prev/` EXISTING but holding zero files is a different condition — AC-3 requires it to
+// exit non-zero, and the distinction matters operationally: it means either `restore` was
+// already run to completion (the directory it created is now drained), or something deleted
+// its contents by hand. Either way there is nothing to replay, but arriving at "nothing to
+// replay" via an existing-but-drained directory is worth surfacing as a refusal rather than a
+// quiet no-op, so an operator who runs `restore` twice in a row learns the second call did
+// nothing rather than assuming it repeated the first. This lane has shipped this same
+// absent-vs-degenerate split twice before (BA.26.B's `read_document`, BA.26.C's spawn-failure
+// classification) and collapsing the two was the defect both times.
+//
+// `emit-schema` IS DELIBERATELY NOT IMPLEMENTED IN THIS BLOCK. AC-4 required it, and the block
+// record (`planning/blocks/BA.25.C.json`) marks that criterion DEFERRED (D18, 2026-09-08),
+// `gateable: false`: `schemars` is a dependency of neither `okf-core` nor `bastion`
+// (`grep -n schemars` on both `Cargo.toml`s returns nothing), so generating the four schemas
+// "from okf-core's types" needs `JsonSchema` derives added to okf-core — another repo, outside
+// what this block decides alone. The diff target is also ambiguous three ways today
+// (`base-template`'s, HQ's, and this repo's own stale pre-BT.8.A `.claude/workflows/*.schema.json`
+// disagree). A bastion-local hand-maintained substitute was considered and rejected: it would
+// satisfy AC-4's letter while defeating its purpose, since the schemas are supposed to TRACK
+// okf-core's types rather than exist as a third hand-kept copy. Refile as its own block once
+// okf-core carries `JsonSchema` derives.
+
+/// The outcome of one `restore` call — every snapshot file actually moved back from `.prev/`
+/// to its original location under `lock_dir`, as `/`-joined paths relative to `lock_dir`
+/// (matching `.prev/`'s own on-disk mirror of that layout).
+#[derive(Debug)]
+struct RestoreOutcome {
+    restored: Vec<String>,
+}
+
+/// `<lock_dir>/.prev/` — the snapshot root `engine_core::coord::write`'s `snapshot_existing`
+/// writes into (`PREV_SUBDIR` in that module). Reconstructed here, read-only: this module owns
+/// no write path into `.prev/` of its own, only the replay-and-consume read of it.
+fn prev_dir(lock_dir: &Path) -> PathBuf {
+    lock_dir.join(".prev")
+}
+
+/// Every regular file under `dir`, recursively, as paths relative to `dir` — used both to
+/// distinguish an EMPTY `.prev/` from a populated one and to drive the restore walk itself.
+/// `dir` not existing is the caller's (ABSENT) case to handle, not this function's; called only
+/// once `restore_at` has already confirmed `dir.exists()`.
+fn list_files_relative(dir: &Path) -> Result<Vec<PathBuf>, CoordWriteError> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CoordWriteError> {
+        let entries = std::fs::read_dir(dir).map_err(|e| CoordWriteError::Io {
+            path: dir.to_path_buf(),
+            source: e,
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|e| CoordWriteError::Io {
+                path: dir.to_path_buf(),
+                source: e,
+            })?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|e| CoordWriteError::Io {
+                path: path.clone(),
+                source: e,
+            })?;
+            if file_type.is_dir() {
+                walk(root, &path, out)?;
+            } else if file_type.is_file() {
+                out.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+/// `restore` against an already-resolved `lock_dir` — the pure(ish) core `run_restore` wraps,
+/// mirroring `register_at`'s split. Returns `Ok(RestoreOutcome { restored: [] })` for an
+/// ABSENT `.prev/` (nothing has ever been snapshotted — a legitimate no-op), an `Err` for an
+/// EMPTY `.prev/` (AC-3: exists but holds nothing to replay), and otherwise moves every
+/// snapshot back to its original location and reports what moved.
+fn restore_at(lock_dir: &Path) -> Result<RestoreOutcome> {
+    let prev = prev_dir(lock_dir);
+    if !prev.exists() {
+        // ABSENT: distinct from EMPTY below — no snapshot has ever been taken, so there is
+        // nothing to undo. A legitimate success, same shape as an absent `.fleet-locks/`
+        // reading `Live` with zero entries.
+        return Ok(RestoreOutcome {
+            restored: Vec::new(),
+        });
+    }
+    let files = list_files_relative(&prev).context("failed to enumerate `.prev/` snapshots")?;
+    if files.is_empty() {
+        anyhow::bail!(
+            "`.prev/` exists at {} but holds no snapshots to restore — either `restore` \
+             already replayed them, or nothing was there to begin with; this is a distinct \
+             condition from an ABSENT `.prev/`, which restore treats as a no-op success",
+            prev.display()
+        );
+    }
+    let mut restored = Vec::new();
+    for rel in &files {
+        let src = prev.join(rel);
+        let dest = lock_dir.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create restore destination dir {}",
+                    parent.display()
+                )
+            })?;
+        }
+        std::fs::rename(&src, &dest).with_context(|| {
+            format!(
+                "failed to restore snapshot {} back to {}",
+                src.display(),
+                dest.display()
+            )
+        })?;
+        restored.push(rel.display().to_string());
+    }
+    restored.sort();
+    Ok(RestoreOutcome { restored })
+}
+
+/// `bastion coord restore [--lock-dir <dir>]` — replay every snapshot under `<lock_dir>/.prev/`
+/// back to its original location, consuming each snapshot exactly once.
+///
+/// Prints `{"restored":[...]}` and exits `0` for both a successful replay AND an ABSENT
+/// `.prev/` (nothing has ever been snapshotted — a legitimate no-op, `{"restored":[]}`).
+/// Exits non-zero (AC-3) when `.prev/` EXISTS but holds no files to replay — a distinct
+/// condition from ABSENT, never collapsed into it (see the module comment above `restore_at`).
+/// No Python counterpart — `fleet_concurrency_check.py` has no undo verb.
+pub fn run_restore(lock_dir_override: Option<&Path>) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let outcome = restore_at(&lock_dir).context("restore failed")?;
+    println!("{}", serde_json::json!({ "restored": outcome.restored }));
+    Ok(())
+}
+
 /// Serialise `view` exactly as `engine-serve`'s `GET /api/coordination` route does —
 /// `HttpResponse::Ok().json(view)`, which is `serde_json`'s default (compact)
 /// serialisation of the same `CoordinationView` type. Pure and independently testable
@@ -1984,6 +2144,126 @@ mod tests {
         assert!(
             !inbox_dir.exists() || list_json_filenames(&inbox_dir).is_empty(),
             "a refused run_send must write nothing to inbox/"
+        );
+    }
+
+    // ── BA.25.C task 4: `restore` — absent vs. empty vs. populated `.prev/` ─────
+
+    /// ABSENT `.prev/`, EMPTY `.prev/`, and a POPULATED `.prev/` that actually restores
+    /// are three distinct outcomes, asserted together so absent and empty are provably
+    /// not collapsed into the same behaviour (AC-3, and the task's own "do not collapse
+    /// them" instruction).
+    #[test]
+    fn restore_absent_empty_and_populated_prev_are_three_distinct_outcomes() {
+        // ABSENT: no `.prev/` directory at all — a legitimate no-op success.
+        let absent_root = tempfile::tempdir().expect("tempdir");
+        let absent_lock_dir = absent_root.path().join(".fleet-locks");
+        std::fs::create_dir_all(&absent_lock_dir).expect("create lock_dir");
+        assert!(
+            !prev_dir(&absent_lock_dir).exists(),
+            "precondition: .prev/ must not exist for the ABSENT case"
+        );
+        let absent_outcome =
+            restore_at(&absent_lock_dir).expect("restore against an ABSENT .prev/ must succeed");
+        assert!(
+            absent_outcome.restored.is_empty(),
+            "an ABSENT .prev/ has nothing to restore"
+        );
+
+        // EMPTY: `.prev/` exists but holds zero files — AC-3: exits non-zero (an Err here).
+        let empty_root = tempfile::tempdir().expect("tempdir");
+        let empty_lock_dir = empty_root.path().join(".fleet-locks");
+        std::fs::create_dir_all(prev_dir(&empty_lock_dir)).expect("create empty .prev/");
+        let empty_result = restore_at(&empty_lock_dir);
+        assert!(
+            empty_result.is_err(),
+            "restore against an EMPTY .prev/ must exit non-zero (AC-3), got: {empty_result:?}"
+        );
+
+        // The two must actually differ — this is the "do not collapse them" assertion.
+        assert!(
+            absent_outcome.restored.is_empty() && empty_result.is_err(),
+            "ABSENT (success) and EMPTY (error) must be distinguishable outcomes"
+        );
+
+        // POPULATED: `.prev/` holds real snapshots — restore replays them back to their
+        // original relative locations and reports what moved, consuming the snapshot.
+        let populated_root = tempfile::tempdir().expect("tempdir");
+        let populated_lock_dir = populated_root.path().join(".fleet-locks");
+        let prev = prev_dir(&populated_lock_dir);
+        std::fs::create_dir_all(prev.join("lane-agents")).expect("create .prev/lane-agents");
+        std::fs::write(
+            prev.join("lane-agents").join("agent-a.json"),
+            r#"{"agent_name":"agent-a"}"#,
+        )
+        .expect("write snapshot fixture");
+        std::fs::create_dir_all(prev.join("leases")).expect("create .prev/leases");
+        std::fs::write(
+            prev.join("leases").join("bastion.json"),
+            r#"{"repo":"bastion"}"#,
+        )
+        .expect("write second snapshot fixture");
+
+        let populated_outcome = restore_at(&populated_lock_dir)
+            .expect("restore against a populated .prev/ must succeed");
+        assert_eq!(
+            populated_outcome.restored,
+            vec![
+                "lane-agents/agent-a.json".to_string(),
+                "leases/bastion.json".to_string(),
+            ],
+            "restore must report every snapshot it replayed, relative to lock_dir"
+        );
+        assert_eq!(
+            std::fs::read_to_string(populated_lock_dir.join("lane-agents").join("agent-a.json"))
+                .expect("restored file must exist at its original location"),
+            r#"{"agent_name":"agent-a"}"#,
+        );
+        assert_eq!(
+            std::fs::read_to_string(populated_lock_dir.join("leases").join("bastion.json"))
+                .expect("restored file must exist at its original location"),
+            r#"{"repo":"bastion"}"#,
+        );
+        assert!(
+            list_files_relative(&prev)
+                .expect("list .prev/ after restore")
+                .is_empty(),
+            "a replayed snapshot must be consumed (moved, not copied) so .prev/ is drained"
+        );
+
+        // Consuming the snapshot means a SECOND restore now sees the same EMPTY condition
+        // as the empty case above, not a repeat success.
+        let second_result = restore_at(&populated_lock_dir);
+        assert!(
+            second_result.is_err(),
+            "a second restore after a full replay must see an EMPTY .prev/ and exit non-zero"
+        );
+    }
+
+    /// `run_restore` honours `--lock-dir` and prints `{"restored":[...]}` for the ABSENT
+    /// case — mirrors `task2_run_entry_points_honour_lock_dir_override` above.
+    #[test]
+    fn run_restore_honours_lock_dir_override_on_absent_prev() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join("override-lock-dir");
+
+        run_restore(Some(lock_dir.as_path())).expect(
+            "run_restore against an ABSENT .prev/ under an overridden lock_dir must succeed",
+        );
+    }
+
+    /// `run_restore` against an EMPTY `.prev/` under the CLI entry point (not just
+    /// `restore_at` directly) still exits non-zero.
+    #[test]
+    fn run_restore_errors_on_empty_prev() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+        std::fs::create_dir_all(prev_dir(&lock_dir)).expect("create empty .prev/");
+
+        let result = run_restore(Some(lock_dir.as_path()));
+        assert!(
+            result.is_err(),
+            "run_restore against an EMPTY .prev/ must exit non-zero"
         );
     }
 }

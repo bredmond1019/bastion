@@ -432,6 +432,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     message_id,
                     lock_dir,
                 } => coord_cli::run_complete(&repo, &lane, &message_id, lock_dir.as_deref()),
+                CoordMode::Restore { lock_dir } => coord_cli::run_restore(lock_dir.as_deref()),
             },
         },
     }
