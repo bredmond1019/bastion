@@ -268,7 +268,8 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 write,
                 fail_on_drift,
                 agent,
-            } => brainval::run_emit_state(path, write, fail_on_drift, agent),
+                scope,
+            } => brainval::run_emit_state(path, write, fail_on_drift, agent, scope),
             // Serve is DB-free — does NOT call Config::load() or require DATABASE_URL.
             // The actix System runs on a dedicated OS thread (runtime-spike outcome, Task 1).
             Commands::Serve { addr, token } => {
@@ -627,6 +628,7 @@ mod tests {
                 write: false,
                 fail_on_drift: false,
                 agent: None,
+                scope: None,
             }),
             "emit-state"
         );

@@ -335,6 +335,13 @@ pub enum Commands {
         /// process itself might have taken under a different invocation.
         #[arg(long)]
         agent: Option<String>,
+        /// Narrow the emit to one repo's derived surfaces — a `[[repos]]` slug from
+        /// `brain.toml` (e.g. `bastion`). Resolved through mev's own
+        /// `BrainConfig::scope_dependencies`, never hand-assembled or post-filtered.
+        /// Omitting `--scope` emits every repo's derived surfaces, unchanged from
+        /// today's behaviour.
+        #[arg(long)]
+        scope: Option<String>,
     },
 
     /// Query the code-as-graph surface for symbol definitions, references, and dependents
@@ -1009,11 +1016,13 @@ mod tests {
                 write,
                 fail_on_drift,
                 agent,
+                scope,
             }) => {
                 assert_eq!(path, PathBuf::from("."));
                 assert!(!write);
                 assert!(!fail_on_drift);
                 assert_eq!(agent, None);
+                assert_eq!(scope, None);
             }
             other => panic!("expected EmitState, got {other:?}"),
         }
@@ -1028,11 +1037,25 @@ mod tests {
                 write,
                 fail_on_drift,
                 agent,
+                scope,
             }) => {
                 assert_eq!(path, PathBuf::from("/some/root"));
                 assert!(write);
                 assert!(!fail_on_drift);
                 assert_eq!(agent, None);
+                assert_eq!(scope, None);
+            }
+            other => panic!("expected EmitState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_state_scope_parses() {
+        let cli = Cli::try_parse_from(["bastion", "emit-state", "--write", "--scope", "bastion"])
+            .unwrap();
+        match cli.command {
+            Some(Commands::EmitState { scope, .. }) => {
+                assert_eq!(scope.as_deref(), Some("bastion"));
             }
             other => panic!("expected EmitState, got {other:?}"),
         }
