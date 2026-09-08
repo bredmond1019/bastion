@@ -112,9 +112,40 @@ pub enum Mode {
 pub enum Action {
     Attach(String),
     New(String),
-    Send { session: String, keys: String },
+    Send {
+        session: String,
+        keys: String,
+    },
     Kill(String),
+    /// Spawn the open-work board refresh subprocess (BA.26.C task 4). Handled
+    /// specially by the ui.rs event loop — like `Attach`, it needs to own a
+    /// resource (`std::process::Child`) this module deliberately never holds,
+    /// per this module's own "no I/O" doc comment.
+    RefreshOpenWork,
     None,
+}
+
+/// Progress/result state for the open-work board refresh (BA.26.C task 4).
+///
+/// Purely data — no `Child`/`Command` lives on `AppState`; the subprocess
+/// itself is spawned and polled by the ui.rs event loop (`spawn_refresh` /
+/// `poll_refresh_child`), which then writes the classified result back here.
+/// Keeping the `Child` off `AppState` is why `Action::RefreshOpenWork` exists
+/// as an indirection rather than `on_key` spawning directly: this module
+/// stays exhaustively unit-testable without a real subprocess.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum OpenWorkStatus {
+    /// No refresh has run yet this session.
+    #[default]
+    Idle,
+    /// A refresh subprocess is in flight — set the moment the key is
+    /// pressed, before the event loop has even spawned it, so the footer
+    /// reflects "in flight" starting on the very next frame.
+    Refreshing,
+    /// The most recently completed refresh's classified result
+    /// (`crate::openwork::RefreshOutcome`), rendered until the next refresh
+    /// starts.
+    Done(crate::openwork::RefreshOutcome),
 }
 
 /// One Normal-mode global keybinding advertised in the footer (BA.26.B task
@@ -166,6 +197,13 @@ pub const NORMAL_KEY_BINDINGS: &[KeyBinding] = &[
     KeyBinding {
         key: 'e',
         label: "expand cell",
+    },
+    // BA.26.C task 4 — one key, global (not content-pane scoped, unlike
+    // 'e'): refreshing the six open-work boards is meaningful from anywhere
+    // in the spine, not only while the content pane is focused.
+    KeyBinding {
+        key: 'r',
+        label: "refresh boards",
     },
 ];
 
@@ -219,6 +257,10 @@ pub struct AppState {
     /// clicking a stray non-table part of the content pane does not lose
     /// the toggle target the key press repeats.
     pub selected_table_hit: Option<(u64, bella_engine::links::TableHit)>,
+    /// Progress/result of the open-work board refresh (BA.26.C task 4). See
+    /// [`OpenWorkStatus`] — this field is data only; the subprocess itself is
+    /// owned by the ui.rs event loop, never by this module.
+    pub openwork_status: OpenWorkStatus,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -244,6 +286,7 @@ impl AppState {
             table_expansions: bella_engine::links::TableExpansions::new(),
             content_table_map: bella_engine::links::TableMap::default(),
             selected_table_hit: None,
+            openwork_status: OpenWorkStatus::default(),
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.
@@ -638,6 +681,22 @@ impl AppState {
                         self.table_expansions =
                             toggle_table_hit(self.selected_table_hit, &self.table_expansions);
                         Action::None
+                    }
+                    // Refresh the six open-work boards (BA.26.C task 4). Global
+                    // — not gated on `overview_pane`, unlike 'e' — because the
+                    // boards are worth refreshing from any spine position, not
+                    // only while the content pane is focused. Guards against a
+                    // second keypress spawning a second subprocess: the event
+                    // loop owns exactly one in-flight `Child` slot, so while
+                    // one refresh is running a repeat press is a no-op rather
+                    // than silently dropped or queued.
+                    KeyCode::Char('r') => {
+                        if self.openwork_status == OpenWorkStatus::Refreshing {
+                            Action::None
+                        } else {
+                            self.openwork_status = OpenWorkStatus::Refreshing;
+                            Action::RefreshOpenWork
+                        }
                     }
                     _ => Action::None,
                 }
@@ -1451,6 +1510,20 @@ mod tests {
                         "footer key 'e' did not resolve to a bound handler"
                     );
                 }
+                'r' => {
+                    let mut app = make_empty_app();
+                    let action = app.on_key(KeyCode::Char('r'));
+                    assert_eq!(
+                        action,
+                        Action::RefreshOpenWork,
+                        "footer key 'r' did not resolve to a bound handler"
+                    );
+                    assert_eq!(
+                        app.openwork_status,
+                        OpenWorkStatus::Refreshing,
+                        "footer key 'r' must mark a refresh as in flight immediately"
+                    );
+                }
                 other => panic!(
                     "footer advertises key '{other}' with no bound-handler assertion \
                      registered in this test — add one before shipping the binding, so an \
@@ -1458,6 +1531,45 @@ mod tests {
                 ),
             }
         }
+    }
+
+    // ── on_key: 'r' open-work refresh (BA.26.C task 4) ──────────────────────
+
+    /// A second 'r' press while a refresh is already in flight must NOT
+    /// re-emit `Action::RefreshOpenWork` — the event loop owns exactly one
+    /// `Child` slot, and a second spawn would either be silently dropped or
+    /// leak a second `refresh.py` process. Guarded purely on
+    /// `openwork_status`, no I/O involved.
+    #[test]
+    fn on_key_r_while_already_refreshing_is_a_no_op() {
+        let mut app = make_empty_app();
+        let first = app.on_key(KeyCode::Char('r'));
+        assert_eq!(first, Action::RefreshOpenWork);
+        assert_eq!(app.openwork_status, OpenWorkStatus::Refreshing);
+
+        let second = app.on_key(KeyCode::Char('r'));
+        assert_eq!(
+            second,
+            Action::None,
+            "a second 'r' while refreshing must not spawn a second subprocess"
+        );
+        assert_eq!(
+            app.openwork_status,
+            OpenWorkStatus::Refreshing,
+            "status must stay Refreshing, not reset or double-count"
+        );
+    }
+
+    /// Once a previous refresh has completed (`Done`), a fresh 'r' press
+    /// must spawn a new one — the guard is scoped to `Refreshing`, not to
+    /// "a refresh has ever run".
+    #[test]
+    fn on_key_r_after_a_done_result_starts_a_new_refresh() {
+        let mut app = make_empty_app();
+        app.openwork_status = OpenWorkStatus::Done(crate::openwork::RefreshOutcome::Current);
+        let action = app.on_key(KeyCode::Char('r'));
+        assert_eq!(action, Action::RefreshOpenWork);
+        assert_eq!(app.openwork_status, OpenWorkStatus::Refreshing);
     }
 
     // ── on_key: Input mode ────────────────────────────────────────────────────

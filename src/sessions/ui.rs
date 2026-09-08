@@ -7,7 +7,9 @@
 use crate::brain::spaces::{SelectedNode, SpineRow};
 use crate::detect::AgentState;
 use crate::sessions::agent_panel::{AgentPanelRow, agent_panel_rows};
-use crate::sessions::app::{Action, AppState, InputKind, Mode, NORMAL_KEY_BINDINGS};
+use crate::sessions::app::{
+    Action, AppState, InputKind, Mode, NORMAL_KEY_BINDINGS, OpenWorkStatus,
+};
 use crate::sessions::commands::{Degraded, degrade_tmux_error};
 use crate::sessions::model::{Pane, Session, parse_sessions};
 use crate::sessions::tmux::{self, TmuxError};
@@ -90,8 +92,39 @@ pub fn footer_hint(mode: &Mode) -> String {
 /// In Input mode: the prompt prepended to the live input buffer.
 pub fn status_line(app: &AppState) -> String {
     match &app.mode {
-        Mode::Normal => app.status.clone().unwrap_or_else(|| footer_hint(&app.mode)),
+        // Open-work refresh progress/result (BA.26.C task 4) takes priority
+        // over an ordinary `app.status` message while in Normal mode — it
+        // reflects a subprocess actually in flight or just finished, which
+        // is more current than whatever the last keypress set `app.status`
+        // to. `Idle` returns `None` here, so this is a no-op before the
+        // first refresh and existing footer behaviour is unchanged. Scoped
+        // to `Mode::Normal` only — a refresh finishing mid-typed-input must
+        // not blank out the operator's in-progress `Input` prompt/buffer.
+        Mode::Normal => openwork_status_message(&app.openwork_status)
+            .or_else(|| app.status.clone())
+            .unwrap_or_else(|| footer_hint(&app.mode)),
         Mode::Input(_) => format!("{}{}", footer_hint(&app.mode), app.input),
+    }
+}
+
+/// Render `AppState::openwork_status` (BA.26.C task 4) as footer text, or
+/// `None` while `Idle` so callers fall through to their existing behaviour.
+/// The `Failed`/`SpawnFailed` arms show the REAL exit code / OS error text
+/// (AC-2) — never a generic "refresh failed" message, so an operator's next
+/// action (retry vs. fix the environment) is legible from the footer alone.
+fn openwork_status_message(status: &OpenWorkStatus) -> Option<String> {
+    use crate::openwork::RefreshOutcome;
+    match status {
+        OpenWorkStatus::Idle => None,
+        OpenWorkStatus::Refreshing => Some("refreshing open-work boards…".to_string()),
+        OpenWorkStatus::Done(outcome) => Some(match outcome {
+            RefreshOutcome::Current => "open-work boards refreshed — all current".to_string(),
+            RefreshOutcome::StaleOrChanged => "open-work boards refreshed — updated".to_string(),
+            RefreshOutcome::Failed { code } => format!("open-work refresh FAILED (exit {code})"),
+            RefreshOutcome::SpawnFailed { reason } => {
+                format!("open-work refresh failed to start: {reason}")
+            }
+        }),
     }
 }
 
@@ -674,6 +707,11 @@ fn execute_action(action: Action, app: &mut AppState) {
         Action::None | Action::Attach(_) => {
             // Attach is handled in the event loop (needs terminal suspension).
         }
+        Action::RefreshOpenWork => {
+            // Handled specially in the event loop (needs to own the spawned
+            // `Child` across ticks — see `spawn_refresh`/`poll_refresh_child`
+            // in `run_inner_with_events_and_refresh`).
+        }
         Action::New(name) => match tmux::new_session(&name, None) {
             Ok(()) => app.status = Some(format!("created '{name}'")),
             Err(e) => set_tmux_status(app, "new", &name, e),
@@ -724,23 +762,49 @@ fn run_inner(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut AppState,
 ) -> Result<()> {
-    run_inner_with_events(terminal, app, &mut CrosstermEvents)
+    let mut refresh_child: Option<std::process::Child> = None;
+    run_inner_with_events_and_refresh(terminal, app, &mut CrosstermEvents, &mut refresh_child)
 }
 
-/// The actual event loop body, generic over its [`EventSource`] so it can be
-/// driven by tests without a real terminal attached to stdin. `run_inner`
-/// (production) and the task-3 non-blocking test both go through this same
-/// function — there is no separate "test loop" that could pass while the
-/// real one blocks.
+/// Test/production-shared entry point that always starts with no refresh in
+/// flight. `run_inner` (production) and the task-3 non-blocking test both
+/// ultimately go through [`run_inner_with_events_and_refresh`] — there is no
+/// separate "test loop" that could pass while the real one blocks.
 fn run_inner_with_events<E: EventSource>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut AppState,
     events: &mut E,
 ) -> Result<()> {
+    let mut refresh_child: Option<std::process::Child> = None;
+    run_inner_with_events_and_refresh(terminal, app, events, &mut refresh_child)
+}
+
+/// The actual event loop body, generic over its [`EventSource`] so it can be
+/// driven by tests without a real terminal attached to stdin, and over an
+/// externally-owned `refresh_child` slot (BA.26.C task 4) so a test can seed
+/// it with a pre-spawned STAND-IN child and observe the SAME poll/re-read
+/// machinery production drives, rather than a parallel test-only
+/// implementation (see `openwork_refresh_completion_invalidates_and_rereads`
+/// below).
+fn run_inner_with_events_and_refresh<E: EventSource>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut AppState,
+    events: &mut E,
+    refresh_child: &mut Option<std::process::Child>,
+) -> Result<()> {
     let mut list_state = ListState::default();
     let mut render_cache = RenderCache::default();
 
     loop {
+        // Poll any in-flight open-work refresh WITHOUT blocking, before this
+        // tick's draw — so a refresh that finished between ticks is reflected
+        // in the very next frame, both in the footer status (AC-2) and in the
+        // content pane, which re-reads its document from disk on every draw
+        // regardless (see `read_document` call sites above) and therefore
+        // picks up the regenerated file the moment this poll observes the
+        // child has exited.
+        poll_refresh_child(app, refresh_child);
+
         terminal.draw(|f| draw(f, app, &mut list_state, &mut render_cache))?;
 
         if let Some(event) = events.poll_next(Duration::from_millis(REFRESH_MS))? {
@@ -781,6 +845,15 @@ fn run_inner_with_events<E: EventSource>(
                     continue;
                 }
 
+                if let Action::RefreshOpenWork = action {
+                    // Non-blocking: `spawn_argv`/`Command::spawn` return as
+                    // soon as the child is forked/exec'd (AC-3) — this adds no
+                    // synchronization of its own, so the loop continues to
+                    // its next tick immediately.
+                    spawn_refresh(app, refresh_child);
+                    continue;
+                }
+
                 execute_action(action, app);
             }
         } else {
@@ -793,6 +866,58 @@ fn run_inner_with_events<E: EventSource>(
         }
     }
     Ok(())
+}
+
+/// Poll an in-flight open-work refresh child WITHOUT blocking
+/// (`Child::try_wait`), classify its result on completion, and clear the
+/// slot. Called once per event-loop tick regardless of whether an input
+/// event arrived this tick (AC-3's "the loop must not have blocked" — a
+/// non-blocking poll on a timeout tick is not blocking on the child).
+fn poll_refresh_child(app: &mut AppState, refresh_child: &mut Option<std::process::Child>) {
+    let Some(child) = refresh_child.as_mut() else {
+        return;
+    };
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            // `ExitStatus::code()` is `None` only on Unix when the process
+            // was killed by a signal rather than exiting — there is no exit
+            // code to classify in that case, so it is threaded through as
+            // `-1` (matches `classify_exit_code`'s "negative code" test,
+            // which documents this as a real signal-derived shape rather
+            // than a made-up sentinel).
+            let code = status.code().unwrap_or(-1);
+            app.openwork_status = OpenWorkStatus::Done(crate::openwork::classify_exit_code(code));
+            *refresh_child = None;
+        }
+        Ok(None) => {
+            // Still running — `openwork_status` already reads `Refreshing`
+            // (set by `AppState::on_key` the moment the key was pressed).
+        }
+        Err(e) => {
+            app.openwork_status = OpenWorkStatus::Done(crate::openwork::classify_spawn_error(&e));
+            *refresh_child = None;
+        }
+    }
+}
+
+/// Spawn the open-work refresh subprocess (BA.26.C task 4's key-bound
+/// action) into `refresh_child`. Resolves the HQ root the same way every
+/// other cross-tree read in this module does — `load_brain_toml_path`'s
+/// parent (mirrors the `Tier` branch in `draw_with_root` above). Always
+/// `RefreshMode::CheckOnly` — the only mode this action ever uses; AC-1's
+/// argv builder has no representation for `--commit`/`--emit` regardless.
+fn spawn_refresh(app: &mut AppState, refresh_child: &mut Option<std::process::Child>) {
+    let hq_root = crate::config::load_brain_toml_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let argv = crate::openwork::refresh_args(crate::openwork::RefreshMode::CheckOnly, &hq_root);
+    match crate::openwork::spawn_argv(&argv) {
+        Ok(child) => *refresh_child = Some(child),
+        Err(e) => {
+            app.openwork_status = OpenWorkStatus::Done(crate::openwork::classify_spawn_error(&e));
+        }
+    }
 }
 
 /// Resolve the active theme from the on-disk config (DB-free — see D4) and
@@ -984,6 +1109,172 @@ mod tests {
         // its full duration as an orphan.
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    // ── task 4: refresh completion invalidates and re-reads (AC-5, first
+    // half) ─────────────────────────────────────────────────────────────
+
+    /// AC-5, first half: when a refresh FINISHES, the pane must show the NEW
+    /// content — "the console stays responsive" (task 3) is satisfied
+    /// perfectly by a build that never re-reads, which is why this is a
+    /// separate assertion. Runs a REAL stand-in child (`sh`, never
+    /// `refresh.py` — its measured no-op `--check` path is 21.7 s) that
+    /// rewrites the displayed file, polls it to completion through the
+    /// PRODUCTION `poll_refresh_child` (the exact function the ui.rs event
+    /// loop calls once per tick), then redraws through the PRODUCTION
+    /// `draw_with_root` and asserts the RENDERED CONTENT changed — not
+    /// merely that `openwork_status` flipped to `Done`. (Driving the full
+    /// `run_inner_with_events_and_refresh` loop here would need a
+    /// `TestBackend`-typed terminal, but that loop is typed over the real
+    /// `CrosstermBackend` so its `Attach` branch can suspend/restore an
+    /// actual terminal — task 3's non-blocking test covers that loop's
+    /// scheduling behaviour with a real `Terminal`; this test covers the
+    /// poll+redraw content pipeline that loop calls into, directly.)
+    #[test]
+    fn openwork_refresh_completion_invalidates_and_rereads() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = crate::testsupport::unique_temp_dir("bastion-openwork-refresh-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let status_path = dir.join("status.md");
+        std::fs::write(&status_path, "# OLD board content\n").expect("write initial status.md");
+
+        // Hq-selected app — mirrors `hq_space_overview_render_hides_html_sentinel_comments`
+        // above: a `"_root"`-tagged tier routes `selected_node()` to `Hq`,
+        // whose content pane defaults to `<planning_root>/status.md` when
+        // `space_overview_file` is `None`.
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        let mut list_state = ListState::default();
+
+        // Sanity: the pane shows the OLD content before any refresh runs.
+        terminal
+            .draw(|f| {
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                )
+            })
+            .expect("first draw must not panic");
+        let before = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(
+            before.contains("OLD board content"),
+            "expected OLD content before any refresh: {before}"
+        );
+
+        // Mirror `AppState::on_key`'s side effect of pressing 'r'.
+        app.openwork_status = OpenWorkStatus::Refreshing;
+
+        // A REAL stand-in child that rewrites `status.md` — simulating a
+        // completed refresh's non-atomic truncating write of the exact file
+        // this pane reads.
+        let mut refresh_child = Some(
+            crate::openwork::spawn_argv(&[
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "printf '# NEW board content\\n' > {}",
+                    status_path.display()
+                ),
+            ])
+            .expect("spawn stand-in refresh child"),
+        );
+
+        // Poll via the PRODUCTION `poll_refresh_child` — the exact function
+        // `run_inner_with_events_and_refresh` calls once per tick — until
+        // the stand-in child completes. `try_wait` never blocks, so this
+        // loop only busy-polls with a short real sleep between attempts; it
+        // does not depend on any particular render-tick cadence.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while refresh_child.is_some() {
+            poll_refresh_child(&mut app, &mut refresh_child);
+            if refresh_child.is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "stand-in child never completed within 5s"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        assert_eq!(
+            app.openwork_status,
+            OpenWorkStatus::Done(crate::openwork::RefreshOutcome::Current),
+            "the stand-in child exits 0, so the classified result must be Current"
+        );
+
+        // Redraw through the SAME production `draw_with_root` path and
+        // assert the content pane picked up the rewritten file.
+        terminal
+            .draw(|f| {
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                )
+            })
+            .expect("second draw must not panic");
+        let after = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(
+            after.contains("NEW board content"),
+            "pane must show the NEW content once the refresh completes: {after}"
+        );
+        assert!(
+            !after.contains("OLD board content"),
+            "pane must not still show the stale OLD content after refresh completion: {after}"
+        );
+        assert!(
+            after.contains("open-work boards refreshed"),
+            "footer must render the classified result, not just the content pane: {after}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A spawn failure (program not found) must classify as `SpawnFailed`
+    /// and render its OS-level reason in the footer, distinct from an
+    /// exit-code-derived `Failed`. `spawn_refresh` (the production caller)
+    /// always builds argv against the real HQ root/refresh.py — this
+    /// exercises the exact classification path it applies on a spawn error
+    /// (`classify_spawn_error`), and the exact rendering path
+    /// (`openwork_status_message`) the footer uses for it, over a program
+    /// guaranteed not to exist rather than depending on the test sandbox's
+    /// HQ layout.
+    #[test]
+    fn spawn_refresh_failure_sets_spawn_failed_status_with_reason() {
+        let mut app = AppState::new(vec![], crate::brain::spaces::SpaceTree::default());
+
+        let err = crate::openwork::spawn_argv(&["definitely-not-a-real-binary-xyz".to_string()])
+            .expect_err("spawning a nonexistent program must error");
+        app.openwork_status = OpenWorkStatus::Done(crate::openwork::classify_spawn_error(&err));
+
+        match &app.openwork_status {
+            OpenWorkStatus::Done(crate::openwork::RefreshOutcome::SpawnFailed { reason }) => {
+                assert!(!reason.is_empty());
+            }
+            other => panic!("expected Done(SpawnFailed), got {other:?}"),
+        }
+        let msg = openwork_status_message(&app.openwork_status)
+            .expect("Done status must render a footer message");
+        assert!(
+            msg.contains("failed to start"),
+            "spawn failure message must be distinguishable from an exit-code failure: {msg}"
+        );
     }
 
     // ── read_document / render_document_markdown (BA.26.B task 7,
@@ -1229,6 +1520,94 @@ mod tests {
             line.contains("Enter=create"),
             "status_line missing prompt: {line}"
         );
+    }
+
+    // ── openwork_status_message / status_line integration (task 4) ─────────
+
+    #[test]
+    fn openwork_status_message_idle_is_none() {
+        assert_eq!(openwork_status_message(&OpenWorkStatus::Idle), None);
+    }
+
+    #[test]
+    fn openwork_status_message_refreshing_is_distinct_from_done() {
+        let msg = openwork_status_message(&OpenWorkStatus::Refreshing)
+            .expect("Refreshing must render a message");
+        assert!(msg.contains("refreshing"));
+    }
+
+    /// Each `RefreshOutcome` variant renders a DISTINCT message, and the
+    /// failure variants show the REAL exit code / OS error text (AC-2) —
+    /// never a generic "it failed".
+    #[test]
+    fn openwork_status_message_per_outcome_is_distinct_and_carries_failure_detail() {
+        use crate::openwork::RefreshOutcome;
+
+        let current =
+            openwork_status_message(&OpenWorkStatus::Done(RefreshOutcome::Current)).unwrap();
+        let stale =
+            openwork_status_message(&OpenWorkStatus::Done(RefreshOutcome::StaleOrChanged)).unwrap();
+        let failed_17 =
+            openwork_status_message(&OpenWorkStatus::Done(RefreshOutcome::Failed { code: 17 }))
+                .unwrap();
+        let failed_3 =
+            openwork_status_message(&OpenWorkStatus::Done(RefreshOutcome::Failed { code: 3 }))
+                .unwrap();
+        let spawn_failed =
+            openwork_status_message(&OpenWorkStatus::Done(RefreshOutcome::SpawnFailed {
+                reason: "No such file or directory".to_string(),
+            }))
+            .unwrap();
+
+        // All five distinct.
+        let all = [&current, &stale, &failed_17, &failed_3, &spawn_failed];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "messages at {i} and {j} must differ: {all:?}");
+                }
+            }
+        }
+
+        assert!(
+            failed_17.contains("17"),
+            "must carry the real exit code: {failed_17}"
+        );
+        assert!(
+            failed_3.contains('3'),
+            "must carry the real exit code: {failed_3}"
+        );
+        assert!(
+            spawn_failed.contains("No such file or directory"),
+            "must carry the real OS error reason: {spawn_failed}"
+        );
+    }
+
+    /// `status_line` in Normal mode prefers the open-work refresh message
+    /// over an ordinary `app.status` line — the refresh state is more
+    /// current than a stale status set by an earlier keypress.
+    #[test]
+    fn status_line_normal_mode_prefers_openwork_status_over_app_status() {
+        let mut app = make_app(&[]);
+        app.status = Some("some other status".to_string());
+        app.openwork_status = OpenWorkStatus::Refreshing;
+        let line = status_line(&app);
+        assert!(line.contains("refreshing"), "line: {line}");
+        assert!(!line.contains("some other status"), "line: {line}");
+    }
+
+    /// A refresh finishing while the operator is mid-typed-input must NOT
+    /// blank out the `Input` prompt/buffer — `status_line` only overrides in
+    /// `Mode::Normal`.
+    #[test]
+    fn status_line_input_mode_ignores_openwork_status() {
+        let mut app = make_app(&[]);
+        app.mode = Mode::Input(InputKind::New);
+        app.input = "my-session".into();
+        app.openwork_status = OpenWorkStatus::Done(crate::openwork::RefreshOutcome::Current);
+        let line = status_line(&app);
+        assert!(line.contains("my-session"), "line: {line}");
+        assert!(!line.contains("refreshed"), "line: {line}");
     }
 
     // ── tier_status_path ─────────────────────────────────────────────────────
