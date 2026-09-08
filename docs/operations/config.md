@@ -157,6 +157,52 @@ It has no effect on the observability track (monitor, costs, inspect).
 
 An unknown name in step 2 or 3 is a fatal error (`ConfigError::UnknownWorkspace`).
 
+## Reader views (`[views]`, BA.26.A)
+
+The `[views]` table declares named reader destinations that the session TUI's spine
+(`bastion tui`) offers as first-class sidebar entries reachable in one keypress — press `v` from
+anywhere in the spine, including boot, to jump straight to the next declared view (cycling if more
+than one is declared) — instead of navigating there through the generic browser via sequential
+Down/Up.
+
+```toml
+[views.open-work]
+label = "Open Work"
+root  = "planning/open-work"
+```
+
+| Key | Type | Description |
+|---|---|---|
+| `[views.<name>]` | table | One declared view; `<name>` is the table key, used internally, not shown in the UI. |
+| `label` | `String` | Human-readable sidebar label for this view. |
+| `root` | `PathBuf` | The view's reader destination. May be authored as relative TOML — canonicalized against the config file's own directory, exactly like a `[workspaces]` entry. |
+
+**Absence-tolerant in three ways, none of which is an error or a panic:**
+
+- **No `[views]` table at all** — no view entries are offered; the sidebar is unchanged from
+  before this feature existed.
+- **A view nobody declared** — there is nothing to omit; it was never a candidate.
+- **A declared view whose `root` does not exist on disk** — silently omitted from the offered
+  list. bastion boots and the TUI runs normally; the view just does not appear.
+
+There is no environment-variable form — `[views]` is config-file only, and env vars have no
+equivalent key to override it with.
+
+### Malformed config is a visible degradation, not a silent revert
+
+A parse error anywhere in the TOML file (not only inside `[views]`) is a different, louder case
+than the absence-tolerant rules above. bastion still boots and the TUI still runs — a malformed
+config must never panic or refuse to start — but the failure is no longer silently indistinguishable
+from an empty or absent file: the session TUI's status line names the config path and the
+underlying parser's own error message.
+
+This matters specifically because `OP.bastion-tui-console-credentials` instructs the operator to
+hand-edit this exact file — a stray unclosed quote previously made `[views]` vanish, the theme
+silently revert to `bastion`, and (once configured) other file-backed keys vanish along with it,
+with no way to tell a syntax error from an empty config. If you edit this file and the TUI's
+sidebar or theme looks unexpectedly like the defaults, check the status line for a `config error
+in <path>: ...` message before assuming the table was never declared.
+
 ## Budget caps + engine API key (BA.7.C)
 
 Three new, fully optional keys back the cost-budget-alerts-abort block:

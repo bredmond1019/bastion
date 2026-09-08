@@ -1,3 +1,4 @@
+use crate::config::OfferedView;
 use crate::sessions::model::Session;
 use anyhow::Result;
 use serde::Deserialize;
@@ -49,6 +50,10 @@ pub enum SpineRow {
     Tier(String),
     /// A single space (repo) entry, nested under its `Hq` or `Tier` header.
     Space(SpaceEntry),
+    /// A declared `[views]` reader destination (BA.26.A), appended after every
+    /// tier/space row. Carries the resolved [`OfferedView`] so the row and its
+    /// routed [`SelectedNode::View`] share the same data — no re-lookup needed.
+    View(OfferedView),
 }
 
 impl SpineRow {
@@ -59,6 +64,7 @@ impl SpineRow {
             SpineRow::Hq => SelectedNode::Hq,
             SpineRow::Tier(name) => SelectedNode::Tier(name.clone()),
             SpineRow::Space(entry) => SelectedNode::Space(entry.clone()),
+            SpineRow::View(view) => SelectedNode::View(view.clone()),
         }
     }
 }
@@ -73,15 +79,21 @@ pub enum SelectedNode {
     Hq,
     Tier(String),
     Space(SpaceEntry),
+    /// A declared `[views]` reader destination (BA.26.A). Routes the main area
+    /// to that view's content pane, rooted at its resolved `root` path.
+    View(OfferedView),
 }
 
-/// Flatten a [`SpaceTree`] into the ordered, primary-navigation spine row list:
-/// `◆ Mission Control` first, then `HQ` and its children (`learn-ai`/`base-template`,
-/// with the redundant `brain` leaf collapsed into the `Hq` row), then the remaining tiers
-/// (`core` / `side` / `client` / `portfolio` / any other) with their spaces.
+/// Flatten a [`SpaceTree`] and a resolved `[views]` list into the ordered,
+/// primary-navigation spine row list: `◆ Mission Control` first, then `HQ` and
+/// its children (`learn-ai`/`base-template`, with the redundant `brain` leaf
+/// collapsed into the `Hq` row), then the remaining tiers (`core` / `side` /
+/// `client` / `portfolio` / any other) with their spaces, then every declared
+/// `[views]` entry from `offered_views` (BA.26.A) — appended last so every
+/// existing row and its relative order are unchanged.
 ///
 /// Does not modify `tree` or [`parse_space_tree`]'s output — purely a presentation-layer view.
-pub fn spine_rows(tree: &SpaceTree) -> Vec<SpineRow> {
+pub fn spine_rows(tree: &SpaceTree, offered_views: &[OfferedView]) -> Vec<SpineRow> {
     let mut rows = vec![SpineRow::MissionControl];
 
     for (tier_name, entries) in &tree.tiers {
@@ -100,6 +112,10 @@ pub fn spine_rows(tree: &SpaceTree) -> Vec<SpineRow> {
                 rows.push(SpineRow::Space(entry.clone()));
             }
         }
+    }
+
+    for view in offered_views {
+        rows.push(SpineRow::View(view.clone()));
     }
 
     rows
@@ -463,14 +479,14 @@ repo_path = "portfolio/rag-engine-rs"
     #[test]
     fn spine_rows_pins_mission_control_first() {
         let tree = parse_space_tree(full_toml()).unwrap();
-        let rows = spine_rows(&tree);
+        let rows = spine_rows(&tree, &[]);
         assert_eq!(rows[0], SpineRow::MissionControl);
     }
 
     #[test]
     fn spine_rows_renames_root_to_hq_and_collapses_brain_leaf() {
         let tree = parse_space_tree(full_toml()).unwrap();
-        let rows = spine_rows(&tree);
+        let rows = spine_rows(&tree, &[]);
 
         // The Hq row appears right after Mission Control.
         assert_eq!(rows[1], SpineRow::Hq);
@@ -492,7 +508,7 @@ repo_path = "portfolio/rag-engine-rs"
     #[test]
     fn spine_rows_places_learn_ai_and_base_template_under_hq() {
         let tree = parse_space_tree(full_toml()).unwrap();
-        let rows = spine_rows(&tree);
+        let rows = spine_rows(&tree, &[]);
 
         // learn-ai and base-template directly follow the Hq row (before any Tier row).
         assert_eq!(
@@ -518,7 +534,7 @@ repo_path = "portfolio/rag-engine-rs"
     #[test]
     fn spine_rows_orders_remaining_tiers_after_hq() {
         let tree = parse_space_tree(full_toml()).unwrap();
-        let rows = spine_rows(&tree);
+        let rows = spine_rows(&tree, &[]);
 
         let tier_headers: Vec<&String> = rows
             .iter()
@@ -548,7 +564,7 @@ repo_path = "portfolio/rag-engine-rs"
     #[test]
     fn spine_rows_handles_empty_tree() {
         let tree = SpaceTree::default();
-        let rows = spine_rows(&tree);
+        let rows = spine_rows(&tree, &[]);
         assert_eq!(rows, vec![SpineRow::MissionControl]);
     }
 
@@ -561,7 +577,7 @@ tier = "_root"
 repo_path = "."
 "#;
         let tree = parse_space_tree(toml).unwrap();
-        let rows = spine_rows(&tree);
+        let rows = spine_rows(&tree, &[]);
         assert_eq!(rows, vec![SpineRow::MissionControl, SpineRow::Hq]);
     }
 
@@ -586,5 +602,44 @@ repo_path = "."
             SpineRow::Space(space.clone()).as_selected_node(),
             SelectedNode::Space(space)
         );
+
+        let view = OfferedView {
+            name: "open-work".to_string(),
+            label: "Open Work".to_string(),
+            root: PathBuf::from("/tmp/open-work"),
+        };
+        assert_eq!(
+            SpineRow::View(view.clone()).as_selected_node(),
+            SelectedNode::View(view)
+        );
+    }
+
+    // ─── spine_rows + [views] (BA.26.A task 3) ─────────────────────────────────
+
+    #[test]
+    fn spine_rows_appends_declared_view_after_every_tier_and_space_row() {
+        let tree = parse_space_tree(full_toml()).unwrap();
+        let without_views = spine_rows(&tree, &[]);
+        let view = OfferedView {
+            name: "open-work".to_string(),
+            label: "Open Work".to_string(),
+            root: PathBuf::from("/tmp/open-work"),
+        };
+        let with_view = spine_rows(&tree, std::slice::from_ref(&view));
+
+        // Every existing row and its relative order are unchanged...
+        assert_eq!(&with_view[..without_views.len()], without_views.as_slice());
+        // ...and the declared view is appended last.
+        assert_eq!(with_view.len(), without_views.len() + 1);
+        assert_eq!(with_view[without_views.len()], SpineRow::View(view));
+    }
+
+    #[test]
+    fn spine_rows_omits_a_view_not_passed_in_the_offered_list() {
+        // An undeclared/unresolved view simply never appears — `spine_rows`
+        // only ever renders what `offered_views` (src/config.rs) resolved.
+        let tree = parse_space_tree(full_toml()).unwrap();
+        let rows = spine_rows(&tree, &[]);
+        assert!(!rows.iter().any(|row| matches!(row, SpineRow::View(_))));
     }
 }

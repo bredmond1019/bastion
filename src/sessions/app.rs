@@ -5,6 +5,7 @@
 // tested exhaustively without spawning any process.
 
 use crate::brain::spaces::{SelectedNode, SpaceTree, SpineRow};
+use crate::config::OfferedView;
 use crate::sessions::agent_panel::agent_panel_rows;
 use crate::sessions::model::Session;
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
@@ -76,7 +77,7 @@ pub fn compute_pane_areas(
         .split(main_area);
 
     let (browser, content) = match selected_node {
-        SelectedNode::Hq | SelectedNode::Space(_) => {
+        SelectedNode::Hq | SelectedNode::Space(_) | SelectedNode::View(_) => {
             let overview_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(30), Constraint::Min(0)])
@@ -140,6 +141,10 @@ pub struct AppState {
     /// Per-pane viewport `Rect`s from the most recent draw (BA.13.2). Zeroed
     /// (all-default) until the first draw runs.
     pub pane_areas: PaneAreas,
+    /// Declared `[views]` reader destinations resolved as safe to offer
+    /// (BA.26.A) — empty unless [`AppState::with_offered_views`] was called.
+    /// Appended to `spine_rows()`'s output after every tier/space row.
+    pub offered_views: Vec<OfferedView>,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -162,6 +167,7 @@ impl AppState {
             space_overview_file: None,
             markdown_overlay: None,
             pane_areas: PaneAreas::default(),
+            offered_views: Vec::new(),
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.
@@ -169,9 +175,20 @@ impl AppState {
         app
     }
 
-    /// The ordered, flattened primary-navigation spine for the current `space_tree`.
+    /// Attach a resolved `[views]` offered-list (BA.26.A) to this app state,
+    /// so `spine_rows()` appends one [`SpineRow::View`] per entry. Builder-style
+    /// so every existing `AppState::new` call site (production and test) is
+    /// unaffected — an app built without calling this has an empty views list,
+    /// exactly today's behaviour.
+    pub fn with_offered_views(mut self, offered_views: Vec<OfferedView>) -> Self {
+        self.offered_views = offered_views;
+        self
+    }
+
+    /// The ordered, flattened primary-navigation spine for the current `space_tree`,
+    /// with any declared `[views]` entries (BA.26.A) appended.
     pub fn spine_rows(&self) -> Vec<SpineRow> {
-        crate::brain::spaces::spine_rows(&self.space_tree)
+        crate::brain::spaces::spine_rows(&self.space_tree, &self.offered_views)
     }
 
     /// The main-area routing target for the currently selected spine row.
@@ -203,6 +220,17 @@ impl AppState {
                 self.space_overview_scroll = 0;
                 self.space_overview_file = None;
             }
+            SelectedNode::View(view) => {
+                // A declared reader destination roots directly at its own
+                // `root` — unlike `Space`/`Hq`, there is no repo/`planning`
+                // structure to descend into first (BA.26.A).
+                let path = view.root.clone();
+                let mut browser = bella_engine::browser::Browser::new(path.clone());
+                browser.root_boundary = Some(path);
+                self.file_browser = browser;
+                self.space_overview_scroll = 0;
+                self.space_overview_file = None;
+            }
             SelectedNode::MissionControl | SelectedNode::Tier(_) => {}
         }
     }
@@ -211,6 +239,10 @@ impl AppState {
         match self.selected_node() {
             SelectedNode::Space(entry) => entry.repo_path.join("planning"),
             SelectedNode::Hq => std::path::PathBuf::from(".").join("planning"),
+            // The declared view's root IS the reader destination — content
+            // defaults to `<root>/status.md` if present, exactly like `Hq`'s
+            // convention, but rooted at the view rather than the brain root.
+            SelectedNode::View(view) => view.root.clone(),
             SelectedNode::MissionControl | SelectedNode::Tier(_) => {
                 crate::config::load_planning_root()
             }
@@ -251,18 +283,52 @@ impl AppState {
         self.reinit_browser();
     }
 
-    pub fn selected_session(&self) -> Option<&Session> {
-        if let SelectedNode::Space(entry) = self.selected_node() {
-            return self.sessions.iter().find(|s| s.name == entry.slug);
+    /// Jump directly to a declared `[views]` reader destination in ONE keypress,
+    /// from anywhere in the spine — including boot (AC-4, BA.26.A). Unlike
+    /// `select_next`/`select_prev`'s sequential Down/Up walk, this does not
+    /// depend on how many tier/space rows sit between the current selection
+    /// and the first view row: it finds every `SpineRow::View` index directly
+    /// and jumps to the next one after the current selection, wrapping to the
+    /// first view row (and cycling through further views on repeat presses).
+    /// A no-op (selection unchanged) when no view is declared/offered.
+    pub fn jump_to_next_view(&mut self) {
+        let rows = self.spine_rows();
+        let view_indices: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row, SpineRow::View(_)))
+            .map(|(i, _)| i)
+            .collect();
+        if view_indices.is_empty() {
+            return;
         }
-        None
+        let next = view_indices
+            .iter()
+            .find(|&&i| i > self.selected_spine)
+            .copied()
+            .unwrap_or(view_indices[0]);
+        self.selected_spine = next;
+        self.reinit_browser();
+    }
+
+    pub fn selected_session(&self) -> Option<&Session> {
+        match self.selected_node() {
+            SelectedNode::Space(entry) => self.sessions.iter().find(|s| s.name == entry.slug),
+            SelectedNode::MissionControl
+            | SelectedNode::Hq
+            | SelectedNode::Tier(_)
+            | SelectedNode::View(_) => None,
+        }
     }
 
     pub fn selected_space_slug(&self) -> Option<String> {
-        if let SelectedNode::Space(entry) = self.selected_node() {
-            return Some(entry.slug);
+        match self.selected_node() {
+            SelectedNode::Space(entry) => Some(entry.slug),
+            SelectedNode::MissionControl
+            | SelectedNode::Hq
+            | SelectedNode::Tier(_)
+            | SelectedNode::View(_) => None,
         }
-        None
     }
 
     /// Replace the session list
@@ -274,16 +340,20 @@ impl AppState {
     }
 
     pub fn selected_session_for_actions(&self) -> Option<&Session> {
-        if self.selected_node() == SelectedNode::MissionControl {
-            if let Some(crate::monitor::app::MissionItem::Session(s)) =
-                self.monitor_app.selected_item()
-            {
-                Some(s)
-            } else {
-                None
+        match self.selected_node() {
+            SelectedNode::MissionControl => {
+                if let Some(crate::monitor::app::MissionItem::Session(s)) =
+                    self.monitor_app.selected_item()
+                {
+                    Some(s)
+                } else {
+                    None
+                }
             }
-        } else {
-            self.selected_session()
+            SelectedNode::Hq
+            | SelectedNode::Tier(_)
+            | SelectedNode::Space(_)
+            | SelectedNode::View(_) => self.selected_session(),
         }
     }
 
@@ -313,12 +383,13 @@ impl AppState {
     pub fn on_key(&mut self, key: KeyCode) -> Action {
         match &self.mode.clone() {
             Mode::Normal => {
-                // Space Overview renders for both `Hq` and `Space` nodes; Mission
+                // Space Overview renders for `Hq`, `Space`, and a declared `[views]`
+                // entry (BA.26.A) — all three have a browser + content pane. Mission
                 // Control and tier headers route elsewhere (ui.rs).
-                let is_space_overview = matches!(
-                    self.selected_node(),
-                    SelectedNode::Hq | SelectedNode::Space(_)
-                );
+                let is_space_overview = match self.selected_node() {
+                    SelectedNode::Hq | SelectedNode::Space(_) | SelectedNode::View(_) => true,
+                    SelectedNode::MissionControl | SelectedNode::Tier(_) => false,
+                };
                 self.status = Option::None;
 
                 // Handle pane focus switching in SpaceOverview
@@ -427,15 +498,23 @@ impl AppState {
                 match key {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.select_next();
-                        if self.selected_node() == SelectedNode::MissionControl {
-                            self.monitor_app.next_item();
+                        match self.selected_node() {
+                            SelectedNode::MissionControl => self.monitor_app.next_item(),
+                            SelectedNode::Hq
+                            | SelectedNode::Tier(_)
+                            | SelectedNode::Space(_)
+                            | SelectedNode::View(_) => {}
                         }
                         Action::None
                     }
                     KeyCode::Up => {
                         self.select_prev();
-                        if self.selected_node() == SelectedNode::MissionControl {
-                            self.monitor_app.prev_item();
+                        match self.selected_node() {
+                            SelectedNode::MissionControl => self.monitor_app.prev_item(),
+                            SelectedNode::Hq
+                            | SelectedNode::Tier(_)
+                            | SelectedNode::Space(_)
+                            | SelectedNode::View(_) => {}
                         }
                         Action::None
                     }
@@ -478,6 +557,13 @@ impl AppState {
                     }
                     KeyCode::Char('q') => {
                         self.should_quit = true;
+                        Action::None
+                    }
+                    KeyCode::Char('v') => {
+                        // Dedicated jump-to-view keybinding (AC-4, BA.26.A): reaches a
+                        // declared `[views]` destination in ONE keypress from anywhere
+                        // in the spine, including boot — see `jump_to_next_view`.
+                        self.jump_to_next_view();
                         Action::None
                     }
                     _ => Action::None,
@@ -818,6 +904,169 @@ mod tests {
         let mut app = make_empty_app();
         app.selected_spine = 99;
         assert_eq!(app.selected_node(), SelectedNode::MissionControl);
+    }
+
+    // ── SelectedNode::View (BA.26.A task 3) ─────────────────────────────────
+
+    fn make_view_fixture() -> OfferedView {
+        OfferedView {
+            name: "open-work".to_string(),
+            label: "Open Work".to_string(),
+            root: std::path::PathBuf::from("/tmp/bastion-open-work-fixture"),
+        }
+    }
+
+    /// `make_full_app()`'s spine plus one declared view appended last, per
+    /// `spine_rows`'s append-after-every-existing-row contract.
+    fn make_full_app_with_view() -> (AppState, usize) {
+        let app = make_full_app().with_offered_views(vec![make_view_fixture()]);
+        let view_index = app.spine_rows().len() - 1;
+        (app, view_index)
+    }
+
+    /// A large, multi-tier spine approximating the real fleet's `brain.toml`
+    /// (24 registered repos across `core`/`side`/`client`/`portfolio` plus the
+    /// `_root` tier) with one declared view appended last — the scale the
+    /// review flagged as requiring ~25-30 sequential Down presses to reach.
+    fn make_large_fleet_app_with_view() -> (AppState, usize) {
+        fn tier(name: &str, n: usize) -> (String, Vec<crate::brain::spaces::SpaceEntry>) {
+            (
+                name.to_string(),
+                (0..n)
+                    .map(|i| crate::brain::spaces::SpaceEntry {
+                        slug: format!("{name}-repo-{i}"),
+                        tier: name.to_string(),
+                        repo_path: std::path::PathBuf::from(format!("{name}-repo-{i}")),
+                        heading: None,
+                    })
+                    .collect(),
+            )
+        }
+        let tree = SpaceTree {
+            tiers: vec![
+                tier("_root", 2),
+                tier("core", 12),
+                tier("side", 5),
+                tier("client", 3),
+                tier("portfolio", 2),
+            ],
+        };
+        let app = AppState::new(vec![], tree).with_offered_views(vec![make_view_fixture()]);
+        let view_index = app.spine_rows().len() - 1;
+        (app, view_index)
+    }
+
+    #[test]
+    fn jump_to_next_view_reaches_a_declared_view_in_one_keypress_from_boot() {
+        // Drives on_key(KeyCode::Char('v')) from selected_spine == 0 (boot,
+        // Mission Control) against a realistic multi-tier/multi-space corpus
+        // (24 repos + 2 _root entries), exactly the scenario the review found
+        // ungated: reaching the declared view via sequential Down/Up alone
+        // would take ~25-30 keypresses here.
+        let (mut app, view_index) = make_large_fleet_app_with_view();
+        assert_eq!(app.selected_spine, 0);
+        // Sanity: the view row really does sit far from boot, so a pass here
+        // is not accidentally trivial.
+        assert!(
+            view_index > 20,
+            "fixture must place the view row far from boot; view_index={view_index}"
+        );
+
+        app.on_key(KeyCode::Char('v'));
+
+        assert_eq!(
+            app.selected_spine, view_index,
+            "expected a single 'v' press from boot to land on the view row"
+        );
+        match app.selected_node() {
+            SelectedNode::View(view) => assert_eq!(view.name, "open-work"),
+            other => panic!("expected View(open-work) after one 'v' press, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jump_to_next_view_cycles_and_wraps_on_repeat_presses() {
+        // With only one declared view, pressing 'v' again (already on the
+        // view row) wraps back to the same view rather than getting stuck.
+        let (mut app, view_index) = make_full_app_with_view();
+        app.selected_spine = view_index;
+        app.jump_to_next_view();
+        assert_eq!(app.selected_spine, view_index);
+    }
+
+    #[test]
+    fn jump_to_next_view_is_a_noop_when_no_view_is_declared() {
+        let mut app = make_full_app();
+        let before = app.selected_spine;
+        app.on_key(KeyCode::Char('v'));
+        assert_eq!(app.selected_spine, before);
+    }
+
+    #[test]
+    fn selected_node_maps_a_declared_view_row() {
+        let (mut app, view_index) = make_full_app_with_view();
+        app.selected_spine = view_index;
+        match app.selected_node() {
+            SelectedNode::View(view) => assert_eq!(view.name, "open-work"),
+            other => panic!("expected View(open-work), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_space_overview_gate_treats_a_view_like_hq_and_space() {
+        // `is_space_overview` is private to `on_key`, so this is asserted
+        // behaviourally: Right/Left pane-focus switching only fires when
+        // `is_space_overview` is true, exactly the browser-key gate AC-1
+        // converted from a `matches!` to an exhaustive `match`.
+        let (mut app, view_index) = make_full_app_with_view();
+        app.selected_spine = view_index;
+        assert_eq!(app.overview_pane, OverviewPane::Sidebar);
+        app.on_key(KeyCode::Right);
+        assert_eq!(app.overview_pane, OverviewPane::Browser);
+        app.on_key(KeyCode::Right);
+        assert_eq!(app.overview_pane, OverviewPane::Content);
+        app.on_key(KeyCode::Left);
+        assert_eq!(app.overview_pane, OverviewPane::Browser);
+    }
+
+    #[test]
+    fn reinit_browser_roots_at_the_declared_views_own_root() {
+        let (mut app, view_index) = make_full_app_with_view();
+        app.selected_spine = view_index;
+        app.reinit_browser();
+        assert_eq!(
+            app.file_browser.root_boundary,
+            Some(std::path::PathBuf::from("/tmp/bastion-open-work-fixture"))
+        );
+    }
+
+    #[test]
+    fn current_space_planning_root_is_the_declared_views_own_root() {
+        let (mut app, view_index) = make_full_app_with_view();
+        app.selected_spine = view_index;
+        assert_eq!(
+            app.current_space_planning_root(),
+            std::path::PathBuf::from("/tmp/bastion-open-work-fixture")
+        );
+    }
+
+    #[test]
+    fn selected_session_and_space_slug_are_none_for_a_view() {
+        let (mut app, view_index) = make_full_app_with_view();
+        app.selected_spine = view_index;
+        assert!(app.selected_session().is_none());
+        assert!(app.selected_space_slug().is_none());
+        assert!(app.selected_session_for_actions().is_none());
+    }
+
+    #[test]
+    fn with_offered_views_defaults_to_empty_and_does_not_change_the_spine() {
+        // Every existing `AppState::new` call site sees no views unless it
+        // opts in via `with_offered_views` — the empty default keeps today's
+        // spine identical.
+        let plain = make_full_app();
+        let with_empty_views = make_full_app().with_offered_views(vec![]);
+        assert_eq!(plain.spine_rows(), with_empty_views.spine_rows());
     }
 
     // ── set_sessions ─────────────────────────────────────────────────────────

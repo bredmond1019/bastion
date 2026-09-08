@@ -72,20 +72,26 @@ on whichever spine row is selected:
   (`src/brain/spaces.rs`) over the `brain.toml` workspace tree: `◆ Mission Control` is pinned
   first, followed by the `HQ` header and its children (`learn-ai`, `base-template` — the old
   standalone `brain` leaf is collapsed into `HQ`), then the `core`/`side`/`client`/`portfolio`
-  tier headers and their spaces. Tier headers and `HQ` are selectable rows, not just section
-  labels. `↑`/`↓`/`j`/`k` move through the spine and **wrap** at both ends.
+  tier headers and their spaces, then one row per declared `[views]` entry from `config.toml`
+  (see [Reader views](../operations/config.md#reader-views-views-ba26a) — appended last, absent
+  entirely when no `[views]` table is configured or a declared view's root doesn't resolve on
+  disk). Tier headers and `HQ` are selectable rows, not just section labels. `↑`/`↓`/`j`/`k` move
+  through the spine and **wrap** at both ends.
 - **Mission Control (selecting `◆ Mission Control`):** A unified "active work" view in the main
   area. The left pane lists all live tmux sessions alongside running orchestrator workflow DAGs.
   Selecting a session displays its agent state (`Working`, `Idle`, or `Blocked`), foreground
   command, and recent output in the right detail pane. Selecting a run displays its node
   progression. All session management (attach, new, kill, send) happens here.
-- **Space Overview (selecting `HQ` or a space row):** A split-pane layout with a built-in file
-  browser on the left and a scrollable content pane on the right. By default, it opens the
-  space's `planning/status.md`. You can browse the space's directories or preview markdown files
-  in the content pane (using the `bella-engine` parser with the console's active theme, selectable
-  via the `[theme]` config section — see [config.md](../operations/config.md#theme-section)). Pressing `t` opens the
+- **Space Overview (selecting `HQ`, a space row, or a declared view row):** A split-pane layout
+  with a built-in file browser on the left and a scrollable content pane on the right. `HQ`/space
+  rows open the space's `planning/status.md` by default; a view row instead roots the browser and
+  content pane directly at that view's own configured `root` (no `planning/` subpath assumed).
+  You can browse the rooted directory or preview markdown files in the content pane (using the
+  `bella-engine` parser with the console's active theme, selectable via the `[theme]` config
+  section — see [config.md](../operations/config.md#theme-section)). Pressing `t` opens the
   selected markdown file as a transient full-screen overlay instead of a new tab (overlay polish
-  is deferred; tab machinery has been removed).
+  is deferred; tab machinery has been removed). Pane-focus and navigation keys (below) behave
+  identically whether the row is `HQ`, a space, or a view.
 - **Tier overview (selecting a tier header — `HQ`/`core`/`side`/`client`/`portfolio`):** Routes
   the main area to that tier's `<tier>/planning/status.md`. If the file or tier directory is
   absent, the pane degrades gracefully to an empty state instead of panicking.
@@ -134,7 +140,7 @@ for the click/scroll-to-pane mapping.
 | `↑`/`↓` or `j`/`k` | Move selection through the spine (wraps at both ends) |
 | `q` / `Esc` | Quit the dashboard |
 
-**Space Overview (`HQ` / space rows):**
+**Space Overview (`HQ` / space rows / view rows):**
 | Key | Action |
 |---|---|
 | `←` / `→` | Switch focus between the file Browser and the Content pane |

@@ -19,6 +19,7 @@
 mod tests {
     use crate::brain::spaces::SpaceEntry;
     use crate::sessions::app::AppState;
+    use crossterm::event::KeyCode;
     use ratatui::{Terminal, backend::TestBackend};
     use std::path::Path;
 
@@ -448,5 +449,190 @@ mod tests {
 
         assert!(app.pane_areas.browser.width > 0 && app.pane_areas.browser.height > 0);
         assert!(app.pane_areas.content.width > 0 && app.pane_areas.content.height > 0);
+    }
+
+    // ── Declared-view reader keys (BA.26.A task 4, AC-2) ───────────────────────
+
+    /// Build an app with one declared `[views]` entry (BA.26.A task 3) rooted at
+    /// `root`, selected as the current spine row. Returns the app with the
+    /// browser already (re)initialized at that root.
+    fn app_with_view_at(root: &Path) -> AppState {
+        let offered = crate::config::OfferedView {
+            name: "open-work".to_string(),
+            label: "Open Work".to_string(),
+            root: root.to_path_buf(),
+        };
+        let mut app = AppState::new(vec![], crate::brain::spaces::SpaceTree::default())
+            .with_offered_views(vec![offered]);
+        let view_index = app.spine_rows().len() - 1;
+        app.selected_spine = view_index;
+        app.reinit_browser();
+        app
+    }
+
+    /// AC-2 (mandatory, must be SHOWN FAILING): drive the reader keys (Right,
+    /// Left, Enter) against the declared-view `SelectedNode` variant and assert
+    /// pane focus moves and Enter descends — then, via a RUNTIME INVERSION
+    /// rather than a committed red baseline (base-template D68), prove this
+    /// assertion set can actually go red for the exact bug AC-1 forecloses.
+    ///
+    /// The inversion reproduces the pre-BA.26.A-task-3 non-exhaustive gate
+    /// (`is_space_overview` computed as `SelectedNode::Hq | SelectedNode::Space(_)
+    /// => true, _ => false` — View was not yet a variant, so it fell through to
+    /// `false`) as a local closure and shows it disagrees with today's
+    /// exhaustive gate on the View row — i.e. under the old gate the Right/Left
+    /// focus-switch keys asserted above would silently never have fired. A test
+    /// that only ever exercises the fixed gate cannot tell a real fix from a
+    /// no-op; this side-by-side comparison is what makes it a gate that can
+    /// fail.
+    ///
+    /// Written as a `match ... _ => false` rather than the `matches!` macro on
+    /// purpose: `scripts/check-selected-node-exhaustive.sh` (this same task)
+    /// sweeps ALL of src/ — this test file included — for exactly that macro
+    /// over a `selected_node()` scrutinee, and a literal reproduction here
+    /// would trip its own regression check.
+    #[test]
+    fn view_variant_reader_keys_move_focus_and_descend_and_the_gate_can_fail() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize root");
+        let child = root.join("child");
+        std::fs::create_dir(&child).expect("mkdir child");
+        let child = child.canonicalize().expect("canonicalize child");
+
+        let mut app = app_with_view_at(&root);
+        match app.selected_node() {
+            crate::brain::spaces::SelectedNode::View(view) => {
+                assert_eq!(view.name, "open-work")
+            }
+            other => panic!("expected SelectedNode::View(open-work), got {other:?}"),
+        }
+        assert_eq!(
+            app.file_browser.dir, root,
+            "reinit_browser must root the browser at the declared view's own root"
+        );
+
+        // Right: Sidebar -> Browser -> Content. Left: Content -> Browser -> Sidebar.
+        assert_eq!(
+            app.overview_pane,
+            crate::sessions::app::OverviewPane::Sidebar
+        );
+        app.on_key(KeyCode::Right);
+        assert_eq!(
+            app.overview_pane,
+            crate::sessions::app::OverviewPane::Browser,
+            "Right must move focus Sidebar -> Browser for a declared view"
+        );
+        app.on_key(KeyCode::Right);
+        assert_eq!(
+            app.overview_pane,
+            crate::sessions::app::OverviewPane::Content,
+            "Right must move focus Browser -> Content for a declared view"
+        );
+        app.on_key(KeyCode::Left);
+        assert_eq!(
+            app.overview_pane,
+            crate::sessions::app::OverviewPane::Browser,
+            "Left must move focus Content -> Browser for a declared view"
+        );
+
+        // Enter, with the "child" directory entry selected, must descend.
+        let child_idx = app
+            .file_browser
+            .entries
+            .iter()
+            .position(|e| e.kind == bella_engine::browser::BrowserEntryKind::Dir)
+            .expect("fixture root must list the 'child' directory entry");
+        app.file_browser.selected = child_idx;
+        app.on_key(KeyCode::Enter);
+        assert_eq!(
+            app.file_browser.dir, child,
+            "Enter on a directory entry must descend the browser into it for a declared view"
+        );
+
+        // ── Runtime inversion: prove the gate can fail (D68) ────────────────
+        // Reproduce the OLD, non-exhaustive gate from before BA.26.A task 3
+        // (View was not yet a SelectedNode variant, so it fell through to the
+        // `_ => false` arm) as a local closure over the SAME `selected_node()`
+        // this test already exercised above. Deliberately a `match ... _ =>`,
+        // not the `matches!` macro — see the doc comment above.
+        #[allow(clippy::match_like_matches_macro)]
+        let naive_is_space_overview = match app.selected_node() {
+            crate::brain::spaces::SelectedNode::Hq
+            | crate::brain::spaces::SelectedNode::Space(_) => true,
+            _ => false,
+        };
+        assert!(
+            !naive_is_space_overview,
+            "the pre-fix non-exhaustive `matches!` gate treats a declared View as NOT \
+             space-overview — reproducing the exact bug AC-1's exhaustive match forecloses; \
+             if this ever becomes true the inversion below is testing nothing"
+        );
+
+        // Today's exhaustive gate (src/sessions/app.rs's `is_space_overview`) is
+        // what actually ran when Right/Left/Enter fired above.
+        let exhaustive_is_space_overview = match app.selected_node() {
+            crate::brain::spaces::SelectedNode::Hq
+            | crate::brain::spaces::SelectedNode::Space(_)
+            | crate::brain::spaces::SelectedNode::View(_) => true,
+            crate::brain::spaces::SelectedNode::MissionControl
+            | crate::brain::spaces::SelectedNode::Tier(_) => false,
+        };
+        assert!(
+            exhaustive_is_space_overview,
+            "the exhaustive gate must treat a declared View as space-overview"
+        );
+
+        assert_ne!(
+            naive_is_space_overview, exhaustive_is_space_overview,
+            "the naive pre-fix gate and today's exhaustive gate must disagree on the View \
+             variant — this disagreement is what proves the Right/Left/Enter assertions above \
+             actually exercise AC-1's fix rather than passing vacuously"
+        );
+    }
+
+    // ── scripts/check-selected-node-exhaustive.sh (BA.26.A task 4, AC-3) ───────
+
+    /// Locate the repo root from `CARGO_MANIFEST_DIR` so this test finds the
+    /// script regardless of the working directory `cargo test`/`nextest` is
+    /// invoked from.
+    fn repo_root() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// AC-3's regression sweep must exit 0 (no `matches!`/`==`/`!=` gating on
+    /// `SelectedNode` anywhere in src/) on the post-change tree.
+    #[test]
+    fn selected_node_exhaustive_check_passes_on_current_tree() {
+        let script = repo_root().join("scripts/check-selected-node-exhaustive.sh");
+        let status = std::process::Command::new("bash")
+            .arg(&script)
+            .current_dir(repo_root())
+            .status()
+            .expect("failed to run scripts/check-selected-node-exhaustive.sh");
+        assert!(
+            status.success(),
+            "scripts/check-selected-node-exhaustive.sh must exit 0 on the current tree"
+        );
+    }
+
+    /// AC-3's MANDATORY positive control: the identical sweep run against the
+    /// pre-BA.26.A revision (`27f04fa`) of src/sessions/app.rs must MATCH at
+    /// the `is_space_overview` site — proving the sweep can find the pattern
+    /// it otherwise reports absent. An empty result here would mean the
+    /// instrument is broken, not that the tree is clean (standing rule 11).
+    #[test]
+    fn selected_node_exhaustive_check_control_matches_pre_change_revision() {
+        let script = repo_root().join("scripts/check-selected-node-exhaustive.sh");
+        let status = std::process::Command::new("bash")
+            .arg(&script)
+            .arg("--control")
+            .current_dir(repo_root())
+            .status()
+            .expect("failed to run scripts/check-selected-node-exhaustive.sh --control");
+        assert!(
+            status.success(),
+            "the positive control must pass: the pre-change revision (27f04fa) of \
+             src/sessions/app.rs must match the sweep, or the instrument itself is broken"
+        );
     }
 }

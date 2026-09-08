@@ -56,7 +56,7 @@ pub fn session_row(s: &Session) -> String {
 pub fn footer_hint(mode: &Mode) -> String {
     match mode {
         Mode::Normal => {
-            "[a]ttach [n]ew [s]end [k]ill [q]uit  ↑/j ↓/k move spine (wraps)".to_string()
+            "[a]ttach [n]ew [s]end [k]ill [v]iew [q]uit  ↑/j ↓/k move spine (wraps)".to_string()
         }
         Mode::Input(InputKind::New) => "new session name (Enter=create, Esc=cancel): ".to_string(),
         Mode::Input(InputKind::Send) => "send to selected (Enter=send, Esc=cancel): ".to_string(),
@@ -222,6 +222,13 @@ fn build_sidebar_items(app: &AppState) -> Vec<ListItem<'static>> {
             SpineRow::Space(entry) => {
                 items.push(build_space_item(app, &entry.slug));
             }
+            SpineRow::View(view) => {
+                let span = Span::styled(
+                    format!("  {} ", view.label),
+                    Style::default().fg(crate::ui_theme::text()),
+                );
+                items.push(ListItem::new(Line::from(vec![span])));
+            }
         }
     }
     items
@@ -318,8 +325,11 @@ fn draw_with_root(
             let paragraph = Paragraph::new(rendered.lines).block(tier_block);
             frame.render_widget(paragraph, content_area);
         }
-        SelectedNode::Hq | SelectedNode::Space(_) => {
-            // Browser Pane
+        SelectedNode::Hq | SelectedNode::Space(_) | SelectedNode::View(_) => {
+            // Browser Pane — a declared `[views]` entry (BA.26.A) shares this
+            // rendering path: `app.file_browser`/`planning_root` are already
+            // rooted at the view's declared `root` via `reinit_browser` /
+            // `current_space_planning_root`.
             let browser_active = app.overview_pane == crate::sessions::app::OverviewPane::Browser;
             let browser_block = crate::ui_theme::themed_block(
                 Span::styled(" file browser ", crate::ui_theme::title_style()),
@@ -524,20 +534,39 @@ fn run_inner(
 
 /// Resolve the active theme from the on-disk config (DB-free — see D4) and
 /// initialize the process-wide runtime theme so chrome and the markdown view
-/// (`render_with_edit`) share one palette. A missing/unreadable/malformed
-/// config degrades gracefully to the `bastion` default rather than panicking.
-fn init_theme_from_config() {
-    let file = crate::config::load_workspace_registry(
-        std::env::var("XDG_CONFIG_HOME").ok(),
-        std::env::var("HOME").ok(),
-    )
-    .unwrap_or_default();
-    crate::ui_theme::init_theme(crate::config::resolve_theme(&file));
+/// (`render_with_edit`) share one palette. A missing or unreadable config
+/// degrades gracefully to the `bastion` default; a **malformed** config also
+/// degrades to the default (never panics, never refuses to boot) but is no
+/// longer silently indistinguishable from an absent one — the returned
+/// `Some(message)` names the config path and the parser's own error so the
+/// caller can surface it (BA.26.A task 2; previously `.unwrap_or_default()`
+/// discarded `ConfigError::MalformedFile` here entirely).
+fn init_theme_from_config() -> Option<String> {
+    let xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    let home = std::env::var("HOME").ok();
+    let path = crate::config::config_path(xdg.clone(), home.clone());
+    match crate::config::load_workspace_registry(xdg, home) {
+        Ok(file) => {
+            crate::ui_theme::init_theme(crate::config::resolve_theme(&file));
+            None
+        }
+        Err(e) => {
+            // Still degrade to the default theme — a malformed config must
+            // never panic or block boot — but, unlike before, do not throw
+            // the error away: report it via `path` so the caller can surface
+            // it to the operator instead of silently reverting.
+            crate::ui_theme::init_theme(crate::config::resolve_theme(
+                &crate::config::FileConfig::default(),
+            ));
+            let result: Result<crate::config::FileConfig, crate::config::ConfigError> = Err(e);
+            path.and_then(|p| crate::config::describe_config_load_error(&p, &result))
+        }
+    }
 }
 
 /// Launch the interactive session dashboard (synchronous; no tokio).
 pub fn run() -> Result<()> {
-    init_theme_from_config();
+    let theme_degradation = init_theme_from_config();
 
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -547,7 +576,23 @@ pub fn run() -> Result<()> {
 
     let space_tree = crate::brain::spaces::load_space_tree(&crate::config::load_brain_toml_path())
         .unwrap_or_default();
-    let mut app = AppState::new(poll_sessions(), space_tree);
+    // Resolve the declared `[views]` table (BA.26.A) the same way the theme was
+    // just resolved above: absent/unreadable/malformed all degrade to an empty
+    // offered-list — never an error, never a panic — since `init_theme_from_config`
+    // already surfaced a malformed file via `theme_degradation`.
+    let offered_views = crate::config::load_workspace_registry(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
+    .map(|file| crate::config::offered_views(&file))
+    .unwrap_or_default();
+    let mut app = AppState::new(poll_sessions(), space_tree).with_offered_views(offered_views);
+    // A malformed config file degrades to defaults above, but the operator
+    // must still be told — surface it in the same footer status line other
+    // degradations use (BA.26.A task 2), rather than leaving it silent.
+    if let Some(msg) = theme_degradation {
+        app.status = Some(msg);
+    }
     let result = run_inner(&mut terminal, &mut app);
 
     // Always tear down — even on the error path — so the terminal is never left
@@ -663,6 +708,7 @@ mod tests {
         assert!(hint.contains("[n]"), "hint: {hint}");
         assert!(hint.contains("[s]"), "hint: {hint}");
         assert!(hint.contains("[k]"), "hint: {hint}");
+        assert!(hint.contains("[v]"), "hint: {hint}");
         assert!(hint.contains("[q]"), "hint: {hint}");
         // The top tab bar + Tab/Shift+Tab cycling is gone (spine is now the single
         // primary navigator) — the hint must not reference it.
