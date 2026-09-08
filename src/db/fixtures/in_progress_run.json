@@ -48,25 +48,13 @@
   },
   "nodes": {
     "DataIngestionNode": {
-      "output": {
-        "documents_loaded": 3,
-        "total_bytes": 15240
-      }
+      "documents_loaded": 3,
+      "total_bytes": 15240
     },
     "EmbeddingNode": {
-      "output": {
-        "embedding_dim": 1536,
-        "chunks_embedded": 12
-      }
+      "embedding_dim": 1536,
+      "chunks_embedded": 12
     },
-    "LLMSummaryNode": {
-      "output": null
-    },
-    "ValidationNode": {
-      "output": null
-    },
-    "OutputFormatterNode": {
-      "output": null
-    }
+    "LLMSummaryNode": null
   }
 }

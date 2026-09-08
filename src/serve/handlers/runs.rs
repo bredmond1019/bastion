@@ -123,6 +123,7 @@ fn node_states_from(ctx: &TaskContext) -> Vec<NodeState> {
             tokens_out: None,
             model: None,
             started_at: run.started_at.map(|t| t.to_rfc3339()),
+            completed_at: run.completed_at.map(|t| t.to_rfc3339()),
             elapsed_secs: None,
         })
         .collect()

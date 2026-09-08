@@ -429,6 +429,7 @@ mod tests {
             tokens_out,
             model: model.map(str::to_string),
             started_at: None,
+            completed_at: None,
             elapsed_secs: None,
         }
     }
@@ -453,6 +454,7 @@ mod tests {
             tokens_out,
             model: model.map(str::to_string),
             started_at: None,
+            completed_at: None,
             elapsed_secs: None,
         }
     }
