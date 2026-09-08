@@ -363,6 +363,76 @@ async fn dispatch(cli: Cli) -> Result<()> {
             // read-only coordination reader (BA.25.A). No reader logic lives here.
             Commands::Coord { mode } => match mode {
                 CoordMode::Status { json } => coord_cli::run_status(json),
+                CoordMode::Register {
+                    agent_name,
+                    repo,
+                    lane,
+                    roadmap,
+                    category,
+                    lock_dir,
+                } => coord_cli::run_register(
+                    &agent_name,
+                    &repo,
+                    &lane,
+                    &roadmap,
+                    category.as_deref(),
+                    lock_dir.as_deref(),
+                ),
+                CoordMode::Heartbeat {
+                    agent_name,
+                    current_block,
+                    block_started_at,
+                    lock_dir,
+                } => coord_cli::run_heartbeat(
+                    &agent_name,
+                    current_block.as_deref(),
+                    block_started_at.as_deref(),
+                    lock_dir.as_deref(),
+                ),
+                CoordMode::Release {
+                    agent_name,
+                    lock_dir,
+                } => coord_cli::run_release(&agent_name, lock_dir.as_deref()),
+                CoordMode::Lease {
+                    repo,
+                    lane,
+                    agent_name,
+                    kind,
+                    scope,
+                    window,
+                    lane_block,
+                    lock_dir,
+                } => coord_cli::run_lease(
+                    &repo,
+                    &lane,
+                    &agent_name,
+                    &kind,
+                    scope.as_deref(),
+                    &window,
+                    &lane_block,
+                    lock_dir.as_deref(),
+                ),
+                CoordMode::Unlease { repo, lock_dir } => {
+                    coord_cli::run_unlease(&repo, lock_dir.as_deref())
+                }
+                CoordMode::Drain {
+                    repo,
+                    lane,
+                    lock_dir,
+                } => coord_cli::run_drain(&repo, &lane, lock_dir.as_deref()),
+                CoordMode::Send {
+                    repo,
+                    lane,
+                    file,
+                    lock_dir,
+                } => coord_cli::run_send(&repo, &lane, &file, lock_dir.as_deref()),
+                CoordMode::Complete {
+                    repo,
+                    lane,
+                    message_id,
+                    lock_dir,
+                } => coord_cli::run_complete(&repo, &lane, &message_id, lock_dir.as_deref()),
+                CoordMode::Restore { lock_dir } => coord_cli::run_restore(lock_dir.as_deref()),
             },
         },
     }

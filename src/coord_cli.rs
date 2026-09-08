@@ -38,10 +38,13 @@
 //! module, and no test in this file, treats a clean `Live` verdict as evidence the
 //! surface is populated or that its records are current-shape.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use engine_core::coord::write::{
+    CoordWriteError, HeartbeatRequest, LeaseRequest, RegisterOutcome, RegisterRequest,
+};
 use engine_core::coord::{CoordinationStatus, CoordinationView};
 
 /// Handler for `bastion coord status [--json]`. Resolves `brain_root` exactly as the
@@ -90,6 +93,651 @@ fn degraded_result(view: &CoordinationView) -> Result<()> {
 /// `engine_core::coord::read_coordination_view` directly — no reimplementation.
 fn view_for(brain_root: &Path) -> CoordinationView {
     engine_core::coord::read_coordination_view(brain_root)
+}
+
+// ── `register` / `heartbeat` / `release` — `bastion coord`'s write verbs (BA.25.C task 1) ──
+//
+// These three are thin CLI faces over `engine_core::coord::write::{register,heartbeat,
+// release}` — the SAME functions `engine-serve`'s `POST /api/coordination/{register,
+// heartbeat,release}` routes call (`engine-serve/src/http.rs`, `coord_register`/
+// `coord_heartbeat`/`coord_release`). No write logic — schema validation, `.prev/`
+// snapshotting, capacity enforcement — is reimplemented here; that seam is `EN.15.C`'s.
+//
+// Each public `run_*` entry point resolves the REAL lock directory (via `resolve_brain_root()`
+// then `engine_core::coord::resolve_lock_dir`, unless `--lock-dir` overrides it) and delegates
+// to a `*_at` sibling that takes the resolved directory directly — the same split `run_status`/
+// `view_for` already established, so a test can drive the write functions against a `tempdir()`
+// fixture without going through brain-root discovery at all, and the live `.fleet-locks/` is
+// never touched by anything in `#[cfg(test)]` below.
+//
+// `register`'s exit code is the one place this module's write verbs diverge from a plain
+// `Result<()>` → exit-1-on-Err contract: `fleet_concurrency_check.py register` exits 0 when
+// allowed (including the degraded-advisory case) and 3 when refused at capacity (see that
+// script's own module doc comment and `main()`'s `return 0 if result.allowed else 3`) — a
+// caller-visible contract this CLI must hold, not an internal implementation detail. Mirroring
+// `notify_cli::AskOutcome::exit_code`'s pattern: the 0/3 mapping lives in one pure, directly
+// testable function (`register_exit_code`), and the only `std::process::exit` call sits in
+// `run_register`, after the outcome's JSON has already been printed to stdout.
+//
+// `heartbeat` and `release` have no such second exit code. `release` always reports success
+// (`{"removed": bool}`) on a real seam I/O outcome, matching `fleet_concurrency_check.py
+// release`'s own always-0 contract — a genuine filesystem error is still a real failure and
+// exits 1 via the ordinary `anyhow::Result` path, same as any other bastion command's I/O
+// fault. `heartbeat` errors when `agent_name` names no existing registry claim
+// (`engine_core::coord::write::heartbeat`'s own refusal — "nothing to heartbeat"); the Python
+// oracle has NO direct `heartbeat` subcommand to compare this against (its own re-register-is-
+// a-heartbeat idiom never refuses this way — an absent claim there just becomes a fresh
+// `register`), so this case is deliberately left to bastion's ordinary exit-1 error path
+// rather than inventing a code with nothing on the other side of the parity contract to match.
+
+/// Resolve the lock directory a coord write verb writes into: `lock_dir_override` when given
+/// (mirrors `fleet_concurrency_check.py`'s own `--lock-dir`, and is how every fixture test in
+/// this module points a write verb at a `tempdir()` instead of the live tree), else the same
+/// `resolve_brain_root()` → `engine_core::coord::resolve_lock_dir` path `run_status` already
+/// uses for reads.
+fn resolve_write_lock_dir(lock_dir_override: Option<&Path>) -> Result<PathBuf> {
+    if let Some(dir) = lock_dir_override {
+        return Ok(dir.to_path_buf());
+    }
+    let brain_root =
+        engine_core::brain_root::resolve_brain_root().context("cannot resolve brain root")?;
+    Ok(engine_core::coord::resolve_lock_dir(&brain_root))
+}
+
+/// The exit code for a `register` outcome — total over both cases, mirroring
+/// `fleet_concurrency_check.py register`'s own contract: `0` when allowed, `3` when refused at
+/// capacity. Kept as its own pure function (not inlined into `run_register`) so it is testable
+/// directly, without spawning a process — same shape as `notify_cli::AskOutcome::exit_code`.
+fn register_exit_code(outcome: &RegisterOutcome) -> i32 {
+    if outcome.allowed { 0 } else { 3 }
+}
+
+/// `register` against an already-resolved `lock_dir` — the pure(ish) core `run_register`
+/// wraps, and what every fixture test in this module calls directly against a `tempdir()`.
+/// Stamps `now`/`pid` itself (mirroring `coord_register`'s own route handler) rather than
+/// trusting a caller-supplied clock; writes no `host` (single-host fleet, per
+/// `engine_core::coord::write`'s own module doc comment on Fork 1).
+#[allow(clippy::too_many_arguments)]
+fn register_at(
+    lock_dir: &Path,
+    agent_name: &str,
+    repo: &str,
+    lane: &str,
+    roadmap: &str,
+    category: Option<&str>,
+) -> Result<RegisterOutcome, CoordWriteError> {
+    let now = chrono::Utc::now();
+    let now_iso = now.to_rfc3339();
+    let now_epoch = now.timestamp() as f64 + f64::from(now.timestamp_subsec_nanos()) / 1e9;
+    let req = RegisterRequest {
+        agent_name,
+        repo,
+        lane,
+        roadmap,
+        host: None,
+        category,
+        now_iso: &now_iso,
+        now_epoch,
+        pid: std::process::id() as i64,
+    };
+    engine_core::coord::write::register(lock_dir, &req)
+}
+
+/// `bastion coord register --agent-name <n> --repo <r> --lane <l> --roadmap <rm> [--category
+/// <c>] [--lock-dir <dir>]` — write the lane-agent registry claim and, when `--category` is
+/// given, enforce and write the heavy-lane capacity slot first (`engine_core::coord::write::
+/// register`'s own all-or-nothing contract: a capacity refusal writes nothing at all).
+///
+/// Always prints the outcome as one JSON line — `{"allowed":true,"reason":null,"active":[]}`
+/// on success, `{"allowed":false,"reason":"...","active":[...]}` on refusal — then exits `0` or
+/// `3` per [`register_exit_code`]. A `CoordWriteError` (invalid record shape, I/O failure)
+/// bubbles up as an ordinary `anyhow::Result` error and exits `1`, same as any other bastion
+/// command fault.
+#[allow(clippy::too_many_arguments)]
+pub fn run_register(
+    agent_name: &str,
+    repo: &str,
+    lane: &str,
+    roadmap: &str,
+    category: Option<&str>,
+    lock_dir_override: Option<&Path>,
+) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let outcome = register_at(&lock_dir, agent_name, repo, lane, roadmap, category)
+        .with_context(|| format!("register failed for agent `{agent_name}`"))?;
+    let json = serde_json::json!({
+        "allowed": outcome.allowed,
+        "reason": outcome.reason,
+        "active": outcome.active,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&json).context("failed to serialise register outcome")?
+    );
+    let code = register_exit_code(&outcome);
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+/// `heartbeat` against an already-resolved `lock_dir` — mirrors [`register_at`]'s split.
+fn heartbeat_at(
+    lock_dir: &Path,
+    agent_name: &str,
+    current_block: Option<&str>,
+    block_started_at: Option<&str>,
+) -> Result<(), CoordWriteError> {
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let req = HeartbeatRequest {
+        agent_name,
+        host: None,
+        now_iso: &now_iso,
+        current_block,
+        block_started_at,
+    };
+    engine_core::coord::write::heartbeat(lock_dir, &req)
+}
+
+/// `bastion coord heartbeat --agent-name <n> [--current-block <b>] [--block-started-at <ts>]
+/// [--lock-dir <dir>]` — re-stamp an existing registry claim's `heartbeat` field (and, when
+/// given, `current_block`/`block_started_at`); `started_at` is left untouched, unlike
+/// `register`'s own idempotent-refresh path.
+///
+/// Prints `{"ok":true}` and exits `0` on success. Errors — including "no existing registry
+/// claim for this agent", `engine_core::coord::write::heartbeat`'s own refusal — bubble up as
+/// an ordinary `anyhow::Result` error and exit `1`; see this module's doc comment for why that
+/// case gets no invented exit code of its own.
+pub fn run_heartbeat(
+    agent_name: &str,
+    current_block: Option<&str>,
+    block_started_at: Option<&str>,
+    lock_dir_override: Option<&Path>,
+) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    heartbeat_at(&lock_dir, agent_name, current_block, block_started_at)
+        .with_context(|| format!("heartbeat failed for agent `{agent_name}`"))?;
+    println!("{}", serde_json::json!({ "ok": true }));
+    Ok(())
+}
+
+/// `release` against an already-resolved `lock_dir` — mirrors [`register_at`]'s split.
+fn release_at(lock_dir: &Path, agent_name: &str) -> Result<bool, CoordWriteError> {
+    engine_core::coord::write::release(lock_dir, agent_name)
+}
+
+/// `bastion coord release --agent-name <n> [--lock-dir <dir>]` — remove `agent_name`'s registry
+/// claim, if any. Idempotent, matching `fleet_concurrency_check.py release`'s own
+/// always-succeeds contract: prints `{"removed":true|false}` and exits `0` whether or not a
+/// claim actually existed to remove. A genuine I/O failure removing the file still bubbles up
+/// as an ordinary `anyhow::Result` error and exits `1`.
+pub fn run_release(agent_name: &str, lock_dir_override: Option<&Path>) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let removed = release_at(&lock_dir, agent_name)
+        .with_context(|| format!("release failed for agent `{agent_name}`"))?;
+    println!("{}", serde_json::json!({ "removed": removed }));
+    Ok(())
+}
+
+// ── `lease` / `unlease` / `drain` / `complete` — BA.25.C task 2 ─────────────────────────
+//
+// Same shape as task 1's verbs above: thin CLI faces over `engine_core::coord::write::{lease,
+// unlease, drain, complete}` — the same functions the corresponding
+// `POST /api/coordination/{lease,unlease,drain,complete}` routes call (`EN.15.C`). No write
+// logic is reimplemented here.
+//
+// NONE OF THESE FOUR HAS A `fleet_concurrency_check.py` COUNTERPART. That script's own
+// `_build_parser()` registers exactly five actions — `register`, `release`, `status`,
+// `is-heavy`, `acquire-exclusive` — and `acquire-exclusive` is a pre-flight ADMISSION CHECK
+// for a fleet-exclusive lease (it never writes a lease itself; see that function's own doc
+// comment: "This script does not write the lease itself"), not a lease/unlease/drain/complete
+// writer. There is therefore nothing on the Python side for any of these four verbs to hold
+// exit-code parity with, and per this module's own doc comment on `run_heartbeat` above, that
+// means no invented code: every one of the four uses bastion's ordinary
+// `anyhow::Result<()>` → exit-0-on-`Ok`/exit-1-on-`Err` contract, with the outcome (including
+// a "nothing happened, that's fine" case) reported in the printed JSON rather than as a
+// distinct exit code.
+
+/// Parse `--kind` into [`okf_core::LeaseKind`] — `"exclusive"` or `"shared"`, matching
+/// `LeaseKind`'s own `#[serde(rename_all = "lowercase")]` wire form exactly, so a value valid
+/// on the CLI is always valid on disk too.
+fn parse_lease_kind(raw: &str) -> Result<okf_core::LeaseKind> {
+    match raw {
+        "exclusive" => Ok(okf_core::LeaseKind::Exclusive),
+        "shared" => Ok(okf_core::LeaseKind::Shared),
+        other => anyhow::bail!("invalid --kind `{other}` — expected `exclusive` or `shared`"),
+    }
+}
+
+/// Parse `--scope` into [`okf_core::LeaseScope`] — `"repo"` or `"fleet"`, mirroring
+/// [`parse_lease_kind`]'s own lowercase wire form.
+fn parse_lease_scope(raw: &str) -> Result<okf_core::LeaseScope> {
+    match raw {
+        "repo" => Ok(okf_core::LeaseScope::Repo),
+        "fleet" => Ok(okf_core::LeaseScope::Fleet),
+        other => anyhow::bail!("invalid --scope `{other}` — expected `repo` or `fleet`"),
+    }
+}
+
+/// `lease` against an already-resolved `lock_dir` — mirrors [`register_at`]'s split. A
+/// `window` block absent from `lane_blocks` is refused by `engine_core::coord::write::lease`
+/// itself, naming the offending block, before anything is written.
+#[allow(clippy::too_many_arguments)]
+fn lease_at(
+    lock_dir: &Path,
+    repo: &str,
+    lane: &str,
+    agent: &str,
+    kind: okf_core::LeaseKind,
+    scope: Option<okf_core::LeaseScope>,
+    window: &[String],
+    lane_blocks: &[String],
+) -> Result<(), CoordWriteError> {
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let window_opt = (!window.is_empty()).then_some(window);
+    let req = LeaseRequest {
+        repo,
+        lane,
+        agent,
+        kind,
+        scope,
+        host: None,
+        now_iso: &now_iso,
+        window: window_opt,
+        lane_blocks,
+    };
+    engine_core::coord::write::lease(lock_dir, &req)
+}
+
+/// `bastion coord lease --repo <r> --lane <l> --agent-name <a> --kind exclusive|shared
+/// [--scope repo|fleet] [--window <block>]... [--lane-block <block>]... [--lock-dir <dir>]` —
+/// acquire or renew an exclusive/shared claim on `repo`'s working tree. No Python
+/// counterpart — see this section's doc comment above; exits `0` on success and `1` on any
+/// `CoordWriteError` (including a `--window` block absent from `--lane-block`), via the
+/// ordinary `anyhow::Result` path.
+#[allow(clippy::too_many_arguments)]
+pub fn run_lease(
+    repo: &str,
+    lane: &str,
+    agent_name: &str,
+    kind: &str,
+    scope: Option<&str>,
+    window: &[String],
+    lane_blocks: &[String],
+    lock_dir_override: Option<&Path>,
+) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let kind = parse_lease_kind(kind)?;
+    let scope = scope.map(parse_lease_scope).transpose()?;
+    lease_at(
+        &lock_dir,
+        repo,
+        lane,
+        agent_name,
+        kind,
+        scope,
+        window,
+        lane_blocks,
+    )
+    .with_context(|| format!("lease failed for repo `{repo}`"))?;
+    println!("{}", serde_json::json!({ "ok": true }));
+    Ok(())
+}
+
+/// `unlease` against an already-resolved `lock_dir` — mirrors [`release_at`]'s split.
+fn unlease_at(lock_dir: &Path, repo: &str) -> Result<bool, CoordWriteError> {
+    engine_core::coord::write::unlease(lock_dir, repo)
+}
+
+/// `bastion coord unlease --repo <r> [--lock-dir <dir>]` — release the lease on `repo`, if
+/// any. Idempotent, matching `engine_core::coord::write::unlease`'s own always-succeeds
+/// contract: prints `{"removed":true|false}` and exits `0` whether or not a lease actually
+/// existed to remove — "unleasing a lease you do not hold" is `removed: false`, not an error.
+/// No Python counterpart.
+pub fn run_unlease(repo: &str, lock_dir_override: Option<&Path>) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let removed =
+        unlease_at(&lock_dir, repo).with_context(|| format!("unlease failed for repo `{repo}`"))?;
+    println!("{}", serde_json::json!({ "removed": removed }));
+    Ok(())
+}
+
+/// `<lock_dir>/queue/<repo>/<lane>/inbox/` — the same path
+/// `engine_core::coord::write`'s own (private) `queue_dir`/`inbox_dir` construction resolves
+/// to (see that module's doc comment on the message verbs). Reconstructed here, read-only,
+/// only so `drain_at` can diff the directory's contents before/after the call to report a
+/// partial drain — this is not a second write path, nothing here ever creates or writes a
+/// file under it.
+fn queue_inbox_dir(lock_dir: &Path, repo: &str, lane: &str) -> PathBuf {
+    lock_dir.join("queue").join(repo).join(lane).join("inbox")
+}
+
+/// Every `*.json` filename directly under `dir`, sorted. Empty (never an error) when `dir`
+/// does not exist — mirrors `engine_core::coord::write::drain`'s own "missing inbox/ is an
+/// empty drain, not a failure" contract, since this exists only to diff against that same
+/// directory.
+fn list_json_filenames(dir: &Path) -> Vec<String> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            let mut names: Vec<String> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+                .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+                .collect();
+            names.sort();
+            names
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The outcome of one `drain` call — every message actually moved to `processing/`, and
+/// every message that was in `inbox/` before the call and is STILL there afterwards (a
+/// malformed file, one missing `message_id`, or a lost rename race — `drain`'s own
+/// `continue`-on-failure cases). Reported together so a partial drain can never collapse into
+/// a bare `{"ok":true}` — the exact failure shape task 2's AC forbids.
+struct DrainOutcome {
+    moved: Vec<String>,
+    failed: Vec<String>,
+}
+
+/// `drain` against an already-resolved `lock_dir` — mirrors [`register_at`]'s split, plus the
+/// before/after `inbox/` diff [`DrainOutcome`] needs. `failed` is a leftover *filename*
+/// (`<ts>-<uuid>.json`), not a `message_id`: a file that failed to parse at all has no
+/// `message_id` this side can trust, so the filename is the only identifier guaranteed to
+/// exist for every failure case.
+fn drain_at(lock_dir: &Path, repo: &str, lane: &str) -> Result<DrainOutcome, CoordWriteError> {
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let inbox_dir = queue_inbox_dir(lock_dir, repo, lane);
+    let before = list_json_filenames(&inbox_dir);
+
+    let moved = engine_core::coord::write::drain(lock_dir, repo, lane, &now_iso)?;
+
+    let after: std::collections::HashSet<String> =
+        list_json_filenames(&inbox_dir).into_iter().collect();
+    let failed: Vec<String> = before.into_iter().filter(|f| after.contains(f)).collect();
+    Ok(DrainOutcome { moved, failed })
+}
+
+/// `bastion coord drain --repo <r> --lane <l> [--lock-dir <dir>]` — move every message
+/// currently in `<lock_dir>/queue/<repo>/<lane>/inbox/` into `.../processing/`.
+///
+/// Always prints BOTH halves of the outcome — `{"moved":[...],"failed":[...]}` — never a bare
+/// `{"ok":true}`: a partial drain is visible in the same line as a full one, and an empty
+/// inbox (nothing to drain) is `{"moved":[],"failed":[]}`, a legitimate success rather than a
+/// distinguishable failure. Exits `0` whenever the call itself completes without a
+/// `CoordWriteError` — including when `failed` is non-empty, since a partial drain is a
+/// reported outcome, not a process fault — and `1` on a genuine I/O error (e.g. `processing/`
+/// could not be created). No Python counterpart.
+pub fn run_drain(repo: &str, lane: &str, lock_dir_override: Option<&Path>) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let outcome = drain_at(&lock_dir, repo, lane)
+        .with_context(|| format!("drain failed for {repo}/{lane}"))?;
+    println!(
+        "{}",
+        serde_json::json!({ "moved": outcome.moved, "failed": outcome.failed })
+    );
+    Ok(())
+}
+
+/// `complete` against an already-resolved `lock_dir` — mirrors [`release_at`]'s split.
+fn complete_at(
+    lock_dir: &Path,
+    repo: &str,
+    lane: &str,
+    message_id: &str,
+) -> Result<bool, CoordWriteError> {
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    engine_core::coord::write::complete(lock_dir, repo, lane, message_id, &now_iso)
+}
+
+/// `bastion coord complete --repo <r> --lane <l> --message-id <id> [--lock-dir <dir>]` — move
+/// `message_id`'s file from `.../processing/` to `.../done/`, if present.
+///
+/// Prints `{"completed":true|false}` and exits `0` either way — "completing a message that is
+/// not in `processing/`" (already completed by another drainer, or never drained) is
+/// `completed: false`, a distinct, legitimate outcome, matching
+/// `engine_core::coord::write::complete`'s own "never an error" contract. A genuine I/O error
+/// moving the file still exits `1` via the ordinary `anyhow::Result` path. No Python
+/// counterpart.
+pub fn run_complete(
+    repo: &str,
+    lane: &str,
+    message_id: &str,
+    lock_dir_override: Option<&Path>,
+) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let completed = complete_at(&lock_dir, repo, lane, message_id)
+        .with_context(|| format!("complete failed for message `{message_id}`"))?;
+    println!("{}", serde_json::json!({ "completed": completed }));
+    Ok(())
+}
+
+// ── `send` — BA.25.C task 3 ──────────────────────────────────────────────────────────
+//
+// Thin CLI face over `engine_core::coord::write::send`, same shape as `lease`/`drain`/
+// `complete` above: no write logic reimplemented here, no Python counterpart (`send` has
+// no `fleet_concurrency_check.py` analogue either).
+//
+// ## Where the `priority` refusal actually lives, and against which schema
+//
+// `engine_core::coord::write::send` scans the raw envelope for a forbidden key (`priority`
+// or `urgency`) BEFORE any typed deserialisation runs, and the refusal text it returns
+// already names D43 as the owner of priority — see that function's own
+// `forbidden_message_key_reason`. This module adds no second check and no second message:
+// duplicating the refusal text here would be exactly the "two documents can drift" failure
+// this block exists to prevent (module doc comment, top of file).
+//
+// The schema that check mirrors is `base-template/.claude/workflows/message.schema.json`
+// — the canonical, current copy (its own description states the `priority`-forbidding
+// intent verbatim). It is NOT this repo's own `.claude/workflows/message.schema.json`:
+// that copy is pre-BT.8.A and five lines shorter (missing the `host` field BT.8.A added),
+// per the block record's F-67. Neither copy is read as a file at runtime here or in
+// `engine_core` — `MessageRecord` (`okf-core`'s `coord::message` module) is the typed,
+// compiled mirror of base-template's schema, kept in sync by hand today (`emit-schema`,
+// which would generate it mechanically, is this block's AC-4 and is deferred — see the
+// block record). A test in this module's own suite authors its fixtures against
+// base-template's field set, never bastion's stale copy, so a `priority`-carrying file is
+// refused for the schema's actual, current reason.
+fn send_at(
+    lock_dir: &Path,
+    repo: &str,
+    lane: &str,
+    value: serde_json::Value,
+) -> Result<PathBuf, CoordWriteError> {
+    engine_core::coord::write::send(lock_dir, repo, lane, value, None)
+}
+
+/// `bastion coord send --repo <r> --lane <l> --file <path> [--lock-dir <dir>]` — read a
+/// message envelope as JSON from `file` and write it into `repo`/`lane`'s inbox.
+///
+/// Prints `{"sent":true,"path":"..."}` and exits `0` on success. A refusal — a forbidden
+/// key (`priority`/`urgency`), a missing required field, or any other
+/// [`CoordWriteError::Invalid`] — bubbles up as an ordinary `anyhow::Result` error and
+/// exits `1`. The full refusal text (including the D43 citation for a `priority`/
+/// `urgency` key) is [`CoordWriteError`]'s own `Display`, preserved in this error's
+/// source chain; this module's own tests assert it directly against [`send_at`]'s typed
+/// `Err`, the same split `run_register`/`run_lease` above already use. No Python
+/// counterpart.
+pub fn run_send(
+    repo: &str,
+    lane: &str,
+    file: &Path,
+    lock_dir_override: Option<&Path>,
+) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("could not read message file {}", file.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("message file {} is not valid JSON", file.display()))?;
+    let path = send_at(&lock_dir, repo, lane, value)
+        .with_context(|| format!("send failed for {repo}/{lane}: {}", file.display()))?;
+    println!(
+        "{}",
+        serde_json::json!({ "sent": true, "path": path.display().to_string() })
+    );
+    Ok(())
+}
+
+// ── `restore` — BA.25.C task 4 ───────────────────────────────────────────────────────
+//
+// `restore` has NO `engine_core::coord::write` counterpart and NO route — `EN.15.C` shipped
+// eight write routes (register/heartbeat/release/lease/unlease/send/drain/complete;
+// `../engine-rs/crates/engine-serve/src/http.rs:357+`) and `restore` is not among them. The
+// snapshot mechanism it replays IS engine-core's: every `write_coord_json`/
+// `write_heartbeat_file` call there copies whatever file it is about to overwrite to
+// `<lock_dir>/.prev/<relative path>` first (`coord/write.rs`'s `snapshot_existing`, module doc
+// comment step 3). `restore` is the read-and-replay side of that same mechanism, owned here
+// because nothing in engine-core exposes it — undoing a write is a CLI-operator concern, not
+// a route engine-serve needs to answer.
+//
+// `restore` PULLS a snapshot back rather than copying it: each file under `.prev/` is moved
+// (not copied) to its original location relative to `lock_dir`, so a snapshot is consumed
+// exactly once — a second `restore` immediately after a successful one sees an EMPTY `.prev/`
+// and is refused (see below), rather than silently re-applying a stale snapshot forever.
+//
+// ## ABSENT vs. EMPTY `.prev/` — two different conditions, two different outcomes
+//
+// `.prev/` not existing at all means no coordination write has ever snapshotted anything on
+// this host — there is nothing to undo, and that is exactly as legitimate as an absent
+// `.fleet-locks/` tree being read as `Live` with zero entries (this module's top-level doc
+// comment, "What 'Live' does and does not mean here"). `restore` against an ABSENT `.prev/`
+// is therefore a no-op success: `{"restored":[]}`, exit 0.
+//
+// `.prev/` EXISTING but holding zero files is a different condition — AC-3 requires it to
+// exit non-zero, and the distinction matters operationally: it means either `restore` was
+// already run to completion (the directory it created is now drained), or something deleted
+// its contents by hand. Either way there is nothing to replay, but arriving at "nothing to
+// replay" via an existing-but-drained directory is worth surfacing as a refusal rather than a
+// quiet no-op, so an operator who runs `restore` twice in a row learns the second call did
+// nothing rather than assuming it repeated the first. This lane has shipped this same
+// absent-vs-degenerate split twice before (BA.26.B's `read_document`, BA.26.C's spawn-failure
+// classification) and collapsing the two was the defect both times.
+//
+// `emit-schema` IS DELIBERATELY NOT IMPLEMENTED IN THIS BLOCK. AC-4 required it, and the block
+// record (`planning/blocks/BA.25.C.json`) marks that criterion DEFERRED (D18, 2026-09-08),
+// `gateable: false`: `schemars` is a dependency of neither `okf-core` nor `bastion`
+// (`grep -n schemars` on both `Cargo.toml`s returns nothing), so generating the four schemas
+// "from okf-core's types" needs `JsonSchema` derives added to okf-core — another repo, outside
+// what this block decides alone. The diff target is also ambiguous three ways today
+// (`base-template`'s, HQ's, and this repo's own stale pre-BT.8.A `.claude/workflows/*.schema.json`
+// disagree). A bastion-local hand-maintained substitute was considered and rejected: it would
+// satisfy AC-4's letter while defeating its purpose, since the schemas are supposed to TRACK
+// okf-core's types rather than exist as a third hand-kept copy. Refile as its own block once
+// okf-core carries `JsonSchema` derives.
+
+/// The outcome of one `restore` call — every snapshot file actually moved back from `.prev/`
+/// to its original location under `lock_dir`, as `/`-joined paths relative to `lock_dir`
+/// (matching `.prev/`'s own on-disk mirror of that layout).
+#[derive(Debug)]
+struct RestoreOutcome {
+    restored: Vec<String>,
+}
+
+/// `<lock_dir>/.prev/` — the snapshot root `engine_core::coord::write`'s `snapshot_existing`
+/// writes into (`PREV_SUBDIR` in that module). Reconstructed here, read-only: this module owns
+/// no write path into `.prev/` of its own, only the replay-and-consume read of it.
+fn prev_dir(lock_dir: &Path) -> PathBuf {
+    lock_dir.join(".prev")
+}
+
+/// Every regular file under `dir`, recursively, as paths relative to `dir` — used both to
+/// distinguish an EMPTY `.prev/` from a populated one and to drive the restore walk itself.
+/// `dir` not existing is the caller's (ABSENT) case to handle, not this function's; called only
+/// once `restore_at` has already confirmed `dir.exists()`.
+fn list_files_relative(dir: &Path) -> Result<Vec<PathBuf>, CoordWriteError> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CoordWriteError> {
+        let entries = std::fs::read_dir(dir).map_err(|e| CoordWriteError::Io {
+            path: dir.to_path_buf(),
+            source: e,
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|e| CoordWriteError::Io {
+                path: dir.to_path_buf(),
+                source: e,
+            })?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|e| CoordWriteError::Io {
+                path: path.clone(),
+                source: e,
+            })?;
+            if file_type.is_dir() {
+                walk(root, &path, out)?;
+            } else if file_type.is_file() {
+                out.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+/// `restore` against an already-resolved `lock_dir` — the pure(ish) core `run_restore` wraps,
+/// mirroring `register_at`'s split. Returns `Ok(RestoreOutcome { restored: [] })` for an
+/// ABSENT `.prev/` (nothing has ever been snapshotted — a legitimate no-op), an `Err` for an
+/// EMPTY `.prev/` (AC-3: exists but holds nothing to replay), and otherwise moves every
+/// snapshot back to its original location and reports what moved.
+fn restore_at(lock_dir: &Path) -> Result<RestoreOutcome> {
+    let prev = prev_dir(lock_dir);
+    if !prev.exists() {
+        // ABSENT: distinct from EMPTY below — no snapshot has ever been taken, so there is
+        // nothing to undo. A legitimate success, same shape as an absent `.fleet-locks/`
+        // reading `Live` with zero entries.
+        return Ok(RestoreOutcome {
+            restored: Vec::new(),
+        });
+    }
+    let files = list_files_relative(&prev).context("failed to enumerate `.prev/` snapshots")?;
+    if files.is_empty() {
+        anyhow::bail!(
+            "`.prev/` exists at {} but holds no snapshots to restore — either `restore` \
+             already replayed them, or nothing was there to begin with; this is a distinct \
+             condition from an ABSENT `.prev/`, which restore treats as a no-op success",
+            prev.display()
+        );
+    }
+    let mut restored = Vec::new();
+    for rel in &files {
+        let src = prev.join(rel);
+        let dest = lock_dir.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create restore destination dir {}",
+                    parent.display()
+                )
+            })?;
+        }
+        std::fs::rename(&src, &dest).with_context(|| {
+            format!(
+                "failed to restore snapshot {} back to {}",
+                src.display(),
+                dest.display()
+            )
+        })?;
+        restored.push(rel.display().to_string());
+    }
+    restored.sort();
+    Ok(RestoreOutcome { restored })
+}
+
+/// `bastion coord restore [--lock-dir <dir>]` — replay every snapshot under `<lock_dir>/.prev/`
+/// back to its original location, consuming each snapshot exactly once.
+///
+/// Prints `{"restored":[...]}` and exits `0` for both a successful replay AND an ABSENT
+/// `.prev/` (nothing has ever been snapshotted — a legitimate no-op, `{"restored":[]}`).
+/// Exits non-zero (AC-3) when `.prev/` EXISTS but holds no files to replay — a distinct
+/// condition from ABSENT, never collapsed into it (see the module comment above `restore_at`).
+/// No Python counterpart — `fleet_concurrency_check.py` has no undo verb.
+pub fn run_restore(lock_dir_override: Option<&Path>) -> Result<()> {
+    let lock_dir = resolve_write_lock_dir(lock_dir_override)?;
+    let outcome = restore_at(&lock_dir).context("restore failed")?;
+    println!("{}", serde_json::json!({ "restored": outcome.restored }));
+    Ok(())
 }
 
 /// Serialise `view` exactly as `engine-serve`'s `GET /api/coordination` route does —
@@ -576,6 +1224,1046 @@ mod tests {
         assert_eq!(
             bastion_active, python_active_restored,
             "comparing against the unmodified fixture again must agree"
+        );
+    }
+
+    // ── BA.25.C task 1: register / heartbeat / release ──────────────────────────
+    //
+    // Every fixture below is its own `tempdir()`, matching this module's Task-3 parity tests
+    // above — none of these ever reads or writes the live shared `.fleet-locks/`.
+
+    /// `python3 <script> register --repo <r> --agent <a> --category <c> --lock-dir <dir>`'s
+    /// captured exit code and parsed JSON stdout.
+    struct PythonRegisterOutput {
+        exit_code: i32,
+        json: serde_json::Value,
+    }
+
+    fn run_python_register(
+        script: &Path,
+        lock_dir: &Path,
+        repo: &str,
+        agent: &str,
+        category: &str,
+    ) -> PythonRegisterOutput {
+        let output = Command::new("python3")
+            .arg(script)
+            .arg("register")
+            .arg("--repo")
+            .arg(repo)
+            .arg("--agent")
+            .arg(agent)
+            .arg("--category")
+            .arg(category)
+            .arg("--lock-dir")
+            .arg(lock_dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn python3 register: {e}"));
+        let exit_code = output.status.code().unwrap_or(-1);
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "register output was not valid JSON: {e}\nstdout={}\nstderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        PythonRegisterOutput { exit_code, json }
+    }
+
+    /// Parse `MAX_LANES_BY_CATEGORY`'s per-category cap out of the oracle's own source text —
+    /// e.g. the `"native-build": 4,` line — never a number copied out of this spec. Mirrors
+    /// `parse_default_ttl_seconds`'s own line-scan approach.
+    fn parse_cap_for_category(source: &str, category: &str) -> usize {
+        let needle = format!("\"{category}\":");
+        for line in source.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix(needle.as_str()) else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                return digits
+                    .parse()
+                    .unwrap_or_else(|e| panic!("cap digits '{digits}' not a usize: {e}"));
+            }
+        }
+        panic!("could not find a `\"{category}\": <int>` line in the given source text");
+    }
+
+    /// AC-1 (task 1): a category already filled to capacity by Python-registered slots makes
+    /// `register` exit 3 with the SAME message the Python emits for the identical refusal —
+    /// both captured live in this one test run, never a copied string literal. The category's
+    /// cap is parsed from the oracle's own source (`parse_cap_for_category`), not hardcoded,
+    /// since D66 made the cap vary per category and a frozen "three" from an older spec
+    /// revision would no longer describe either side's real behaviour.
+    #[test]
+    fn register_full_category_exits_3_with_pythons_own_message() {
+        let Some(script) = require_parity_environment() else {
+            return;
+        };
+        let source = std::fs::read_to_string(&script).expect("read oracle script");
+        let category = "native-build";
+        let cap = parse_cap_for_category(&source, category);
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        // Fill the category to capacity THROUGH THE PYTHON oracle itself — never via a
+        // hand-written fixture file — so the "already filled" state is genuinely
+        // Python-registered, per the AC's own wording.
+        for i in 0..cap {
+            let repo = format!("filler-repo-{i}");
+            let agent = format!("filler-agent-{i}");
+            let filler = run_python_register(&script, &lock_dir, &repo, &agent, category);
+            assert_eq!(
+                filler.exit_code, 0,
+                "python filler register #{i} into `{category}` must succeed (cap={cap}): {:?}",
+                filler.json
+            );
+        }
+
+        // A DISTINCT (repo, agent) attempting to register into the now-full category. Run
+        // through the Python oracle first, on the SAME fixture directory, to capture its
+        // actual refusal — a register refusal writes nothing (both sides' `register` is
+        // all-or-nothing), so this call leaves the fixture exactly as filled as it was.
+        let overflow_repo = "overflow-repo";
+        let overflow_agent = "overflow-agent";
+        let python_overflow =
+            run_python_register(&script, &lock_dir, overflow_repo, overflow_agent, category);
+        assert_eq!(
+            python_overflow.exit_code, 3,
+            "python register into a full `{category}` category must exit 3, got: {:?}",
+            python_overflow.json
+        );
+        assert_eq!(python_overflow.json["allowed"], serde_json::json!(false));
+        let python_message = python_overflow.json["reason"]
+            .as_str()
+            .expect("python refusal must carry a `reason` string")
+            .to_string();
+
+        // Now the RUST verb, against the SAME (still-full, untouched-by-the-refusal-above)
+        // fixture directory.
+        let outcome = register_at(
+            &lock_dir,
+            overflow_agent,
+            overflow_repo,
+            "some-lane",
+            "some-roadmap",
+            Some(category),
+        )
+        .expect("register_at must not error on an ordinary capacity refusal");
+
+        assert!(
+            !outcome.allowed,
+            "rust register must also refuse: {outcome:?}"
+        );
+        assert_eq!(
+            register_exit_code(&outcome),
+            python_overflow.exit_code,
+            "rust's exit code must match python's captured exit code, not a hardcoded 3"
+        );
+        assert_eq!(
+            outcome.reason.as_deref(),
+            Some(python_message.as_str()),
+            "rust's refusal message must byte-equal python's captured refusal message"
+        );
+    }
+
+    /// AC-5 (positive half): an ordinary, under-capacity registration exits `0` on both sides
+    /// for the identical (repo, agent, category) input, on a shared fixture directory.
+    #[test]
+    fn register_allowed_exits_0_matching_python() {
+        let Some(script) = require_parity_environment() else {
+            return;
+        };
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let python_result = run_python_register(
+            &script,
+            &lock_dir,
+            "probe-repo",
+            "probe-agent",
+            "native-build",
+        );
+        assert_eq!(python_result.exit_code, 0, "{:?}", python_result.json);
+        assert_eq!(python_result.json["allowed"], serde_json::json!(true));
+
+        // A DIFFERENT agent/repo pair, against the SAME directory the python call above just
+        // wrote one slot into — asserts the rust side's own capacity read agrees, not just
+        // that an empty directory trivially allows.
+        let outcome = register_at(
+            &lock_dir,
+            "probe-agent-2",
+            "probe-repo-2",
+            "some-lane",
+            "some-roadmap",
+            Some("native-build"),
+        )
+        .expect("register_at must succeed");
+        assert!(outcome.allowed);
+        assert_eq!(register_exit_code(&outcome), python_result.exit_code);
+    }
+
+    /// `register_exit_code` is a total function over both `RegisterOutcome` shapes — asserted
+    /// directly, with no process spawned, mirroring
+    /// `notify_cli::exit_code_is_total_over_all_four_variants`'s own style.
+    #[test]
+    fn register_exit_code_is_total_over_both_outcomes() {
+        assert_eq!(
+            register_exit_code(&RegisterOutcome {
+                allowed: true,
+                reason: None,
+                active: Vec::new(),
+            }),
+            0
+        );
+        assert_eq!(
+            register_exit_code(&RegisterOutcome {
+                allowed: false,
+                reason: Some("fleet at capacity".to_string()),
+                active: vec!["bastion".to_string()],
+            }),
+            3
+        );
+    }
+
+    /// A capacity refusal must write NOTHING — no slot, no registry claim — matching
+    /// `engine_core::coord::write::register`'s own all-or-nothing contract (mirrored from the
+    /// Python's). Fixture is a `tempdir()`; the live `.fleet-locks/` is never touched.
+    #[test]
+    fn register_refusal_writes_nothing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        for i in 0..4 {
+            let repo = format!("filler-{i}");
+            let agent = format!("filler-agent-{i}");
+            let outcome = register_at(
+                &lock_dir,
+                &agent,
+                &repo,
+                "lane",
+                "roadmap",
+                Some("native-build"),
+            )
+            .expect("filler register must succeed (native-build cap is 4)");
+            assert!(outcome.allowed, "filler #{i} must be allowed: {outcome:?}");
+        }
+
+        let before: Vec<_> = std::fs::read_dir(&lock_dir)
+            .expect("read lock_dir")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+
+        let outcome = register_at(
+            &lock_dir,
+            "overflow-agent",
+            "overflow-repo",
+            "lane",
+            "roadmap",
+            Some("native-build"),
+        )
+        .expect("refused register_at must not error");
+        assert!(!outcome.allowed);
+
+        let after: Vec<_> = std::fs::read_dir(&lock_dir)
+            .expect("read lock_dir")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "a capacity refusal must not write a new file: before={before:?} after={after:?}"
+        );
+    }
+
+    /// `heartbeat` re-stamps an existing claim's `heartbeat`/`current_block`/
+    /// `block_started_at` fields while leaving `started_at` untouched — read back through
+    /// `view_for` (the same reader `bastion coord status` uses), never a second parse path.
+    #[test]
+    fn heartbeat_updates_claim_leaves_started_at_untouched() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        register_at(
+            &lock_dir,
+            "hb-agent",
+            "hb-repo",
+            "hb-lane",
+            "hb-roadmap",
+            None,
+        )
+        .expect("initial register must succeed");
+
+        let before = view_for(root.path());
+        let claim_before = before
+            .registry
+            .iter()
+            .find_map(|e| e.claim.typed())
+            .expect("registry claim must exist after register");
+        let started_at_before = claim_before.started_at.clone();
+
+        heartbeat_at(
+            &lock_dir,
+            "hb-agent",
+            Some("BA.25.C"),
+            Some("2026-09-08T00:00:00Z"),
+        )
+        .expect("heartbeat must succeed for an existing claim");
+
+        let after = view_for(root.path());
+        let claim_after = after
+            .registry
+            .iter()
+            .find_map(|e| e.claim.typed())
+            .expect("registry claim must still exist after heartbeat");
+
+        assert_eq!(
+            claim_after.started_at, started_at_before,
+            "heartbeat must never touch started_at"
+        );
+        assert_eq!(claim_after.current_block.as_deref(), Some("BA.25.C"));
+        assert_eq!(
+            claim_after.block_started_at.as_deref(),
+            Some("2026-09-08T00:00:00Z")
+        );
+        assert_ne!(
+            claim_after.heartbeat, claim_before.heartbeat,
+            "heartbeat field itself must be re-stamped"
+        );
+    }
+
+    /// Heartbeating an agent with no existing registry claim errors rather than silently
+    /// creating one — `engine_core::coord::write::heartbeat`'s own refusal, surfaced here as
+    /// an ordinary `Err`. No Python counterpart exists for this case (see this module's doc
+    /// comment above `run_heartbeat`), so this only asserts `Err`, never a specific exit code.
+    #[test]
+    fn heartbeat_errors_when_no_existing_claim() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+        std::fs::create_dir_all(&lock_dir).expect("create lock dir");
+
+        let result = heartbeat_at(&lock_dir, "ghost-agent", None, None);
+        assert!(
+            result.is_err(),
+            "heartbeating a never-registered agent must error, not silently create a claim"
+        );
+    }
+
+    /// `release` reports `removed: true` for a real claim and `removed: false` the second time
+    /// — idempotent, matching `fleet_concurrency_check.py release`'s own always-succeeds
+    /// contract. Effect verified through `view_for`, same as the heartbeat test above.
+    #[test]
+    fn release_removes_claim_then_reports_false() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        register_at(
+            &lock_dir,
+            "release-agent",
+            "release-repo",
+            "release-lane",
+            "release-roadmap",
+            None,
+        )
+        .expect("initial register must succeed");
+
+        let before = view_for(root.path());
+        assert!(
+            before.registry.iter().any(|e| e
+                .claim
+                .typed()
+                .is_some_and(|c| c.agent_name == "release-agent")),
+            "claim must exist before release"
+        );
+
+        let removed_first = release_at(&lock_dir, "release-agent").expect("release must succeed");
+        assert!(
+            removed_first,
+            "first release of a real claim must report removed: true"
+        );
+
+        let after = view_for(root.path());
+        assert!(
+            !after.registry.iter().any(|e| e
+                .claim
+                .typed()
+                .is_some_and(|c| c.agent_name == "release-agent")),
+            "claim must be gone after release"
+        );
+
+        let removed_second =
+            release_at(&lock_dir, "release-agent").expect("second release must not error");
+        assert!(
+            !removed_second,
+            "releasing an already-absent claim must report removed: false, not error"
+        );
+    }
+
+    /// `run_register`/`run_heartbeat`/`run_release` all honour `--lock-dir`'s override rather
+    /// than falling through to `resolve_brain_root()` — the property every fixture test above
+    /// relies on to never touch the live shared `.fleet-locks/`. Exercised through the public
+    /// `run_*` entry points themselves (not just the `*_at` helpers), so a regression that
+    /// dropped the override before it reached `resolve_write_lock_dir` would be caught here.
+    #[test]
+    fn run_entry_points_honour_lock_dir_override() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        run_register(
+            "override-agent",
+            "override-repo",
+            "override-lane",
+            "override-roadmap",
+            None,
+            Some(lock_dir.as_path()),
+        )
+        .expect("run_register with --lock-dir override must succeed");
+        assert!(
+            lock_dir.join("lane-agents").exists(),
+            "register must have written under the overridden lock_dir"
+        );
+
+        run_heartbeat("override-agent", None, None, Some(lock_dir.as_path()))
+            .expect("run_heartbeat with --lock-dir override must succeed");
+
+        run_release("override-agent", Some(lock_dir.as_path()))
+            .expect("run_release with --lock-dir override must succeed");
+        let claim_path = lock_dir
+            .join("lane-agents")
+            .join("agent-override-agent.json");
+        assert!(
+            !claim_path.exists(),
+            "release must have removed the claim under the overridden lock_dir"
+        );
+    }
+
+    // ── BA.25.C task 2: lease / unlease / drain / complete ──────────────────────
+
+    /// `lease` then `unlease` round-trips: the lease file exists after acquire, is gone
+    /// after release, and a SECOND unlease (nothing held any more) reports `false` rather
+    /// than erroring — "unleasing a lease you do not hold" is a distinct, non-error outcome.
+    #[test]
+    fn lease_then_unlease_then_unlease_again_reports_false() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        lease_at(
+            &lock_dir,
+            "lease-repo",
+            "lease-lane",
+            "lease-agent",
+            okf_core::LeaseKind::Exclusive,
+            None,
+            &[],
+            &[],
+        )
+        .expect("lease must succeed");
+
+        let lease_path = lock_dir.join("leases").join("lease-lease-repo.json");
+        assert!(lease_path.exists(), "lease file must exist after acquire");
+
+        let removed_first = unlease_at(&lock_dir, "lease-repo").expect("first unlease");
+        assert!(
+            removed_first,
+            "first unlease of a real lease must report true"
+        );
+        assert!(
+            !lease_path.exists(),
+            "lease file must be gone after unlease"
+        );
+
+        let removed_second = unlease_at(&lock_dir, "lease-repo")
+            .expect("unleasing an already-absent lease must not error");
+        assert!(
+            !removed_second,
+            "unleasing a lease not held must report false, not error"
+        );
+    }
+
+    /// A `--window` block absent from `--lane-block` is refused BEFORE anything is written —
+    /// the lease file must not exist afterwards.
+    #[test]
+    fn lease_window_block_outside_lane_blocks_is_refused() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let window = vec!["BA.99.Z".to_string()];
+        let lane_blocks = vec!["BA.25.C".to_string()];
+        let result = lease_at(
+            &lock_dir,
+            "window-repo",
+            "window-lane",
+            "window-agent",
+            okf_core::LeaseKind::Exclusive,
+            None,
+            &window,
+            &lane_blocks,
+        );
+        assert!(
+            result.is_err(),
+            "a window block absent from lane_blocks must be refused"
+        );
+
+        let lease_path = lock_dir.join("leases").join("lease-window-repo.json");
+        assert!(
+            !lease_path.exists(),
+            "a refused lease must write nothing, matching every other refusal in this seam"
+        );
+    }
+
+    /// `run_lease` rejects an unrecognised `--kind` before ever resolving the lock dir's
+    /// write path, and a valid `--scope` round-trips through to the written record.
+    #[test]
+    fn parse_lease_kind_and_scope_are_total_over_valid_and_invalid_input() {
+        assert!(matches!(
+            parse_lease_kind("exclusive"),
+            Ok(okf_core::LeaseKind::Exclusive)
+        ));
+        assert!(matches!(
+            parse_lease_kind("shared"),
+            Ok(okf_core::LeaseKind::Shared)
+        ));
+        assert!(parse_lease_kind("bogus").is_err());
+
+        assert!(matches!(
+            parse_lease_scope("repo"),
+            Ok(okf_core::LeaseScope::Repo)
+        ));
+        assert!(matches!(
+            parse_lease_scope("fleet"),
+            Ok(okf_core::LeaseScope::Fleet)
+        ));
+        assert!(parse_lease_scope("bogus").is_err());
+    }
+
+    /// Draining an EMPTY inbox (no `inbox/` directory at all) is a legitimate success — zero
+    /// moved, zero failed — never an error. Distinct from the populated-inbox cases below.
+    #[test]
+    fn drain_empty_inbox_reports_zero_moved_zero_failed() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let outcome = drain_at(&lock_dir, "drain-repo", "drain-lane")
+            .expect("draining an absent inbox must not error");
+        assert!(outcome.moved.is_empty());
+        assert!(outcome.failed.is_empty());
+    }
+
+    /// A FULL drain: every well-formed message in `inbox/` is moved to `processing/`, none
+    /// left behind.
+    #[test]
+    fn drain_moves_every_well_formed_message() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+        let inbox_dir = queue_inbox_dir(&lock_dir, "drain-repo", "drain-lane");
+        std::fs::create_dir_all(&inbox_dir).expect("create inbox dir");
+
+        std::fs::write(
+            inbox_dir.join("20260101T000000Z-msg-one.json"),
+            serde_json::json!({ "message_id": "msg-one" }).to_string(),
+        )
+        .expect("write fixture message one");
+        std::fs::write(
+            inbox_dir.join("20260101T000001Z-msg-two.json"),
+            serde_json::json!({ "message_id": "msg-two" }).to_string(),
+        )
+        .expect("write fixture message two");
+
+        let outcome = drain_at(&lock_dir, "drain-repo", "drain-lane").expect("drain must succeed");
+
+        let mut moved = outcome.moved.clone();
+        moved.sort();
+        assert_eq!(moved, vec!["msg-one".to_string(), "msg-two".to_string()]);
+        assert!(
+            outcome.failed.is_empty(),
+            "no message should have failed to move"
+        );
+
+        let processing_dir = lock_dir
+            .join("queue")
+            .join("drain-repo")
+            .join("drain-lane")
+            .join("processing");
+        assert_eq!(
+            std::fs::read_dir(&processing_dir)
+                .expect("read processing dir")
+                .count(),
+            2,
+            "both messages must now live in processing/"
+        );
+        assert!(
+            !inbox_dir.read_dir().expect("read inbox dir").any(|e| e
+                .expect("dir entry")
+                .path()
+                .extension()
+                .and_then(|x| x.to_str())
+                == Some("json")),
+            "inbox/ must be empty of .json files after a full drain"
+        );
+    }
+
+    /// A PARTIAL drain: one well-formed message moves, one malformed file (invalid JSON
+    /// syntax, a real artifact per D68) is left behind in `inbox/` and reported in `failed`,
+    /// never silently swallowed into a bare success.
+    #[test]
+    fn drain_partial_reports_moved_and_failed_together() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+        let inbox_dir = queue_inbox_dir(&lock_dir, "drain-repo", "drain-lane");
+        std::fs::create_dir_all(&inbox_dir).expect("create inbox dir");
+
+        std::fs::write(
+            inbox_dir.join("20260101T000000Z-good-msg.json"),
+            serde_json::json!({ "message_id": "good-msg" }).to_string(),
+        )
+        .expect("write good fixture message");
+        std::fs::write(
+            inbox_dir.join("20260101T000001Z-bad-msg.json"),
+            b"{ this is not valid json",
+        )
+        .expect("write malformed fixture message");
+
+        let outcome =
+            drain_at(&lock_dir, "drain-repo", "drain-lane").expect("drain must not error");
+
+        assert_eq!(outcome.moved, vec!["good-msg".to_string()]);
+        assert_eq!(
+            outcome.failed,
+            vec!["20260101T000001Z-bad-msg.json".to_string()],
+            "the malformed file must be reported as failed by filename"
+        );
+
+        assert!(
+            inbox_dir.join("20260101T000001Z-bad-msg.json").exists(),
+            "the malformed file must be left in inbox/, not silently dropped"
+        );
+    }
+
+    /// Completing a message that is NOT in `processing/` (never drained, or already
+    /// completed) reports `false` rather than erroring — distinct from a real completion.
+    #[test]
+    fn complete_missing_message_reports_false() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let completed = complete_at(&lock_dir, "complete-repo", "complete-lane", "ghost-msg")
+            .expect("completing an absent message must not error");
+        assert!(
+            !completed,
+            "completing a message not in processing/ must report false"
+        );
+    }
+
+    /// A message actually sitting in `processing/` is moved to `done/` and reported `true`;
+    /// completing it a second time reports `false` — the "already completed" case is the
+    /// same distinct outcome as "never drained", exactly as the task requires.
+    #[test]
+    fn complete_moves_processing_message_to_done_then_reports_false_on_repeat() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+        let processing_dir = lock_dir
+            .join("queue")
+            .join("complete-repo")
+            .join("complete-lane")
+            .join("processing");
+        std::fs::create_dir_all(&processing_dir).expect("create processing dir");
+        std::fs::write(
+            processing_dir.join("20260101T000000Z-real-msg.json"),
+            serde_json::json!({ "message_id": "real-msg" }).to_string(),
+        )
+        .expect("write fixture message in processing/");
+
+        let completed_first = complete_at(&lock_dir, "complete-repo", "complete-lane", "real-msg")
+            .expect("complete must succeed");
+        assert!(
+            completed_first,
+            "a real processing/ message must complete true"
+        );
+
+        let done_dir = lock_dir
+            .join("queue")
+            .join("complete-repo")
+            .join("complete-lane")
+            .join("done");
+        assert!(
+            done_dir.join("20260101T000000Z-real-msg.json").exists(),
+            "the message file must now live in done/"
+        );
+
+        let completed_second = complete_at(&lock_dir, "complete-repo", "complete-lane", "real-msg")
+            .expect("completing an already-done message must not error");
+        assert!(
+            !completed_second,
+            "completing an already-completed message must report false, not error"
+        );
+    }
+
+    /// `run_lease`/`run_unlease`/`run_drain`/`run_complete` all honour `--lock-dir`'s
+    /// override, mirroring `run_entry_points_honour_lock_dir_override` above — none of these
+    /// four ever touches the live shared `.fleet-locks/`.
+    #[test]
+    fn task2_run_entry_points_honour_lock_dir_override() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        run_lease(
+            "override-repo",
+            "override-lane",
+            "override-agent",
+            "shared",
+            None,
+            &[],
+            &[],
+            Some(lock_dir.as_path()),
+        )
+        .expect("run_lease with --lock-dir override must succeed");
+        let lease_path = lock_dir.join("leases").join("lease-override-repo.json");
+        assert!(
+            lease_path.exists(),
+            "lease must have written under the overridden lock_dir"
+        );
+
+        run_unlease("override-repo", Some(lock_dir.as_path()))
+            .expect("run_unlease with --lock-dir override must succeed");
+        assert!(
+            !lease_path.exists(),
+            "unlease must have removed the lease under the overridden lock_dir"
+        );
+
+        let inbox_dir = queue_inbox_dir(&lock_dir, "override-repo", "override-lane");
+        std::fs::create_dir_all(&inbox_dir).expect("create inbox dir");
+        std::fs::write(
+            inbox_dir.join("20260101T000000Z-override-msg.json"),
+            serde_json::json!({ "message_id": "override-msg" }).to_string(),
+        )
+        .expect("write fixture message");
+
+        run_drain("override-repo", "override-lane", Some(lock_dir.as_path()))
+            .expect("run_drain with --lock-dir override must succeed");
+
+        run_complete(
+            "override-repo",
+            "override-lane",
+            "override-msg",
+            Some(lock_dir.as_path()),
+        )
+        .expect("run_complete with --lock-dir override must succeed");
+        let done_dir = lock_dir
+            .join("queue")
+            .join("override-repo")
+            .join("override-lane")
+            .join("done");
+        assert!(
+            done_dir.join("20260101T000000Z-override-msg.json").exists(),
+            "complete must have moved the message under the overridden lock_dir"
+        );
+    }
+
+    // ── BA.25.C task 3: `send` and the `priority` refusal ───────────────────────
+    //
+    // Every field here mirrors base-template's `message.schema.json` required set
+    // (`message_id`, `sender{agent_name,repo,lane,roadmap}`, `sent_at`, `kind`,
+    // `subject{repo}`, `body`, `durable_home{channel,ref}`, `verified_by`) — never
+    // bastion's own stale pre-BT.8.A copy under `.claude/workflows/`, which is missing
+    // only the optional `host` field these fixtures don't set anyway. See this module's
+    // `send_at` doc comment and the block record's F-67.
+
+    /// A message envelope valid in every respect against `message.schema.json`'s
+    /// required fields — the control fixture task 3's AC pairs against a `priority`-
+    /// carrying variant of the same file.
+    fn valid_message_fixture(message_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "message_id": message_id,
+            "sender": {
+                "agent_name": "bastion-probe",
+                "repo": "bastion",
+                "lane": "coordination-layer-port",
+                "roadmap": "coordination-layer-port",
+            },
+            "sent_at": "2026-09-08T00:00:00Z",
+            "kind": "FINDING",
+            "subject": {
+                "repo": "bastion",
+            },
+            "body": "task 3 fixture message.",
+            "durable_home": {
+                "channel": "run-record",
+                "ref": "bastion/planning/BA.25.C/tasks.json#3",
+            },
+            "verified_by": "UNVERIFIED: BA.25.C task 3 fixture",
+        })
+    }
+
+    /// The AC-2 pair, asserted in one test: a message identical to
+    /// [`valid_message_fixture`] except carrying a `priority` property is REFUSED, and
+    /// the SAME message without `priority` is ACCEPTED — so the refusal is provably
+    /// about that property, not about being malformed generally. The refusal names D43
+    /// as the owner of priority rather than reporting a bare schema failure.
+    #[test]
+    fn send_refuses_priority_and_accepts_the_same_message_without_it() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        // The known-bad artifact: valid in every respect except a hand-authored
+        // `priority` property, per D68's gate-shape requirement (a real fixture, not a
+        // missing subcommand).
+        let mut with_priority = valid_message_fixture("priority-msg");
+        with_priority["priority"] = serde_json::json!("urgent");
+
+        let err = send_at(&lock_dir, "send-repo", "send-lane", with_priority)
+            .expect_err("a message carrying `priority` must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("priority"),
+            "refusal must name the offending key `priority`, got: {msg}"
+        );
+        assert!(
+            msg.contains("D43"),
+            "refusal must name D43 as the owner of priority rather than a bare schema \
+             failure, got: {msg}"
+        );
+
+        let inbox_dir = queue_inbox_dir(&lock_dir, "send-repo", "send-lane");
+        assert!(
+            !inbox_dir.exists() || list_json_filenames(&inbox_dir).is_empty(),
+            "a refused send must write nothing to inbox/"
+        );
+
+        // The control: the identical message minus `priority` must be accepted.
+        let without_priority = valid_message_fixture("priority-msg");
+        let written_path = send_at(&lock_dir, "send-repo", "send-lane", without_priority)
+            .expect("the same message without `priority` must be accepted");
+        assert!(
+            written_path.exists(),
+            "an accepted send must write the envelope to inbox/"
+        );
+        assert!(
+            written_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.contains("priority-msg")),
+            "the written filename must carry the message_id"
+        );
+    }
+
+    /// `urgency` is refused exactly like `priority` — both are in
+    /// `engine_core::coord::write`'s `FORBIDDEN_MESSAGE_KEYS`, and this module adds no
+    /// second, divergent list of its own.
+    #[test]
+    fn send_refuses_urgency_too() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let mut with_urgency = valid_message_fixture("urgency-msg");
+        with_urgency["urgency"] = serde_json::json!("high");
+
+        let err = send_at(&lock_dir, "send-repo", "send-lane", with_urgency)
+            .expect_err("a message carrying `urgency` must be refused");
+        assert!(err.to_string().contains("D43"));
+    }
+
+    /// A `priority` nested inside another object (not top-level) is refused exactly like
+    /// a top-level one — mirrors `check_messages.py`'s own whole-envelope scan.
+    #[test]
+    fn send_refuses_nested_priority() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let mut nested = valid_message_fixture("nested-priority-msg");
+        nested["sender"]["priority"] = serde_json::json!("urgent");
+
+        let err = send_at(&lock_dir, "send-repo", "send-lane", nested)
+            .expect_err("a nested `priority` must be refused just like a top-level one");
+        assert!(err.to_string().contains("D43"));
+    }
+
+    /// `run_send` reads the envelope from `--file`, honours `--lock-dir`, and prints the
+    /// written path on success — mirrors `task2_run_entry_points_honour_lock_dir_override`
+    /// above.
+    #[test]
+    fn run_send_reads_file_and_honours_lock_dir_override() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let message_path = root.path().join("message.json");
+        std::fs::write(
+            &message_path,
+            serde_json::to_string(&valid_message_fixture("run-send-msg")).unwrap(),
+        )
+        .expect("write fixture message file");
+
+        run_send(
+            "override-repo",
+            "override-lane",
+            &message_path,
+            Some(lock_dir.as_path()),
+        )
+        .expect("run_send with --lock-dir override must succeed");
+
+        let inbox_dir = queue_inbox_dir(&lock_dir, "override-repo", "override-lane");
+        let files = list_json_filenames(&inbox_dir);
+        assert_eq!(
+            files.len(),
+            1,
+            "run_send must have written exactly one file under the overridden lock_dir"
+        );
+        assert!(files[0].contains("run-send-msg"));
+    }
+
+    /// `run_send` against a `--file` carrying `priority` refuses and writes nothing —
+    /// the CLI entry point's own refusal path, not just [`send_at`]'s.
+    #[test]
+    fn run_send_refuses_priority_file_and_writes_nothing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+
+        let mut with_priority = valid_message_fixture("run-send-priority-msg");
+        with_priority["priority"] = serde_json::json!("urgent");
+        let message_path = root.path().join("bad-message.json");
+        std::fs::write(
+            &message_path,
+            serde_json::to_string(&with_priority).unwrap(),
+        )
+        .expect("write fixture message file");
+
+        let result = run_send(
+            "override-repo",
+            "override-lane",
+            &message_path,
+            Some(lock_dir.as_path()),
+        );
+        assert!(
+            result.is_err(),
+            "run_send must refuse a message carrying `priority`"
+        );
+
+        let inbox_dir = queue_inbox_dir(&lock_dir, "override-repo", "override-lane");
+        assert!(
+            !inbox_dir.exists() || list_json_filenames(&inbox_dir).is_empty(),
+            "a refused run_send must write nothing to inbox/"
+        );
+    }
+
+    // ── BA.25.C task 4: `restore` — absent vs. empty vs. populated `.prev/` ─────
+
+    /// ABSENT `.prev/`, EMPTY `.prev/`, and a POPULATED `.prev/` that actually restores
+    /// are three distinct outcomes, asserted together so absent and empty are provably
+    /// not collapsed into the same behaviour (AC-3, and the task's own "do not collapse
+    /// them" instruction).
+    #[test]
+    fn restore_absent_empty_and_populated_prev_are_three_distinct_outcomes() {
+        // ABSENT: no `.prev/` directory at all — a legitimate no-op success.
+        let absent_root = tempfile::tempdir().expect("tempdir");
+        let absent_lock_dir = absent_root.path().join(".fleet-locks");
+        std::fs::create_dir_all(&absent_lock_dir).expect("create lock_dir");
+        assert!(
+            !prev_dir(&absent_lock_dir).exists(),
+            "precondition: .prev/ must not exist for the ABSENT case"
+        );
+        let absent_outcome =
+            restore_at(&absent_lock_dir).expect("restore against an ABSENT .prev/ must succeed");
+        assert!(
+            absent_outcome.restored.is_empty(),
+            "an ABSENT .prev/ has nothing to restore"
+        );
+
+        // EMPTY: `.prev/` exists but holds zero files — AC-3: exits non-zero (an Err here).
+        let empty_root = tempfile::tempdir().expect("tempdir");
+        let empty_lock_dir = empty_root.path().join(".fleet-locks");
+        std::fs::create_dir_all(prev_dir(&empty_lock_dir)).expect("create empty .prev/");
+        let empty_result = restore_at(&empty_lock_dir);
+        assert!(
+            empty_result.is_err(),
+            "restore against an EMPTY .prev/ must exit non-zero (AC-3), got: {empty_result:?}"
+        );
+
+        // The two must actually differ — this is the "do not collapse them" assertion.
+        assert!(
+            absent_outcome.restored.is_empty() && empty_result.is_err(),
+            "ABSENT (success) and EMPTY (error) must be distinguishable outcomes"
+        );
+
+        // POPULATED: `.prev/` holds real snapshots — restore replays them back to their
+        // original relative locations and reports what moved, consuming the snapshot.
+        let populated_root = tempfile::tempdir().expect("tempdir");
+        let populated_lock_dir = populated_root.path().join(".fleet-locks");
+        let prev = prev_dir(&populated_lock_dir);
+        std::fs::create_dir_all(prev.join("lane-agents")).expect("create .prev/lane-agents");
+        std::fs::write(
+            prev.join("lane-agents").join("agent-a.json"),
+            r#"{"agent_name":"agent-a"}"#,
+        )
+        .expect("write snapshot fixture");
+        std::fs::create_dir_all(prev.join("leases")).expect("create .prev/leases");
+        std::fs::write(
+            prev.join("leases").join("bastion.json"),
+            r#"{"repo":"bastion"}"#,
+        )
+        .expect("write second snapshot fixture");
+
+        let populated_outcome = restore_at(&populated_lock_dir)
+            .expect("restore against a populated .prev/ must succeed");
+        assert_eq!(
+            populated_outcome.restored,
+            vec![
+                "lane-agents/agent-a.json".to_string(),
+                "leases/bastion.json".to_string(),
+            ],
+            "restore must report every snapshot it replayed, relative to lock_dir"
+        );
+        assert_eq!(
+            std::fs::read_to_string(populated_lock_dir.join("lane-agents").join("agent-a.json"))
+                .expect("restored file must exist at its original location"),
+            r#"{"agent_name":"agent-a"}"#,
+        );
+        assert_eq!(
+            std::fs::read_to_string(populated_lock_dir.join("leases").join("bastion.json"))
+                .expect("restored file must exist at its original location"),
+            r#"{"repo":"bastion"}"#,
+        );
+        assert!(
+            list_files_relative(&prev)
+                .expect("list .prev/ after restore")
+                .is_empty(),
+            "a replayed snapshot must be consumed (moved, not copied) so .prev/ is drained"
+        );
+
+        // Consuming the snapshot means a SECOND restore now sees the same EMPTY condition
+        // as the empty case above, not a repeat success.
+        let second_result = restore_at(&populated_lock_dir);
+        assert!(
+            second_result.is_err(),
+            "a second restore after a full replay must see an EMPTY .prev/ and exit non-zero"
+        );
+    }
+
+    /// `run_restore` honours `--lock-dir` and prints `{"restored":[...]}` for the ABSENT
+    /// case — mirrors `task2_run_entry_points_honour_lock_dir_override` above.
+    #[test]
+    fn run_restore_honours_lock_dir_override_on_absent_prev() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join("override-lock-dir");
+
+        run_restore(Some(lock_dir.as_path())).expect(
+            "run_restore against an ABSENT .prev/ under an overridden lock_dir must succeed",
+        );
+    }
+
+    /// `run_restore` against an EMPTY `.prev/` under the CLI entry point (not just
+    /// `restore_at` directly) still exits non-zero.
+    #[test]
+    fn run_restore_errors_on_empty_prev() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let lock_dir = root.path().join(".fleet-locks");
+        std::fs::create_dir_all(prev_dir(&lock_dir)).expect("create empty .prev/");
+
+        let result = run_restore(Some(lock_dir.as_path()));
+        assert!(
+            result.is_err(),
+            "run_restore against an EMPTY .prev/ must exit non-zero"
         );
     }
 }
