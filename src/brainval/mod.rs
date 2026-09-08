@@ -735,6 +735,77 @@ heading = "bastion"
     }
 
     #[test]
+    fn emit_state_pre_change_path_warns_unguarded_writer_but_post_change_path_does_not() {
+        // AC-3, RE-PINNED per D18 (see the block record's amended criterion — the
+        // original "W_MEV_UNGUARDED_WRITER no longer names bastion in any log" was
+        // unfalsifiable: that warning is structurally unreachable unless a guard would
+        // ACTUALLY have refused, so it never fires in the ordinary no-lease case and
+        // bastion was already absent from it before this block, too. A foreign-agent
+        // lease is the condition where the warning genuinely fires, so it is the only
+        // fixture that can distinguish the fix from its absence.
+        //
+        // Both directions are asserted in ONE test:
+        //   - PRE-CHANGE shape: bastion's old call site, `mev::emit_state(&root, write,
+        //     None)` — no identity, no guard, downgraded by MV.20.B to a
+        //     `W_MEV_UNGUARDED_WRITER` warning naming the calling binary.
+        //   - POST-CHANGE shape: this block's `run_emit_state`, which now threads an
+        //     identity through to the guarded `mev::emit_state_as` — refused outright
+        //     (`E_QUIESCE_LEASE_HELD`) with no `Report` ever constructed, so the warning
+        //     cannot be present.
+        //
+        // Per the task's staging recipe: assert on the returned `Report`'s diagnostics
+        // locator (the preferred, rot-resistant form) rather than captured text — this
+        // call happens in-process via the Rust API, not through a spawned CLI process,
+        // so there is no separate stdout/stderr stream to pipe-capture in the first
+        // place; the `Report` (pre-change) and the downcast `GuardRefusal` (post-change,
+        // which never yields a `Report` at all) are the whole observable surface here.
+        let dir = make_temp_brain_root("brainval-emit-state-unguarded-writer");
+        write_exclusive_lease(&dir, "other-lane", "other-agent", "bastion");
+        let root = mev::brain::config::find_brain_root(&dir).unwrap();
+
+        // Pre-change: the identity-less legacy entry point still succeeds permissively
+        // under a foreign lease (MV.20.B's downgrade), but its Report carries the
+        // unguarded-writer warning.
+        let pre_change_report = mev::emit_state(&root, true, None).expect(
+            "the legacy identity-less path must still succeed (permissively) under a foreign lease",
+        );
+        let unguarded_diag = pre_change_report
+            .diagnostics
+            .iter()
+            .find(|d| d.locator == "emit-state" && d.message.contains("W_MEV_UNGUARDED_WRITER"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a W_MEV_UNGUARDED_WRITER diagnostic from the identity-less \
+                     legacy path under a foreign lease, got: {:?}",
+                    pre_change_report.diagnostics
+                )
+            });
+        assert!(
+            unguarded_diag.message.contains("bastion"),
+            "expected the unguarded-writer warning to name bastion as the calling binary \
+             (mev derives it from the running executable's file stem, and this crate's \
+             package name is `bastion`), got: {}",
+            unguarded_diag.message
+        );
+
+        // Post-change: this task's own guarded call path is refused outright under the
+        // same lease — no Report is ever produced, so the warning cannot be in it.
+        let post_change_result = run_emit_state(dir.clone(), true, false, None);
+        let err = post_change_result
+            .expect_err("expected the post-change path to be refused under the same foreign lease");
+        let refusal = err
+            .downcast_ref::<mev::GuardRefusal>()
+            .unwrap_or_else(|| panic!("expected a GuardRefusal, got: {err:?}"));
+        assert_eq!(refusal.code(), mev::E_QUIESCE_LEASE_HELD);
+        assert!(
+            !format!("{err:?}").contains("W_MEV_UNGUARDED_WRITER"),
+            "the post-change refusal must not carry the unguarded-writer warning: {err:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn validate_brain_run_on_valid_brain_root_succeeds() {
         let dir = make_temp_brain_root("brainval-validate-ok");
         let mode = select_validate_brain_mode(false, false, false, false, false);
