@@ -439,6 +439,67 @@ The surface degrades gracefully rather than panicking:
 
 ---
 
+## Capture harness (BA.26.J)
+
+The unified console TUI has a screenshot harness so polish and layout can be judged against
+`polish-standard.md` (the `bastion-tui` initiative's polish standard, `planning/`) from a
+captured frame instead of argued about from a description. It is driven by
+[celia](https://github.com/bredmond1019/celia) (`../celia` — a sibling repo, not vendored here)
+via `celia.toml` at the bastion repo root, the same tool `../bella` uses for its own TUI captures.
+**Out-of-band by design** — see the [harness gate](#harness-gate) note below.
+
+Two tiers, one manifest:
+
+- **Text (deterministic).** A `tmux capture-pane` TEXT scene of the console, diffed byte-for-byte
+  against a committed golden under `tests/scenes/`. This is the tier that can actually fail on a
+  real regression.
+- **Image (non-deterministic).** A VHS-style PNG, held to a per-scene byte-size floor plus a
+  freshness check rather than a pixel diff — font rendering and capture timing are not
+  deterministic across machines/runs, so a pixel-identical PNG can never be a reliable pass/fail
+  signal. No `[image]` table is configured in `celia.toml` yet; that tier is currently a no-op and
+  is wired for a later block.
+
+Three scenes, matching the three widths the `bastion-tui` polish assessment measured:
+
+| Width | Height | Why |
+|---|---|---|
+| `200x55` | Wide desktop terminal | Upper bound the assessment measured. |
+| `120x40` | Mid-size terminal | Common working width. |
+| `80x24` | Classic terminal | **The width `polish-standard.md` T1 was written for**, and the one the `BA.26.H` review gate asserts against — this is the frame that must be kept working. |
+
+Each scene drives `bastion tui` (never `bastion --help`) against a fixture, not a live board:
+`XDG_CONFIG_HOME`/`BASTION_BRAIN_TOML` point the captured process at
+`tests/fixtures/celia-tui/` — a small, committed, hand-authored config + brain.toml + open-work
+board. A live `planning/open-work/` board is rewritten nightly by cron and by the console's own
+refresh action, so a golden keyed to one would rot by construction; the fixture is what makes the
+text tier's byte-for-byte determinism possible at all.
+
+Run it by hand:
+
+```bash
+cargo build --release
+cargo run --quiet --release --manifest-path ../celia/Cargo.toml -p celia-cli -- \
+  check --manifest celia.toml --tier text     # diffs the three text goldens
+cargo run --quiet --release --manifest-path ../celia/Cargo.toml -p celia-cli -- \
+  check --manifest celia.toml --tier image    # byte-floor + freshness (no-op until [image] exists)
+```
+
+`celia` is not installed on `PATH` on this machine, so each invocation compiles `celia-cli` fresh
+— the same cost `../bella`'s equivalent checks accept today. See `celia.toml`'s own header
+comment for the full provenance (bella's now-deleted scene scripts, why bastion ports from celia
+rather than from bella directly, and the nested-tmux-server fix that keeps the agents-priority
+strip's live session list from leaking into a capture).
+
+### Harness gate
+
+`capture-scenes-text` / `capture-scenes-image` are registered in `planning/harness.json` with
+`gates: false` and no `perTask` key — deliberately never able to block a task or a push. Capture
+is expensive and slow by nature (it drives a real terminal), so it runs out-of-band, the same
+reasoning that keeps this repo's `tripwires` and `conformance` checks non-gating. A red capture
+check is a prompt for a human to look at the new frame, never a build error.
+
+---
+
 ## Remote access via REST (bastion serve)
 
 The same session operations available at the CLI are also exposed over HTTP for remote clients
