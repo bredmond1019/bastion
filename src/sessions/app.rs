@@ -117,6 +117,58 @@ pub enum Action {
     None,
 }
 
+/// One Normal-mode global keybinding advertised in the footer (BA.26.B task
+/// 4). `label`'s first character MUST equal `key` — `sessions::ui::footer_hint`
+/// renders each entry as `[key]rest-of-label` (e.g. `key: 'a', label:
+/// "attach"` -> `"[a]ttach"`), so a mismatched pair renders wrong rather than
+/// failing loudly; the render-side debug_assert catches it in tests/debug
+/// builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyBinding {
+    pub key: char,
+    pub label: &'static str,
+}
+
+/// Single source of truth for the Normal-mode key legend. `sessions::ui::footer_hint`
+/// renders exactly this list rather than a hand-maintained string, so the
+/// footer can never advertise a key this list doesn't carry. The matching
+/// half of the contract — that every key listed here actually resolves to a
+/// bound handler in `on_key`, not the catch-all `_ => Action::None` — is
+/// asserted by `tests::footer_normal_key_bindings_each_resolve_to_a_bound_handler`
+/// below, which walks this exact list.
+pub const NORMAL_KEY_BINDINGS: &[KeyBinding] = &[
+    KeyBinding {
+        key: 'a',
+        label: "attach",
+    },
+    KeyBinding {
+        key: 'n',
+        label: "new",
+    },
+    KeyBinding {
+        key: 's',
+        label: "send",
+    },
+    KeyBinding {
+        key: 'k',
+        label: "kill",
+    },
+    KeyBinding {
+        key: 'v',
+        label: "view",
+    },
+    KeyBinding {
+        key: 'q',
+        label: "quit",
+    },
+    // The one new keybinding this block introduces (task 2) — content-pane
+    // only, but still advertised globally in the footer legend.
+    KeyBinding {
+        key: 'e',
+        label: "expand cell",
+    },
+];
+
 /// State for the interactive session dashboard.
 pub struct AppState {
     pub sessions: Vec<Session>,
@@ -1354,6 +1406,99 @@ mod tests {
             app.markdown_overlay,
             Some(std::path::PathBuf::from("alpha/README.md"))
         );
+    }
+
+    // ── footer legend / bound-key contract (BA.26.B task 4) ────────────────────
+
+    #[test]
+    fn footer_normal_key_bindings_each_resolve_to_a_bound_handler() {
+        // `sessions::ui::footer_hint` renders NORMAL_KEY_BINDINGS directly
+        // (single source of truth), so a key can only be advertised in the
+        // footer if it is listed there. This is the other half of that
+        // contract: walk the SAME list and drive each key through `on_key`,
+        // asserting it lands on ITS OWN handler rather than the catch-all
+        // `_ => Action::None` fallthrough — over the pure key set, not by
+        // reading the rendered footer string.
+        for binding in NORMAL_KEY_BINDINGS {
+            match binding.key {
+                'a' => {
+                    let mut app = make_app(&make_sessions(&["s1"]));
+                    app.selected_spine = 2;
+                    app.reinit_browser();
+                    let action = app.on_key(KeyCode::Char('a'));
+                    assert_eq!(
+                        action,
+                        Action::Attach("s1".into()),
+                        "footer key 'a' did not resolve to a bound handler"
+                    );
+                }
+                'n' => {
+                    let mut app = make_empty_app();
+                    app.on_key(KeyCode::Char('n'));
+                    assert_eq!(
+                        app.mode,
+                        Mode::Input(InputKind::New),
+                        "footer key 'n' did not resolve to a bound handler"
+                    );
+                }
+                's' => {
+                    let mut app = make_app(&make_sessions(&["s1"]));
+                    app.selected_spine = 2;
+                    app.reinit_browser();
+                    app.on_key(KeyCode::Char('s'));
+                    assert_eq!(
+                        app.mode,
+                        Mode::Input(InputKind::Send),
+                        "footer key 's' did not resolve to a bound handler"
+                    );
+                }
+                'k' => {
+                    let mut app = make_app(&make_sessions(&["victim"]));
+                    app.selected_spine = 2;
+                    app.reinit_browser();
+                    let action = app.on_key(KeyCode::Char('k'));
+                    assert_eq!(
+                        action,
+                        Action::Kill("victim".into()),
+                        "footer key 'k' did not resolve to a bound handler"
+                    );
+                }
+                'v' => {
+                    let (mut app, view_index) = make_full_app_with_view();
+                    app.on_key(KeyCode::Char('v'));
+                    assert_eq!(
+                        app.selected_spine, view_index,
+                        "footer key 'v' did not resolve to a bound handler"
+                    );
+                }
+                'q' => {
+                    let mut app = make_empty_app();
+                    app.on_key(KeyCode::Char('q'));
+                    assert!(
+                        app.should_quit,
+                        "footer key 'q' did not resolve to a bound handler"
+                    );
+                }
+                'e' => {
+                    let mut app = make_full_app_with_panes();
+                    app.overview_pane = OverviewPane::Content;
+                    app.selected_table_hit = Some((42, bella_engine::links::TableHit::All));
+                    app.on_key(KeyCode::Char('e'));
+                    assert!(
+                        app.table_expansions
+                            .get(&42)
+                            .map(|e| e.all)
+                            .unwrap_or(false),
+                        "footer key 'e' did not resolve to a bound handler"
+                    );
+                }
+                other => panic!(
+                    "footer advertises key '{other}' with no bound-handler assertion \
+                     registered in this test — add one before shipping the binding, so an \
+                     entry can never be advertised without also being tested as wired"
+                ),
+            }
+        }
     }
 
     // ── on_key: Input mode ────────────────────────────────────────────────────

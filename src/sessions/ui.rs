@@ -7,7 +7,7 @@
 use crate::brain::spaces::{SelectedNode, SpineRow};
 use crate::detect::AgentState;
 use crate::sessions::agent_panel::{AgentPanelRow, agent_panel_rows};
-use crate::sessions::app::{Action, AppState, InputKind, Mode};
+use crate::sessions::app::{Action, AppState, InputKind, Mode, NORMAL_KEY_BINDINGS};
 use crate::sessions::commands::{Degraded, degrade_tmux_error};
 use crate::sessions::model::{Pane, Session, parse_sessions};
 use crate::sessions::tmux::{self, TmuxError};
@@ -53,10 +53,32 @@ pub fn session_row(s: &Session) -> String {
 }
 
 /// Render the footer key legend (Normal mode) or the active input prompt.
+///
+/// Normal mode is rendered from `NORMAL_KEY_BINDINGS` (BA.26.B task 4) —
+/// the single source of truth for which keys the footer advertises — rather
+/// than a hand-maintained string, so a key can only appear here if it is
+/// listed there. See `AppState`'s `footer_normal_key_bindings_each_resolve_to_a_bound_handler`
+/// test for the other half of the contract: every listed key actually
+/// resolves to a bound `on_key` handler.
 pub fn footer_hint(mode: &Mode) -> String {
     match mode {
         Mode::Normal => {
-            "[a]ttach [n]ew [s]end [k]ill [v]iew [q]uit  ↑/j ↓/k move spine (wraps)".to_string()
+            let legend: Vec<String> = NORMAL_KEY_BINDINGS
+                .iter()
+                .map(|b| {
+                    let mut chars = b.label.chars();
+                    let first = chars
+                        .next()
+                        .expect("KeyBinding.label must be non-empty");
+                    debug_assert_eq!(
+                        first, b.key,
+                        "KeyBinding.label must start with its own key so `[x]abel` renders correctly: key={:?} label={:?}",
+                        b.key, b.label
+                    );
+                    format!("[{}]{}", b.key, chars.as_str())
+                })
+                .collect();
+            format!("{}  ↑/j ↓/k move spine (wraps)", legend.join(" "))
         }
         Mode::Input(InputKind::New) => "new session name (Enter=create, Esc=cancel): ".to_string(),
         Mode::Input(InputKind::Send) => "send to selected (Enter=send, Esc=cancel): ".to_string(),
@@ -708,6 +730,10 @@ mod tests {
         assert!(hint.contains("[k]"), "hint: {hint}");
         assert!(hint.contains("[v]"), "hint: {hint}");
         assert!(hint.contains("[q]"), "hint: {hint}");
+        // The expand/collapse toggle (BA.26.B task 2) is the one new
+        // keybinding this block introduces — the footer must stay honest
+        // about it.
+        assert!(hint.contains("[e]"), "hint: {hint}");
         // The top tab bar + Tab/Shift+Tab cycling is gone (spine is now the single
         // primary navigator) — the hint must not reference it.
         assert!(!hint.contains("Tab"), "hint: {hint}");
