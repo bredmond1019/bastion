@@ -378,6 +378,18 @@ fn draw_with_root(
             frame.render_stateful_widget(browser_list, browser_area, &mut list_state);
 
             // Content Pane
+            //
+            // The browser's `t` ("open") key formerly set a transient
+            // `AppState::markdown_overlay` field with no reader anywhere in
+            // this module — it was never drawn, never cleared, and the key
+            // was never advertised in the footer legend (`NORMAL_KEY_BINDINGS`
+            // has no 't' entry). BA.26.B task 5 removed the field, its setter
+            // in `AppState::on_key`, and its test rather than finish the
+            // wiring: finishing it would need a new close keybinding, which
+            // this block's scope explicitly excludes ("New keybindings beyond
+            // the expansion toggle..."). The single content pane below —
+            // driven by `space_overview_file`, Enter to open — is the only
+            // markdown-viewing path; there is no full-screen overlay.
             let content_active = app.overview_pane == crate::sessions::app::OverviewPane::Content;
             let content_block = crate::ui_theme::themed_block(
                 Span::styled(" content ", crate::ui_theme::title_style()),

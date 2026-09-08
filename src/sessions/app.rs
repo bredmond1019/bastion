@@ -186,10 +186,6 @@ pub struct AppState {
     pub space_overview_scroll: u16,
     pub overview_pane: OverviewPane,
     pub space_overview_file: Option<std::path::PathBuf>,
-    /// Transient full-screen markdown overlay flag, set by the `t` ("open") key in the
-    /// file browser. Replaces the old tab-push behaviour; overlay rendering/close-key
-    /// polish is deferred to a later block.
-    pub markdown_overlay: Option<std::path::PathBuf>,
     /// Per-pane viewport `Rect`s from the most recent draw (BA.13.2). Zeroed
     /// (all-default) until the first draw runs.
     pub pane_areas: PaneAreas,
@@ -243,7 +239,6 @@ impl AppState {
             space_overview_scroll: 0,
             overview_pane: OverviewPane::Sidebar,
             space_overview_file: None,
-            markdown_overlay: None,
             pane_areas: PaneAreas::default(),
             offered_views: Vec::new(),
             table_expansions: bella_engine::links::TableExpansions::new(),
@@ -519,19 +514,6 @@ impl AppState {
                                         if is_md {
                                             self.space_overview_file = Some(entry.path.clone());
                                             self.space_overview_scroll = 0;
-                                        }
-                                    }
-                                    return Action::None;
-                                }
-                                KeyCode::Char('t') => {
-                                    if let Some(entry) = self.file_browser.selected_entry() {
-                                        let is_md = entry.kind
-                                            == bella_engine::browser::BrowserEntryKind::Markdown;
-                                        if is_md {
-                                            // Transient full-screen overlay flag — replaces
-                                            // the old tab-push. Overlay rendering/close-key
-                                            // polish is deferred.
-                                            self.markdown_overlay = Some(entry.path.clone());
                                         }
                                     }
                                     return Action::None;
@@ -1383,29 +1365,6 @@ mod tests {
         let action = app.on_key(KeyCode::Char('q'));
         assert_eq!(action, Action::None);
         assert!(app.should_quit);
-    }
-
-    #[test]
-    fn t_key_sets_markdown_overlay_on_markdown_entry() {
-        // Land on a Space row so `is_space_overview` gates the browser keys.
-        let mut app = make_app(&make_sessions(&["alpha"]));
-        app.selected_spine = 2;
-        app.reinit_browser();
-        app.overview_pane = OverviewPane::Browser;
-        app.file_browser.entries = vec![bella_engine::browser::BrowserEntry {
-            path: std::path::PathBuf::from("alpha/README.md"),
-            display: "README.md".to_string(),
-            kind: bella_engine::browser::BrowserEntryKind::Markdown,
-        }];
-        app.file_browser.selected = 0;
-        assert!(app.markdown_overlay.is_none());
-
-        let action = app.on_key(KeyCode::Char('t'));
-        assert_eq!(action, Action::None);
-        assert_eq!(
-            app.markdown_overlay,
-            Some(std::path::PathBuf::from("alpha/README.md"))
-        );
     }
 
     // ── footer legend / bound-key contract (BA.26.B task 4) ────────────────────
