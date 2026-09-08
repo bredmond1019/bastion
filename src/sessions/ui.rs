@@ -8,7 +8,7 @@ use crate::brain::spaces::{SelectedNode, SpineRow};
 use crate::detect::AgentState;
 use crate::sessions::agent_panel::{AgentPanelRow, agent_panel_rows};
 use crate::sessions::app::{
-    Action, AppState, InputKind, Mode, NORMAL_KEY_BINDINGS, OpenWorkStatus,
+    Action, AppState, InputKind, Mode, NORMAL_KEY_BINDINGS, OpenWorkStatus, RunViewStatus,
 };
 use crate::sessions::commands::{Degraded, degrade_tmux_error};
 use crate::sessions::model::{Pane, Session, parse_sessions};
@@ -125,6 +125,39 @@ fn openwork_status_message(status: &OpenWorkStatus) -> Option<String> {
                 format!("open-work refresh failed to start: {reason}")
             }
         }),
+    }
+}
+
+/// Render `AppState::run_view_status` (BA.26.D task 5, AC-2) as the
+/// explanatory line shown in place of a blank Mission Control pane. Unlike
+/// [`openwork_status_message`] this is never consulted for the FOOTER — it
+/// is drawn directly into the content pane by `draw_with_root`'s
+/// `SelectedNode::MissionControl` arm, only when there are no items to show,
+/// so the operator always sees a REASON instead of silence. Mirrors
+/// [`crate::runs::RunViewState`]'s own doc comments for each state's wording.
+fn run_view_status_message(status: &RunViewStatus) -> String {
+    use crate::runs::RunViewState;
+    match status {
+        RunViewStatus::Idle => "press 'p' to check why this pane is empty".to_string(),
+        RunViewStatus::Probing => "checking reachability…".to_string(),
+        RunViewStatus::Done(state) => match state {
+            RunViewState::NotConfigured => {
+                "not configured — no client bearer token set (docs/operations/config.md)"
+                    .to_string()
+            }
+            RunViewState::ServeUnreachable(reason) => {
+                format!("bastion serve unreachable: {reason}")
+            }
+            RunViewState::Unauthorized => {
+                "unauthorized — the client bearer token or engine API key was rejected".to_string()
+            }
+            RunViewState::EngineRoutesUnmounted => {
+                "engine routes are not mounted on bastion serve".to_string()
+            }
+            RunViewState::GenuinelyIdle => {
+                "genuinely idle — reachable and authorized, no live runs".to_string()
+            }
+        },
     }
 }
 
@@ -526,6 +559,24 @@ fn draw_with_root(
     match app.selected_node() {
         SelectedNode::MissionControl => {
             crate::monitor::ui::render(frame, &app.monitor_app, content_area);
+            // BA.26.D task 5, AC-2: an empty Mission Control pane must say
+            // WHY, not render as one blank screen. Drawn as a one-line
+            // overlay along the pane's bottom edge — `monitor::ui::render`
+            // above already painted its own (empty) list/graph/detail
+            // blocks, so this never replaces that render, only adds the
+            // explanation `run_view_status` carries.
+            if app.monitor_app.items.is_empty() && content_area.height > 0 {
+                let message = run_view_status_message(&app.run_view_status);
+                let banner_area = ratatui::layout::Rect {
+                    x: content_area.x + 1,
+                    y: content_area.y + content_area.height.saturating_sub(2),
+                    width: content_area.width.saturating_sub(2),
+                    height: 1,
+                };
+                let banner =
+                    Paragraph::new(message).style(Style::default().fg(crate::ui_theme::muted()));
+                frame.render_widget(banner, banner_area);
+            }
         }
         SelectedNode::Tier(tier_name) => {
             // Rooted at `<brain_root>/<tier>/planning/status.md`; missing tier/file
@@ -713,6 +764,12 @@ fn execute_action(action: Action, app: &mut AppState) {
             // `Child` across ticks — see `spawn_refresh`/`poll_refresh_child`
             // in `run_inner_with_events_and_refresh`).
         }
+        Action::ProbeRunView => {
+            // Handled specially in the event loop (needs to own the spawned
+            // probe thread's `mpsc::Receiver` across ticks — see
+            // `spawn_run_view_probe`/`poll_run_view_probe` in
+            // `run_inner_with_events_and_refresh`).
+        }
         Action::New(name) => match tmux::new_session(&name, None) {
             Ok(()) => app.status = Some(format!("created '{name}'")),
             Err(e) => set_tmux_status(app, "new", &name, e),
@@ -764,7 +821,14 @@ fn run_inner(
     app: &mut AppState,
 ) -> Result<()> {
     let mut refresh_child: Option<std::process::Child> = None;
-    run_inner_with_events_and_refresh(terminal, app, &mut CrosstermEvents, &mut refresh_child)
+    let mut run_view_probe: Option<std::sync::mpsc::Receiver<crate::runs::RunViewState>> = None;
+    run_inner_with_events_and_refresh(
+        terminal,
+        app,
+        &mut CrosstermEvents,
+        &mut refresh_child,
+        &mut run_view_probe,
+    )
 }
 
 /// Test/production-shared entry point that always starts with no refresh in
@@ -777,7 +841,14 @@ fn run_inner_with_events<E: EventSource>(
     events: &mut E,
 ) -> Result<()> {
     let mut refresh_child: Option<std::process::Child> = None;
-    run_inner_with_events_and_refresh(terminal, app, events, &mut refresh_child)
+    let mut run_view_probe: Option<std::sync::mpsc::Receiver<crate::runs::RunViewState>> = None;
+    run_inner_with_events_and_refresh(
+        terminal,
+        app,
+        events,
+        &mut refresh_child,
+        &mut run_view_probe,
+    )
 }
 
 /// The actual event loop body, generic over its [`EventSource`] so it can be
@@ -792,6 +863,7 @@ fn run_inner_with_events_and_refresh<E: EventSource>(
     app: &mut AppState,
     events: &mut E,
     refresh_child: &mut Option<std::process::Child>,
+    run_view_probe: &mut Option<std::sync::mpsc::Receiver<crate::runs::RunViewState>>,
 ) -> Result<()> {
     let mut list_state = ListState::default();
     let mut render_cache = RenderCache::default();
@@ -805,6 +877,10 @@ fn run_inner_with_events_and_refresh<E: EventSource>(
         // picks up the regenerated file the moment this poll observes the
         // child has exited.
         poll_refresh_child(app, refresh_child);
+        // Same non-blocking contract as above, for the run-view reachability
+        // probe (BA.26.D task 5, AC-2): a probe that resolved between ticks
+        // must show up on the very next frame's Mission Control pane.
+        poll_run_view_probe(app, run_view_probe);
 
         terminal.draw(|f| draw(f, app, &mut list_state, &mut render_cache))?;
 
@@ -852,6 +928,15 @@ fn run_inner_with_events_and_refresh<E: EventSource>(
                     // synchronization of its own, so the loop continues to
                     // its next tick immediately.
                     spawn_refresh(app, refresh_child);
+                    continue;
+                }
+
+                if let Action::ProbeRunView = action {
+                    // Non-blocking for the same reason as `RefreshOpenWork`
+                    // above: `std::thread::spawn` returns immediately — the
+                    // probe's two HTTP round-trips run on the spawned thread,
+                    // never on this loop.
+                    *run_view_probe = Some(spawn_run_view_probe());
                     continue;
                 }
 
@@ -919,6 +1004,120 @@ fn spawn_refresh(app: &mut AppState, refresh_child: &mut Option<std::process::Ch
             app.openwork_status = OpenWorkStatus::Done(crate::openwork::classify_spawn_error(&e));
         }
     }
+}
+
+/// Poll an in-flight run-view probe WITHOUT blocking (`try_recv`), write the
+/// classified [`crate::runs::RunViewState`] back onto `app.run_view_status`
+/// on completion, and clear the slot. Mirrors `poll_refresh_child`'s exact
+/// shape (BA.26.D task 5): called once per event-loop tick regardless of
+/// whether an input event arrived this tick.
+fn poll_run_view_probe(
+    app: &mut AppState,
+    run_view_probe: &mut Option<std::sync::mpsc::Receiver<crate::runs::RunViewState>>,
+) {
+    let Some(rx) = run_view_probe.as_ref() else {
+        return;
+    };
+    match rx.try_recv() {
+        Ok(state) => {
+            app.run_view_status = crate::sessions::app::RunViewStatus::Done(state);
+            *run_view_probe = None;
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            // Still probing — `run_view_status` already reads `Probing` (set
+            // by `AppState::on_key` the moment the key was pressed).
+        }
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            // The probe thread ended without sending — panicked, most
+            // likely. Never leave the pane stuck reading "checking…"
+            // forever; report it through the same `ServeUnreachable` state
+            // the connection-failure probes already use (AC-2's diagnostics
+            // criterion — the reason is preserved, not discarded).
+            app.run_view_status = crate::sessions::app::RunViewStatus::Done(
+                crate::runs::RunViewState::ServeUnreachable(
+                    "probe thread ended without a result".to_string(),
+                ),
+            );
+            *run_view_probe = None;
+        }
+    }
+}
+
+/// DB-free (D4) resolution of the three values `classify_run_view` needs:
+/// `bastion serve`'s own base URL, the engine's `X-API-Key`, and the client
+/// bearer token. Deliberately independent of `Config::load()` (which this
+/// module's own header comment forbids) — reads env first, the same
+/// workspace-registry file `init_theme_from_config`/`offered_views` already
+/// read elsewhere in this module second, and `config::resolve_api_base_url`'s
+/// own built-in default last. Engine routes are mounted on the SAME `bastion
+/// serve` process as `/api/*` (D48's embed), so the engine probe reuses the
+/// console base URL rather than a separate one.
+fn resolve_run_view_probe_config() -> (String, Option<String>, Option<String>) {
+    let file = crate::config::load_workspace_registry(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
+    .unwrap_or_default();
+
+    let api_base_url = crate::config::resolve_api_base_url(
+        std::env::var("BASTION_API_URL").ok(),
+        file.api_base_url.clone(),
+    );
+    let engine_api_key = std::env::var("BASTION_ENGINE_API_KEY")
+        .ok()
+        .or_else(|| file.engine_api_key.clone());
+    let client_bearer_token = std::env::var("BASTION_CLIENT_BEARER_TOKEN")
+        .ok()
+        .or_else(|| file.client_bearer_token.clone());
+
+    (api_base_url, engine_api_key, client_bearer_token)
+}
+
+/// Spawn the run-view reachability probe (BA.26.D task 5, AC-2) into a
+/// background OS thread carrying its OWN short-lived tokio runtime —
+/// `classify_run_view` is `async`, but this module stays sync (D5, "no
+/// tokio coupling"): the runtime lives and dies entirely inside the spawned
+/// thread, never touching whatever runtime the process's `#[tokio::main]`
+/// is driving. Returns immediately (AC-3's non-blocking-spawn convention,
+/// mirrored from `spawn_refresh`); the result arrives later via the
+/// returned channel, polled by `poll_run_view_probe`.
+fn spawn_run_view_probe() -> std::sync::mpsc::Receiver<crate::runs::RunViewState> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (api_base_url, engine_api_key, client_bearer_token) = resolve_run_view_probe_config();
+
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = tx.send(crate::runs::RunViewState::ServeUnreachable(format!(
+                    "could not start probe runtime: {e}"
+                )));
+                return;
+            }
+        };
+
+        let console_client = crate::api::client::ApiClient::new(&api_base_url)
+            .with_bearer_token(client_bearer_token.clone());
+        let http = reqwest::Client::new();
+
+        let state = runtime.block_on(crate::runs::classify_run_view(
+            &console_client,
+            &http,
+            &api_base_url,
+            engine_api_key.as_deref(),
+            client_bearer_token.as_deref(),
+            "/api/runs",
+            "/workflows",
+        ));
+
+        // The receiver may already be gone (e.g. the TUI quit mid-probe) —
+        // dropping the result silently is correct there, not an error.
+        let _ = tx.send(state);
+    });
+    rx
 }
 
 /// Resolve the active theme from the on-disk config (DB-free — see D4) and
@@ -1276,6 +1475,162 @@ mod tests {
             msg.contains("failed to start"),
             "spawn failure message must be distinguishable from an exit-code failure: {msg}"
         );
+    }
+
+    // ── run_view_status_message / poll_run_view_probe / spawn_run_view_probe
+    // (BA.26.D task 5, AC-2 wired to the console) ───────────────────────────
+
+    #[test]
+    fn run_view_status_message_idle_prompts_the_probe_key() {
+        let msg = run_view_status_message(&RunViewStatus::Idle);
+        assert!(
+            msg.contains('p'),
+            "idle message should mention the 'p' key: {msg}"
+        );
+    }
+
+    #[test]
+    fn run_view_status_message_probing_is_distinct_from_idle() {
+        assert_ne!(
+            run_view_status_message(&RunViewStatus::Probing),
+            run_view_status_message(&RunViewStatus::Idle)
+        );
+    }
+
+    #[test]
+    fn run_view_status_message_per_state_is_distinct_and_carries_failure_detail() {
+        use crate::runs::RunViewState;
+
+        let not_configured =
+            run_view_status_message(&RunViewStatus::Done(RunViewState::NotConfigured));
+        let unreachable = run_view_status_message(&RunViewStatus::Done(
+            RunViewState::ServeUnreachable("connection refused".to_string()),
+        ));
+        let unauthorized =
+            run_view_status_message(&RunViewStatus::Done(RunViewState::Unauthorized));
+        let unmounted =
+            run_view_status_message(&RunViewStatus::Done(RunViewState::EngineRoutesUnmounted));
+        let idle = run_view_status_message(&RunViewStatus::Done(RunViewState::GenuinelyIdle));
+
+        // Every state's message must be distinct from every other's — an
+        // operator reading the pane must be able to tell the five states
+        // apart from the text alone.
+        let all = [
+            &not_configured,
+            &unreachable,
+            &unauthorized,
+            &unmounted,
+            &idle,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "states {i} and {j} produced the same message");
+                }
+            }
+        }
+
+        // The raw connection-failure reason is preserved, never discarded
+        // (AC-2's diagnostics criterion).
+        assert!(
+            unreachable.contains("connection refused"),
+            "ServeUnreachable message must carry the underlying reason: {unreachable}"
+        );
+    }
+
+    #[test]
+    fn poll_run_view_probe_empty_channel_leaves_status_unchanged() {
+        let mut app = make_app(&[]);
+        app.run_view_status = RunViewStatus::Probing;
+        let (_tx, rx) = std::sync::mpsc::channel::<crate::runs::RunViewState>();
+        let mut slot = Some(rx);
+
+        poll_run_view_probe(&mut app, &mut slot);
+
+        assert_eq!(app.run_view_status, RunViewStatus::Probing);
+        assert!(slot.is_some(), "an empty channel must not clear the slot");
+    }
+
+    #[test]
+    fn poll_run_view_probe_delivered_result_sets_done_and_clears_slot() {
+        let mut app = make_app(&[]);
+        app.run_view_status = RunViewStatus::Probing;
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(crate::runs::RunViewState::GenuinelyIdle)
+            .expect("send into an open channel");
+        let mut slot = Some(rx);
+
+        poll_run_view_probe(&mut app, &mut slot);
+
+        assert_eq!(
+            app.run_view_status,
+            RunViewStatus::Done(crate::runs::RunViewState::GenuinelyIdle)
+        );
+        assert!(
+            slot.is_none(),
+            "a delivered result must clear the probe slot"
+        );
+    }
+
+    #[test]
+    fn poll_run_view_probe_disconnected_sender_reports_serve_unreachable_and_clears_slot() {
+        let mut app = make_app(&[]);
+        app.run_view_status = RunViewStatus::Probing;
+        let (tx, rx) = std::sync::mpsc::channel::<crate::runs::RunViewState>();
+        drop(tx); // the probe thread panicked/exited without sending.
+        let mut slot = Some(rx);
+
+        poll_run_view_probe(&mut app, &mut slot);
+
+        assert!(
+            matches!(
+                app.run_view_status,
+                RunViewStatus::Done(crate::runs::RunViewState::ServeUnreachable(_))
+            ),
+            "a disconnected channel must surface as ServeUnreachable, not hang at Probing forever: {:?}",
+            app.run_view_status
+        );
+        assert!(slot.is_none(), "a disconnected channel must clear the slot");
+    }
+
+    /// Thin-I/O-shell smoke test (repo standing rule 6): `spawn_run_view_probe`
+    /// really does spawn a background thread carrying its own tokio runtime
+    /// and eventually deliver SOME classified state over the channel — proven
+    /// against a real (if certainly-unreachable-in-CI) default target rather
+    /// than mocked. `classify_run_view` itself is already exhaustively
+    /// unit-tested (task 4); this only proves the thread/channel plumbing
+    /// around it does not hang or panic silently.
+    #[test]
+    fn spawn_run_view_probe_delivers_a_result_without_blocking_the_caller() {
+        // SAFETY for test isolation: clear the env vars this probe reads so
+        // the result is deterministic regardless of the running machine's
+        // `.env` / shell environment (dotenvy is never invoked by this
+        // module — D4 — but a real `BASTION_API_URL` etc. could still be
+        // exported in the test process's environment).
+        for var in [
+            "BASTION_API_URL",
+            "BASTION_ENGINE_API_KEY",
+            "BASTION_CLIENT_BEARER_TOKEN",
+            "XDG_CONFIG_HOME",
+            "HOME",
+        ] {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let rx = spawn_run_view_probe();
+        let start = std::time::Instant::now();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "spawn_run_view_probe must not block the calling thread"
+        );
+        // With no client bearer token configured, `classify_run_view`
+        // short-circuits on probe 1 without any I/O — this must resolve
+        // almost instantly, never time out.
+        let state = result.expect("probe must deliver a result within the timeout");
+        assert_eq!(state, crate::runs::RunViewState::NotConfigured);
     }
 
     // ── read_document / render_document_markdown (BA.26.B task 7,

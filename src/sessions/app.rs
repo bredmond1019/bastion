@@ -122,7 +122,36 @@ pub enum Action {
     /// resource (`std::process::Child`) this module deliberately never holds,
     /// per this module's own "no I/O" doc comment.
     RefreshOpenWork,
+    /// Spawn the run-view reachability probe (BA.26.D task 5, AC-2 wired to
+    /// the console): `src/runs::classify_run_view` is `async` and makes two
+    /// HTTP round-trips, so — exactly like `RefreshOpenWork` — this module
+    /// never performs the I/O itself. The ui.rs event loop owns the
+    /// background thread and its `mpsc::Receiver` and writes the classified
+    /// [`RunViewState`](crate::runs::RunViewState) back onto
+    /// [`AppState::run_view_status`] once the probe completes.
+    ProbeRunView,
     None,
+}
+
+/// Progress/result state for the run-view reachability probe (BA.26.D task
+/// 5, AC-2). Mirrors [`OpenWorkStatus`]'s own shape and rationale exactly:
+/// purely data, no network handle lives on `AppState` — the ui.rs event loop
+/// spawns the probe (`spawn_run_view_probe`) and polls it
+/// (`poll_run_view_probe`) each tick, writing the classified
+/// [`RunViewState`](crate::runs::RunViewState) back here once it resolves.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum RunViewStatus {
+    /// No probe has run yet this session — the pane has not tried to explain
+    /// why it might be empty.
+    #[default]
+    Idle,
+    /// A probe is in flight — set the moment 'p' is pressed, before the
+    /// event loop has spawned the background thread, so the pane reflects
+    /// "checking" starting on the very next frame.
+    Probing,
+    /// The most recently completed probe's classification, rendered until
+    /// the next probe starts.
+    Done(crate::runs::RunViewState),
 }
 
 /// Progress/result state for the open-work board refresh (BA.26.C task 4).
@@ -205,6 +234,14 @@ pub const NORMAL_KEY_BINDINGS: &[KeyBinding] = &[
         key: 'r',
         label: "refresh boards",
     },
+    // BA.26.D task 5 (AC-2 wired to the console) — Mission-Control-scoped:
+    // checks why the run pane is empty (not configured / serve unreachable /
+    // unauthorized / engine routes unmounted / genuinely idle) instead of
+    // leaving one blank screen.
+    KeyBinding {
+        key: 'p',
+        label: "probe run view",
+    },
 ];
 
 /// State for the interactive session dashboard.
@@ -261,6 +298,10 @@ pub struct AppState {
     /// [`OpenWorkStatus`] — this field is data only; the subprocess itself is
     /// owned by the ui.rs event loop, never by this module.
     pub openwork_status: OpenWorkStatus,
+    /// Progress/result of the run-view reachability probe (BA.26.D task 5).
+    /// See [`RunViewStatus`] — this field is data only; the HTTP probe
+    /// itself is owned by the ui.rs event loop, never by this module.
+    pub run_view_status: RunViewStatus,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -287,6 +328,7 @@ impl AppState {
             content_table_map: bella_engine::links::TableMap::default(),
             selected_table_hit: None,
             openwork_status: OpenWorkStatus::default(),
+            run_view_status: RunViewStatus::default(),
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.
@@ -698,6 +740,28 @@ impl AppState {
                             Action::RefreshOpenWork
                         }
                     }
+                    // Check why the run pane is empty (BA.26.D task 5, AC-2
+                    // wired to the console). Scoped to `SelectedNode::MissionControl`
+                    // — the run pane's home — via an EXHAUSTIVE match, per
+                    // `scripts/check-selected-node-exhaustive.sh` (a bare
+                    // `matches!`/`==` over `SelectedNode` here would silently
+                    // stop gating the moment a new variant is added). Guards
+                    // against a second keypress spawning a second probe the
+                    // same way 'r' guards `RefreshOpenWork`.
+                    KeyCode::Char('p') => match self.selected_node() {
+                        SelectedNode::MissionControl => {
+                            if self.run_view_status == RunViewStatus::Probing {
+                                Action::None
+                            } else {
+                                self.run_view_status = RunViewStatus::Probing;
+                                Action::ProbeRunView
+                            }
+                        }
+                        SelectedNode::Hq
+                        | SelectedNode::Tier(_)
+                        | SelectedNode::Space(_)
+                        | SelectedNode::View(_) => Action::None,
+                    },
                     _ => Action::None,
                 }
             }
@@ -1524,6 +1588,22 @@ mod tests {
                         "footer key 'r' must mark a refresh as in flight immediately"
                     );
                 }
+                'p' => {
+                    // `make_empty_app()` selects Mission Control (spine index
+                    // 0) by construction — see its own doc comment.
+                    let mut app = make_empty_app();
+                    let action = app.on_key(KeyCode::Char('p'));
+                    assert_eq!(
+                        action,
+                        Action::ProbeRunView,
+                        "footer key 'p' did not resolve to a bound handler"
+                    );
+                    assert_eq!(
+                        app.run_view_status,
+                        RunViewStatus::Probing,
+                        "footer key 'p' must mark a probe as in flight immediately"
+                    );
+                }
                 other => panic!(
                     "footer advertises key '{other}' with no bound-handler assertion \
                      registered in this test — add one before shipping the binding, so an \
@@ -1570,6 +1650,62 @@ mod tests {
         let action = app.on_key(KeyCode::Char('r'));
         assert_eq!(action, Action::RefreshOpenWork);
         assert_eq!(app.openwork_status, OpenWorkStatus::Refreshing);
+    }
+
+    // ── on_key: 'p' run-view probe (BA.26.D task 5) ─────────────────────────
+
+    /// A second 'p' press while a probe is already in flight must NOT
+    /// re-emit `Action::ProbeRunView` — the event loop owns exactly one
+    /// probe-thread slot, mirroring `on_key_r_while_already_refreshing_is_a_no_op`.
+    #[test]
+    fn on_key_p_while_already_probing_is_a_no_op() {
+        let mut app = make_empty_app();
+        let first = app.on_key(KeyCode::Char('p'));
+        assert_eq!(first, Action::ProbeRunView);
+        assert_eq!(app.run_view_status, RunViewStatus::Probing);
+
+        let second = app.on_key(KeyCode::Char('p'));
+        assert_eq!(
+            second,
+            Action::None,
+            "a second 'p' while probing must not spawn a second probe thread"
+        );
+        assert_eq!(
+            app.run_view_status,
+            RunViewStatus::Probing,
+            "status must stay Probing, not reset or double-count"
+        );
+    }
+
+    /// Once a previous probe has completed (`Done`), a fresh 'p' press must
+    /// spawn a new one — the guard is scoped to `Probing`, not to "a probe
+    /// has ever run".
+    #[test]
+    fn on_key_p_after_a_done_result_starts_a_new_probe() {
+        let mut app = make_empty_app();
+        app.run_view_status = RunViewStatus::Done(crate::runs::RunViewState::GenuinelyIdle);
+        let action = app.on_key(KeyCode::Char('p'));
+        assert_eq!(action, Action::ProbeRunView);
+        assert_eq!(app.run_view_status, RunViewStatus::Probing);
+    }
+
+    /// 'p' is scoped to `SelectedNode::MissionControl` — the run pane's
+    /// home. Elsewhere in the spine it is a no-op and must not touch
+    /// `run_view_status` at all (proving the dispatch is a real `match` over
+    /// `SelectedNode`, not a global key that happens to look scoped).
+    #[test]
+    fn on_key_p_outside_mission_control_is_a_no_op() {
+        let (mut app, _view_index) = make_full_app_with_view();
+        app.selected_spine = 1; // Hq row — not Mission Control.
+        assert_ne!(app.selected_node(), SelectedNode::MissionControl);
+
+        let action = app.on_key(KeyCode::Char('p'));
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            app.run_view_status,
+            RunViewStatus::Idle,
+            "a 'p' press outside Mission Control must not start a probe"
+        );
     }
 
     // ── on_key: Input mode ────────────────────────────────────────────────────
