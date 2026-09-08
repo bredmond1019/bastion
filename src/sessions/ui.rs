@@ -103,22 +103,33 @@ pub fn tier_status_path(brain_root: &std::path::Path, tier: &str) -> std::path::
 
 /// Strip YAML frontmatter (`---` delimited block) from a markdown string.
 /// If no frontmatter is found the original string is returned unchanged.
+///
+/// AC-7 (BA.26.B task 6) reconciliation: fence *detection* delegates to
+/// `bella_engine::frontmatter::detect_fence` — the module bella owns since
+/// BE.7.A — rather than re-implementing it by hand. bastion keeps exactly
+/// two behaviours on top of that delegation, both real leniency this shell
+/// depends on for files read straight off disk, not legacy accidents.
+///
+/// First, leading whitespace/blank lines before the opening fence are
+/// trimmed before detection runs, so a file with a stray leading blank line
+/// still has its frontmatter recognized. Second, every blank line
+/// immediately after the closing fence is consumed
+/// (`trim_start_matches('\n')`), not just one, so multiple trailing blank
+/// lines in the frontmatter block don't leak into the rendered body.
+///
+/// `detect_fence` itself is stricter than the old hand-rolled search — it
+/// requires the closing line to be *exactly* `---`, where the previous
+/// bastion code matched the substring `"\n---"` anywhere (which could
+/// false-match a closing fence followed immediately by more text on the
+/// same line). That tightening is a correctness improvement inherited for
+/// free. A future bella change to fence detection therefore surfaces here
+/// as a test failure (see `strip_frontmatter_*` tests below) rather than as
+/// a silently different render.
 pub fn strip_frontmatter(md: &str) -> &str {
     let trimmed = md.trim_start();
-    if !trimmed.starts_with("---") {
-        return md;
-    }
-    // Skip the opening `---` line.
-    let after_fence = &trimmed[3..];
-    // Find the closing `---`.
-    if let Some(pos) = after_fence.find("\n---") {
-        // Skip past `\n---` plus the newline that follows it.
-        let end = 3 + pos + 4; // 3 (opening) + pos + 4 ("\n---")
-        let rest = &trimmed[end..];
-        // Consume one optional newline after the closing fence.
-        rest.trim_start_matches('\n')
-    } else {
-        md
+    match bella_engine::frontmatter::detect_fence(trimmed) {
+        Some(range) => trimmed[range.end..].trim_start_matches('\n'),
+        None => md,
     }
 }
 
@@ -660,6 +671,52 @@ pub fn draw_for_test(
 mod tests {
     use super::*;
     use crate::sessions::model::SessionState;
+
+    // ── strip_frontmatter (AC-7, BA.26.B task 6) ──────────────────────────
+    // Pins the two behaviours bastion keeps on top of delegating fence
+    // detection to `bella_engine::frontmatter::detect_fence`: leading
+    // blank-line tolerance before the opening fence, and multi-blank-line
+    // consumption after the closing fence. A future bella change to fence
+    // detection semantics should surface as a failure here.
+
+    #[test]
+    fn strip_frontmatter_removes_fenced_block() {
+        let md = "---\ntype: Doc\ntitle: T\n---\n# Body\n";
+        assert_eq!(strip_frontmatter(md), "# Body\n");
+    }
+
+    #[test]
+    fn strip_frontmatter_no_fence_returns_unchanged() {
+        let md = "# Body\nNo frontmatter here.\n";
+        assert_eq!(strip_frontmatter(md), md);
+    }
+
+    #[test]
+    fn strip_frontmatter_tolerates_leading_blank_lines() {
+        // bastion-specific leniency: real files occasionally carry a stray
+        // leading blank line before the fence; `detect_fence` alone would
+        // require the very first line to be `---` and miss this.
+        let md = "\n\n---\ntype: Doc\n---\nBody text\n";
+        assert_eq!(strip_frontmatter(md), "Body text\n");
+    }
+
+    #[test]
+    fn strip_frontmatter_consumes_multiple_trailing_blank_lines() {
+        // bastion-specific leniency: consume every blank line right after
+        // the closing fence, not just one, so it never leaks into the body.
+        let md = "---\ntype: Doc\n---\n\n\n\nBody text\n";
+        assert_eq!(strip_frontmatter(md), "Body text\n");
+    }
+
+    #[test]
+    fn strip_frontmatter_requires_exact_closing_fence_line() {
+        // detect_fence is stricter than the old hand-rolled search: a line
+        // that merely CONTAINS "---" as a substring (not the whole line) is
+        // not a closing fence, so nothing is stripped and the whole string
+        // (unchanged) is returned.
+        let md = "---\ntype: Doc\n---not-a-real-fence\nBody\n";
+        assert_eq!(strip_frontmatter(md), md);
+    }
 
     fn make_session(name: &str, state: SessionState, last_line: &str) -> Session {
         Session {
