@@ -329,6 +329,108 @@ fn build_sidebar_items(app: &AppState) -> Vec<ListItem<'static>> {
     items
 }
 
+/// Deterministic fingerprint of a `TableExpansions` map's expand/collapse
+/// state, used as part of `RenderCacheKey` so a table toggle still
+/// invalidates the cache even though `TableExpansions` (a bare
+/// `HashMap<u64, TableExpand>` from bella) implements neither `Hash` nor
+/// `PartialEq`. Iteration order over a `HashMap` is not stable, so the keys
+/// are sorted before hashing — two maps with the same entries in a different
+/// insertion/iteration order must fingerprint identically.
+fn table_expansions_fingerprint(tables: &bella_engine::links::TableExpansions) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut keys: Vec<&u64> = tables.keys().collect();
+    keys.sort_unstable();
+
+    let mut hasher = DefaultHasher::new();
+    for key in keys {
+        let expand = &tables[key];
+        key.hash(&mut hasher);
+        expand.all.hash(&mut hasher);
+        let mut cols: Vec<&usize> = expand.cols.iter().collect();
+        cols.sort_unstable();
+        cols.hash(&mut hasher);
+        let mut cells: Vec<&(usize, usize)> = expand.cells.iter().collect();
+        cells.sort_unstable();
+        cells.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Identity of one cached `render_with_edit` output: which document (by
+/// path), what its raw content was, the width it was laid out at, and the
+/// table-expansion state it was rendered under. A pure scroll changes none
+/// of these — only `AppState::space_overview_scroll`, which `draw_with_root`
+/// applies via `Paragraph::scroll` after the fact — so a `RenderCacheKey`
+/// unchanged between two frames means the previous frame's `Rendered` is
+/// still exactly correct and does not need re-parsing.
+#[derive(PartialEq, Eq)]
+struct RenderCacheKey {
+    path: std::path::PathBuf,
+    content: String,
+    width: u16,
+    expansions_fingerprint: u64,
+}
+
+/// Single-slot cache for the markdown parse/layout pass
+/// (`bella_engine::render_with_edit`) shared by both `draw_with_root` content
+/// call sites (the Tier status pane and the Hq/Space overview content pane).
+/// `read_document` + `strip_frontmatter` + `render_with_edit` walks the whole
+/// document through `pulldown-cmark` and re-runs the full wrap/layout pass —
+/// on every frame, that is a full re-parse of the entire document, even on a
+/// frame whose only change is the scroll offset. This block replaced
+/// table-cell clipping with wrapping (strictly more layout work) on exactly
+/// the files this initiative makes one-keypress-reachable, so a pure scroll
+/// paying for a full re-parse is the concern task 8 exists to close. Held by
+/// `run_inner` and threaded through `draw`/`draw_with_root` so it survives
+/// across frames — never reconstructed per-draw, which would defeat it the
+/// same way task 1 found `TableExpansions::new()` defeated table expansion.
+///
+/// Only the Tier/Hq/Space branches use it — `SelectedNode::MissionControl`
+/// has no markdown document to cache.
+#[derive(Default)]
+struct RenderCache {
+    entry: Option<(RenderCacheKey, bella_engine::Rendered)>,
+    /// Incremented only on an actual `render_with_edit` call (a cache miss).
+    /// Exists so a test can assert *zero* re-parses across a pure scroll by
+    /// counting, rather than inferring it from output shape alone.
+    parses: usize,
+}
+
+impl RenderCache {
+    /// Return the cached `Rendered` for `(path, content, width, tables)` if
+    /// the previous call's key matches exactly, otherwise run
+    /// `bella_engine::render_with_edit` (bumping `parses`) and cache the
+    /// fresh result before returning it.
+    fn get_or_render(
+        &mut self,
+        path: &std::path::Path,
+        content: &str,
+        width: u16,
+        theme: &bella_engine::Theme,
+        tables: &bella_engine::links::TableExpansions,
+    ) -> bella_engine::Rendered {
+        let key = RenderCacheKey {
+            path: path.to_path_buf(),
+            content: content.to_string(),
+            width,
+            expansions_fingerprint: table_expansions_fingerprint(tables),
+        };
+
+        if let Some((cached_key, cached)) = &self.entry
+            && *cached_key == key
+        {
+            return cached.clone();
+        }
+
+        let rendered = bella_engine::render_with_edit(content, None, width, theme, None, tables);
+        self.parses += 1;
+        self.entry = Some((key, rendered.clone()));
+        rendered
+    }
+}
+
 /// Core frame-builder. Takes an explicit `planning_root` so tests can inject a
 /// tempdir path without touching the process environment.
 fn draw_with_root(
@@ -336,6 +438,7 @@ fn draw_with_root(
     app: &mut AppState,
     list_state: &mut ListState,
     planning_root: &std::path::Path,
+    render_cache: &mut RenderCache,
 ) {
     // The bottom "agents · priority" strip (BA.13.1.3) is always reserved,
     // regardless of `SelectedNode` — it renders under Mission Control, HQ,
@@ -405,12 +508,11 @@ fn draw_with_root(
                 render_document_markdown(&doc, &format!("No {} found.", file_path.display()));
             let status_md = strip_frontmatter(&raw_md).to_owned();
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
-            let rendered = bella_engine::render_with_edit(
+            let rendered = render_cache.get_or_render(
+                &file_path,
                 &status_md,
-                None,
                 content_area.width.saturating_sub(2), // account for borders
                 &theme,
-                None,
                 &app.table_expansions,
             );
             let tier_block = crate::ui_theme::themed_block(
@@ -480,12 +582,11 @@ fn draw_with_root(
             // Strip YAML frontmatter before handing to bella.
             let status_md = strip_frontmatter(&raw_md).to_owned();
             let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
-            let rendered = bella_engine::render_with_edit(
+            let rendered = render_cache.get_or_render(
+                &file_path,
                 &status_md,
-                None,
                 content_area.width.saturating_sub(2), // account for borders
                 &theme,
-                None,
                 &app.table_expansions,
             );
             let paragraph = Paragraph::new(rendered.lines)
@@ -518,10 +619,17 @@ fn draw_with_root(
 }
 
 /// Thin real-world wrapper: resolves the planning root from the environment,
-/// then delegates to `draw_with_root`.
-fn draw(frame: &mut Frame, app: &mut AppState, list_state: &mut ListState) {
+/// then delegates to `draw_with_root`. `render_cache` is owned by
+/// `run_inner` and threaded through here so it survives across the whole
+/// event loop rather than being rebuilt every frame.
+fn draw(
+    frame: &mut Frame,
+    app: &mut AppState,
+    list_state: &mut ListState,
+    render_cache: &mut RenderCache,
+) {
     let root = app.current_space_planning_root();
-    draw_with_root(frame, app, list_state, &root);
+    draw_with_root(frame, app, list_state, &root, render_cache);
 }
 
 // ── tmux poll → Vec<Session> ──────────────────────────────────────────────────
@@ -582,9 +690,10 @@ fn run_inner(
     app: &mut AppState,
 ) -> Result<()> {
     let mut list_state = ListState::default();
+    let mut render_cache = RenderCache::default();
 
     loop {
-        terminal.draw(|f| draw(f, app, &mut list_state))?;
+        terminal.draw(|f| draw(f, app, &mut list_state, &mut render_cache))?;
 
         if event::poll(Duration::from_millis(REFRESH_MS))? {
             // Click-to-select and wheel-scroll routing (BA.13.2) share the same
@@ -717,7 +826,10 @@ pub fn run() -> Result<()> {
 
 /// Thin wrapper over `draw_with_root`, exposed only in test builds so that
 /// `tui_tests.rs` can drive a `TestBackend` frame with an injected planning root
-/// without touching the process environment.
+/// without touching the process environment. Builds a fresh `RenderCache` per
+/// call — `tui_tests.rs` exercises single-frame draws, not the persist-across-
+/// frames behaviour, which the `RenderCache` unit tests below cover directly
+/// against `draw_with_root`.
 #[cfg(test)]
 pub fn draw_for_test(
     frame: &mut ratatui::Frame,
@@ -725,7 +837,13 @@ pub fn draw_for_test(
     list_state: &mut ratatui::widgets::ListState,
     planning_root: &std::path::Path,
 ) {
-    draw_with_root(frame, app, list_state, planning_root);
+    draw_with_root(
+        frame,
+        app,
+        list_state,
+        planning_root,
+        &mut RenderCache::default(),
+    );
 }
 
 // ── Unit tests for pure helpers ───────────────────────────────────────────────
@@ -1064,7 +1182,13 @@ mod tests {
         terminal
             .draw(|f| {
                 let mut list_state = ratatui::widgets::ListState::default();
-                draw_with_root(f, &mut app, &mut list_state, &dir);
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                );
             })
             .expect("draw must not panic");
         let buf = terminal.backend().buffer().clone();
@@ -1162,7 +1286,13 @@ mod tests {
         terminal
             .draw(|f| {
                 let mut list_state = ratatui::widgets::ListState::default();
-                draw_with_root(f, &mut app, &mut list_state, &dir);
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                );
             })
             .expect("draw must not panic");
 
@@ -1314,7 +1444,13 @@ mod tests {
         terminal
             .draw(|f| {
                 let mut list_state = ratatui::widgets::ListState::default();
-                draw_with_root(f, &mut app, &mut list_state, &dir);
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                );
             })
             .expect("draw must not panic");
         let first_buf = terminal.backend().buffer().clone();
@@ -1355,7 +1491,13 @@ mod tests {
             terminal
                 .draw(|f| {
                     let mut list_state = ratatui::widgets::ListState::default();
-                    draw_with_root(f, &mut app, &mut list_state, &dir);
+                    draw_with_root(
+                        f,
+                        &mut app,
+                        &mut list_state,
+                        &dir,
+                        &mut RenderCache::default(),
+                    );
                 })
                 .expect("draw must not panic");
             let buf = terminal.backend().buffer().clone();
@@ -1365,6 +1507,163 @@ mod tests {
                 "expansion must still be in effect on re-render #{attempt}: {text}"
             );
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── RenderCache: pure scroll must not re-parse (BA.26.B task 8) ────────
+
+    /// Two `TableExpansions` built with the same entries inserted in a
+    /// different order must fingerprint identically — `HashMap` iteration
+    /// order is not stable, so a naive "hash whatever order `.iter()` gives"
+    /// implementation would flap between runs and defeat the cache on pure
+    /// noise.
+    #[test]
+    fn table_expansions_fingerprint_is_order_independent() {
+        let mut a = bella_engine::links::TableExpansions::new();
+        a.insert(
+            1,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: [2usize, 5usize].into_iter().collect(),
+                cells: Default::default(),
+            },
+        );
+        a.insert(
+            9,
+            bella_engine::links::TableExpand {
+                all: true,
+                cols: Default::default(),
+                cells: [(0usize, 0usize)].into_iter().collect(),
+            },
+        );
+
+        let mut b = bella_engine::links::TableExpansions::new();
+        b.insert(
+            9,
+            bella_engine::links::TableExpand {
+                all: true,
+                cols: Default::default(),
+                cells: [(0usize, 0usize)].into_iter().collect(),
+            },
+        );
+        b.insert(
+            1,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: [5usize, 2usize].into_iter().collect(),
+                cells: Default::default(),
+            },
+        );
+
+        assert_eq!(
+            table_expansions_fingerprint(&a),
+            table_expansions_fingerprint(&b),
+            "same entries inserted in a different order must fingerprint the same"
+        );
+    }
+
+    /// A fingerprint must actually change when the expansion state changes —
+    /// otherwise `RenderCache` would silently serve a stale render across a
+    /// table toggle, which is worse than never caching at all.
+    #[test]
+    fn table_expansions_fingerprint_changes_with_expansion_state() {
+        let empty = bella_engine::links::TableExpansions::new();
+        let mut expanded = bella_engine::links::TableExpansions::new();
+        expanded.insert(
+            1,
+            bella_engine::links::TableExpand {
+                all: true,
+                cols: Default::default(),
+                cells: Default::default(),
+            },
+        );
+
+        assert_ne!(
+            table_expansions_fingerprint(&empty),
+            table_expansions_fingerprint(&expanded),
+            "toggling a table's expansion must change the fingerprint"
+        );
+    }
+
+    /// AC-8's gated stand-in: render the same document at the same width
+    /// through the same `RenderCache` twice, with only
+    /// `AppState::space_overview_scroll` different between the two draws — a
+    /// pure scroll, exactly what `Paragraph::scroll` exists to handle without
+    /// touching the underlying `Rendered` at all. Asserts `RenderCache::parses`
+    /// is `1` after both draws: the second draw is a cache hit, not a second
+    /// `bella_engine::render_with_edit` call, so the document is not
+    /// re-parsed.
+    #[test]
+    fn pure_scroll_does_not_reparse_the_document() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = crate::testsupport::unique_temp_dir("bastion-ui-render-cache-scroll-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        // A document with enough lines that a scroll is a meaningful, distinct
+        // viewport rather than a no-op against a document shorter than the pane.
+        let long_md: String = (0..200)
+            .map(|i| format!("- line {i}\n"))
+            .collect::<String>();
+        std::fs::write(dir.join("status.md"), &long_md).expect("write status.md");
+
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        let mut render_cache = RenderCache::default();
+
+        // First draw at scroll=0.
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir, &mut render_cache);
+            })
+            .expect("draw must not panic");
+        assert_eq!(
+            render_cache.parses, 1,
+            "the first draw of a never-before-seen document must parse exactly once"
+        );
+
+        // A pure scroll: nothing else about the document, width, or table
+        // expansion state changes.
+        app.space_overview_scroll = 5;
+
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir, &mut render_cache);
+            })
+            .expect("draw must not panic");
+        assert_eq!(
+            render_cache.parses, 1,
+            "a pure scroll (space_overview_scroll changed, nothing else) must be a cache \
+             hit — the document must not be re-parsed a second time"
+        );
+
+        // Sanity: a genuine content change (a different document) DOES bump
+        // the cache — proves `parses == 1` above is a real hit, not a broken
+        // counter that never increments.
+        std::fs::write(dir.join("status.md"), format!("{long_md}- one more line\n"))
+            .expect("rewrite status.md");
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(f, &mut app, &mut list_state, &dir, &mut render_cache);
+            })
+            .expect("draw must not panic");
+        assert_eq!(
+            render_cache.parses, 2,
+            "a genuine content change must invalidate the cache and re-parse"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
