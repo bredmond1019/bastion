@@ -154,6 +154,23 @@ pub struct AppState {
     /// Both `render_with_edit` call sites in `sessions/ui.rs` must read this
     /// field, never construct their own map.
     pub table_expansions: bella_engine::links::TableExpansions,
+    /// Hit-test geometry for whichever table-bearing document the content
+    /// pane rendered most recently (BA.26.B task 2), produced by
+    /// `bella_engine::render_with_edit`'s `Rendered::table_map` and copied
+    /// here by `sessions/ui.rs` after every draw of the Tier / Space-overview
+    /// content pane. Held on `AppState` — not `PaneAreas` — because it keys
+    /// clicks to table *cells*, not panes; `handle_click`'s content arm reads
+    /// it to resolve `(line, col)` to a `TableHit` via `TableMap::hit`.
+    /// Default (empty) before the first draw and whenever the content pane is
+    /// showing something with no table map (Mission Control), so a stray
+    /// click there cannot resolve a stale hit.
+    pub content_table_map: bella_engine::links::TableMap,
+    /// The most recent table hit resolved by a content-pane click (BA.26.B
+    /// task 2) — the "selected cell" the expand/collapse key re-targets.
+    /// Only updated on a hit (never cleared by a miss), so scrolling or
+    /// clicking a stray non-table part of the content pane does not lose
+    /// the toggle target the key press repeats.
+    pub selected_table_hit: Option<(u64, bella_engine::links::TableHit)>,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -178,6 +195,8 @@ impl AppState {
             pane_areas: PaneAreas::default(),
             offered_views: Vec::new(),
             table_expansions: bella_engine::links::TableExpansions::new(),
+            content_table_map: bella_engine::links::TableMap::default(),
+            selected_table_hit: None,
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.
@@ -576,6 +595,20 @@ impl AppState {
                         self.jump_to_next_view();
                         Action::None
                     }
+                    // Expand/collapse the selected table cell (BA.26.B task 2) — the
+                    // one new keybinding this block introduces. Guarded on the
+                    // content pane being focused (matching where a click can set
+                    // `selected_table_hit` in the first place); a global binding
+                    // would fire the same toggle from the sidebar/browser, where
+                    // there is no content-pane table to target. Re-targets whatever
+                    // `selected_table_hit` last resolved to — `None` before any
+                    // click has hit a table is a no-op via `toggle_table_hit`, not
+                    // a special case here.
+                    KeyCode::Char('e') if self.overview_pane == OverviewPane::Content => {
+                        self.table_expansions =
+                            toggle_table_hit(self.selected_table_hit, &self.table_expansions);
+                        Action::None
+                    }
                     _ => Action::None,
                 }
             }
@@ -693,6 +726,33 @@ impl AppState {
             }
         } else if bella_engine::geometry::point_in(self.pane_areas.content, col, row) {
             self.overview_pane = OverviewPane::Content;
+            // Map the click to the content pane's rendered (line, col) —
+            // subtracting the block's one-row/one-col top-left border and
+            // adding the vertical scroll offset — then resolve it against
+            // `content_table_map`, the hit-test geometry `sessions/ui.rs`
+            // copied from the last render (BA.26.B task 2). Guard the
+            // border subtraction explicitly: `row`/`col` land inside
+            // `pane_areas.content` (the `point_in` check above), but that
+            // still includes the border rows/cols themselves, and a bare
+            // `row - inner_top` there would underflow (u16) and panic.
+            let inner_top = self.pane_areas.content.y + 1;
+            let inner_left = self.pane_areas.content.x + 1;
+            let hit = if row >= inner_top && col >= inner_left {
+                let line = (row - inner_top) as usize + self.space_overview_scroll as usize;
+                let hit_col = (col - inner_left) as usize;
+                self.content_table_map.hit(line, hit_col)
+            } else {
+                None
+            };
+            if hit.is_some() {
+                self.selected_table_hit = hit;
+            }
+            // Thin shell over the pure decision (`toggle_table_hit`): a miss
+            // (`hit` is `None`, whether from a border click or a click that
+            // lands inside the pane but outside every table region) leaves
+            // `table_expansions` unchanged rather than panicking or no-oping
+            // ambiguously.
+            self.table_expansions = toggle_table_hit(hit, &self.table_expansions);
         }
         // Click outside every stored pane (including all-zero default areas
         // before the first draw): no-op.
@@ -722,6 +782,46 @@ impl AppState {
             }
         }
     }
+}
+
+/// Pure hit→toggle decision for click-to-expand tables (BA.26.B task 2).
+/// Given what a click/key resolved to (`hit`, from `TableMap::hit`) and the
+/// current persisted expansion map, returns the map with that target's
+/// expansion flipped — the whole table for `TableHit::All`, one column for
+/// `TableHit::Column`, one cell for `TableHit::Cell`. `hit` being `None` (a
+/// miss — the click landed outside every table region) returns a clone of
+/// `map` unchanged, never panics. Kept free of any `AppState`/`Frame`
+/// dependency so both `handle_click` and the expand/collapse key are thin
+/// shells that call straight through to this, and so a direct unit test can
+/// assert the resulting map element-by-element without a render pass.
+fn toggle_table_hit(
+    hit: Option<(u64, bella_engine::links::TableHit)>,
+    map: &bella_engine::links::TableExpansions,
+) -> bella_engine::links::TableExpansions {
+    use bella_engine::links::TableHit;
+
+    let Some((id, hit)) = hit else {
+        return map.clone();
+    };
+    let mut next = map.clone();
+    let entry = next.entry(id).or_default();
+    match hit {
+        TableHit::All => entry.all = !entry.all,
+        TableHit::Column(c) => {
+            if !entry.cols.remove(&c) {
+                entry.cols.insert(c);
+            }
+        }
+        TableHit::Cell(r, c) => {
+            if !entry.cells.remove(&(r, c)) {
+                entry.cells.insert((r, c));
+            }
+        }
+    }
+    if entry.is_empty() {
+        next.remove(&id);
+    }
+    next
 }
 
 /// Map a click row to an in-list index, accounting for the enclosing block's
@@ -1622,6 +1722,197 @@ mod tests {
         let action = app.on_mouse(left_click(65, 2));
         assert_eq!(action, Action::None);
         assert_eq!(app.overview_pane, OverviewPane::Content);
+    }
+
+    // -- click-to-expand tables (BA.26.B task 2) --------------------------------------
+
+    /// One table region at display lines 0..5 inside the content pane's own
+    /// (unscrolled) coordinate space: line 0/2/4 border, line 1 header
+    /// (col_x-mapped), line 3 the single body row. Two columns, `col_x`
+    /// `[(1,5),(6,10)]`, so a hit at local col 2 lands in column 0 and a hit
+    /// at local col 7 lands in column 1.
+    fn sample_table_map() -> bella_engine::links::TableMap {
+        use bella_engine::links::{TableMap, TableRegion};
+        TableMap {
+            regions: vec![TableRegion {
+                id: 42,
+                line_start: 0,
+                line_end: 5,
+                border_lines: vec![0, 2, 4],
+                header_start: 1,
+                header_end: 2,
+                col_x: vec![(1, 5), (6, 10)],
+                border_x: vec![0, 5, 10],
+                body_rows: vec![(3, 4)],
+            }],
+        }
+    }
+
+    #[test]
+    fn toggle_table_hit_none_is_a_noop_clone() {
+        let map = bella_engine::links::TableExpansions::new();
+        let next = toggle_table_hit(None, &map);
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn toggle_table_hit_all_flips_and_untoggling_removes_the_entry() {
+        let map = bella_engine::links::TableExpansions::new();
+        let on = toggle_table_hit(Some((7, bella_engine::links::TableHit::All)), &map);
+        assert!(on.get(&7).expect("entry created").all);
+        let off = toggle_table_hit(Some((7, bella_engine::links::TableHit::All)), &on);
+        assert!(
+            !off.contains_key(&7),
+            "an all-empty entry is dropped, not left as a false-everything struct"
+        );
+    }
+
+    #[test]
+    fn toggle_table_hit_column_is_independent_of_other_columns() {
+        let map = bella_engine::links::TableExpansions::new();
+        let step1 = toggle_table_hit(Some((3, bella_engine::links::TableHit::Column(2))), &map);
+        assert!(step1.get(&3).unwrap().cols.contains(&2));
+        let step2 = toggle_table_hit(Some((3, bella_engine::links::TableHit::Column(5))), &step1);
+        let entry = step2.get(&3).unwrap();
+        assert!(entry.cols.contains(&2));
+        assert!(entry.cols.contains(&5));
+        let step3 = toggle_table_hit(Some((3, bella_engine::links::TableHit::Column(2))), &step2);
+        let entry = step3.get(&3).unwrap();
+        assert!(!entry.cols.contains(&2));
+        assert!(entry.cols.contains(&5));
+    }
+
+    #[test]
+    fn toggle_table_hit_cell_leaves_the_rest_of_the_entry_untouched() {
+        let mut map = bella_engine::links::TableExpansions::new();
+        let existing = bella_engine::links::TableExpand {
+            all: true,
+            ..Default::default()
+        };
+        map.insert(9, existing);
+        let next = toggle_table_hit(Some((9, bella_engine::links::TableHit::Cell(1, 2))), &map);
+        let entry = next.get(&9).unwrap();
+        assert!(entry.all, "unrelated `all` flag must survive a cell toggle");
+        assert!(entry.cells.contains(&(1, 2)));
+    }
+
+    #[test]
+    fn click_on_table_body_cell_toggles_it_and_records_the_selection() {
+        let mut app = make_full_app_with_panes();
+        app.content_table_map = sample_table_map();
+        app.overview_pane = OverviewPane::Sidebar;
+
+        // content area is Rect::new(60, 0, 20, 16); inner top/left border is
+        // at (61, 1). Local (line, col) = (3, 2) -> screen (63, 4).
+        let action = app.on_mouse(left_click(63, 4));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(app.overview_pane, OverviewPane::Content);
+        assert_eq!(
+            app.selected_table_hit,
+            Some((42, bella_engine::links::TableHit::Cell(0, 0)))
+        );
+        assert!(
+            app.table_expansions
+                .get(&42)
+                .expect("cell hit creates the table's entry")
+                .cells
+                .contains(&(0, 0))
+        );
+    }
+
+    #[test]
+    fn click_on_table_header_cell_toggles_the_column() {
+        let mut app = make_full_app_with_panes();
+        app.content_table_map = sample_table_map();
+
+        // Local (line, col) = (1, 7) -> screen (68, 2); col 7 falls in
+        // col_x[1] = (6, 10) -> column index 1.
+        app.on_mouse(left_click(68, 2));
+
+        assert_eq!(
+            app.selected_table_hit,
+            Some((42, bella_engine::links::TableHit::Column(1)))
+        );
+        assert!(app.table_expansions.get(&42).unwrap().cols.contains(&1));
+    }
+
+    #[test]
+    fn click_missing_every_table_region_leaves_the_map_unchanged_and_keeps_the_selection() {
+        let mut app = make_full_app_with_panes();
+        app.content_table_map = sample_table_map();
+        app.table_expansions.insert(42, {
+            let mut e = bella_engine::links::TableExpand::default();
+            e.cols.insert(1);
+            e
+        });
+        app.selected_table_hit = Some((42, bella_engine::links::TableHit::Column(1)));
+
+        // Local line = row(10) - inner_top(1) = 9, past `line_end` (5) — a
+        // click inside the content pane but outside every table region.
+        let action = app.on_mouse(left_click(63, 10));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(app.overview_pane, OverviewPane::Content);
+        let entry = app.table_expansions.get(&42).unwrap();
+        assert!(entry.cols.contains(&1) && entry.cols.len() == 1 && entry.cells.is_empty());
+        // A miss does not clear whatever the last real hit was — the key
+        // toggle should still repeat it.
+        assert_eq!(
+            app.selected_table_hit,
+            Some((42, bella_engine::links::TableHit::Column(1)))
+        );
+    }
+
+    #[test]
+    fn click_on_content_pane_border_is_a_safe_miss_no_panic() {
+        let mut app = make_full_app_with_panes();
+        app.content_table_map = sample_table_map();
+        // (60, 0) is the content block's top-left border corner — inside
+        // `pane_areas.content` per `point_in`, but before the border-adjusted
+        // inner top/left used for line/col mapping. Must not underflow/panic.
+        let action = app.on_mouse(left_click(60, 0));
+        assert_eq!(action, Action::None);
+        assert!(app.table_expansions.is_empty());
+        assert_eq!(app.selected_table_hit, None);
+    }
+
+    #[test]
+    fn expand_key_repeats_the_toggle_for_the_selected_hit() {
+        let mut app = make_full_app_with_panes();
+        app.overview_pane = OverviewPane::Content;
+        app.selected_table_hit = Some((42, bella_engine::links::TableHit::All));
+
+        app.on_key(KeyCode::Char('e'));
+        assert!(app.table_expansions.get(&42).unwrap().all);
+
+        // Pressing it again toggles the same target back off.
+        app.on_key(KeyCode::Char('e'));
+        assert!(!app.table_expansions.contains_key(&42));
+    }
+
+    #[test]
+    fn expand_key_with_no_selection_yet_is_a_noop() {
+        let mut app = make_full_app_with_panes();
+        app.overview_pane = OverviewPane::Content;
+        assert_eq!(app.selected_table_hit, None);
+
+        app.on_key(KeyCode::Char('e'));
+        assert!(app.table_expansions.is_empty());
+    }
+
+    #[test]
+    fn expand_key_outside_the_content_pane_does_not_fire() {
+        let mut app = make_full_app_with_panes();
+        app.overview_pane = OverviewPane::Sidebar;
+        app.selected_table_hit = Some((42, bella_engine::links::TableHit::All));
+
+        app.on_key(KeyCode::Char('e'));
+
+        assert!(
+            app.table_expansions.is_empty(),
+            "the expand key is scoped to the content pane, not global"
+        );
     }
 
     // -- click: outside every pane / before first draw -------------------------------
