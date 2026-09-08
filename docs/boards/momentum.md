@@ -17,7 +17,8 @@ stuck?** It walks every workspace in your `[workspaces]` registry, reads that re
 `planning/status.md`, and prints a single table of `now` / `next` / `blocked` plus a rolled-up
 `## Metrics` section. Plain stdout — no TUI, no database, no writes.
 
-For a single repo's work as a Kanban board, use [`bastion overview`](overview.md) instead.
+For a single repo's own open-work sections, use [`bastion overview`](overview.md) instead (its
+prior Kanban board is parked code, no longer the default — that doc is pending an update).
 
 ## Quickstart
 
@@ -80,6 +81,6 @@ generators; bastion only reads them via the `[workspaces]` registry (brain decis
 
 ## See also
 
-- [overview.md](overview.md) — one repo's queues, as a Kanban TUI.
+- [overview.md](overview.md) — one repo's open-work sections (doc pending update; see NEEDS_REVIEW).
 - [config.md § Workspace registry](../operations/config.md#workspace-registry) — how to register a workspace.
 - [commands.md](../commands.md) — every bastion subcommand in one table.

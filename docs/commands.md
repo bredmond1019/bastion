@@ -115,7 +115,7 @@ Read files on disk. Never write back — `/log-work` owns the writes (decision D
 
 | Command | What it does | Doc |
 |---|---|---|
-| `bastion overview` | Kanban TUI of this repo's own `planning/state.json` focus queues (`now` / `next` / `blocked`). | [overview.md](boards/overview.md) |
+| `bastion overview` | Tabbed open-work viewer over this repo's declared `[views]` sections, with in-document `[[roadmap:id]]`/`[[epic:id]]`/`[[repo:id]]` jumps. The prior Kanban `now`/`next`/`blocked` board is parked code, no longer the default. | [overview.md](boards/overview.md) *(doc pending update — see NEEDS_REVIEW)* |
 | `bastion momentum` | Cross-repo rollup: the momentum queues and `## Metrics` from every registered workspace's `planning/status.md`, in one table. | [momentum.md](boards/momentum.md) |
 
 ## Knowledge graph and validation

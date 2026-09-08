@@ -8,6 +8,19 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-08]
 
+Ran /sdlc-flow on BA.26.G tasks 1 through 4, all passing with confirmed workAssertionPassed outcomes; consolidated review returned PASS. `bastion overview` is repointed at the open-work reader: task 1 added a new tab-switching renderer (`render_sections`) in src/overview/mod.rs driven by `config::offered_views`, alongside the untouched parked Kanban `render`/`StateJson`; task 2 threaded the caller-held `bella_engine::links::TableExpansions` through to bella's `render_with_edit` (no per-draw `TableExpansions::new()`) and introduced `src/openwork::resolved_sections` as a thin shared wrapper over `config::offered_views` so overview and the TUI reader agree on what a section is; task 3 re-pointed `bastion overview`'s CLI dispatch in main.rs at `overview::run_sections_ui` (asserted via a fn-pointer-identity test, not by running the binary) with tab-switching and quit wired as the minimal interactive loop; task 4 added in-document `[[roadmap:id]]`/`[[epic:id]]`/`[[repo:id]]` jump syntax (pure `parse_jump_targets`, resolution against HQ's roadmap tree/epics registry/brain.toml SpaceTree, a visible-miss footer state, 'g' to cycle) reusing the same markdown read path the reader displays rather than a second read. Full harness suite green across fmt/clippy/test/release build/three drift scripts. `planning/status.md` and `planning/state.json` (BA.26.G -> closed) updated and validated clean via `mev validate-brain`. Next: pick up the next queued item per `planning/status.md`.
+
+```
+321170c docs: update docs for BA.26.G
+e6f49f9 feat: implement BA.26.G-task4
+6627836 feat: implement BA.26.G-task3
+76356b9 feat: implement BA.26.G-task2
+649b93a feat: implement BA.26.G-task1
+db34116 chore: init worktree BA.26.G-flow
+```
+
+## [run: 2026-09-08]
+
 Ran /sdlc-flow on BA.26.C tasks 1 through 5; tasks 1-4 passed with confirmed workAssertionPassed outcomes and task 5 BAILED. Task 1 added src/openwork/mod.rs with a pure refresh_args() argv builder over a closed RefreshMode enum (CheckOnly, ForceCheck) that cannot represent --commit/--emit; task 2 classified refresh.py's exit codes (0/2/other) and spawn errors into a named RefreshOutcome; task 3 added a thin spawn_argv I/O shell and refactored ui.rs's run_inner into an EventSource-generic run_inner_with_events, proving with a real spawned stand-in child that the event loop never blocks on the spawn; task 4 bound 'r' to spawn the refresh via a new Action::RefreshOpenWork, added AppState::openwork_status as pure data, and made ui.rs own the spawned Child (spawn_refresh/poll_refresh_child), with the footer showing progress and the classified result and the content pane re-reading fresh content on completion. Task 5 was validation-only — the full harness suite (fmt/clippy/full test/release build/three drift scripts) passed and the AC-6 hand smoke was run against the real cargo-installed binary via a scripted tmux session, confirming the refresh spawns off the render thread, the console stays responsive mid-refresh, and completion re-renders with the classified result — but it made no source edits this attempt, so its work-assertion check has no repo-side commit to diff against, and the terminal write recipe still requires a positive workAssertionPassed field derived from that diff. This is a structural mismatch between how validation-only tasks are specified and how the terminal write recipe verifies work, not a code defect a retry would fix. Next: resolve the validation-only work-assertion gap (either accept task 5's recorded hand-smoke evidence as the assertion, or restructure it as a task that touches a repo file) and close out BA.26.C.
 
 ```
