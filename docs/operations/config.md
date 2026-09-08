@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [configuration, environment variables, config file, workspace registry, precedence, TOML, theme]
-related: [observ, serve-api, brain, sessions, telegram-commands]
+related: [observ, serve-api, brain, sessions, telegram-commands, brainval]
 ---
 
 # Configuration
@@ -53,6 +53,29 @@ These flags appear before the subcommand and apply to every invocation:
 Both flags are declared `global = true` in clap, so they work before or after any subcommand.
 
 The flags are consumed by `observ::init_tracing(verbose, json_logs)`, called once at the top of `main()` before dispatch. The `RUST_LOG` environment variable overrides the level set by `--verbose` when both are present.
+
+## `emit-state` writer identity and scope (BA.25.B)
+
+`bastion emit-state [PATH] [--write] [--fail-on-drift] [--agent <name>] [--scope <repo>]` gained
+two subcommand-specific flags on top of the base pass-through described in
+[brainval.md](../knowledge/brainval.md#emit-state). Both are thin pass-throughs to `mev`'s
+guarded `emit_state_as` entry point — bastion supplies identity and scope, mev's library owns
+the quiesce guard and the actual filtering (D25: the mutation and the guard both live in mev).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--agent <name>` | unset | Writer identity passed through to `emit_state_as` as the self-exemption. With `--write`, a live exclusive quiesce lease held by another agent on the resolved repo refuses the write with `E_QUIESCE_LEASE_HELD`; a lease held under this **same** `--agent` never refuses. Omitting `--agent` means the write can never be self-exempted — any live exclusive lease refuses it, including one this same process might hold under a different invocation. |
+| `--scope <repo>` | unset (whole corpus) | Narrows the emit to one repo's derived surfaces — a `[[repos]]` slug from `brain.toml` (e.g. `bastion`). Resolved through mev's own `BrainConfig::scope_dependencies`, never hand-assembled or post-filtered. Omitting `--scope` emits every repo's derived surfaces, unchanged from the flag's absence. |
+
+Both flags only affect `--write` runs; a dry run reports the same planned actions either way.
+
+`scripts/sync/emit_state_write.sh` — the one way this session is expected to run
+`emit-state --write` (see that script's own header) — accepts `--scope <repo>` and forwards it.
+When the underlying `bastion emit-state --write` call refuses with `E_QUIESCE_LEASE_HELD`, the
+script **skips** that repo (logs it, exits 0, does not commit) rather than treating the refusal
+as a hard failure — this is what lets a per-repo driving loop (the commander's step 3) move past
+a repo another agent has leased instead of stalling on it. The script does not yet accept
+`--agent`; passing writer identity through the script is out of this task's scope.
 
 ## Environment variables
 
