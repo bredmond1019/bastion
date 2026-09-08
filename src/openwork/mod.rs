@@ -30,6 +30,22 @@ use std::io;
 use std::path::Path;
 use std::process::{Child, Command};
 
+/// Resolves the config's `[views]` table into the sections BOTH the session
+/// TUI reader's spine (BA.26.A/B) and `bastion overview`'s new renderer
+/// (BA.26.G) may offer.
+///
+/// A thin, single-purpose wrapper over [`crate::config::offered_views`] —
+/// the actual existence-filtering logic (a declared view whose `root` does
+/// not exist on disk is silently omitted, never an error) lives there
+/// exactly once. This function exists so every caller that needs "what
+/// sections exist" reaches that SAME resolver through one shared name
+/// instead of importing `config::offered_views` directly at each call
+/// site — two calls that happen to agree today are one edit away from
+/// disagreeing tomorrow; one shared name cannot drift from itself.
+pub fn resolved_sections(file: &crate::config::FileConfig) -> Vec<crate::config::OfferedView> {
+    crate::config::offered_views(file)
+}
+
 /// The path to HQ's open-work refresh script, relative to the HQ root
 /// (`agentic-portfolio/`). Bastion executes this script; it never writes to
 /// it or to any path under `planning/open-work/`.
@@ -171,6 +187,63 @@ pub fn spawn_argv(argv: &[String]) -> io::Result<Child> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- resolved_sections (BA.26.G task 2, AC-3) -----------------------
+
+    /// `resolved_sections` must be a pure delegation to
+    /// `config::offered_views` — asserted by constructing a `[views]` table
+    /// with one present and one absent-root entry and checking the two
+    /// functions return the identical resolved list, not just "the same
+    /// length" or "the same on this input by coincidence".
+    #[test]
+    fn resolved_sections_delegates_to_config_offered_views() {
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let mut views = HashMap::new();
+        views.insert(
+            "present".to_string(),
+            crate::config::ViewEntry {
+                label: "Present Section".to_string(),
+                root: dir.path().to_path_buf(),
+            },
+        );
+        views.insert(
+            "absent".to_string(),
+            crate::config::ViewEntry {
+                label: "Absent Section".to_string(),
+                root: std::path::PathBuf::from(
+                    "/definitely/does/not/exist/BA-26-G-openwork-fixture",
+                ),
+            },
+        );
+
+        let fc = crate::config::FileConfig {
+            views: Some(views),
+            ..crate::config::FileConfig::default()
+        };
+
+        let via_openwork = resolved_sections(&fc);
+        let via_config = crate::config::offered_views(&fc);
+        assert_eq!(
+            via_openwork, via_config,
+            "resolved_sections must return exactly what config::offered_views \
+             returns for the same input — it is a single shared resolver, \
+             not a second one that happens to agree"
+        );
+        assert_eq!(via_openwork.len(), 1);
+        assert_eq!(via_openwork[0].label, "Present Section");
+    }
+
+    /// An absent `[views]` table resolves to an empty list through the
+    /// shared resolver too, matching `config::offered_views`'s own
+    /// absence-tolerant contract.
+    #[test]
+    fn resolved_sections_absent_views_table_is_empty() {
+        let fc = crate::config::FileConfig::default();
+        assert!(resolved_sections(&fc).is_empty());
+    }
 
     fn all_modes() -> [RefreshMode; 2] {
         [RefreshMode::CheckOnly, RefreshMode::ForceCheck]

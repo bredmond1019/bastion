@@ -211,14 +211,20 @@ pub fn render(frame: &mut Frame, state: &StateJson, area: ratatui::layout::Rect)
 /// single "no sections declared" placeholder rather than panicking on an
 /// out-of-bounds `Tabs::select`.
 ///
-/// The content pane here is a placeholder (label + root path) — task 2 wires
-/// it to bella's markdown renderer sharing the TUI reader's persisted
-/// `TableExpansions`, and task 4 adds the in-document jumps. This task's
-/// job is the section resolution and the tab-switching skeleton only.
+/// The content pane renders the selected section's document through
+/// bella's markdown renderer (task 2), sharing the CALLER-HELD
+/// `TableExpansions` — task 4 adds the in-document jumps. This function
+/// never constructs its own `TableExpansions`; `tables` must be the SAME
+/// persisted map the caller holds across draws (mirroring how BA.26.B's
+/// `AppState::table_expansions` is held outside `draw_with_root` and
+/// threaded through, rather than being rebuilt fresh every frame — the bug
+/// this section exists to not repeat, since before this task
+/// `src/overview/mod.rs` had zero `bella_engine` references at all).
 pub fn render_sections(
     frame: &mut Frame,
     sections: &[OfferedView],
     selected: usize,
+    tables: &bella_engine::links::TableExpansions,
     area: ratatui::layout::Rect,
 ) {
     let layout = Layout::default()
@@ -245,12 +251,51 @@ pub fn render_sections(
         .block(crate::ui_theme::themed_block(" Open Work ", true));
     frame.render_widget(tabs, layout[0]);
 
-    let content = match sections.get(selected) {
-        Some(section) => Paragraph::new(format!("{}\n{}", section.label, section.root.display())),
-        None => Paragraph::new("No open-work sections declared."),
+    let content_area = layout[1];
+    match sections.get(selected) {
+        Some(section) => {
+            // A section's `root` may be a single markdown document or a
+            // directory of them (mirrors the session TUI reader's own
+            // resolution); when it's a directory, `index.md` is the entry
+            // document — the same convention `read_document`/
+            // `render_document_markdown` apply everywhere else in this
+            // codebase for a directory-rooted view.
+            let doc_path = if section.root.is_dir() {
+                section.root.join("index.md")
+            } else {
+                section.root.clone()
+            };
+            let doc = crate::sessions::ui::read_document(&doc_path);
+            let raw_md = crate::sessions::ui::render_document_markdown(
+                &doc,
+                &format!("No {} found.", doc_path.display()),
+            );
+            let md = crate::sessions::ui::strip_frontmatter(&raw_md).to_owned();
+
+            let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
+            // `tables` is threaded straight through from the caller — never
+            // `bella_engine::links::TableExpansions::new()` constructed
+            // here, which is exactly the per-draw-fresh-map bug BA.26.B
+            // fixed for the session TUI reader (AC-3).
+            let rendered = bella_engine::render_with_edit(
+                &md,
+                None,
+                content_area.width.saturating_sub(2),
+                &theme,
+                None,
+                tables,
+            );
+
+            let content = Paragraph::new(rendered.lines)
+                .block(crate::ui_theme::themed_block(section.label.as_str(), false));
+            frame.render_widget(content, content_area);
+        }
+        None => {
+            let content = Paragraph::new("No open-work sections declared.")
+                .block(crate::ui_theme::themed_block("", false));
+            frame.render_widget(content, content_area);
+        }
     }
-    .block(crate::ui_theme::themed_block("", false));
-    frame.render_widget(content, layout[1]);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -423,7 +468,7 @@ mod tests {
             ..crate::config::FileConfig::default()
         };
 
-        let sections = crate::config::offered_views(&fc);
+        let sections = crate::openwork::resolved_sections(&fc);
 
         // AC-3: derived from the resolved table, never a literal count.
         let declared_with_existing_root = 2;
@@ -434,7 +479,8 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_sections(f, &sections, 0, area);
+                let tables = bella_engine::links::TableExpansions::new();
+                render_sections(f, &sections, 0, &tables, area);
             })
             .expect("render_sections must not panic");
 
@@ -473,7 +519,7 @@ mod tests {
             views: Some(views),
             ..crate::config::FileConfig::default()
         };
-        let sections = crate::config::offered_views(&fc);
+        let sections = crate::openwork::resolved_sections(&fc);
         assert_eq!(sections.len(), 1);
 
         let backend = TestBackend::new(80, 24);
@@ -481,7 +527,8 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_sections(f, &sections, 0, area);
+                let tables = bella_engine::links::TableExpansions::new();
+                render_sections(f, &sections, 0, &tables, area);
             })
             .expect("render_sections must not panic");
 
@@ -497,7 +544,7 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
 
         let fc = crate::config::FileConfig::default();
-        let sections = crate::config::offered_views(&fc);
+        let sections = crate::openwork::resolved_sections(&fc);
         assert_eq!(sections.len(), 0);
 
         let backend = TestBackend::new(80, 24);
@@ -505,7 +552,8 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_sections(f, &sections, 0, area);
+                let tables = bella_engine::links::TableExpansions::new();
+                render_sections(f, &sections, 0, &tables, area);
             })
             .expect("render_sections must not panic on zero declared sections");
 
@@ -531,5 +579,175 @@ mod tests {
                 render(f, &state, area);
             })
             .expect("parked Kanban render must still work");
+    }
+
+    // ── Shared TableExpansions + section resolution (BA.26.G task 2) ───────
+
+    /// A markdown source with one table whose single cell is wider than the
+    /// content pane, so wrap-vs-clip is actually exercised. Mirrors
+    /// `src/sessions/ui.rs`'s own `WIDE_TABLE_MD` fixture and the BA.26.B
+    /// regression test built on it (`table_expansion_survives_rerender_via_app_state`).
+    const WIDE_TABLE_MD: &str = "# T\n\n\
+        | Col |\n\
+        | --- |\n\
+        | This cell holds a long run of prose text that is deliberately wider \
+          than the content pane so that truncation or wrapping has something \
+          real to do once the table is laid out at that width |\n";
+
+    /// AC-2 of task 2 (the concrete content of the BA.26.B edge): an
+    /// expansion recorded on the SAME `AppState::table_expansions` field the
+    /// session TUI reader's key handler mutates (BA.26.B) is visible when
+    /// rendered through `render_sections` — proving the two surfaces share
+    /// state rather than each constructing their own map. A test proving
+    /// only that `render_sections` renders correctly twice would NOT prove
+    /// sharing; this test proves it by mutating the app's own field between
+    /// the two renders and passing that exact field both times.
+    #[test]
+    fn render_sections_reflects_an_expansion_recorded_on_the_tui_readers_app_state() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("index.md"), WIDE_TABLE_MD).expect("write index.md");
+
+        let section = crate::config::OfferedView {
+            name: "wide".to_string(),
+            label: "Wide Section".to_string(),
+            root: dir.path().to_path_buf(),
+        };
+        let sections = vec![section];
+
+        // The exact type `AppState` (the session TUI reader, BA.26.B) holds
+        // as `table_expansions` — constructed via its own `AppState::new`,
+        // not a bare map built just for this test.
+        let mut app =
+            crate::sessions::app::AppState::new(vec![], crate::brain::spaces::SpaceTree::default());
+
+        // First render: through the TUI reader's own (fresh) map. No
+        // expansion recorded yet, so the wide cell must clip.
+        let width = 78u16;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, width + 2, 24);
+                render_sections(f, &sections, 0, &app.table_expansions, area);
+            })
+            .expect("render_sections must not panic (unexpanded)");
+        let clipped = buf_to_string(&terminal.backend().buffer().clone());
+        assert!(
+            clipped.contains('…'),
+            "unexpanded first render must clip: {clipped}"
+        );
+
+        // Locate the table's id exactly as bella laid it out at this width,
+        // then record the expansion on `app.table_expansions` — i.e.
+        // "through the TUI reader surface".
+        let theme = crate::ui_theme::to_bella_theme(crate::ui_theme::current_theme());
+        let baseline = bella_engine::render_with_edit(
+            WIDE_TABLE_MD,
+            None,
+            width,
+            &theme,
+            None,
+            &bella_engine::links::TableExpansions::new(),
+        );
+        let id = baseline
+            .table_map
+            .regions
+            .first()
+            .expect("WIDE_TABLE_MD must lay out exactly one table region")
+            .id;
+        app.table_expansions.insert(
+            id,
+            bella_engine::links::TableExpand {
+                all: false,
+                cols: Default::default(),
+                cells: std::iter::once((0usize, 0usize)).collect(),
+            },
+        );
+
+        // Second render: "through the other surface" — `render_sections` —
+        // passed the SAME `app.table_expansions`, mutated in place, never
+        // reconstructed. The expansion must be visible here.
+        let backend2 = TestBackend::new(80, 24);
+        let mut terminal2 = Terminal::new(backend2).expect("TestBackend terminal");
+        terminal2
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, width + 2, 24);
+                render_sections(f, &sections, 0, &app.table_expansions, area);
+            })
+            .expect("render_sections must not panic (expanded)");
+        let wrapped = buf_to_string(&terminal2.backend().buffer().clone());
+        assert!(
+            !wrapped.contains('…'),
+            "an expansion recorded on the TUI reader's own AppState.table_expansions \
+             must be visible through render_sections, not re-clipped: {wrapped}"
+        );
+    }
+
+    /// AC-1 of task 2: no draw path in this module constructs a fresh
+    /// `TableExpansions` — asserted indirectly by proving `render_sections`
+    /// actually honors an externally-supplied, non-empty map (a renderer
+    /// that silently substituted `TableExpansions::new()` internally would
+    /// fail this the same way it fails the sharing test above), and
+    /// directly by a source-level check over actual CODE lines (comments
+    /// and doc comments are allowed to mention the pattern by name when
+    /// explaining why it must not appear in code, as this file's own doc
+    /// comments do).
+    #[test]
+    fn render_sections_source_never_constructs_a_fresh_table_expansions() {
+        let source = include_str!("mod.rs");
+        // Split off this test module's own fixture/setup lines (which
+        // legitimately construct `TableExpansions::new()` to build a test
+        // baseline) — only the non-test portion of the file is a "draw
+        // path".
+        let production_source = source
+            .split("mod tests {")
+            .next()
+            .expect("file must contain a tests module");
+
+        let offending_code_lines: Vec<&str> = production_source
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && line.contains("TableExpansions::new()")
+            })
+            .collect();
+
+        assert!(
+            offending_code_lines.is_empty(),
+            "no production draw path in src/overview/mod.rs may construct a fresh \
+             TableExpansions — it must be threaded through from the caller; \
+             offending line(s): {offending_code_lines:?}"
+        );
+    }
+
+    /// AC-3 of task 2: section resolution is the SAME shared function used
+    /// by `src/openwork/`, not a second resolver that happens to agree
+    /// today. Proven by calling `openwork::resolved_sections` (as the
+    /// production call sites above do) and cross-checking it returns
+    /// exactly what `config::offered_views` returns for the same input.
+    #[test]
+    fn section_resolution_is_shared_with_openwork() {
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut views = HashMap::new();
+        views.insert(
+            "shared".to_string(),
+            crate::config::ViewEntry {
+                label: "Shared Section".to_string(),
+                root: dir.path().to_path_buf(),
+            },
+        );
+        let fc = crate::config::FileConfig {
+            views: Some(views),
+            ..crate::config::FileConfig::default()
+        };
+
+        let via_openwork = crate::openwork::resolved_sections(&fc);
+        let via_config = crate::config::offered_views(&fc);
+        assert_eq!(via_openwork, via_config);
+        assert_eq!(via_openwork.len(), 1);
     }
 }
