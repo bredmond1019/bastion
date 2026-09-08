@@ -11,6 +11,23 @@
 //! Reimplementing the reader, the degradation classification, or a second brain-root
 //! resolution path is out of scope — that's engine-rs's `EN.15.A`.
 //!
+//! ## The live route this CLI is diffed against is currently unreachable (task 4, 2026-09-08)
+//!
+//! `BA.25.A` task 4's live comparison (`bastion coord status --json` vs. `curl -s
+//! $ENGINE/api/coordination` against an installed, running `bastion serve`) FAILED, not
+//! blocked: the server came up cleanly and every other route tested (`/api/repos`,
+//! `/events/`) answered correctly, but `GET /api/coordination` itself 404s. Root cause
+//! is in `src/serve/mod.rs`, not here: bastion's own bearer-protected `web::scope("/api")`
+//! is registered as its own top-level service before the engine's route table is mounted
+//! at `web::scope("")`, and actix-web does not fall through to that sibling scope when a
+//! request under `/api/*` matches no resource bastion itself registered — so the engine's
+//! literal `/api/coordination` resource, while genuinely mounted, is unreachable through
+//! the live process as currently wired. This module and its `--json` output are unaffected
+//! — the failure is in HTTP routing, not in this reader path — but AC-1's live half cannot
+//! be closed until that scope ordering is fixed in a follow-up `bastion` block. Full
+//! invocation, response bodies and the confirming positive controls are recorded in the
+//! block record's `notes` (`planning/blocks/BA.25.A.json`).
+//!
 //! ## What "Live" does and does not mean here
 //!
 //! A `CoordinationStatus::Live` result only means every artifact this reader looked at
