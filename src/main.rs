@@ -393,6 +393,39 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     agent_name,
                     lock_dir,
                 } => coord_cli::run_release(&agent_name, lock_dir.as_deref()),
+                CoordMode::Lease {
+                    repo,
+                    lane,
+                    agent_name,
+                    kind,
+                    scope,
+                    window,
+                    lane_block,
+                    lock_dir,
+                } => coord_cli::run_lease(
+                    &repo,
+                    &lane,
+                    &agent_name,
+                    &kind,
+                    scope.as_deref(),
+                    &window,
+                    &lane_block,
+                    lock_dir.as_deref(),
+                ),
+                CoordMode::Unlease { repo, lock_dir } => {
+                    coord_cli::run_unlease(&repo, lock_dir.as_deref())
+                }
+                CoordMode::Drain {
+                    repo,
+                    lane,
+                    lock_dir,
+                } => coord_cli::run_drain(&repo, &lane, lock_dir.as_deref()),
+                CoordMode::Complete {
+                    repo,
+                    lane,
+                    message_id,
+                    lock_dir,
+                } => coord_cli::run_complete(&repo, &lane, &message_id, lock_dir.as_deref()),
             },
         },
     }

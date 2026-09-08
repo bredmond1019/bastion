@@ -536,6 +536,97 @@ pub enum CoordMode {
         #[arg(long = "lock-dir")]
         lock_dir: Option<PathBuf>,
     },
+
+    /// Acquire or renew an exclusive/shared claim on `--repo`'s working tree — faces
+    /// `engine_core::coord::write::lease`, the same function `POST /api/coordination/lease`
+    /// calls (`BA.25.C` task 2).
+    ///
+    /// No `fleet_concurrency_check.py` counterpart — that script's own `acquire-exclusive`
+    /// is a pre-flight admission CHECK, never a writer. Exits 0 on success, 1 on any refusal
+    /// (including a `--window` block absent from `--lane-block`) via the ordinary error path.
+    Lease {
+        /// Repo slug this lease covers, as registered in `brain.toml`.
+        #[arg(long)]
+        repo: String,
+        /// This lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// The `ListAgents` nickname taking this lease.
+        #[arg(long = "agent-name")]
+        agent_name: String,
+        /// `exclusive` or `shared`.
+        #[arg(long)]
+        kind: String,
+        /// `repo` or `fleet`. Omit for the schema's own default (`repo`).
+        #[arg(long)]
+        scope: Option<String>,
+        /// A block id this lease's window covers. Repeat for multiple; omit entirely for a
+        /// whole-lane lease claiming no window.
+        #[arg(long = "window")]
+        window: Vec<String>,
+        /// A block id the lane actually owns — the yardstick `--window` is checked against.
+        /// Repeat for multiple.
+        #[arg(long = "lane-block")]
+        lane_block: Vec<String>,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Release the lease on `--repo`, if any — faces `engine_core::coord::write::unlease`,
+    /// the same function `POST /api/coordination/unlease` calls (`BA.25.C` task 2).
+    ///
+    /// Idempotent: exits 0 whether or not a lease existed to remove — "unleasing a lease you
+    /// do not hold" is `removed: false`, not an error. No Python counterpart.
+    Unlease {
+        /// Repo slug whose lease to release.
+        #[arg(long)]
+        repo: String,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Move every message in `--repo`/`--lane`'s inbox into `processing/` — faces
+    /// `engine_core::coord::write::drain`, the same function `POST /api/coordination/drain`
+    /// calls (`BA.25.C` task 2).
+    ///
+    /// Always prints both halves of the outcome — `{"moved":[...],"failed":[...]}` — never a
+    /// bare success; an empty inbox is a legitimate `{"moved":[],"failed":[]}`. No Python
+    /// counterpart.
+    Drain {
+        /// Repo slug of the recipient lane's queue.
+        #[arg(long)]
+        repo: String,
+        /// The recipient lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
+
+    /// Move `--message-id`'s file from `processing/` to `done/`, if present — faces
+    /// `engine_core::coord::write::complete`, the same function
+    /// `POST /api/coordination/complete` calls (`BA.25.C` task 2).
+    ///
+    /// Prints `{"completed":true|false}` and exits 0 either way — completing a message not
+    /// in `processing/` is a distinct, legitimate `false`, not an error. No Python
+    /// counterpart.
+    Complete {
+        /// Repo slug of the lane's queue.
+        #[arg(long)]
+        repo: String,
+        /// The lane's name/slug.
+        #[arg(long)]
+        lane: String,
+        /// The message's `message_id` (the second half of its `<ts>-<uuid>.json` filename).
+        #[arg(long = "message-id")]
+        message_id: String,
+        /// Override the coordination lock directory — see `register`'s own `--lock-dir`.
+        #[arg(long = "lock-dir")]
+        lock_dir: Option<PathBuf>,
+    },
 }
 
 /// `bastion notify` subcommands — see [`Commands::Notify`].
