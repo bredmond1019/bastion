@@ -8,6 +8,15 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-08]
 
+Ran /sdlc-flow on BA.26.J tasks 1 through 3; task 1 (celia.toml + fixture brain.toml/config.toml/open-work board for `bastion tui` captures) and task 2 (captured text goldens + fixed a Scene.args override bug and a nested-tmux-server determinism fix) both completed, but the run BAILED before task 3. Task 2's automated `task_validation_2` check still invokes a manifest path (`../celia/Cargo.toml`) that does not resolve from the worktree; attempt 2's fix summary states the mismatch was resolved only by running the check manually with a different relative path (`../../../celia/Cargo.toml`), with no change made to tasks.json or the validation command itself. Because the actual configured check was never corrected, it will keep failing on every retry and the work assertion can never receive a positive `workAssertionPassed` field — the same underlying failure recurring with no code/config change to close it. This is a validation-command configuration defect, not something a further content fix to celia.toml can resolve. Next: fix `task_validation_2`'s manifest path in tasks.json (or the check script itself) to resolve correctly from a worktree, then resume BA.26.J from task 2's work-assertion gate.
+
+```
+6f0981f feat: implement BA.26.J-task1
+134199d feat: implement BA.26.J-task2
+```
+
+## [run: 2026-09-08]
+
 Ran /sdlc-flow on BA.25.C tasks 1 through 4, all passing with confirmed workAssertionPassed outcomes; consolidated review returned PASS. `bastion coord` gains nine of its ten write verbs as thin CLI faces over `engine_core::coord::write`: task 1 added register/heartbeat/release (register's 0/3 exit code re-derived live against `fleet_concurrency_check.py`'s per-category caps, D66); task 2 added lease/unlease/drain/complete (all four have no Python counterpart, so they use the ordinary exit-0/exit-1 anyhow contract, with drain's partial-failure reporting derived by diffing the inbox/ listing before/after since engine-core's write silently skips unmovable files); task 3 added `send`, refusing any message carrying `priority`/`urgency` per D43 (fixture-tested against a hand-authored message file, since no such fixture existed); task 4 added `restore`, replaying `.fleet-locks/.prev/` snapshots via `fs::rename` and distinguishing ABSENT-.prev/ (no-op success) from EMPTY-.prev/ (refusal), leaving `emit-schema` (AC-4) explicitly deferred per D18 — schemars is not a dependency of okf-core or bastion and no single canonical schema exists to diff against. Full harness suite green. Next: pick up the next queued item per `planning/status.md`.
 
 ```
