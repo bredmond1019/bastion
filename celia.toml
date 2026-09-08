@@ -1,0 +1,88 @@
+# celia.toml — bastion's celia manifest (BA.26.J task 1).
+#
+# bastion becomes celia's THIRD consumer, the same way bella became its second
+# (`core/bella/Cargo.toml:7-10`). This is NOT a port of bella's deleted
+# `scripts/vhs/scenes.toml` (that harness is gone — CE.1.D, `core/bella@9b9b24b` — and bella
+# itself no longer uses it): celia owns the two-tier text/PNG capture machinery entirely, and
+# this file is the whole of bastion's own configuration surface for it, modelled on
+# `core/bella/celia.toml`'s shape (read in full before editing this file — target/settle/scene
+# tables below follow it field for field).
+#
+# [target].program drives the SESSION TUI (`bastion tui`, BA.26.A/B/C/G) — never
+# `bastion --help`. Two env vars are set via the `env` wrapper rather than a bare binary
+# invocation, because celia's `Target` has no per-manifest env-var field (celia-core's
+# `manifest::Target` is `program`/`args`/`cwd` only):
+#   - XDG_CONFIG_HOME points at a fixture config (tests/fixtures/celia-tui/xdg/) instead of the
+#     operator's real ~/.config/bastion/config.toml — a capture must never read (or risk
+#     leaking secrets from, e.g. `[client].token`) the real config.
+#   - BASTION_BRAIN_TOML points at a fixture, empty-repos brain.toml instead of walking up to
+#     the real fleet-wide one — keeps the session TUI's spine to exactly
+#     [Mission Control, Open Work] regardless of what repos exist on the machine that runs the
+#     capture, which is what makes the byte-for-byte determinism AC-3 demands possible at all.
+# The fixture's single `[views.open-work]` entry (tests/fixtures/celia-tui/xdg/bastion/config.toml)
+# points at tests/fixtures/celia-tui/open-work/ — a small, committed, hand-authored fixture
+# board — NEVER a live `planning/open-work/` board. A live one is rewritten nightly by cron and
+# by BA.26.C's own refresh action, which would make a byte-identical golden rot by construction
+# (this task's own description names exactly this trap).
+
+golden_dir = "tests/scenes"
+
+[target]
+program = "/usr/bin/env"
+args = [
+  "XDG_CONFIG_HOME=tests/fixtures/celia-tui/xdg",
+  "BASTION_BRAIN_TOML=tests/fixtures/celia-tui/brain.toml",
+  "./target/release/bastion",
+  "tui",
+]
+cwd = "."
+
+[settle]
+# Carried from bella's celia.toml — proven-safe defaults for a ratatui app booting cold.
+launch_settle = 2.0
+key_settle = 0.4
+
+# --- The three widths the bastion-tui assessment measured -----------------
+#
+# All three scenes press one `Down` to move the spine selection off
+# `Mission Control` onto the fixture's single declared `[views]` entry
+# ("Open Work") — the one-keypress reachability BA.26.A built, and the
+# surface BA.26.C/G's refresh action and open-work renderer actually
+# populate. Measured byte counts below are from a verified-good tmux TEXT
+# capture of each scene on this machine (`tmux capture-pane -p | wc -c`,
+# 2026-09-08); `min_bytes` is the IMAGE tier's per-scene byte floor
+# (`celia_core::manifest::Scene::min_bytes` — inert until a `[image]` table
+# is added, out of scope for this block per its task breakdown, which
+# declares no VHS tape files), set here at roughly 90% of the measured TEXT
+# byte count as a documented placeholder derived from a real capture of
+# THAT scene, never a single global number — the same discipline the
+# manifest's own doc comments demand of a genuine image floor. A future
+# block wiring the `[image]` tier must re-derive these from real PNG
+# captures; they are not carried over unchanged.
+
+[[scene]]
+name = "session_tui_open_work_200x55"
+args = []
+keys = ["Down"]
+width = 200
+height = 55
+min_bytes = 12000
+tape = "scripts/vhs/session-tui.tape"
+
+[[scene]]
+name = "session_tui_open_work_120x40"
+args = []
+keys = ["Down"]
+width = 120
+height = 40
+min_bytes = 5800
+tape = "scripts/vhs/session-tui.tape"
+
+[[scene]]
+name = "session_tui_open_work_80x24"
+args = []
+keys = ["Down"]
+width = 80
+height = 24
+min_bytes = 2400
+tape = "scripts/vhs/session-tui.tape"

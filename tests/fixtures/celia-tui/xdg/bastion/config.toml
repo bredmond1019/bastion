@@ -1,0 +1,16 @@
+# tests/fixtures/celia-tui/xdg/bastion/config.toml — fixture config for BA.26.J's capture
+# harness. Loaded only when `celia.toml`'s [target] sets XDG_CONFIG_HOME to this fixture's
+# `xdg/` directory, so a capture never reads (or risks leaking secrets from) the operator's
+# real ~/.config/bastion/config.toml.
+#
+# Declares exactly one [views] entry so the session TUI's spine (BA.26.A) offers a single,
+# fixture-backed "Open Work" row — reachable in one `Down` keypress from Mission Control, the
+# same shape BA.26.A/C/G built for the real `planning/open-work/` boards, but never pointed at
+# a live one (those are rewritten nightly by cron and by BA.26.C's refresh action, which would
+# make a byte-identical golden rot by construction).
+[views.open-work]
+label = "Open Work"
+# Relative to THIS file's own parent directory (xdg/bastion/) — canonicalized by
+# `load_workspace_registry` the same way `[workspaces]` entries are — landing on
+# tests/fixtures/celia-tui/open-work/.
+root = "../../open-work"
