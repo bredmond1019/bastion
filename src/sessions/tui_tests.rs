@@ -615,13 +615,22 @@ mod tests {
         );
     }
 
-    /// AC-3's MANDATORY positive control: the identical sweep run against the
-    /// pre-BA.26.A revision (`27f04fa`) of src/sessions/app.rs must MATCH at
-    /// the `is_space_overview` site — proving the sweep can find the pattern
-    /// it otherwise reports absent. An empty result here would mean the
-    /// instrument is broken, not that the tree is clean (standing rule 11).
+    /// AC-3's MANDATORY positive control: the identical sweep run against
+    /// scripts/fixtures/selected-node-control-pre-change.rs (a checked-in
+    /// fixture reproducing the pre-BA.26.A `is_space_overview` shape) must
+    /// MATCH — proving the sweep can find the pattern it otherwise reports
+    /// absent. An empty result here would mean the instrument is broken, not
+    /// that the tree is clean (standing rule 11).
+    ///
+    /// A fixture, not `git show <hardcoded-rev>`: an earlier version of this
+    /// test resolved the control from a commit hash that turned out not to
+    /// be reachable from this repo's own `origin/main` history at all — not
+    /// a shallow-checkout gap, the object was simply absent from the pushed
+    /// history graph, so it failed in every CI run regardless of checkout
+    /// depth (confirmed 2026-09-08). A checked-in fixture is deterministic
+    /// in any checkout.
     #[test]
-    fn selected_node_exhaustive_check_control_matches_pre_change_revision() {
+    fn selected_node_exhaustive_check_control_matches_fixture() {
         let script = repo_root().join("scripts/check-selected-node-exhaustive.sh");
         let status = std::process::Command::new("bash")
             .arg(&script)
@@ -631,8 +640,8 @@ mod tests {
             .expect("failed to run scripts/check-selected-node-exhaustive.sh --control");
         assert!(
             status.success(),
-            "the positive control must pass: the pre-change revision (27f04fa) of \
-             src/sessions/app.rs must match the sweep, or the instrument itself is broken"
+            "the positive control must pass: scripts/fixtures/selected-node-control-pre-change.rs \
+             must match the sweep, or the instrument itself is broken"
         );
     }
 }

@@ -34,9 +34,18 @@
 # weaker check — the patterns and the file set are the same.
 #
 # POSITIVE CONTROL: run with `--control` to assert the identical sweep DOES
-# match against the pre-BA.26.A revision (27f04fa) of src/sessions/app.rs —
-# proving the sweep can find the pattern it otherwise reports absent. An empty
-# result there means the instrument is broken, not that the tree is clean.
+# match against a checked-in fixture reproducing the pre-BA.26.A shape of
+# src/sessions/app.rs's `is_space_overview` site — proving the sweep can find
+# the pattern it otherwise reports absent. An empty result there means the
+# instrument is broken, not that the tree is clean.
+#
+# FIXTURE, not `git show <rev>`: an earlier version of this script resolved
+# the control from a hardcoded commit hash. That hash is not reachable from
+# this repo's own `origin/main` history (confirmed 2026-09-08 —
+# `git merge-base --is-ancestor <rev> origin/main` fails even with full
+# history), so it could never resolve in CI regardless of checkout depth —
+# not a shallow-clone gap, the object is simply absent from the pushed
+# history graph. A checked-in fixture is deterministic in any checkout.
 #
 # NOT registered in planning/harness.json (BA.26.A task 4, deliberate): this is
 # a task-level check; gating it fleet-wide is a separate decision.
@@ -101,18 +110,17 @@ run_sweep() {
 }
 
 if [[ "${1:-}" == "--control" ]]; then
-    # Positive control: the pre-change revision's app.rs must match at the
-    # `is_space_overview` site (app.rs:318-321 pre-block).
-    CONTROL_REV="27f04fa"
-    CONTROL_FILE="$(mktemp -t bastion-selected-node-control.XXXXXX)"
-    trap 'rm -f "$CONTROL_FILE"' EXIT
-    git show "${CONTROL_REV}:src/sessions/app.rs" > "$CONTROL_FILE"
+    # Positive control: a checked-in fixture reproducing the pre-BA.26.A
+    # `is_space_overview` site must match the sweep. The fixture is a minimal
+    # excerpt, not a full pre-change app.rs — it exists only to prove the
+    # sweep's patterns fire on the exact shape they exist to catch.
+    CONTROL_FILE="$SCRIPT_DIR/fixtures/selected-node-control-pre-change.rs"
 
     if run_sweep "$CONTROL_FILE" >/dev/null; then
         echo "OK: positive control matched — the sweep instrument works (pre-change app.rs contains the pattern)."
         exit 0
     else
-        echo "CONTROL FAILED: the sweep found NOTHING in the pre-change revision (${CONTROL_REV}) of src/sessions/app.rs." >&2
+        echo "CONTROL FAILED: the sweep found NOTHING in the pre-change fixture (${CONTROL_FILE})." >&2
         echo "This means the instrument itself is broken, not that the tree is clean. Do not trust a clean result from this script until this control passes." >&2
         exit 1
     fi
