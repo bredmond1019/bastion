@@ -30,6 +30,13 @@ use engine_core::coord::{CoordinationStatus, CoordinationView};
 /// Handler for `bastion coord status [--json]`. Resolves `brain_root` exactly as the
 /// route handler does, reads the joined coordination view, and prints either the
 /// human summary or the `serde_json` serialisation of the view.
+///
+/// A [`CoordinationStatus::Degraded`] view is not a silent warning: this returns `Err`
+/// naming every offending path (task 2, AC-2) so the process exits non-zero and the
+/// operator's next action — open that file — is right there in the error. An absent
+/// `.fleet-locks` subtree, or the whole directory, is a legitimate "nothing has run
+/// yet" `Live` result and exits zero, same as any other clean read; only a record that
+/// exists and cannot be parsed (or a failed cross-check) is degraded.
 pub fn run_status(json: bool) -> Result<()> {
     let brain_root =
         engine_core::brain_root::resolve_brain_root().context("cannot resolve brain root")?;
@@ -40,7 +47,24 @@ pub fn run_status(json: bool) -> Result<()> {
         human_summary(&view)
     };
     println!("{output}");
-    Ok(())
+    degraded_result(&view)
+}
+
+/// `Err` naming the offending path(s) when `view.status` is `Degraded`; `Ok(())`
+/// (including the "nothing has run yet" empty/absent-tree case) otherwise. Split out
+/// from `run_status` so the exit-code decision is testable without going through
+/// `resolve_brain_root()` or stdout.
+fn degraded_result(view: &CoordinationView) -> Result<()> {
+    if view.status != CoordinationStatus::Degraded {
+        return Ok(());
+    }
+    let paths = view
+        .degradation_reasons
+        .iter()
+        .map(|r| r.path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!("coordination surface degraded — offending path(s): {paths}");
 }
 
 /// Read the joined coordination view for `brain_root`. A one-line wrapper kept
@@ -166,5 +190,57 @@ mod tests {
         assert!(summary.contains("degradation reasons: 1"));
         assert!(summary.contains("/tmp/bad.json"));
         assert!(summary.contains("could not parse JSON"));
+    }
+
+    // ── Task 2: degraded-vs-empty exit-code split ───────────────────────────────
+
+    /// A malformed record that EXISTS (real fixture file, never the live
+    /// `.fleet-locks/`) must make `degraded_result` return `Err` naming the offending
+    /// path. Same test also asserts an absent `.fleet-locks` subtree, and an absent
+    /// `.fleet-locks` directory entirely, each go `Ok(())` — so degraded and empty are
+    /// provably distinguishable in one run, not two tests that could each drift.
+    #[test]
+    fn malformed_record_is_degraded_absent_tree_is_not() {
+        // Case 1: a real malformed artifact under lane-agents/ — invalid JSON syntax,
+        // not a missing subcommand, per D68's gate-shape requirement.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let lock_dir = tmp.path().join(".fleet-locks");
+        let lane_agents = lock_dir.join("lane-agents");
+        std::fs::create_dir_all(&lane_agents).expect("create lane-agents");
+        let bad_file = lane_agents.join("bastion__agent-probe.json");
+        std::fs::write(&bad_file, b"{ this is not valid json").expect("write malformed fixture");
+
+        let view = view_for(tmp.path());
+        assert_eq!(view.status, CoordinationStatus::Degraded);
+        let err = degraded_result(&view).expect_err("malformed record must exit non-zero");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&bad_file.display().to_string()),
+            "error must name the offending file path, got: {msg}"
+        );
+
+        // Case 2: an absent `.fleet-locks/lane-agents` subtree (root exists, subdir
+        // doesn't) is a legitimate empty/Live state and must exit zero.
+        let tmp2 = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp2.path().join(".fleet-locks")).expect("create lock dir");
+        let empty_subtree_view = view_for(tmp2.path());
+        assert_eq!(empty_subtree_view.status, CoordinationStatus::Live);
+        assert!(degraded_result(&empty_subtree_view).is_ok());
+
+        // Case 3: the whole `.fleet-locks` directory is absent — also Live, also zero.
+        let tmp3 = tempfile::tempdir().expect("tempdir");
+        let absent_dir_view = view_for(tmp3.path());
+        assert_eq!(absent_dir_view.status, CoordinationStatus::Live);
+        assert!(degraded_result(&absent_dir_view).is_ok());
+    }
+
+    /// `degraded_result` never touches the live shared `.fleet-locks/` — every case
+    /// above builds its own `tempdir()` fixture root, so this suite cannot interfere
+    /// with another lane's concurrent registry/lease/slot state.
+    #[test]
+    fn degraded_result_ok_on_clean_view() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let view = view_for(tmp.path());
+        assert!(degraded_result(&view).is_ok());
     }
 }
