@@ -423,6 +423,32 @@ pub enum Commands {
         #[command(subcommand)]
         mode: NotifyMode,
     },
+
+    /// Fleet coordination surface — who is live, what is leased, what is queued and
+    /// what is escalated (`BA.25.A`)
+    ///
+    /// Faces engine-core's read-only coordination reader
+    /// (`engine_core::coord::read_coordination_view`) — the same function engine-serve's
+    /// `GET /api/coordination` route calls. This subcommand adds no reader logic of its
+    /// own; see `coord_cli` for the thin CLI shell.
+    Coord {
+        #[command(subcommand)]
+        mode: CoordMode,
+    },
+}
+
+/// `bastion coord` subcommands — see [`Commands::Coord`].
+#[derive(Debug, Subcommand)]
+pub enum CoordMode {
+    /// Print the joined fleet coordination view (registry, leases, slots, messages,
+    /// heartbeats, escalations, run records) — human summary by default, or the same
+    /// JSON the `GET /api/coordination` route serves with `--json`.
+    Status {
+        /// Emit the machine-readable JSON envelope (byte-equal to the
+        /// `GET /api/coordination` route's response body) instead of a human summary.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `bastion notify` subcommands — see [`Commands::Notify`].

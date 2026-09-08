@@ -9,6 +9,7 @@ mod brainval;
 mod buildstamp;
 mod cli;
 mod config;
+mod coord_cli;
 mod costs;
 mod db;
 mod docview;
@@ -36,7 +37,7 @@ pub use term_core::detect;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Commands, NotifyMode};
+use cli::{Cli, Commands, CoordMode, NotifyMode};
 use observ::errors::{ConsoleError, ErrorCode};
 
 // ── Pure helpers (unit-tested below) ─────────────────────────────────────────
@@ -76,6 +77,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Edit { .. } => "edit",
         Commands::Assess { .. } => "assess",
         Commands::Notify { .. } => "notify",
+        Commands::Coord { .. } => "coord",
     }
 }
 
@@ -340,6 +342,11 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     )
                     .await
                 }
+            },
+            // Coord is DB-free and synchronous — a thin CLI shell over engine-core's
+            // read-only coordination reader (BA.25.A). No reader logic lives here.
+            Commands::Coord { mode } => match mode {
+                CoordMode::Status { json } => coord_cli::run_status(json),
             },
         },
     }
