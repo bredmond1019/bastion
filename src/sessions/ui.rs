@@ -558,24 +558,33 @@ fn draw_with_root(
 
     match app.selected_node() {
         SelectedNode::MissionControl => {
-            crate::monitor::ui::render(frame, &app.monitor_app, content_area);
-            // BA.26.D task 5, AC-2: an empty Mission Control pane must say
-            // WHY, not render as one blank screen. Drawn as a one-line
-            // overlay along the pane's bottom edge — `monitor::ui::render`
-            // above already painted its own (empty) list/graph/detail
-            // blocks, so this never replaces that render, only adds the
-            // explanation `run_view_status` carries.
-            if app.monitor_app.items.is_empty() && content_area.height > 0 {
-                let message = run_view_status_message(&app.run_view_status);
-                let banner_area = ratatui::layout::Rect {
-                    x: content_area.x + 1,
-                    y: content_area.y + content_area.height.saturating_sub(2),
-                    width: content_area.width.saturating_sub(2),
-                    height: 1,
-                };
-                let banner =
-                    Paragraph::new(message).style(Style::default().fg(crate::ui_theme::muted()));
-                frame.render_widget(banner, banner_area);
+            // BA.26.E task 2: pressing 'f' switches Mission Control's
+            // content into the finished-runs discovery list instead of the
+            // live run/session pane — this block ships the LIST, not a
+            // second in-console detail view (`bastion inspect` and
+            // BA.26.D's live pane already own detail rendering).
+            if app.viewing_finished_runs {
+                render_finished_runs_pane(frame, app, content_area);
+            } else {
+                crate::monitor::ui::render(frame, &app.monitor_app, content_area);
+                // BA.26.D task 5, AC-2: an empty Mission Control pane must say
+                // WHY, not render as one blank screen. Drawn as a one-line
+                // overlay along the pane's bottom edge — `monitor::ui::render`
+                // above already painted its own (empty) list/graph/detail
+                // blocks, so this never replaces that render, only adds the
+                // explanation `run_view_status` carries.
+                if app.monitor_app.items.is_empty() && content_area.height > 0 {
+                    let message = run_view_status_message(&app.run_view_status);
+                    let banner_area = ratatui::layout::Rect {
+                        x: content_area.x + 1,
+                        y: content_area.y + content_area.height.saturating_sub(2),
+                        width: content_area.width.saturating_sub(2),
+                        height: 1,
+                    };
+                    let banner = Paragraph::new(message)
+                        .style(Style::default().fg(crate::ui_theme::muted()));
+                    frame.render_widget(banner, banner_area);
+                }
             }
         }
         SelectedNode::Tier(tier_name) => {
@@ -785,6 +794,12 @@ fn execute_action(action: Action, app: &mut AppState) {
             }
             Err(e) => set_tmux_status(app, "kill", &name, e),
         },
+        Action::LoadFinishedRuns => {
+            // Handled specially in the event loop (needs to own the spawned
+            // load thread's `mpsc::Receiver` across ticks — see
+            // `spawn_finished_runs_load`/`poll_finished_runs_load` in
+            // `run_inner_with_events_and_refresh`).
+        }
     }
 }
 
@@ -822,12 +837,16 @@ fn run_inner(
 ) -> Result<()> {
     let mut refresh_child: Option<std::process::Child> = None;
     let mut run_view_probe: Option<std::sync::mpsc::Receiver<crate::runs::RunViewState>> = None;
+    let mut finished_runs_load: Option<
+        std::sync::mpsc::Receiver<Result<Vec<crate::db::workflows::WorkflowRun>, String>>,
+    > = None;
     run_inner_with_events_and_refresh(
         terminal,
         app,
         &mut CrosstermEvents,
         &mut refresh_child,
         &mut run_view_probe,
+        &mut finished_runs_load,
     )
 }
 
@@ -842,12 +861,16 @@ fn run_inner_with_events<E: EventSource>(
 ) -> Result<()> {
     let mut refresh_child: Option<std::process::Child> = None;
     let mut run_view_probe: Option<std::sync::mpsc::Receiver<crate::runs::RunViewState>> = None;
+    let mut finished_runs_load: Option<
+        std::sync::mpsc::Receiver<Result<Vec<crate::db::workflows::WorkflowRun>, String>>,
+    > = None;
     run_inner_with_events_and_refresh(
         terminal,
         app,
         events,
         &mut refresh_child,
         &mut run_view_probe,
+        &mut finished_runs_load,
     )
 }
 
@@ -864,6 +887,9 @@ fn run_inner_with_events_and_refresh<E: EventSource>(
     events: &mut E,
     refresh_child: &mut Option<std::process::Child>,
     run_view_probe: &mut Option<std::sync::mpsc::Receiver<crate::runs::RunViewState>>,
+    finished_runs_load: &mut Option<
+        std::sync::mpsc::Receiver<Result<Vec<crate::db::workflows::WorkflowRun>, String>>,
+    >,
 ) -> Result<()> {
     let mut list_state = ListState::default();
     let mut render_cache = RenderCache::default();
@@ -881,6 +907,10 @@ fn run_inner_with_events_and_refresh<E: EventSource>(
         // probe (BA.26.D task 5, AC-2): a probe that resolved between ticks
         // must show up on the very next frame's Mission Control pane.
         poll_run_view_probe(app, run_view_probe);
+        // Same non-blocking contract, for the finished-runs discovery-list
+        // load (BA.26.E task 2): a load that resolved between ticks must
+        // show up on the very next frame's Mission Control pane.
+        poll_finished_runs_load(app, finished_runs_load);
 
         terminal.draw(|f| draw(f, app, &mut list_state, &mut render_cache))?;
 
@@ -937,6 +967,15 @@ fn run_inner_with_events_and_refresh<E: EventSource>(
                     // probe's two HTTP round-trips run on the spawned thread,
                     // never on this loop.
                     *run_view_probe = Some(spawn_run_view_probe());
+                    continue;
+                }
+
+                if let Action::LoadFinishedRuns = action {
+                    // Non-blocking for the same reason as `ProbeRunView`
+                    // above: `std::thread::spawn` returns immediately — the
+                    // Postgres query runs on the spawned thread, never on
+                    // this loop.
+                    *finished_runs_load = Some(spawn_finished_runs_load());
                     continue;
                 }
 
@@ -1118,6 +1157,147 @@ fn spawn_run_view_probe() -> std::sync::mpsc::Receiver<crate::runs::RunViewState
         let _ = tx.send(state);
     });
     rx
+}
+
+/// Poll an in-flight finished-runs load WITHOUT blocking (`try_recv`),
+/// write the result onto `app.finished_runs_status`, and clear the slot.
+/// Mirrors `poll_run_view_probe`'s exact shape (BA.26.E task 2): called
+/// once per event-loop tick regardless of whether an input event arrived
+/// this tick.
+fn poll_finished_runs_load(
+    app: &mut AppState,
+    finished_runs_load: &mut Option<
+        std::sync::mpsc::Receiver<Result<Vec<crate::db::workflows::WorkflowRun>, String>>,
+    >,
+) {
+    let Some(rx) = finished_runs_load.as_ref() else {
+        return;
+    };
+    match rx.try_recv() {
+        Ok(Ok(runs)) => {
+            app.finished_runs_status = crate::runs::FinishedRunsStatus::Done(runs);
+            *finished_runs_load = None;
+        }
+        Ok(Err(reason)) => {
+            app.finished_runs_status = crate::runs::FinishedRunsStatus::Failed(reason);
+            *finished_runs_load = None;
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            // Still loading — `finished_runs_status` already reads
+            // `Loading` (set by `AppState::on_key` the moment the key was
+            // pressed).
+        }
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            // The load thread ended without sending — panicked, most
+            // likely. Never leave the pane stuck reading "loading…"
+            // forever; report it the same way `poll_run_view_probe` reports
+            // a disconnected probe thread (the reason is preserved, not
+            // discarded).
+            app.finished_runs_status = crate::runs::FinishedRunsStatus::Failed(
+                "load thread ended without a result".to_string(),
+            );
+            *finished_runs_load = None;
+        }
+    }
+}
+
+/// Spawn the finished-runs discovery-list load (BA.26.E task 2) into a
+/// background OS thread carrying its OWN short-lived tokio runtime — exact
+/// same shape as [`spawn_run_view_probe`] (`db::workflows::list_finished_runs`
+/// is `async`, and this module stays sync, D5). Returns immediately; the
+/// result arrives later via the returned channel, polled by
+/// [`poll_finished_runs_load`]. Reads `DATABASE_URL` directly from the
+/// process environment (never via `Config::load()`, matching how
+/// [`resolve_run_view_probe_config`] reads its own env vars directly) and
+/// reports its absence as an `Err` rather than panicking.
+fn spawn_finished_runs_load()
+-> std::sync::mpsc::Receiver<Result<Vec<crate::db::workflows::WorkflowRun>, String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let db_url = match std::env::var("DATABASE_URL") {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = tx.send(Err("DATABASE_URL is not configured".to_string()));
+                return;
+            }
+        };
+
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = tx.send(Err(format!("could not start load runtime: {e}")));
+                return;
+            }
+        };
+
+        // 20 rows is a reasonable discovery-list depth for a TUI pane — no
+        // scroll/pagination is in scope for this block (out_of_scope:
+        // "Filtering or searching the list beyond what the query needs").
+        let result = runtime.block_on(crate::db::workflows::list_finished_runs(&db_url, 20));
+
+        // The receiver may already be gone (e.g. the TUI quit mid-load) —
+        // dropping the result silently is correct there, not an error.
+        let _ = tx.send(result.map_err(|e| e.to_string()));
+    });
+    rx
+}
+
+/// Render `AppState::finished_runs_status` (BA.26.E task 2) as footer-style
+/// explanatory text for every state EXCEPT `Done` — the list itself is
+/// rendered as rows by [`render_finished_runs_pane`], not as one line of
+/// text, so this returns `None` there and the caller falls back to its own
+/// "list is empty" handling.
+fn finished_runs_status_message(status: &crate::runs::FinishedRunsStatus) -> Option<String> {
+    use crate::runs::FinishedRunsStatus;
+    match status {
+        FinishedRunsStatus::Idle => Some("press 'f' to load finished runs".to_string()),
+        FinishedRunsStatus::Loading => Some("loading finished runs…".to_string()),
+        FinishedRunsStatus::Done(_) => None,
+        FinishedRunsStatus::Failed(reason) => Some(format!("finished runs load failed: {reason}")),
+    }
+}
+
+/// Draw the finished-runs discovery-list pane (BA.26.E task 2) — the
+/// Mission-Control content the 'f' key switches into. Renders through
+/// [`crate::runs::finished_run_row`], the ONE formatter this block adds, so
+/// a reviewer can point at this single call site rather than finding a
+/// second formatter.
+fn render_finished_runs_pane(frame: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
+    use crate::runs::{FinishedRunsStatus, finished_run_row};
+
+    let block = crate::ui_theme::themed_block(
+        Span::styled(" finished runs ", crate::ui_theme::title_style()),
+        false,
+    );
+
+    match &app.finished_runs_status {
+        FinishedRunsStatus::Done(runs) if !runs.is_empty() => {
+            let items: Vec<ListItem> = runs
+                .iter()
+                .map(|r| ListItem::new(finished_run_row(r)))
+                .collect();
+            let list = List::new(items)
+                .block(block)
+                .highlight_style(crate::ui_theme::list_selected_style())
+                .highlight_symbol(">>");
+            let mut list_state = ListState::default();
+            list_state.select(Some(
+                app.finished_runs_selected.min(runs.len().saturating_sub(1)),
+            ));
+            frame.render_stateful_widget(list, area, &mut list_state);
+        }
+        other => {
+            let message = finished_runs_status_message(other)
+                .unwrap_or_else(|| "no finished runs".to_string());
+            let paragraph = Paragraph::new(message)
+                .block(block)
+                .style(Style::default().fg(crate::ui_theme::muted()));
+            frame.render_widget(paragraph, area);
+        }
+    }
 }
 
 /// Resolve the active theme from the on-disk config (DB-free — see D4) and
@@ -1648,6 +1828,175 @@ mod tests {
         // almost instantly, never time out.
         let state = result.expect("probe must deliver a result within the timeout");
         assert_eq!(state, crate::runs::RunViewState::NotConfigured);
+    }
+
+    // ── finished_runs_status_message / poll_finished_runs_load /
+    // spawn_finished_runs_load (BA.26.E task 2) ─────────────────────────────
+
+    fn a_finished_run(id: &str) -> crate::db::workflows::WorkflowRun {
+        crate::db::workflows::WorkflowRun {
+            id: id.to_string(),
+            workflow_name: "some-workflow".to_string(),
+            status: crate::db::workflows::RunStatus::Success,
+            budget_halt: None,
+            nodes: vec![],
+            started_at: Some("2026-09-01T00:00:00Z".to_string()),
+            elapsed_secs: None,
+        }
+    }
+
+    #[test]
+    fn finished_runs_status_message_idle_prompts_the_load_key() {
+        let msg = finished_runs_status_message(&crate::runs::FinishedRunsStatus::Idle)
+            .expect("Idle must carry a message");
+        assert!(
+            msg.contains('f'),
+            "idle message should mention the 'f' key: {msg}"
+        );
+    }
+
+    #[test]
+    fn finished_runs_status_message_loading_is_distinct_from_idle() {
+        assert_ne!(
+            finished_runs_status_message(&crate::runs::FinishedRunsStatus::Loading),
+            finished_runs_status_message(&crate::runs::FinishedRunsStatus::Idle)
+        );
+    }
+
+    #[test]
+    fn finished_runs_status_message_failed_preserves_the_reason() {
+        let msg = finished_runs_status_message(&crate::runs::FinishedRunsStatus::Failed(
+            "connection refused".to_string(),
+        ))
+        .expect("Failed must carry a message");
+        assert!(
+            msg.contains("connection refused"),
+            "Failed message must preserve the raw reason: {msg}"
+        );
+    }
+
+    #[test]
+    fn finished_runs_status_message_done_is_none() {
+        assert!(
+            finished_runs_status_message(&crate::runs::FinishedRunsStatus::Done(vec![
+                a_finished_run("r-1")
+            ]))
+            .is_none(),
+            "Done renders as rows, not as a status message"
+        );
+    }
+
+    #[test]
+    fn poll_finished_runs_load_empty_channel_leaves_status_unchanged() {
+        let mut app = make_app(&[]);
+        app.finished_runs_status = crate::runs::FinishedRunsStatus::Loading;
+        let (_tx, rx) =
+            std::sync::mpsc::channel::<Result<Vec<crate::db::workflows::WorkflowRun>, String>>();
+        let mut slot = Some(rx);
+
+        poll_finished_runs_load(&mut app, &mut slot);
+
+        assert!(matches!(
+            app.finished_runs_status,
+            crate::runs::FinishedRunsStatus::Loading
+        ));
+        assert!(slot.is_some(), "an empty channel must not clear the slot");
+    }
+
+    #[test]
+    fn poll_finished_runs_load_delivered_ok_sets_done_and_clears_slot() {
+        let mut app = make_app(&[]);
+        app.finished_runs_status = crate::runs::FinishedRunsStatus::Loading;
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(vec![a_finished_run("r-1")]))
+            .expect("send into an open channel");
+        let mut slot = Some(rx);
+
+        poll_finished_runs_load(&mut app, &mut slot);
+
+        match &app.finished_runs_status {
+            crate::runs::FinishedRunsStatus::Done(runs) => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].id, "r-1");
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert!(
+            slot.is_none(),
+            "a delivered result must clear the load slot"
+        );
+    }
+
+    #[test]
+    fn poll_finished_runs_load_delivered_err_sets_failed_and_clears_slot() {
+        let mut app = make_app(&[]);
+        app.finished_runs_status = crate::runs::FinishedRunsStatus::Loading;
+        let (tx, rx) =
+            std::sync::mpsc::channel::<Result<Vec<crate::db::workflows::WorkflowRun>, String>>();
+        tx.send(Err("DATABASE_URL is not configured".to_string()))
+            .expect("send into an open channel");
+        let mut slot = Some(rx);
+
+        poll_finished_runs_load(&mut app, &mut slot);
+
+        match &app.finished_runs_status {
+            crate::runs::FinishedRunsStatus::Failed(reason) => {
+                assert_eq!(reason, "DATABASE_URL is not configured");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(slot.is_none(), "a delivered error must clear the load slot");
+    }
+
+    #[test]
+    fn poll_finished_runs_load_disconnected_sender_reports_failed_and_clears_slot() {
+        let mut app = make_app(&[]);
+        app.finished_runs_status = crate::runs::FinishedRunsStatus::Loading;
+        let (tx, rx) =
+            std::sync::mpsc::channel::<Result<Vec<crate::db::workflows::WorkflowRun>, String>>();
+        drop(tx); // the load thread panicked/exited without sending.
+        let mut slot = Some(rx);
+
+        poll_finished_runs_load(&mut app, &mut slot);
+
+        assert!(
+            matches!(
+                app.finished_runs_status,
+                crate::runs::FinishedRunsStatus::Failed(_)
+            ),
+            "a disconnected channel must surface as Failed, not hang at Loading forever: {:?}",
+            app.finished_runs_status
+        );
+        assert!(slot.is_none(), "a disconnected channel must clear the slot");
+    }
+
+    /// Thin-I/O-shell smoke test (repo standing rule 6): `spawn_finished_runs_load`
+    /// really does spawn a background thread carrying its own tokio runtime
+    /// and eventually deliver SOME result over the channel — proven with
+    /// `DATABASE_URL` deliberately unset, so the thread returns an `Err`
+    /// almost instantly rather than attempting a real Postgres connection.
+    #[test]
+    fn spawn_finished_runs_load_delivers_a_result_without_blocking_the_caller() {
+        // Must take the shared env lock before mutating DATABASE_URL — an
+        // unguarded removal races other threads' dotenvy reloads in the same
+        // `cargo test` process (env vars are process-global), which is
+        // exactly the trap `notify_test_send_unconfigured_transport_returns_503_c005`
+        // guards against with the identical pattern (src/serve/mod.rs).
+        let env_lock = crate::testsupport::lock_env();
+        let _db_url = crate::testsupport::EnvVarGuard::unset(&env_lock, "DATABASE_URL");
+
+        let rx = spawn_finished_runs_load();
+        let start = std::time::Instant::now();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "spawn_finished_runs_load must not block the calling thread"
+        );
+        let outcome = result.expect("load must deliver a result within the timeout");
+        match outcome {
+            Err(reason) => assert_eq!(reason, "DATABASE_URL is not configured"),
+            Ok(runs) => panic!("expected Err with DATABASE_URL unset, got Ok({runs:?})"),
+        }
     }
 
     // ── read_document / render_document_markdown (BA.26.B task 7,

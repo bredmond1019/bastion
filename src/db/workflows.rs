@@ -72,6 +72,63 @@ pub async fn get_run_state(db_url: &str, run_id: &str) -> Result<WorkflowRun> {
     parse_event_row(row)
 }
 
+/// Return recently-finished workflow runs — the discovery list a run can be
+/// found through without already knowing its `events.id` (BA.26.E). Read-only;
+/// never writes (D2).
+///
+/// "Finished" means [`WorkflowRun::status`] is one of the four TERMINAL
+/// variants — `Success`, `Failed`, `Cancelled`, `BudgetHalted` — explicitly
+/// excluding `Running`, `Pending`, and `Suspended` (a suspended run is never
+/// final; see [`derive_run_status`]'s doc comment). Ordered by `started_at`
+/// descending (a run with no `started_at` sorts last) and truncated to
+/// `limit` rows. The filter/sort/truncate logic lives in the pure
+/// [`select_finished`] helper so it can be unit-tested without a database.
+pub async fn list_finished_runs(db_url: &str, limit: i64) -> Result<Vec<WorkflowRun>> {
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(db_url)
+        .await
+        .context("failed to connect to PostgreSQL")?;
+
+    let rows =
+        sqlx::query_as::<_, EventRow>("SELECT id::text, workflow_type, task_context FROM events")
+            .fetch_all(&pool)
+            .await
+            .context("failed to query events table")?;
+
+    let mut runs = Vec::with_capacity(rows.len());
+    for row in rows {
+        runs.push(parse_event_row(row)?);
+    }
+    Ok(select_finished(runs, limit))
+}
+
+/// Pure filter/sort/truncate core of [`list_finished_runs`]. Kept as a
+/// separate non-async function (rather than inlined in the async fn) so unit
+/// tests can exercise the terminal-status filter and the ordering/limit logic
+/// directly over a `Vec<WorkflowRun>`, with no Postgres connection involved.
+pub(crate) fn select_finished(mut runs: Vec<WorkflowRun>, limit: i64) -> Vec<WorkflowRun> {
+    runs.retain(|r| {
+        matches!(
+            r.status,
+            RunStatus::Success | RunStatus::Failed | RunStatus::Cancelled | RunStatus::BudgetHalted
+        )
+    });
+
+    // Descending by started_at; a run with no started_at sorts last regardless
+    // of the other side's value.
+    runs.sort_by(|a, b| match (&a.started_at, &b.started_at) {
+        (Some(a_ts), Some(b_ts)) => b_ts.cmp(a_ts),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    let limit = usize::try_from(limit).unwrap_or(0);
+    runs.truncate(limit);
+    runs
+}
+
 // ── database-URL helpers (BA.24.A task 1: prove events read survives the split) ──
 //
 // D91 settles that `events` is not moving — bastion's `database_url` does not
@@ -1089,6 +1146,127 @@ mod tests {
             completed_at: None,
             elapsed_secs: None,
         }
+    }
+
+    // ── select_finished (pure, no I/O — BA.26.E task 1) ───────────────────────
+
+    /// Build a `WorkflowRun` directly (no fixture) for cases the fixture set
+    /// doesn't cover — e.g. a plain all-success run — or where only the
+    /// status/started_at matter to the assertion.
+    fn make_run(id: &str, status: RunStatus, started_at: Option<&str>) -> WorkflowRun {
+        WorkflowRun {
+            id: id.to_string(),
+            workflow_name: "TestWorkflow".to_string(),
+            status,
+            budget_halt: None,
+            nodes: vec![],
+            started_at: started_at.map(str::to_string),
+            elapsed_secs: None,
+        }
+    }
+
+    /// Parse a fixture into a `WorkflowRun` via the same `parse_event_row`
+    /// path a real query result goes through, so the run's derived `status`
+    /// matches production exactly rather than being asserted by hand.
+    fn run_from_fixture(id: &str, fixture: &str) -> WorkflowRun {
+        let tc: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        parse_event_row(EventRow {
+            id: id.to_string(),
+            workflow_type: "TestWorkflow".to_string(),
+            task_context: Some(tc),
+        })
+        .expect("fixture should parse into a WorkflowRun")
+    }
+
+    #[test]
+    fn select_finished_excludes_suspended() {
+        let run = run_from_fixture("r-suspended", SUSPENDED_FIXTURE);
+        assert_eq!(run.status, RunStatus::Suspended, "fixture sanity check");
+        assert!(select_finished(vec![run], 10).is_empty());
+    }
+
+    #[test]
+    fn select_finished_includes_success() {
+        let run = make_run(
+            "r-success",
+            RunStatus::Success,
+            Some("2026-07-16T13:00:00Z"),
+        );
+        let result = select_finished(vec![run], 10);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "r-success");
+    }
+
+    #[test]
+    fn select_finished_includes_failed() {
+        let run = run_from_fixture("r-failed", COMPLETED_FIXTURE);
+        assert_eq!(run.status, RunStatus::Failed, "fixture sanity check");
+        let result = select_finished(vec![run], 10);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "r-failed");
+    }
+
+    #[test]
+    fn select_finished_includes_cancelled() {
+        let run = run_from_fixture("r-cancelled", CANCELLED_FIXTURE);
+        assert_eq!(run.status, RunStatus::Cancelled, "fixture sanity check");
+        let result = select_finished(vec![run], 10);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "r-cancelled");
+    }
+
+    #[test]
+    fn select_finished_includes_budget_halted() {
+        let run = run_from_fixture("r-budget-halted", BUDGET_HALTED_TOKENS_FIXTURE);
+        assert_eq!(run.status, RunStatus::BudgetHalted, "fixture sanity check");
+        let result = select_finished(vec![run], 10);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "r-budget-halted");
+    }
+
+    #[test]
+    fn select_finished_excludes_running_and_pending() {
+        let running = run_from_fixture("r-running", IN_PROGRESS_FIXTURE);
+        assert_eq!(running.status, RunStatus::Running, "fixture sanity check");
+        let pending = make_run("r-pending", RunStatus::Pending, None);
+        assert!(select_finished(vec![running, pending], 10).is_empty());
+    }
+
+    #[test]
+    fn select_finished_orders_descending_and_truncates() {
+        let oldest = make_run("r-oldest", RunStatus::Success, Some("2026-07-16T10:00:00Z"));
+        let middle = make_run("r-middle", RunStatus::Failed, Some("2026-07-16T12:00:00Z"));
+        let newest = make_run(
+            "r-newest",
+            RunStatus::Cancelled,
+            Some("2026-07-16T14:00:00Z"),
+        );
+        let no_started_at = make_run("r-no-started-at", RunStatus::Success, None);
+
+        let result = select_finished(vec![oldest, no_started_at, newest, middle], 2);
+
+        assert_eq!(result.len(), 2, "limit should truncate to 2");
+        assert_eq!(result[0].id, "r-newest", "newest started_at sorts first");
+        assert_eq!(
+            result[1].id, "r-middle",
+            "second-newest started_at sorts second"
+        );
+    }
+
+    #[test]
+    fn select_finished_none_started_at_sorts_last() {
+        let no_started_at = make_run("r-no-started-at", RunStatus::Success, None);
+        let with_started_at = make_run(
+            "r-with-started-at",
+            RunStatus::Success,
+            Some("2026-07-16T10:00:00Z"),
+        );
+
+        let result = select_finished(vec![no_started_at, with_started_at], 10);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "r-with-started-at");
+        assert_eq!(result[1].id, "r-no-started-at");
     }
 
     // ── database-URL helpers (pure, no I/O — BA.24.A task 1) ─────────────────
