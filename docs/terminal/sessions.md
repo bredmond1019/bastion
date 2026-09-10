@@ -165,6 +165,7 @@ for the click/scroll-to-pane mapping.
 | `s` | Send a command to the selected session (prompts for command inline) |
 | `k` | Kill the selected session |
 | `p` | Probe why the run pane is empty (see below) |
+| `f` | Load and switch to the finished-runs discovery list (see below) |
 
 Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without making any change.
 
@@ -179,6 +180,17 @@ press during that window is a no-op rather than starting a duplicate probe.
 
 tmux errors (missing tmux, no server, unknown session) surface as a status message inside the
 TUI rather than crashing the loop.
+
+Pressing `f` at Mission Control (a no-op elsewhere in the spine) answers a different problem than
+`p`: `bastion inspect <run_id>` can already show any run at any status, but only if you already
+know its UUID — nothing lists finished runs. `f` loads that discovery list via a read-only
+Postgres query (`db::workflows::list_finished_runs`, up to 20 rows, most recent first) and swaps
+the run pane into it. While the query runs the pane shows `loading finished runs…`; a second `f`
+press during that window does not start a second load. Once loaded, `↑`/`↓` or `j`/`k` move the
+selection and `Enter` does not open the run in-console — it prints the run's id and the matching
+`bastion inspect <id>` command to the footer, so you can inspect it as a separate step. A query
+failure (bad or missing `DATABASE_URL`, connection refused) shows the raw reason in the pane
+rather than an empty list.
 
 ### Configuration
 
