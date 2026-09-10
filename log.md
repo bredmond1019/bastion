@@ -8,6 +8,15 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-10]
 
+Resumed /sdlc-flow on BA.26.E for a wrap-up pass over tasks 1–3; task 1 remains passed (`list_finished_runs`/`select_finished` in `src/db/workflows.rs`, already committed at `e0af3a0`). Task 2's own code (discovery list wiring in `src/runs/mod.rs`, `src/sessions/app.rs`, `src/sessions/ui.rs`) is already implemented and committed (`b8b1468`), and a follow-up commit already on the branch (`8f62d86`) fixed the previously-bailing flaky test by wrapping its new env-mutating test in the shared `testsupport::lock_env()` guard. This run BAILED again anyway: `task_validation_3` (`notify_test_send_unconfigured_transport_returns_503_c005`, `src/serve/mod.rs:3889`) failed identically under the full parallel suite — got 200, expected 503 — for the second consecutive attempt with no further progress available inside task 2's declared file scope. Suspected cause, not verified this turn: real `.env` Telegram credentials leaking into the test via a dotenvy reload race under full-suite parallelism (this run did not re-run the check against base state to confirm). `mev emit-state --write` ran but skipped derived-surface regeneration (toolchain drift: installed `bastion` binary built from `2dafa87`, stale relative to source at `8f62d86`). Next: rebuild/reinstall `bastion` from `8f62d86`, then either isolate or fix `notify_test_send_unconfigured_transport_returns_503_c005`'s env leak (out of BA.26.E's declared scope) before resuming BA.26.E from task 2's work-assertion gate.
+
+```
+8f62d86 fix: guard spawn_finished_runs_load's test with the shared env lock
+371ced7 chore: wrap up BA.26.E
+b8b1468 feat: implement BA.26.E-task2
+e0af3a0 feat: implement BA.26.E-task1
+```
+
 Ran /sdlc-flow on BA.26.E; task 1 landed clean (`list_finished_runs` + pure `select_finished` helper in `src/db/workflows.rs`, filtering to terminal statuses, sorted by `started_at` descending, tested against fixture-derived and directly-constructed runs). Task 2's own work (the discovery list in `src/runs/mod.rs`, `f`-key navigation in `src/sessions/app.rs`/`ui.rs`) is complete and independently green (fmt, clippy, and 217/217 scoped nextest passes), but the assigned full-suite check `task_validation_3` (`notify_test_send_unconfigured_transport_returns_503_c005`) failed identically across both attempts — got 200 instead of 503 — and was root-caused to a pre-existing environment leak (real Telegram credentials in `.env` bleeding into the test's isolation window under full-suite parallelism), not a defect in task 2's declared files. BAILED after attempt 2 because the same failure recurred with no code change available inside task 2's scope to close it. `mev emit-state --write` ran but skipped derived-surface regeneration (toolchain drift: installed `bastion` binary stale relative to source at `b8b1468`). Next: fix or isolate `notify_test_send_unconfigured_transport_returns_503_c005`'s env leak (out of BA.26.E's scope) or route it through `testsupport::lock_env()`, then resume BA.26.E from task 2's work-assertion gate.
 
 ```
