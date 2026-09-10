@@ -130,6 +130,13 @@ pub enum Action {
     /// [`RunViewState`](crate::runs::RunViewState) back onto
     /// [`AppState::run_view_status`] once the probe completes.
     ProbeRunView,
+    /// Load the finished-runs discovery list (BA.26.E task 2): a direct,
+    /// read-only Postgres query (`db::workflows::list_finished_runs`), so —
+    /// exactly like `ProbeRunView` — this module never performs the I/O
+    /// itself. The ui.rs event loop owns the background thread and its
+    /// `mpsc::Receiver`, writing the result back onto
+    /// [`AppState::finished_runs_status`] once the load completes.
+    LoadFinishedRuns,
     None,
 }
 
@@ -242,6 +249,13 @@ pub const NORMAL_KEY_BINDINGS: &[KeyBinding] = &[
         key: 'p',
         label: "probe run view",
     },
+    // BA.26.E task 2 — Mission-Control-scoped, like 'p': loads the
+    // finished-runs discovery list (a run can be found without already
+    // knowing its UUID) and switches the pane into that list.
+    KeyBinding {
+        key: 'f',
+        label: "finished runs",
+    },
 ];
 
 /// State for the interactive session dashboard.
@@ -302,6 +316,23 @@ pub struct AppState {
     /// See [`RunViewStatus`] — this field is data only; the HTTP probe
     /// itself is owned by the ui.rs event loop, never by this module.
     pub run_view_status: RunViewStatus,
+    /// Progress/result of the finished-runs discovery list load (BA.26.E
+    /// task 2). See [`crate::runs::FinishedRunsStatus`] — data only; the
+    /// Postgres query itself is owned by the ui.rs event loop, never by
+    /// this module.
+    pub finished_runs_status: crate::runs::FinishedRunsStatus,
+    /// Selected row index into `finished_runs_status`'s `Done(Vec<..>)`
+    /// list (BA.26.E task 2), clamped by [`AppState::finished_runs_next`] /
+    /// [`AppState::finished_runs_prev`] the same way `MonitorApp::next_item`
+    /// / `prev_item` clamp their own `selected` index. Meaningless (and
+    /// left at 0) while the list is not `Done`.
+    pub finished_runs_selected: usize,
+    /// `true` once the operator has pressed 'f' at Mission Control — routes
+    /// Up/Down/j/k/Enter to the finished-runs list (via
+    /// [`AppState::finished_runs_next`]/`finished_runs_prev`/row selection)
+    /// instead of the live `monitor_app` cursor, mirroring how
+    /// `overview_pane` re-routes Up/Down inside Space Overview.
+    pub viewing_finished_runs: bool,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -329,6 +360,9 @@ impl AppState {
             selected_table_hit: None,
             openwork_status: OpenWorkStatus::default(),
             run_view_status: RunViewStatus::default(),
+            finished_runs_status: crate::runs::FinishedRunsStatus::default(),
+            finished_runs_selected: 0,
+            viewing_finished_runs: false,
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.
@@ -444,6 +478,25 @@ impl AppState {
         self.reinit_browser();
     }
 
+    /// Move the finished-runs list selection to the next row, clamped to the
+    /// last row (BA.26.E task 2) — same saturating-min shape as
+    /// `MonitorApp::next_item`. A no-op while the list is not `Done` or is
+    /// empty.
+    pub fn finished_runs_next(&mut self) {
+        if let crate::runs::FinishedRunsStatus::Done(runs) = &self.finished_runs_status
+            && !runs.is_empty()
+        {
+            self.finished_runs_selected = (self.finished_runs_selected + 1).min(runs.len() - 1);
+        }
+    }
+
+    /// Move the finished-runs list selection to the previous row, clamped
+    /// to 0 (BA.26.E task 2) — same saturating-sub shape as
+    /// `MonitorApp::prev_item`.
+    pub fn finished_runs_prev(&mut self) {
+        self.finished_runs_selected = self.finished_runs_selected.saturating_sub(1);
+    }
+
     /// Jump directly to a declared `[views]` reader destination in ONE keypress,
     /// from anywhere in the spine — including boot (AC-4, BA.26.A). Unlike
     /// `select_next`/`select_prev`'s sequential Down/Up walk, this does not
@@ -552,6 +605,58 @@ impl AppState {
                     SelectedNode::MissionControl | SelectedNode::Tier(_) => false,
                 };
                 self.status = Option::None;
+
+                // Finished-runs list navigation (BA.26.E task 2) — routed
+                // BEFORE the generic spine Up/Down/j/k below, exactly the
+                // way the SpaceOverview `is_space_overview` block above
+                // re-routes its own Up/Down/j/k while a pane other than the
+                // sidebar has focus (`return Action::None` early rather than
+                // falling through to `select_next`/`select_prev`, which
+                // would move the spine cursor instead of the list cursor).
+                // Scoped to `SelectedNode::MissionControl` so leaving
+                // Mission Control while `viewing_finished_runs` is still
+                // `true` (e.g. via 'v') restores ordinary spine navigation.
+                // Exhaustive match, not `matches!`/`==` — required by
+                // `scripts/check-selected-node-exhaustive.sh` so a future
+                // `SelectedNode` variant is a compile error here, not a
+                // silent `false`.
+                let at_mission_control = match self.selected_node() {
+                    SelectedNode::MissionControl => true,
+                    SelectedNode::Hq
+                    | SelectedNode::Tier(_)
+                    | SelectedNode::Space(_)
+                    | SelectedNode::View(_) => false,
+                };
+                if self.viewing_finished_runs && at_mission_control {
+                    match key {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.finished_runs_prev();
+                            return Action::None;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.finished_runs_next();
+                            return Action::None;
+                        }
+                        KeyCode::Enter => {
+                            // Selecting a row shows its id and `bastion
+                            // inspect` command in the footer — this block
+                            // does NOT render run detail in-console
+                            // (out of scope; `bastion inspect` and BA.26.D's
+                            // live pane already own that).
+                            if let crate::runs::FinishedRunsStatus::Done(runs) =
+                                &self.finished_runs_status
+                                && let Some(run) = runs.get(self.finished_runs_selected)
+                            {
+                                self.status = Some(format!(
+                                    "selected run {} — see: bastion inspect {}",
+                                    run.id, run.id
+                                ));
+                            }
+                            return Action::None;
+                        }
+                        _ => {}
+                    }
+                }
 
                 // Handle pane focus switching in SpaceOverview
                 if is_space_overview {
@@ -755,6 +860,36 @@ impl AppState {
                             } else {
                                 self.run_view_status = RunViewStatus::Probing;
                                 Action::ProbeRunView
+                            }
+                        }
+                        SelectedNode::Hq
+                        | SelectedNode::Tier(_)
+                        | SelectedNode::Space(_)
+                        | SelectedNode::View(_) => Action::None,
+                    },
+                    // Load the finished-runs discovery list (BA.26.E task 2)
+                    // — a run can be found without already knowing its
+                    // UUID. Scoped to `SelectedNode::MissionControl` via an
+                    // EXHAUSTIVE match, exactly like 'p' above, so
+                    // `scripts/check-selected-node-exhaustive.sh` continues
+                    // to pass. Guards against a second keypress spawning a
+                    // second load while one is already `Loading`, same as
+                    // 'p' guards `Probing`; pressing it again after a
+                    // `Done`/`Failed`/`Idle` result starts a fresh load
+                    // (matches 'p''s own re-probe behaviour).
+                    KeyCode::Char('f') => match self.selected_node() {
+                        SelectedNode::MissionControl => {
+                            self.viewing_finished_runs = true;
+                            if matches!(
+                                self.finished_runs_status,
+                                crate::runs::FinishedRunsStatus::Loading
+                            ) {
+                                Action::None
+                            } else {
+                                self.finished_runs_status =
+                                    crate::runs::FinishedRunsStatus::Loading;
+                                self.finished_runs_selected = 0;
+                                Action::LoadFinishedRuns
                             }
                         }
                         SelectedNode::Hq
@@ -1604,6 +1739,28 @@ mod tests {
                         "footer key 'p' must mark a probe as in flight immediately"
                     );
                 }
+                'f' => {
+                    // `make_empty_app()` selects Mission Control (spine index
+                    // 0) by construction — see its own doc comment.
+                    let mut app = make_empty_app();
+                    let action = app.on_key(KeyCode::Char('f'));
+                    assert_eq!(
+                        action,
+                        Action::LoadFinishedRuns,
+                        "footer key 'f' did not resolve to a bound handler"
+                    );
+                    assert!(
+                        matches!(
+                            app.finished_runs_status,
+                            crate::runs::FinishedRunsStatus::Loading
+                        ),
+                        "footer key 'f' must mark a load as in flight immediately"
+                    );
+                    assert!(
+                        app.viewing_finished_runs,
+                        "footer key 'f' must switch Mission Control into the finished-runs view"
+                    );
+                }
                 other => panic!(
                     "footer advertises key '{other}' with no bound-handler assertion \
                      registered in this test — add one before shipping the binding, so an \
@@ -1705,6 +1862,150 @@ mod tests {
             app.run_view_status,
             RunViewStatus::Idle,
             "a 'p' press outside Mission Control must not start a probe"
+        );
+    }
+
+    // ── on_key: 'f' finished-runs discovery list (BA.26.E task 2) ───────────
+
+    fn a_workflow_run(id: &str) -> crate::db::workflows::WorkflowRun {
+        crate::db::workflows::WorkflowRun {
+            id: id.to_string(),
+            workflow_name: "some-workflow".to_string(),
+            status: crate::db::workflows::RunStatus::Success,
+            budget_halt: None,
+            nodes: vec![],
+            started_at: Some("2026-09-01T00:00:00Z".to_string()),
+            elapsed_secs: None,
+        }
+    }
+
+    /// A second 'f' press while a load is already in flight must NOT
+    /// re-emit `Action::LoadFinishedRuns` — the event loop owns exactly one
+    /// load-thread slot, mirroring `on_key_p_while_already_probing_is_a_no_op`.
+    #[test]
+    fn on_key_f_while_already_loading_is_a_no_op() {
+        let mut app = make_empty_app();
+        let first = app.on_key(KeyCode::Char('f'));
+        assert_eq!(first, Action::LoadFinishedRuns);
+        assert!(matches!(
+            app.finished_runs_status,
+            crate::runs::FinishedRunsStatus::Loading
+        ));
+
+        let second = app.on_key(KeyCode::Char('f'));
+        assert_eq!(
+            second,
+            Action::None,
+            "a second 'f' while loading must not spawn a second load thread"
+        );
+        assert!(
+            matches!(
+                app.finished_runs_status,
+                crate::runs::FinishedRunsStatus::Loading
+            ),
+            "status must stay Loading, not reset or double-count"
+        );
+    }
+
+    /// Once a previous load has completed (`Done`), a fresh 'f' press must
+    /// spawn a new one — the guard is scoped to `Loading`, not to "a load
+    /// has ever run".
+    #[test]
+    fn on_key_f_after_a_done_result_starts_a_new_load() {
+        let mut app = make_empty_app();
+        app.finished_runs_status =
+            crate::runs::FinishedRunsStatus::Done(vec![a_workflow_run("r-1")]);
+        let action = app.on_key(KeyCode::Char('f'));
+        assert_eq!(action, Action::LoadFinishedRuns);
+        assert!(matches!(
+            app.finished_runs_status,
+            crate::runs::FinishedRunsStatus::Loading
+        ));
+    }
+
+    /// 'f' is scoped to `SelectedNode::MissionControl` — mirrors
+    /// `on_key_p_outside_mission_control_is_a_no_op`.
+    #[test]
+    fn on_key_f_outside_mission_control_is_a_no_op() {
+        let (mut app, _view_index) = make_full_app_with_view();
+        app.selected_spine = 1; // Hq row — not Mission Control.
+        assert_ne!(app.selected_node(), SelectedNode::MissionControl);
+
+        let action = app.on_key(KeyCode::Char('f'));
+        assert_eq!(action, Action::None);
+        assert!(
+            matches!(
+                app.finished_runs_status,
+                crate::runs::FinishedRunsStatus::Idle
+            ),
+            "an 'f' press outside Mission Control must not start a load"
+        );
+        assert!(
+            !app.viewing_finished_runs,
+            "an 'f' press outside Mission Control must not switch the view"
+        );
+    }
+
+    /// Once loaded, Up/Down/j/k move the finished-runs selection rather than
+    /// the spine cursor — proves the interception happens BEFORE the
+    /// generic spine-navigation match.
+    #[test]
+    fn finished_runs_navigation_moves_selection_not_the_spine() {
+        let mut app = make_empty_app();
+        app.viewing_finished_runs = true;
+        app.finished_runs_status = crate::runs::FinishedRunsStatus::Done(vec![
+            a_workflow_run("r-1"),
+            a_workflow_run("r-2"),
+            a_workflow_run("r-3"),
+        ]);
+        let spine_before = app.selected_spine;
+
+        app.on_key(KeyCode::Down);
+        assert_eq!(app.finished_runs_selected, 1);
+        assert_eq!(
+            app.selected_spine, spine_before,
+            "finished-runs navigation must not move the spine cursor"
+        );
+
+        app.on_key(KeyCode::Char('j'));
+        assert_eq!(app.finished_runs_selected, 2);
+
+        // Clamped at the last row, not wrapped or out of bounds.
+        app.on_key(KeyCode::Down);
+        assert_eq!(app.finished_runs_selected, 2);
+
+        app.on_key(KeyCode::Up);
+        assert_eq!(app.finished_runs_selected, 1);
+        app.on_key(KeyCode::Char('k'));
+        assert_eq!(app.finished_runs_selected, 0);
+        // Clamped at 0, never underflows.
+        app.on_key(KeyCode::Up);
+        assert_eq!(app.finished_runs_selected, 0);
+    }
+
+    /// Selecting a row with Enter shows that run's id and its `bastion
+    /// inspect` command in the footer status — without opening any new
+    /// detail-rendering view (this block ships the LIST only).
+    #[test]
+    fn finished_runs_enter_sets_footer_status_with_id_and_inspect_command() {
+        let mut app = make_empty_app();
+        app.viewing_finished_runs = true;
+        app.finished_runs_status =
+            crate::runs::FinishedRunsStatus::Done(vec![a_workflow_run("r-target")]);
+        app.finished_runs_selected = 0;
+
+        app.on_key(KeyCode::Enter);
+
+        let msg = app
+            .status
+            .expect("Enter on a loaded row must set a footer status");
+        assert!(
+            msg.contains("r-target"),
+            "footer must name the run id: {msg}"
+        );
+        assert!(
+            msg.contains("bastion inspect"),
+            "footer must name the inspect command: {msg}"
         );
     }
 
