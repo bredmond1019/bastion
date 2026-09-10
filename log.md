@@ -8,6 +8,38 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-10]
 
+Full spec BA.26.E ("Find a finished run without knowing its UUID") closed, review PASS, all
+3 tasks passed. Task 1 added an async, read-only `list_finished_runs` plus a pure
+`select_finished` helper to `src/db/workflows.rs`, filtering to terminal statuses
+(Success/Failed/Cancelled/BudgetHalted), sorted by `started_at` descending, truncated to a
+limit. Task 2 (already implemented and committed on this branch across prior attempts, hardened
+against a self-inflicted env-mutation test race by wrapping the new test in the shared
+`testsupport::lock_env()` guard) wires the discovery list — data type, routing, background load,
+rendering — through `src/runs/mod.rs`, `src/sessions/app.rs`, `src/sessions/ui.rs`, rendering
+through the same `NodeState` the live view uses, with an `f`-key navigation intercept ahead of the
+generic spine-navigation match. Task 3 added `tests/plist_database_url.rs`: a gated fixture-pair
+test proving the DATABASE_URL comparison logic can go red/green, plus a non-gated real-file test
+comparing `com.brandon.bastion-serve.plist` and `com.brandon.engine-serve.plist` at the HQ root
+(skips cleanly when the HQ vault is absent). All Postgres access stays read-only (D2). Verdict:
+PASS. `mev set-block-status bastion:BA.26.E closed --write` flipped the block via its own exit
+code; a follow-up `mev emit-state --write` reported toolchain drift (installed `bastion` binary
+built from `2dafa87`, stale relative to source at `571fece`) and skipped derived-surface
+regeneration — the authored close already landed, only the derived boards/focus/project-caches
+are stale until the binary is rebuilt. Next: rebuild/reinstall `bastion` from current HEAD, then
+re-run `mev emit-state --write` to refresh derived surfaces; pick up the next queued item per
+`planning/status.md`.
+
+```
+571fece docs: update docs for BA.26.E
+ebd4d3c feat: implement BA.26.E-task3
+3a57034 chore: wrap up BA.26.E
+496c2e5 chore: wrap up BA.26.E
+8f62d86 fix: guard spawn_finished_runs_load's test with the shared env lock
+371ced7 chore: wrap up BA.26.E
+b8b1468 feat: implement BA.26.E-task2
+e0af3a0 feat: implement BA.26.E-task1
+```
+
 Wrap-up pass over /sdlc-flow's BA.26.E run (tasks 1–3 targeted, task 1 passed). Task 1's `list_finished_runs`/`select_finished` (`src/db/workflows.rs`, `e0af3a0`) stands unchanged. Task 2's discovery-list wiring (`src/runs/mod.rs`, `src/sessions/app.rs`, `src/sessions/ui.rs`, `b8b1468`, hardened by `8f62d86`) is implemented and committed, but this run BAILED again: the step-7a work-assertion check could not confirm task 2's work because intervening non-task "wrap-up" commits sit on top of task 2's actual commit in `HEAD~1..HEAD`, so the diff it inspects never intersects task 2's declared files — a structural artifact of extra commits layered on since the last verified checkpoint, not evidence the work is missing, and the same stuck shape recurring across task 2's prior bails (the env-leak flake, then no progress). This is not fixable by another mechanical retry of task 2. A draft PR (#55) was already opened against this branch by an earlier attempt and is left as-is; the sdlc-flow-state.json bail write for this attempt did not overwrite it. `mev emit-state --write` ran but skipped derived-surface regeneration (toolchain drift: installed `bastion` binary built from `2dafa87`, stale relative to source at `496c2e5`). Next: rebuild/reinstall `bastion` from current HEAD, then resume BA.26.E by re-deriving task 2's work-assertion check against its actual commit (`8f62d86`) rather than `HEAD~1..HEAD`, or merge/close PR #55 directly since task 2's code is already verified sound.
 
 ```
