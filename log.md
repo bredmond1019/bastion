@@ -8,6 +8,20 @@ timestamp: 2026-09-02T07:26:32-0300
 
 ## [run: 2026-09-10]
 
+Wrap-up pass over /sdlc-flow's BA.26.E run (tasks 1–3 targeted, task 1 passed). Task 1's `list_finished_runs`/`select_finished` (`src/db/workflows.rs`, `e0af3a0`) stands unchanged. Task 2's discovery-list wiring (`src/runs/mod.rs`, `src/sessions/app.rs`, `src/sessions/ui.rs`, `b8b1468`, hardened by `8f62d86`) is implemented and committed, but this run BAILED again: the step-7a work-assertion check could not confirm task 2's work because intervening non-task "wrap-up" commits sit on top of task 2's actual commit in `HEAD~1..HEAD`, so the diff it inspects never intersects task 2's declared files — a structural artifact of extra commits layered on since the last verified checkpoint, not evidence the work is missing, and the same stuck shape recurring across task 2's prior bails (the env-leak flake, then no progress). This is not fixable by another mechanical retry of task 2. A draft PR (#55) was already opened against this branch by an earlier attempt and is left as-is; the sdlc-flow-state.json bail write for this attempt did not overwrite it. `mev emit-state --write` ran but skipped derived-surface regeneration (toolchain drift: installed `bastion` binary built from `2dafa87`, stale relative to source at `496c2e5`). Next: rebuild/reinstall `bastion` from current HEAD, then resume BA.26.E by re-deriving task 2's work-assertion check against its actual commit (`8f62d86`) rather than `HEAD~1..HEAD`, or merge/close PR #55 directly since task 2's code is already verified sound.
+
+```
+496c2e5 chore: wrap up BA.26.E
+8f62d86 fix: guard spawn_finished_runs_load's test with the shared env lock
+371ced7 chore: wrap up BA.26.E
+b8b1468 feat: implement BA.26.E-task2
+e0af3a0 feat: implement BA.26.E-task1
+9c6794d chore(harness): sync base-template — sync stop-or-continue rule 10 rewrite + engine updates across fleet
+98b834e chore(harness): sync base-template — sync all commands/harness across fleet
+2dafa87 chore: sync harness manifest from base-template
+```
+
+
 Resumed /sdlc-flow on BA.26.E for a wrap-up pass over tasks 1–3; task 1 remains passed (`list_finished_runs`/`select_finished` in `src/db/workflows.rs`, already committed at `e0af3a0`). Task 2's own code (discovery list wiring in `src/runs/mod.rs`, `src/sessions/app.rs`, `src/sessions/ui.rs`) is already implemented and committed (`b8b1468`), and a follow-up commit already on the branch (`8f62d86`) fixed the previously-bailing flaky test by wrapping its new env-mutating test in the shared `testsupport::lock_env()` guard. This run BAILED again anyway: `task_validation_3` (`notify_test_send_unconfigured_transport_returns_503_c005`, `src/serve/mod.rs:3889`) failed identically under the full parallel suite — got 200, expected 503 — for the second consecutive attempt with no further progress available inside task 2's declared file scope. Suspected cause, not verified this turn: real `.env` Telegram credentials leaking into the test via a dotenvy reload race under full-suite parallelism (this run did not re-run the check against base state to confirm). `mev emit-state --write` ran but skipped derived-surface regeneration (toolchain drift: installed `bastion` binary built from `2dafa87`, stale relative to source at `8f62d86`). Next: rebuild/reinstall `bastion` from `8f62d86`, then either isolate or fix `notify_test_send_unconfigured_transport_returns_503_c005`'s env leak (out of BA.26.E's declared scope) before resuming BA.26.E from task 2's work-assertion gate.
 
 ```
