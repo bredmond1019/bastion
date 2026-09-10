@@ -1977,9 +1977,13 @@ mod tests {
     /// almost instantly rather than attempting a real Postgres connection.
     #[test]
     fn spawn_finished_runs_load_delivers_a_result_without_blocking_the_caller() {
-        unsafe {
-            std::env::remove_var("DATABASE_URL");
-        }
+        // Must take the shared env lock before mutating DATABASE_URL — an
+        // unguarded removal races other threads' dotenvy reloads in the same
+        // `cargo test` process (env vars are process-global), which is
+        // exactly the trap `notify_test_send_unconfigured_transport_returns_503_c005`
+        // guards against with the identical pattern (src/serve/mod.rs).
+        let env_lock = crate::testsupport::lock_env();
+        let _db_url = crate::testsupport::EnvVarGuard::unset(&env_lock, "DATABASE_URL");
 
         let rx = spawn_finished_runs_load();
         let start = std::time::Instant::now();
