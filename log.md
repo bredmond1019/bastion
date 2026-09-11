@@ -8,6 +8,41 @@ timestamp: 2026-09-10T21:10:00-0300
 
 ## [run: 2026-09-10]
 
+Resumed BA.26.H and ran tasks 1 through 5 on the worktree branch. Task 1 added the
+`MIN_CONTENT_WIDTH_WITH_BROWSER` size guard to `compute_pane_areas` so the Hq/Space/View browser
+split collapses to full-width content below 40 columns instead of shredding long slugs mid-word;
+task 2 introduced the shared `StatusKind` glyph/style/label enum in `src/ui_theme.rs` with `From`
+impls for `AgentState` and `db::workflows::RunStatus`; task 3 wired `finished_run_line` (a
+`Line`-based companion to `finished_run_row`) through the finished-runs pane so it resolves through
+the same shared set; task 4 repointed `src/overview/mod.rs`'s `render_jump_status` onto
+`StatusKind::Success`/`Failed`, leaving the parked `render`/`StateJson` path untouched. Task 5
+re-blessed the 80x24 celia golden against the shipped build and fixed six pre-existing
+test-geometry regressions surfaced by the full authoritative gate, landing every declared BA.26.H
+validation command green. The run BAILED at task 5's test stage: `task_validation_8`
+(capture-scenes-text celia check) failed on the pre-existing `session_tui_open_work_200x55`/
+`120x40` scenes (a keybinding-footer-line mismatch), but `planning/harness.json` declares this exact
+check `gates:false` by deliberate design (BA.26.J: a brand-new golden-image surface must not be able
+to red-gate every block on its first day). A source-diff check (`git diff f4a8426..HEAD --
+src/sessions/app.rs`) shows zero changes to `NORMAL_KEY_BINDINGS` across all five BA.26.H task
+commits, and the two golden scenes' keybinding line only lists entries through `r` refresh-boards
+while current source — unchanged by BA.26.H, already present at the branch base — carries later
+entries (`p` probe run view from BA.26.D, plus BA.26.E's addition); the mismatch would reproduce
+byte-for-byte on the pre-BA.26.H tree, though this was not literally re-run against base with celia
+itself (celia is not on PATH here). Closing this needs either blessing the two non-80x24 scenes
+outside task 5's declared file scope (already declined by the implementer) or the test stage
+correctly honoring harness.json's `gates:false` for this check — an operator/spec-owner decision,
+not a retry. Next: get an operator/spec-owner call on the gates:false-vs-test-stage mismatch, then
+resume BA.26.H's end review.
+
+```
+6d51cc8 feat: implement BA.26.H-task5
+e3e5900 chore: wrap up BA.26.H
+810e9ab feat: implement BA.26.H-task4
+91e8b51 feat: implement BA.26.H-task3
+3051bdf feat: implement BA.26.H-task2
+a0de452 feat: implement BA.26.H-task1
+```
+
 Implemented tasks 1-3 of BA.26.H (a chrome pass for 80x24 legibility plus a shared bastiel status
 glyph/colour set): task 1 added `MIN_CONTENT_WIDTH_WITH_BROWSER=40` to
 `compute_pane_areas`/`sessions/app.rs` so the Hq/Space/View browser split collapses to a full-width
