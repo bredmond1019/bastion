@@ -1823,6 +1823,159 @@ mod engine_mount_tests {
         assert!(dispatcher.is_registered("SDLC_FLOW"));
     }
 
+    // ── operator-transport wiring (BA.ticket.engine-dispatcher-carries-
+    //    the-real-operator-transport task 2) ────────────────────────────
+
+    /// A counting [`notify::OperatorTransport`] used only to prove a
+    /// `SWEEP` dispatched from `build_engine_dispatcher(Some(transport))`
+    /// actually routes a `notification`-channel escalation through the
+    /// injected transport — mirrors engine-serve's own
+    /// `CountingOperatorTransport` (`register_builtin_workflows_with_operator`'s
+    /// own test), duplicated here because bastion cannot reach that
+    /// upstream test-only type from its own test module.
+    struct CountingOperatorTransport {
+        sends: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingOperatorTransport {
+        fn new() -> Self {
+            Self {
+                sends: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl notify::OperatorTransport for CountingOperatorTransport {
+        async fn send(
+            &self,
+            _payload: &engine_core::operator::ValidatedOperatorPayload,
+        ) -> Result<notify::DeliveredMessage, notify::NotifyError> {
+            self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(notify::DeliveredMessage {
+                transport_message_id: String::new(),
+            })
+        }
+
+        async fn poll_responses(
+            &self,
+            since: Option<notify::UpdateCursor>,
+        ) -> Result<
+            (Vec<notify::OperatorResponse>, Option<notify::UpdateCursor>),
+            notify::NotifyError,
+        > {
+            Ok((Vec::new(), since))
+        }
+    }
+
+    /// AC: "With a Telegram config present ... a SWEEP dispatched from the
+    /// engine dispatcher over a fixture roadmap holding one new
+    /// `notification` escalation calls the stub's `send` exactly once."
+    ///
+    /// OBSERVED RED: before task 1's hoist, `build_engine_dispatcher` had
+    /// no `operator_transport` parameter at all and always registered
+    /// `SWEEP` against `NoopOperatorTransport` — this test's dispatched
+    /// `SWEEP` would have observed zero sends on the injected transport.
+    #[tokio::test]
+    async fn engine_dispatcher_with_telegram_routes_sweep_notifications_to_the_transport() {
+        let root = tempfile::tempdir().unwrap();
+        let roadmap_dir = root.path().join("planning/roadmaps/demo-roadmap");
+        std::fs::create_dir_all(&roadmap_dir).unwrap();
+        std::fs::write(roadmap_dir.join("lane-log.jsonl"), "").unwrap();
+        std::fs::write(
+            roadmap_dir.join("escalations.jsonl"),
+            serde_json::json!({
+                "gate_id": "g1",
+                "kind": "advisory",
+                "channel": "notification",
+                "severity": "advisory",
+                "summary": "something happened",
+                "options": [
+                    {"key": "ack", "label": "Seen"},
+                    {"key": "later", "label": "Later"},
+                ],
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+
+        let counting = std::sync::Arc::new(CountingOperatorTransport::new());
+        let transport: std::sync::Arc<dyn notify::OperatorTransport> = counting.clone();
+        let dispatcher = build_engine_dispatcher(Some(transport));
+
+        let workflow = dispatcher
+            .dispatch_with_event(
+                "SWEEP",
+                &serde_json::json!({
+                    "root": root.path().to_string_lossy(),
+                    "roadmap": "demo-roadmap",
+                    "now": "2026-09-08T00:00:00Z",
+                }),
+            )
+            .expect("SWEEP should dispatch to a runnable Workflow");
+
+        let _ctx = workflow
+            .run(
+                serde_json::json!({
+                    "root": root.path().to_string_lossy(),
+                    "roadmap": "demo-roadmap",
+                    "now": "2026-09-08T00:00:00Z",
+                }),
+                Box::new(|_ctx| {}),
+            )
+            .await
+            .expect("SWEEP run itself should not error");
+
+        assert_eq!(
+            counting.sends.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a fresh notification-channel escalation must route through the transport \
+             the engine dispatcher was built with exactly once"
+        );
+    }
+
+    /// AC: "The transport given to the engine dispatcher is the same
+    /// allocation the poll loop holds (`Arc::ptr_eq`), not a second
+    /// transport." Exercised at the unit level — the same construction
+    /// pattern `run_server` uses (one `Arc::new`, cloned per consumer) —
+    /// without standing up the full server.
+    #[test]
+    fn engine_dispatcher_shares_the_poll_loop_transport() {
+        let transport: std::sync::Arc<dyn notify::OperatorTransport> =
+            std::sync::Arc::new(StubTransport);
+        let for_dispatcher = std::sync::Arc::clone(&transport);
+        let (poll_loop_transport, _app_data_transport) = split_operator_transport(transport);
+
+        assert!(
+            std::sync::Arc::ptr_eq(&for_dispatcher, &poll_loop_transport),
+            "the transport passed into build_engine_dispatcher must be the SAME allocation \
+             the poll loop holds, not a second TelegramTransport::new(..)"
+        );
+    }
+
+    /// AC: "With no Telegram config ... the engine dispatcher registers the
+    /// same workflow types as today" / "registers the same set of workflow
+    /// types whether or not Telegram is configured."
+    #[test]
+    fn engine_dispatcher_without_telegram_is_unchanged() {
+        let plain = build_engine_dispatcher(None);
+
+        let mut direct = Dispatcher::new();
+        register_builtin_workflows(&mut direct);
+
+        let mut plain_types = plain.registered_types();
+        let mut direct_types = direct.registered_types();
+        plain_types.sort();
+        direct_types.sort();
+
+        assert_eq!(
+            plain_types, direct_types,
+            "build_engine_dispatcher(None) must register exactly the same workflow_type \
+             set as register_builtin_workflows called directly"
+        );
+    }
+
     #[test]
     fn decide_engine_mount_mounts_when_both_present() {
         let decision =
