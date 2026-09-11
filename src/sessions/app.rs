@@ -2233,11 +2233,17 @@ mod tests {
             )]);
         app.on_key(KeyCode::Char('w'));
         assert_eq!(app.watching_session.as_deref(), Some("eng-42"));
+        app.watched_pane_text = Some("stale pane frame".to_string());
 
         app.on_key(KeyCode::Char('w'));
         assert_eq!(
             app.watching_session, None,
             "a second 'w' press must toggle watching back off"
+        );
+        assert_eq!(
+            app.watched_pane_text, None,
+            "toggling watch off must also clear the last-rendered pane text, \
+             not leave a stale frame on screen for a session no longer being watched"
         );
     }
 
