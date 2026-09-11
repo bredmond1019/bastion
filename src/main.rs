@@ -26,6 +26,7 @@ mod run;
 mod runs;
 mod serve;
 mod sessions;
+mod sweep_cli;
 #[cfg(test)]
 mod testsupport;
 mod ui_theme;
