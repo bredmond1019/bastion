@@ -24,6 +24,7 @@ mod observ;
 mod openwork;
 mod overview;
 mod permission_profile;
+mod roadmap_status_cli;
 mod run;
 mod runs;
 mod serve;
@@ -46,6 +47,22 @@ use cli::{Cli, Commands, CoordMode, NotifyMode};
 use observ::errors::{ConsoleError, ErrorCode};
 
 // ── Pure helpers (unit-tested below) ─────────────────────────────────────────
+
+/// Split `lane` (`bastion attach`'s own CLI shape, `<repo>/<lane>`) on the FIRST `/` into
+/// `(repo, lane_name)` — mirroring `drain_cli`'s own `parse_lane` convention for the sibling
+/// `bastion drain --lane <repo>/<lane>` shape (`BA.25.D`). `Err` naming the literal `lane`
+/// string given when it contains no `/`, or more than one — refused before any file I/O,
+/// never silently truncated.
+fn parse_attach_lane(lane: &str) -> Result<(&str, &str)> {
+    let parts: Vec<&str> = lane.split('/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        anyhow::bail!(
+            "attach \"{lane}\" is not a valid `<repo>/<lane>` value — expected exactly one `/` \
+             separating a non-empty repo and a non-empty lane name"
+        );
+    }
+    Ok((parts[0], parts[1]))
+}
 
 /// Resolve the canonical name string for a subcommand variant (pure).
 ///
@@ -83,6 +100,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Assess { .. } => "assess",
         Commands::Notify { .. } => "notify",
         Commands::Coord { .. } => "coord",
+        Commands::RoadmapStatus { .. } => "roadmap-status",
         Commands::Sweep { .. } => "sweep",
         Commands::Drain { .. } => "drain",
     }
@@ -210,7 +228,10 @@ async fn dispatch(cli: Cli) -> Result<()> {
             // Sessions path is DB-free (D4): no Config::load(), no Postgres pool.
             // All session verbs are sync blocking (D5): no async/tokio coupling.
             Commands::Sessions => sessions::run(),
-            Commands::Attach { session } => sessions::commands::attach(&session),
+            Commands::Attach { lane } => {
+                let (repo, lane_name) = parse_attach_lane(&lane)?;
+                sessions::commands::attach_lane(repo, lane_name)
+            }
             Commands::New { session, dir } => {
                 sessions::commands::new(&session, dir.as_deref().and_then(|p| p.to_str()))
             }
@@ -440,6 +461,11 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 } => coord_cli::run_complete(&repo, &lane, &message_id, lock_dir.as_deref()),
                 CoordMode::Restore { lock_dir } => coord_cli::run_restore(lock_dir.as_deref()),
             },
+            // Faces engine-core's typed roadmap-status join, kept beside `/roadmap-status`'s
+            // Python path (BA.25.E). No discovery logic lives here; see `roadmap_status_cli`.
+            Commands::RoadmapStatus { roadmap, json } => {
+                roadmap_status_cli::run_roadmap_status(&roadmap, json)
+            }
             // Sweep/Drain are the only two hand-woken faces for the Rust SWEEP and
             // COMMANDER workflows in this cut (BA.25.D, Fork 4 — no schedule). No
             // pipeline logic lives here; see `sweep_cli`/`drain_cli`.
@@ -622,11 +648,37 @@ mod tests {
     #[test]
     fn command_name_attach() {
         assert_eq!(
-            command_name(&Commands::Attach {
-                session: "s".into()
-            }),
+            command_name(&Commands::Attach { lane: "r/l".into() }),
             "attach"
         );
+    }
+
+    #[test]
+    fn command_name_roadmap_status() {
+        assert_eq!(
+            command_name(&Commands::RoadmapStatus {
+                roadmap: "r".into(),
+                json: false,
+            }),
+            "roadmap-status"
+        );
+    }
+
+    #[test]
+    fn parse_attach_lane_splits_repo_and_lane_on_first_slash() {
+        assert_eq!(parse_attach_lane("bastion/b1").unwrap(), ("bastion", "b1"));
+    }
+
+    #[test]
+    fn parse_attach_lane_refuses_a_value_with_no_slash_naming_it() {
+        let err = parse_attach_lane("not-a-repo-slash-lane").unwrap_err();
+        assert!(err.to_string().contains("not-a-repo-slash-lane"));
+    }
+
+    #[test]
+    fn parse_attach_lane_refuses_a_value_with_more_than_one_slash() {
+        let err = parse_attach_lane("a/b/c").unwrap_err();
+        assert!(err.to_string().contains("a/b/c"));
     }
 
     #[test]
