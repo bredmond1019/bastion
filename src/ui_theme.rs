@@ -221,22 +221,146 @@ pub fn list_selected_style() -> Style {
 
 /// Style for a "running" session state indicator.
 pub fn state_running_style() -> Style {
-    Style::default().fg(cyan()).add_modifier(Modifier::BOLD)
+    StatusKind::Running.style()
 }
 
 /// Style for an "idle" session state indicator.
 pub fn state_idle_style() -> Style {
-    Style::default().fg(muted())
+    StatusKind::Idle.style()
 }
 
 /// Style for an "agent working" state indicator.
 pub fn state_working_style() -> Style {
-    Style::default().fg(sage()).add_modifier(Modifier::BOLD)
+    StatusKind::Working.style()
 }
 
 /// Style for an "agent blocked" state indicator.
 pub fn state_blocked_style() -> Style {
-    Style::default().fg(rose()).add_modifier(Modifier::BOLD)
+    StatusKind::Blocked.style()
+}
+
+// ── Shared status set (BA.26.H) ─────────────────────────────────────────────
+//
+// The single glyph+colour+label resolution path every rendering surface in
+// this block (src/sessions/ui.rs, src/runs/mod.rs, src/overview/mod.rs) must
+// route through, so "what colour is a blocked/failed/halted item" lives in
+// exactly one place. `AgentState` (session-detection states) and
+// `db::workflows::RunStatus` (workflow-run states) both map onto this one
+// enum via `From` below, rather than each rendering surface picking colours
+// ad hoc per call site.
+
+/// One shared classification every status rendered in bastion's TUI resolves
+/// through — the union of `AgentState`'s session states and
+/// `db::workflows::RunStatus`'s run states, collapsed onto one glyph, style,
+/// and human-readable label per kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatusKind {
+    Success,
+    Failed,
+    Running,
+    Pending,
+    Cancelled,
+    Halted,
+    Suspended,
+    Idle,
+    Blocked,
+    Working,
+}
+
+impl StatusKind {
+    /// The glyph prefix for this status — a filled dot for active/terminal
+    /// pass-fail states, a hollow dot for waiting states, and a diamond for
+    /// the three "paused by policy" states (cancelled/halted/suspended),
+    /// so those are visually distinct from a plain idle/pending wait.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            StatusKind::Success
+            | StatusKind::Working
+            | StatusKind::Running
+            | StatusKind::Blocked
+            | StatusKind::Failed => "● ",
+            StatusKind::Idle | StatusKind::Pending => "○ ",
+            StatusKind::Cancelled | StatusKind::Halted | StatusKind::Suspended => "◆ ",
+        }
+    }
+
+    /// The themed style for this status, built from `current_theme()`'s
+    /// named colours — the one place a status-to-colour mapping lives.
+    pub fn style(self) -> Style {
+        match self {
+            StatusKind::Success | StatusKind::Working => {
+                Style::default().fg(sage()).add_modifier(Modifier::BOLD)
+            }
+            StatusKind::Failed | StatusKind::Blocked => {
+                Style::default().fg(rose()).add_modifier(Modifier::BOLD)
+            }
+            StatusKind::Running => Style::default().fg(cyan()).add_modifier(Modifier::BOLD),
+            StatusKind::Idle | StatusKind::Pending | StatusKind::Cancelled => {
+                Style::default().fg(muted())
+            }
+            StatusKind::Halted | StatusKind::Suspended => {
+                Style::default().fg(warning()).add_modifier(Modifier::BOLD)
+            }
+        }
+    }
+
+    /// The human-readable, lowercase label for this status (e.g. "blocked",
+    /// "halted").
+    pub fn label(self) -> &'static str {
+        match self {
+            StatusKind::Success => "success",
+            StatusKind::Failed => "failed",
+            StatusKind::Running => "running",
+            StatusKind::Pending => "pending",
+            StatusKind::Cancelled => "cancelled",
+            StatusKind::Halted => "halted",
+            StatusKind::Suspended => "suspended",
+            StatusKind::Idle => "idle",
+            StatusKind::Blocked => "blocked",
+            StatusKind::Working => "working",
+        }
+    }
+}
+
+impl From<crate::detect::AgentState> for StatusKind {
+    fn from(state: crate::detect::AgentState) -> Self {
+        match state {
+            crate::detect::AgentState::Idle => StatusKind::Idle,
+            crate::detect::AgentState::Working => StatusKind::Working,
+            crate::detect::AgentState::Blocked => StatusKind::Blocked,
+            // `Unknown` has never had a distinct visual from `Idle` (see the
+            // pre-existing `ui.rs` match arm both resolved to
+            // `state_idle_style()`); preserve that rather than inventing a
+            // new appearance here.
+            crate::detect::AgentState::Unknown => StatusKind::Idle,
+        }
+    }
+}
+
+impl From<&crate::db::workflows::RunStatus> for StatusKind {
+    fn from(status: &crate::db::workflows::RunStatus) -> Self {
+        use crate::db::workflows::RunStatus;
+        match status {
+            RunStatus::Running => StatusKind::Running,
+            RunStatus::Success => StatusKind::Success,
+            RunStatus::Failed => StatusKind::Failed,
+            RunStatus::Pending => StatusKind::Pending,
+            RunStatus::Cancelled => StatusKind::Cancelled,
+            RunStatus::BudgetHalted => StatusKind::Halted,
+            RunStatus::Suspended => StatusKind::Suspended,
+        }
+    }
+}
+
+/// The (glyph, style) pair a status resolves to — the single call every
+/// rendering surface should make instead of picking a colour ad hoc.
+pub fn status_glyph_and_style(kind: StatusKind) -> (&'static str, Style) {
+    (kind.glyph(), kind.style())
+}
+
+/// The human-readable label a status resolves to.
+pub fn status_label(kind: StatusKind) -> &'static str {
+    kind.label()
 }
 
 /// Style for the footer status bar.
@@ -403,5 +527,125 @@ mod tests {
         assert_eq!(bella.code_bg, Some(theme.surface));
         assert_eq!(bella.status_fg, theme.text);
         assert_eq!(bella.status_bg, theme.border_active);
+    }
+
+    // ── Shared status set (BA.26.H) ─────────────────────────────────────────
+
+    #[test]
+    fn every_agent_state_resolves_through_the_shared_status_kind() {
+        use crate::detect::AgentState;
+
+        let cases = [
+            (AgentState::Idle, StatusKind::Idle),
+            (AgentState::Working, StatusKind::Working),
+            (AgentState::Blocked, StatusKind::Blocked),
+            (AgentState::Unknown, StatusKind::Idle),
+        ];
+        for (state, expected_kind) in cases {
+            assert_eq!(
+                StatusKind::from(state),
+                expected_kind,
+                "AgentState::{state:?} should resolve to {expected_kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_run_status_resolves_through_the_shared_status_kind() {
+        use crate::db::workflows::RunStatus;
+
+        let cases = [
+            (RunStatus::Running, StatusKind::Running),
+            (RunStatus::Success, StatusKind::Success),
+            (RunStatus::Failed, StatusKind::Failed),
+            (RunStatus::Pending, StatusKind::Pending),
+            (RunStatus::Cancelled, StatusKind::Cancelled),
+            (RunStatus::BudgetHalted, StatusKind::Halted),
+            (RunStatus::Suspended, StatusKind::Suspended),
+        ];
+        for (status, expected_kind) in cases {
+            assert_eq!(
+                StatusKind::from(&status),
+                expected_kind,
+                "RunStatus::{status:?} should resolve to {expected_kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_state_working_resolves_to_a_named_sage_bold_style() {
+        // AgentState::Working is a named, semantically "active/success"
+        // state — pin it to the sage-based style, not merely "some style".
+        let (glyph, style) =
+            status_glyph_and_style(StatusKind::from(crate::detect::AgentState::Working));
+        assert_eq!(glyph, "● ");
+        assert_eq!(style.fg, Some(sage()));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(status_label(StatusKind::Working), "working");
+    }
+
+    #[test]
+    fn run_status_failed_resolves_to_a_named_rose_bold_style() {
+        let (glyph, style) =
+            status_glyph_and_style(StatusKind::from(&crate::db::workflows::RunStatus::Failed));
+        assert_eq!(glyph, "● ");
+        assert_eq!(style.fg, Some(rose()));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(status_label(StatusKind::Failed), "failed");
+    }
+
+    #[test]
+    fn run_status_budget_halted_resolves_to_a_named_warning_style() {
+        let (glyph, style) = status_glyph_and_style(StatusKind::from(
+            &crate::db::workflows::RunStatus::BudgetHalted,
+        ));
+        assert_eq!(glyph, "◆ ");
+        assert_eq!(style.fg, Some(warning()));
+        assert_eq!(status_label(StatusKind::Halted), "halted");
+    }
+
+    #[test]
+    fn status_kind_variants_resolve_to_distinct_deterministic_pairs() {
+        // Calling twice must be deterministic, and the ten kinds must not
+        // all collapse onto one (glyph, style) pair.
+        let all = [
+            StatusKind::Success,
+            StatusKind::Failed,
+            StatusKind::Running,
+            StatusKind::Pending,
+            StatusKind::Cancelled,
+            StatusKind::Halted,
+            StatusKind::Suspended,
+            StatusKind::Idle,
+            StatusKind::Blocked,
+            StatusKind::Working,
+        ];
+        let mut distinct: Vec<(&'static str, Style)> = Vec::new();
+        for kind in all {
+            let pair = status_glyph_and_style(kind);
+            assert_eq!(
+                pair,
+                status_glyph_and_style(kind),
+                "status_glyph_and_style must be deterministic for {kind:?}"
+            );
+            if !distinct.contains(&pair) {
+                distinct.push(pair);
+            }
+        }
+        assert!(
+            distinct.len() > 1,
+            "expected more than one distinct (glyph, style) pair across all StatusKind variants"
+        );
+    }
+
+    #[test]
+    fn state_style_helpers_delegate_to_the_shared_status_kind() {
+        // The pre-existing `state_*_style` functions must resolve to the
+        // same colour as the shared StatusKind lookup, not a duplicated
+        // match arm.
+        assert_eq!(state_running_style(), StatusKind::Running.style());
+        assert_eq!(state_idle_style(), StatusKind::Idle.style());
+        assert_eq!(state_working_style(), StatusKind::Working.style());
+        assert_eq!(state_blocked_style(), StatusKind::Blocked.style());
     }
 }
