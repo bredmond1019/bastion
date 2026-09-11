@@ -254,13 +254,28 @@ mod tests {
     /// `.claude/commands/roadmap-status.md` must document BOTH the pre-existing Python path
     /// (`roadmap_status_discovery.py`) and this block's Rust face (`bastion roadmap-status`) —
     /// per the spec's acceptance criterion "the Python path still works ... both paths are
-    /// offered". This repo sits at `<brain_root>/core/bastion`, so the doc is two levels up.
+    /// offered". This repo sits at `<brain_root>/core/bastion`, so the doc is two levels up —
+    /// in the PRIVATE company-brain vault (`agentic-portfolio`), not in this repo's own git
+    /// index. GitHub CI clones only `bastion` itself (a public/standalone remote), so that
+    /// path is genuinely absent there; it exists only on a developer machine with the full
+    /// monorepo checked out. **Skip rather than fail when the doc is unreachable** — this is
+    /// the same "public CI checkout can't see the private HQ vault" class every cross-repo
+    /// doc check in this fleet has to account for, not a flaky test. This exact edge was hand-
+    /// verified against the real doc post-edit (commit `0ba007a2b`, HQ root) — see
+    /// `planning/BA.25.E/review.md` — so this test's job is to catch a REGRESSION on a machine
+    /// where the doc IS visible, never to gate CI on a path CI cannot see.
     #[test]
     fn hq_roadmap_status_doc_documents_both_paths() {
         let doc_path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/commands/roadmap-status.md");
-        let contents = std::fs::read_to_string(&doc_path)
-            .unwrap_or_else(|e| panic!("could not read {}: {e}", doc_path.display()));
+        let Ok(contents) = std::fs::read_to_string(&doc_path) else {
+            eprintln!(
+                "SKIP: {} not reachable from this checkout (expected in a bastion-only CI clone \
+                 — the file lives in the private company-brain vault, not this repo)",
+                doc_path.display()
+            );
+            return;
+        };
 
         assert!(
             contents.contains("roadmap_status_discovery.py"),
