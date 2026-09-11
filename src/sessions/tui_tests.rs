@@ -445,7 +445,12 @@ mod tests {
 
         let mut app = app_with_hq_and_tier();
         app.selected_spine = 1; // Hq
-        render_frame(&mut app, dir.path(), 80, 24);
+        // BA.26.H: 80 wide now trips the size guard and collapses the
+        // browser (that guard is exactly what this block adds); render
+        // wide enough (120) to assert the *non-collapsed* case this test is
+        // actually about — a guard-engaged assertion belongs with the
+        // guard's own tests in sessions::app::tests.
+        render_frame(&mut app, dir.path(), 120, 24);
 
         assert!(app.pane_areas.browser.width > 0 && app.pane_areas.browser.height > 0);
         assert!(app.pane_areas.content.width > 0 && app.pane_areas.content.height > 0);

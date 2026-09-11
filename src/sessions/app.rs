@@ -2272,7 +2272,16 @@ mod tests {
     /// an `Hq`/`Space` row) a 30-wide browser + remaining content.
     fn make_full_app_with_panes() -> AppState {
         let mut app = make_full_app();
-        app.pane_areas = compute_pane_areas(Rect::new(0, 0, 80, 24), 7, &SelectedNode::Hq);
+        // BA.26.H: 80 wide no longer keeps the browser split open (the size
+        // guard collapses it below MIN_CONTENT_WIDTH_WITH_BROWSER — see
+        // compute_pane_areas). These click/scroll tests exercise routing
+        // *within* the browser+content split, not the guard itself, so they
+        // use a 120-wide frame instead: spine and browser are both
+        // fixed-Length(30), so their rects (and the click coordinates below
+        // that target them) are unchanged from the old 80-wide layout; only
+        // the content pane's width grows, which none of these tests depend
+        // on.
+        app.pane_areas = compute_pane_areas(Rect::new(0, 0, 120, 24), 7, &SelectedNode::Hq);
         app
     }
 

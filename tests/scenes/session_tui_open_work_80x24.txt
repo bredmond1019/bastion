@@ -1,24 +1,24 @@
-┌ spaces ────────────────────┐┌ file browser ──────────────┐┌ content ─────────┐
-│   ◆ Mission Control        ││>> ⇧ ..                     ││                  │
-│    Open Work               ││   📄 index.md              ││Open Work —       │
-│                            ││   📄 status.md             ││Fixture Board     │
-│                            ││                            ││                  │
-│                            ││                            ││FIXTURE —         │
-│                            ││                            ││committed for     │
-│                            ││                            ││BA.26.J’s capture │
-│                            ││                            ││harness. Never    │
-│                            ││                            ││edited by cron or │
-│                            ││                            ││a refresh action; │
-│                            ││                            ││a real  planning/o│
-│                            ││                            ││pen-work/  board  │
-│                            ││                            ││is regenerated    │
-│                            ││                            ││nightly and by    │
-│                            ││                            ││BA.26.C ’s        │
-│                            ││                            ││refresh, which    │
-│                            ││                            ││would make a      │
-│                            ││                            ││byte-identical    │
-└────────────────────────────┘└────────────────────────────┘└──────────────────┘
+┌ spaces ────────────────────┐┌ content ───────────────────────────────────────┐
+│   ◆ Mission Control        ││                                                │
+│    Open Work               ││Open Work — Fixture Board                       │
+│                            ││                                                │
+│                            ││FIXTURE — committed for BA.26.J’s capture       │
+│                            ││harness. Never edited by cron or a refresh      │
+│                            ││action; a real  planning/open-work/  board is   │
+│                            ││regenerated nightly and by  BA.26.C ’s refresh, │
+│                            ││which would make a byte-identical golden capture│
+│                            ││rot by construction.                            │
+│                            ││                                                │
+│                            ││Startable now                                   │
+│                            ││                                                │
+│                            ││┌────┬─────────────┬─────────────┬─────────────┐│
+│                            │││ P  │ Block       │ Roadmap     │ Title       ││
+│                            ││├────┼─────────────┼─────────────┼─────────────┤│
+│                            │││ P1 │  example:E… │  example-r… │ Wire the e… ││
+│                            │││ –  │  example:E… │  example-r… │ Add the se… ││
+│                            ││└────┴─────────────┴─────────────┴─────────────┘│
+└────────────────────────────┘└────────────────────────────────────────────────┘
 ┌ agents · priority ───────────────────────────────────────────────────────────┐
 │○ bastion-capture                                                             │
 └──────────────────────────────────────────────────────────────────────────────┘
-[a]ttach [n]ew [s]end [k]ill [v]iew [q]uit [e]xpand cell [r]efresh boards  ↑/j ↓
+[a]ttach [n]ew [s]end [k]ill [v]iew [q]uit [e]xpand cell [r]efresh boards [p]rob
