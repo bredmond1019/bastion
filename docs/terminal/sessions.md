@@ -166,8 +166,16 @@ for the click/scroll-to-pane mapping.
 | `k` | Kill the selected session |
 | `p` | Probe why the run pane is empty (see below) |
 | `f` | Load and switch to the finished-runs discovery list (see below) |
+| `w` | Watch the selected node's tmux pane — read-only, via `capture_pane_raw`; never pauses the agent (toggles off on a second press) |
+| `t` | Attach to the selected node's tmux session — the real tmux attach; **pauses the engine's sends to that session for the attach duration plus a 60-second hold afterward** (`OperatorHold`/`GuardedSender`) |
 
 Inline prompts appear at the bottom of the screen. `Enter` confirms; `Esc` cancels without making any change.
+
+`w` and `t` both resolve the currently-selected node's tmux session via its `session_name`; a node
+with no attachable session is a no-op with a footer message rather than a panic. Watching is the
+default, non-disruptive affordance — it only ever reads the pane. Attaching is deliberate and
+disruptive: the footer names the 60-second post-attach hold so a deliberate attach is an informed
+one (see `why` in block `BA.26.F`).
 
 When Mission Control's run pane has nothing to show, it no longer just sits blank — it prints
 `press 'p' to check why this pane is empty`. Pressing `p` (Mission-Control-scoped; a no-op
