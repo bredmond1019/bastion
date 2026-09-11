@@ -278,7 +278,17 @@ cache_doc = "docs/projects/hq.md"
         .expect("write lease fixture");
     }
 
+    /// Initialize a throwaway git repo for the fixture tree.
+    ///
+    /// Takes [`crate::testsupport::lock_env`] for the whole helper: `serve::contract_corpus`'s
+    /// tests temporarily set `PATH` to an empty tempdir (`empty_path()` there) under the same
+    /// lock, and under full-suite parallel execution a `git` spawn that does not hold the lock
+    /// races that clearing and fails with `Os { code: 2, kind: NotFound }` — a test-isolation
+    /// failure, not a logic defect. The guard is a plain `std::sync::Mutex` guard and this
+    /// helper is synchronous (no `.await` inside), so holding it here cannot block a runtime
+    /// across a suspension point.
     fn init_git_repo(dir: &Path) {
+        let _env_lock = crate::testsupport::lock_env();
         std::fs::create_dir_all(dir).expect("create repo dir");
         let run = |args: &[&str]| {
             std::process::Command::new("git")
