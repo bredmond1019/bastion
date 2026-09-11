@@ -36,6 +36,17 @@ pub struct PaneAreas {
     pub agent_panel: Rect,
 }
 
+/// Minimum content-pane width (in columns, after the 30-col browser split)
+/// below which `compute_pane_areas` collapses the browser and gives the
+/// content pane the full remaining width instead. Below this, the content
+/// pane's usable width (after `draw_with_root`'s own `saturating_sub(2)`
+/// border allowance) is too narrow for bella's renderer to wrap a long
+/// hyphenated/dotted slug on a word boundary, so it shreds the word mid-token
+/// (BA.26.H). Chosen so an 80-col frame (main area 50, browser+content split
+/// leaving content at 20) engages the guard, while a 160-col frame (main area
+/// 130, content at 100) does not.
+const MIN_CONTENT_WIDTH_WITH_BROWSER: u16 = 40;
+
 /// Pure layout mirror of `draw_with_root`'s `Layout` splits — computes every
 /// pane's viewport `Rect` from a frame size, the already-computed agent-strip
 /// height, and the current `SelectedNode`, without touching a `Frame`. Single
@@ -48,6 +59,8 @@ pub struct PaneAreas {
 /// - `overview_chunks`: only for `Hq`/`Space` (browser + content, 30-col browser);
 ///   `Tier`/`MissionControl` route their content to the whole main area and have
 ///   no browser pane, so `browser` is zero-sized there (`point_in` never matches).
+///   Below `MIN_CONTENT_WIDTH_WITH_BROWSER`, the browser collapses too (BA.26.H
+///   size guard).
 pub fn compute_pane_areas(
     frame_area: Rect,
     agent_strip_height: u16,
@@ -78,11 +91,23 @@ pub fn compute_pane_areas(
 
     let (browser, content) = match selected_node {
         SelectedNode::Hq | SelectedNode::Space(_) | SelectedNode::View(_) => {
+            // Size guard (BA.26.H): below MIN_CONTENT_WIDTH_WITH_BROWSER the
+            // browser+content split leaves too little room for the content
+            // pane to wrap long hyphenated/dotted slugs on a word boundary —
+            // bella's renderer shreds them mid-word instead
+            // (`content_area.width.saturating_sub(2)` ends up single digits
+            // at an 80-wide frame). Below the threshold, collapse the browser
+            // exactly like the MissionControl/Tier branch below already does,
+            // so the content pane gets the full remaining width instead.
             let overview_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(30), Constraint::Min(0)])
                 .split(main_chunks[0]);
-            (overview_chunks[0], overview_chunks[1])
+            if overview_chunks[1].width < MIN_CONTENT_WIDTH_WITH_BROWSER {
+                (Rect::default(), main_chunks[0])
+            } else {
+                (overview_chunks[0], overview_chunks[1])
+            }
         }
         SelectedNode::MissionControl | SelectedNode::Tier(_) => (Rect::default(), main_chunks[0]),
     };
@@ -2424,19 +2449,24 @@ mod tests {
 
     #[test]
     fn compute_pane_areas_hq_splits_browser_and_content() {
-        let frame = Rect::new(0, 0, 80, 24);
+        // A wide frame (160) where main_area (130) - browser (30) leaves a
+        // 100-wide content pane, well above MIN_CONTENT_WIDTH_WITH_BROWSER —
+        // the guard does not engage and the existing 30/30 split holds.
+        let frame = Rect::new(0, 0, 160, 24);
         let areas = compute_pane_areas(frame, 7, &SelectedNode::Hq);
 
         assert_eq!(areas.spine, Rect::new(0, 0, 30, 16));
         // overview_chunks: Length(30) browser + Min(0) content, split from the
-        // 50-wide main area (which starts at x=30).
+        // 130-wide main area (which starts at x=30).
         assert_eq!(areas.browser, Rect::new(30, 0, 30, 16));
-        assert_eq!(areas.content, Rect::new(60, 0, 20, 16));
+        assert_eq!(areas.content, Rect::new(60, 0, 100, 16));
     }
 
     #[test]
     fn compute_pane_areas_space_splits_browser_and_content_same_as_hq() {
-        let frame = Rect::new(0, 0, 80, 24);
+        // Same wide-frame guard-does-not-engage case as the Hq test above,
+        // asserted for Space too (the guard branch covers both selectors).
+        let frame = Rect::new(0, 0, 160, 24);
         let entry = crate::brain::spaces::SpaceEntry {
             slug: "learn-ai".to_string(),
             tier: "_root".to_string(),
@@ -2446,7 +2476,47 @@ mod tests {
         let areas = compute_pane_areas(frame, 7, &SelectedNode::Space(entry));
 
         assert_eq!(areas.browser, Rect::new(30, 0, 30, 16));
-        assert_eq!(areas.content, Rect::new(60, 0, 20, 16));
+        assert_eq!(areas.content, Rect::new(60, 0, 100, 16));
+    }
+
+    #[test]
+    fn compute_pane_areas_hq_at_80_wide_engages_size_guard() {
+        // BA.26.H size guard: at an 80-wide frame, the Hq/Space browser+content
+        // split would leave only a 20-wide content pane — below
+        // MIN_CONTENT_WIDTH_WITH_BROWSER — so the guard collapses the browser
+        // and gives content the full 50-wide main area, exactly like
+        // MissionControl/Tier already do.
+        let frame = Rect::new(0, 0, 80, 24);
+        let areas = compute_pane_areas(frame, 7, &SelectedNode::Hq);
+
+        assert_eq!(areas.browser, Rect::default());
+        assert_eq!(areas.content, Rect::new(30, 0, 50, 16));
+    }
+
+    #[test]
+    fn compute_pane_areas_space_at_80_wide_engages_size_guard() {
+        let frame = Rect::new(0, 0, 80, 24);
+        let entry = crate::brain::spaces::SpaceEntry {
+            slug: "learn-ai".to_string(),
+            tier: "_root".to_string(),
+            repo_path: std::path::PathBuf::from("learn-ai"),
+            heading: None,
+        };
+        let areas = compute_pane_areas(frame, 7, &SelectedNode::Space(entry));
+
+        assert_eq!(areas.browser, Rect::default());
+        assert_eq!(areas.content, Rect::new(30, 0, 50, 16));
+    }
+
+    #[test]
+    fn compute_pane_areas_view_at_80_wide_engages_size_guard() {
+        // SelectedNode::View shares the Hq/Space branch — confirm the guard
+        // covers it too.
+        let frame = Rect::new(0, 0, 80, 24);
+        let areas = compute_pane_areas(frame, 7, &SelectedNode::View(make_view_fixture()));
+
+        assert_eq!(areas.browser, Rect::default());
+        assert_eq!(areas.content, Rect::new(30, 0, 50, 16));
     }
 
     #[test]
@@ -2496,7 +2566,16 @@ mod tests {
     /// an `Hq`/`Space` row) a 30-wide browser + remaining content.
     fn make_full_app_with_panes() -> AppState {
         let mut app = make_full_app();
-        app.pane_areas = compute_pane_areas(Rect::new(0, 0, 80, 24), 7, &SelectedNode::Hq);
+        // BA.26.H: 80 wide no longer keeps the browser split open (the size
+        // guard collapses it below MIN_CONTENT_WIDTH_WITH_BROWSER — see
+        // compute_pane_areas). These click/scroll tests exercise routing
+        // *within* the browser+content split, not the guard itself, so they
+        // use a 120-wide frame instead: spine and browser are both
+        // fixed-Length(30), so their rects (and the click coordinates below
+        // that target them) are unchanged from the old 80-wide layout; only
+        // the content pane's width grows, which none of these tests depend
+        // on.
+        app.pane_areas = compute_pane_areas(Rect::new(0, 0, 120, 24), 7, &SelectedNode::Hq);
         app
     }
 

@@ -94,7 +94,10 @@ on whichever spine row is selected:
   between clipped and fully wrapped in place — no separate overlay or dialog. There is no
   full-screen document overlay — a markdown file always previews inline in the content pane, Enter
   to open. Pane-focus and navigation keys (below) behave identically whether the row is `HQ`, a
-  space, or a view.
+  space, or a view. **On a narrow terminal** (an 80-column frame, for example) the file browser
+  column is dropped and the content pane takes the full width instead of being squeezed to a
+  sliver that wraps long paths mid-word; the browser reappears once the frame is wide enough to
+  give the content pane at least 40 columns.
 - **Tier overview (selecting a tier header — `HQ`/`core`/`side`/`client`/`portfolio`):** Routes
   the main area to that tier's `<tier>/planning/status.md`. If the file or tier directory is
   absent, the pane degrades gracefully to an empty state instead of panicking.

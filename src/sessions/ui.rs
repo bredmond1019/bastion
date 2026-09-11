@@ -1280,11 +1280,13 @@ fn finished_runs_status_message(status: &crate::runs::FinishedRunsStatus) -> Opt
 
 /// Draw the finished-runs discovery-list pane (BA.26.E task 2) — the
 /// Mission-Control content the 'f' key switches into. Renders through
-/// [`crate::runs::finished_run_row`], the ONE formatter this block adds, so
-/// a reviewer can point at this single call site rather than finding a
-/// second formatter.
+/// [`crate::runs::finished_run_line`] (BA.26.H task 3: the styled companion
+/// to `finished_run_row` that resolves the status column through
+/// `ui_theme`'s shared glyph+colour set), the ONE formatter this block
+/// adds, so a reviewer can point at this single call site rather than
+/// finding a second formatter.
 fn render_finished_runs_pane(frame: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
-    use crate::runs::{FinishedRunsStatus, finished_run_row};
+    use crate::runs::{FinishedRunsStatus, finished_run_line};
 
     let block = crate::ui_theme::themed_block(
         Span::styled(" finished runs ", crate::ui_theme::title_style()),
@@ -1295,7 +1297,7 @@ fn render_finished_runs_pane(frame: &mut Frame, app: &AppState, area: ratatui::l
         FinishedRunsStatus::Done(runs) if !runs.is_empty() => {
             let items: Vec<ListItem> = runs
                 .iter()
-                .map(|r| ListItem::new(finished_run_row(r)))
+                .map(|r| ListItem::new(finished_run_line(r)))
                 .collect();
             let list = List::new(items)
                 .block(block)
@@ -2604,6 +2606,74 @@ mod tests {
         assert!(
             text.contains("sentinel-guarded"),
             "expected the surrounding Momentum bullet text to render: {text}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Size guard: long slugs must not shred mid-word at 80x24 (BA.26.H) ──────
+
+    /// Before `compute_pane_areas`'s size guard, an 80-wide frame left the
+    /// `Hq`/`Space` content pane only 18-20 columns wide (after border
+    /// allowance), too narrow for bella's wrap to break a long
+    /// hyphenated/dotted slug on a word boundary — it split mid-token instead
+    /// (e.g. `HQ.ticket.liaison-` / `prompt-must-produc`). This test renders a
+    /// markdown fixture whose body contains such a slug (30 chars — longer
+    /// than the pre-guard 18-column pane, comfortably inside the post-guard
+    /// ~48-column one) as a single unbroken token and asserts it survives on
+    /// screen as one intact word. SHOWN FAILING against the pre-guard
+    /// `compute_pane_areas`: this assertion was confirmed red before the
+    /// guard landed (see tasks.md Notes for BA.26.H task 1) and green after.
+    #[test]
+    fn hq_content_pane_at_80_wide_does_not_shred_long_slug_mid_word() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        const SLUG: &str = "HQ.ticket.liaison-prompt-token";
+
+        let dir = crate::testsupport::unique_temp_dir("bastion-ui-size-guard-test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        std::fs::write(
+            dir.join("status.md"),
+            format!("# Status\n\nSee {SLUG} for details.\n"),
+        )
+        .expect("write status.md");
+
+        // `"_root"`-tagged tier renders as the `Hq` spine row, same fixture
+        // shape as `hq_space_overview_render_hides_html_sentinel_comments`
+        // above.
+        let mut tree = crate::brain::spaces::SpaceTree::default();
+        tree.tiers.push(("_root".to_string(), vec![]));
+        let mut app = AppState::new(vec![], tree);
+        app.selected_spine = 1;
+        assert_eq!(
+            app.selected_node(),
+            crate::brain::spaces::SelectedNode::Hq,
+            "selected_spine=1 must route to Hq"
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+        terminal
+            .draw(|f| {
+                let mut list_state = ratatui::widgets::ListState::default();
+                draw_with_root(
+                    f,
+                    &mut app,
+                    &mut list_state,
+                    &dir,
+                    &mut RenderCache::default(),
+                );
+            })
+            .expect("draw must not panic");
+
+        let buf = terminal.backend().buffer().clone();
+        let text = buf_to_string(&buf);
+
+        assert!(
+            text.contains(SLUG),
+            "expected the long slug to render as one intact, unbroken word at \
+             80x24 (BA.26.H size guard): {text}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

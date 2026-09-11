@@ -266,6 +266,30 @@ pub(crate) fn node_session_name(node: &crate::db::workflows::NodeState) -> Optio
         .map(str::to_string)
 }
 
+/// Styled companion to [`finished_run_row`] (BA.26.H task 3): the same
+/// column layout, but the status column resolves through
+/// [`crate::ui_theme::status_glyph_and_style`]'s shared status set instead
+/// of a bare `{:?}` Debug string, so the finished-runs pane's status colour
+/// comes from the one place every rendering surface this block touches
+/// draws its status glyph/colour/label from. `finished_run_row` itself is
+/// kept — untouched — for the plain-string coverage that already exists on
+/// it; this is the function `render_finished_runs_pane` calls to build each
+/// `ListItem`.
+pub fn finished_run_line(run: &WorkflowRun) -> ratatui::text::Line<'static> {
+    use ratatui::text::Span;
+
+    let kind = crate::ui_theme::StatusKind::from(&run.status);
+    let (glyph, style) = crate::ui_theme::status_glyph_and_style(kind);
+    let label = crate::ui_theme::status_label(kind);
+
+    ratatui::text::Line::from(vec![
+        Span::raw(format!("{:<38} {:<24} ", run.id, run.workflow_name)),
+        Span::styled(glyph, style),
+        Span::styled(format!("{label:<11}"), style),
+        Span::raw(run.started_at.clone().unwrap_or_else(|| "—".to_string())),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,5 +804,80 @@ mod tests {
             row.contains(&run.workflow_name),
             "row must show the workflow name: {row:?}"
         );
+    }
+
+    // ── finished_run_line (BA.26.H task 3) ──────────────────────────────
+
+    /// The styled companion resolves the status column through
+    /// `ui_theme`'s shared `StatusKind` set: the glyph/style span must be
+    /// the SAME (glyph, style) pair `status_glyph_and_style` returns for
+    /// this run's status, checked element-by-element on the returned
+    /// `Line`'s spans rather than by re-deriving a colour independently.
+    #[test]
+    fn finished_run_line_status_span_matches_shared_theme_lookup() {
+        use crate::db::workflows::RunStatus;
+        use crate::ui_theme::{StatusKind, status_glyph_and_style, status_label};
+
+        let run = a_workflow_run(RunStatus::Failed);
+        let line = finished_run_line(&run);
+        let spans = line.spans;
+
+        assert_eq!(
+            spans.len(),
+            4,
+            "expected [id+name, glyph, label, started_at] spans, got {spans:?}"
+        );
+
+        let (expected_glyph, expected_style) =
+            status_glyph_and_style(StatusKind::from(&run.status));
+        let expected_label = status_label(StatusKind::from(&run.status));
+
+        assert_eq!(spans[1].content.as_ref(), expected_glyph);
+        assert_eq!(spans[1].style, expected_style);
+        assert_eq!(spans[2].content.trim(), expected_label);
+        assert_eq!(spans[2].style, expected_style);
+    }
+
+    /// Success and Failed rows must resolve to different (glyph, style)
+    /// pairs on the status span specifically, while the id/workflow-name
+    /// span (span 0) stays identical between the two — the same
+    /// one-formatter-not-two proof `finished_run_row_success_and_failed_*`
+    /// makes for the plain-string form, adapted to the styled spans.
+    #[test]
+    fn finished_run_line_success_and_failed_differ_only_on_status_span() {
+        use crate::db::workflows::RunStatus;
+
+        let success_line = finished_run_line(&a_workflow_run(RunStatus::Success));
+        let failed_line = finished_run_line(&a_workflow_run(RunStatus::Failed));
+
+        assert_eq!(
+            success_line.spans[0].content, failed_line.spans[0].content,
+            "the id+workflow-name span must be identical across statuses"
+        );
+        assert_ne!(
+            (
+                success_line.spans[1].content.clone(),
+                success_line.spans[1].style
+            ),
+            (
+                failed_line.spans[1].content.clone(),
+                failed_line.spans[1].style
+            ),
+            "the status glyph span must differ between Success and Failed"
+        );
+        assert_eq!(
+            success_line.spans[3].content, failed_line.spans[3].content,
+            "the started_at span must be identical across statuses"
+        );
+    }
+
+    #[test]
+    fn finished_run_line_renders_dash_when_started_at_is_absent() {
+        use crate::db::workflows::RunStatus;
+
+        let mut run = a_workflow_run(RunStatus::Success);
+        run.started_at = None;
+        let line = finished_run_line(&run);
+        assert_eq!(line.spans[3].content.as_ref(), "—");
     }
 }
