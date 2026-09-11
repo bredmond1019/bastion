@@ -3383,10 +3383,19 @@ can reach an operator at all without creating a dependency cycle: bastion depend
 never the reverse. The engine app state constructed in `src/serve/mod.rs` is handed the **same**
 `Arc<dyn OperatorTransport>` as the Telegram long-poll loop (`NotifyPollLoop`), registered as
 `app_data` only inside the engine-mount branch (mirroring `ledger_data`) — but `engine-serve` has
-**no extractor for it yet** as of this writing; registering it is the additive half of the seam
-so a later engine-serve change can add a caller without bastion changing again. Absent Telegram
-config, the engine side registers no transport rather than panicking or substituting a
-placeholder.
+**no HTTP extractor for it yet** as of this writing; registering it is the additive half of that
+seam so a later engine-serve change can add an HTTP-level caller without bastion changing again.
+Absent Telegram config, the engine side registers no transport rather than panicking or
+substituting a placeholder.
+
+**Separately**, as of `BA.ticket.engine-dispatcher-carries-the-real-operator-transport`, the
+**same** `Arc` also reaches the engine dispatcher's SWEEP/ORCHESTRATION workflows directly — no
+HTTP extractor involved. `build_engine_dispatcher` in `src/serve/mod.rs` passes the hoisted
+transport into `engine_serve::workflows::register_builtin_workflows_with_operator` (added by
+`EN.17.C`), which re-registers `SWEEP` and `ORCHESTRATION` against it in place of the
+`NoopOperatorTransport` they otherwise use. This is a second, independent integration point on
+the same transport allocation — a Rust chain's bail can reach the operator's phone today, even
+though the app_data path above still awaits its HTTP extractor.
 
 `OperatorTransport` is one `async_trait` with two halves:
 
