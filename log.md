@@ -8,6 +8,30 @@ timestamp: 2026-09-10T21:10:00-0300
 
 ## [run: 2026-09-10]
 
+Closed out BA.26.H (5 of 5 tasks, review PASS) after resuming from the prior bail. Task 1 added a
+`MIN_CONTENT_WIDTH_WITH_BROWSER` size guard to `compute_pane_areas` so the Hq/Space/View browser
+split collapses to full-width content below 40 columns instead of shredding long slugs mid-word;
+task 2 introduced the shared `StatusKind` glyph/style/label enum in `src/ui_theme.rs` with `From`
+impls for `AgentState` and `db::workflows::RunStatus`; task 3 wired `finished_run_line` through the
+finished-runs pane onto the shared set; task 4 repointed `src/overview/mod.rs`'s
+`render_jump_status` onto `StatusKind::Success`/`Failed`, leaving the parked `render`/`StateJson`
+path untouched; task 5 re-blessed the 80x24 celia golden against the shipped build and fixed six
+pre-existing test-geometry regressions. The end review returned PASS with no findings; docs were
+updated (`docs/terminal/sessions.md`). Next: pick up the next queued item per `planning/status.md`.
+
+```
+45b0e0b docs: update docs for BA.26.H
+647dd18 chore: wrap up BA.26.H
+6d51cc8 feat: implement BA.26.H-task5
+e3e5900 chore: wrap up BA.26.H
+810e9ab feat: implement BA.26.H-task4
+91e8b51 feat: implement BA.26.H-task3
+3051bdf feat: implement BA.26.H-task2
+a0de452 feat: implement BA.26.H-task1
+```
+
+## [run: 2026-09-10]
+
 Resumed BA.26.H and ran tasks 1 through 5 on the worktree branch. Task 1 added the
 `MIN_CONTENT_WIDTH_WITH_BROWSER` size guard to `compute_pane_areas` so the Hq/Space/View browser
 split collapses to full-width content below 40 columns instead of shredding long slugs mid-word;
