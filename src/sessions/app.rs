@@ -281,6 +281,23 @@ pub const NORMAL_KEY_BINDINGS: &[KeyBinding] = &[
         key: 'f',
         label: "finished runs",
     },
+    // BA.26.F task 2 — Mission-Control-scoped, like 'p'/'f': a non-pausing,
+    // read-only watch of the selected node's tmux pane via
+    // `tmux::capture_pane_raw`. Never attaches.
+    KeyBinding {
+        key: 'w',
+        label: "watch node",
+    },
+    // BA.26.F task 2 — the deliberate counterpart to 'w': a real tmux
+    // attach that pauses the engine's sends on that session for the attach
+    // duration plus 60s (`OperatorHold`). Documented here per the block
+    // record's AC-4 ("documented where the operator sees it") — the footer
+    // legend is the in-app half; `docs/terminal/sessions.md` (task 3) is
+    // the durable half.
+    KeyBinding {
+        key: 't',
+        label: "terminal attach (60s hold)",
+    },
 ];
 
 /// State for the interactive session dashboard.
@@ -358,6 +375,21 @@ pub struct AppState {
     /// instead of the live `monitor_app` cursor, mirroring how
     /// `overview_pane` re-routes Up/Down inside Space Overview.
     pub viewing_finished_runs: bool,
+    /// The tmux session currently being WATCHED (BA.26.F task 2) — a
+    /// non-pausing, read-only `capture_pane_raw` poll of a selected node's
+    /// pane, never a real tmux attach. `None` when not watching. Set by the
+    /// Watch key (`node_terminal_verb_for_key`'s `Watch` arm) and toggled
+    /// back to `None` by a second press of the same key on the same node,
+    /// exactly like `viewing_finished_runs`'s own toggle-in/toggle-out shape.
+    pub watching_session: Option<String>,
+    /// The most recent `capture_pane_raw` result for `watching_session`
+    /// (BA.26.F task 2), refreshed once per event-loop timeout tick — see
+    /// `ui.rs`'s `poll_sessions()` call site in the same branch. `Ok` text is
+    /// stored verbatim; an `Err` is degraded to a human-readable
+    /// "pane unavailable: ..." message so the watch pane can never panic on
+    /// a session that has since gone away. `None` before the first tick
+    /// since a watch started.
+    pub watched_pane_text: Option<String>,
 }
 
 // ── Constructor + navigation ───────────────────────────────────────────────────
@@ -388,6 +420,8 @@ impl AppState {
             finished_runs_status: crate::runs::FinishedRunsStatus::default(),
             finished_runs_selected: 0,
             viewing_finished_runs: false,
+            watching_session: None,
+            watched_pane_text: None,
         };
         // `spine_rows()` always pins Mission Control first, so index 0 is always a
         // valid selection — no header-skip initialization needed.
@@ -922,6 +956,59 @@ impl AppState {
                         | SelectedNode::Space(_)
                         | SelectedNode::View(_) => Action::None,
                     },
+                    // Watch/attach a selected node's tmux pane (BA.26.F task
+                    // 2). Scoped to `SelectedNode::MissionControl` — the run
+                    // pane's home — via an EXHAUSTIVE match, exactly like 'p'
+                    // and 'f' above, so `scripts/check-selected-node-exhaustive.sh`
+                    // continues to pass. Routed through
+                    // `crate::sessions::commands::node_terminal_verb_for_key`
+                    // (task 1's pure decision) rather than matching the raw
+                    // `KeyCode` here a second time, so the two keys stay
+                    // defined in exactly one place.
+                    key if crate::sessions::commands::node_terminal_verb_for_key(key).is_some() => {
+                        match self.selected_node() {
+                            SelectedNode::MissionControl => {
+                                let verb =
+                                    crate::sessions::commands::node_terminal_verb_for_key(key)
+                                        .expect("guarded by the match arm above");
+                                let session_name = self
+                                    .monitor_app
+                                    .selected_node()
+                                    .and_then(crate::runs::node_session_name);
+                                match session_name {
+                                    None => {
+                                        self.status =
+                                            Some("no attachable session for this node".to_string());
+                                        Action::None
+                                    }
+                                    Some(name) => match verb {
+                                        crate::sessions::commands::NodeTerminalVerb::Watch => {
+                                            // Toggle off on a second press of
+                                            // the same key against the same
+                                            // node, matching how 'r'/'p' guard
+                                            // against a duplicate in-flight
+                                            // action.
+                                            if self.watching_session.as_deref() == Some(&name) {
+                                                self.watching_session = None;
+                                                self.watched_pane_text = None;
+                                            } else {
+                                                self.watching_session = Some(name);
+                                                self.watched_pane_text = None;
+                                            }
+                                            Action::None
+                                        }
+                                        crate::sessions::commands::NodeTerminalVerb::Attach => {
+                                            Action::Attach(name)
+                                        }
+                                    },
+                                }
+                            }
+                            SelectedNode::Hq
+                            | SelectedNode::Tier(_)
+                            | SelectedNode::Space(_)
+                            | SelectedNode::View(_) => Action::None,
+                        }
+                    }
                     _ => Action::None,
                 }
             }
@@ -1786,6 +1873,41 @@ mod tests {
                         "footer key 'f' must switch Mission Control into the finished-runs view"
                     );
                 }
+                'w' => {
+                    // `make_empty_app()` selects Mission Control (spine
+                    // index 0) by construction — see its own doc comment.
+                    let mut app = make_empty_app();
+                    app.monitor_app
+                        .replace_items(vec![crate::monitor::app::MissionItem::Run(
+                            a_workflow_run_with_session("run-1", "eng-42"),
+                        )]);
+                    let action = app.on_key(KeyCode::Char('w'));
+                    assert_eq!(
+                        action,
+                        Action::None,
+                        "footer key 'w' did not resolve to a bound handler"
+                    );
+                    assert_eq!(
+                        app.watching_session.as_deref(),
+                        Some("eng-42"),
+                        "footer key 'w' must start watching the selected node's session"
+                    );
+                }
+                't' => {
+                    // `make_empty_app()` selects Mission Control (spine
+                    // index 0) by construction — see its own doc comment.
+                    let mut app = make_empty_app();
+                    app.monitor_app
+                        .replace_items(vec![crate::monitor::app::MissionItem::Run(
+                            a_workflow_run_with_session("run-1", "eng-42"),
+                        )]);
+                    let action = app.on_key(KeyCode::Char('t'));
+                    assert_eq!(
+                        action,
+                        Action::Attach("eng-42".to_string()),
+                        "footer key 't' did not resolve to a bound handler"
+                    );
+                }
                 other => panic!(
                     "footer advertises key '{other}' with no bound-handler assertion \
                      registered in this test — add one before shipping the binding, so an \
@@ -1902,6 +2024,56 @@ mod tests {
             started_at: Some("2026-09-01T00:00:00Z".to_string()),
             elapsed_secs: None,
         }
+    }
+
+    /// A single-node run whose one node's `output` carries `session_name`
+    /// (BA.26.F task 2) — the shape `monitor_app.selected_node()` +
+    /// `crate::runs::node_session_name` resolve against.
+    fn a_workflow_run_with_session(
+        run_id: &str,
+        session_name: &str,
+    ) -> crate::db::workflows::WorkflowRun {
+        use crate::db::workflows::{NodeState, RunStatus};
+        let mut run = a_workflow_run(run_id);
+        run.nodes = vec![NodeState {
+            id: "node-1".to_string(),
+            name: "some-node".to_string(),
+            status: RunStatus::Running,
+            depends_on: vec![],
+            input: None,
+            output: Some(serde_json::json!({"session_name": session_name})),
+            error: None,
+            tokens_in: None,
+            tokens_out: None,
+            model: None,
+            started_at: None,
+            completed_at: None,
+            elapsed_secs: None,
+        }];
+        run
+    }
+
+    /// A single-node run whose one node has no `session_name` at all
+    /// (BA.26.F task 2) — `output: None`, mirroring most nodes.
+    fn a_workflow_run_without_session(run_id: &str) -> crate::db::workflows::WorkflowRun {
+        use crate::db::workflows::{NodeState, RunStatus};
+        let mut run = a_workflow_run(run_id);
+        run.nodes = vec![NodeState {
+            id: "node-1".to_string(),
+            name: "some-node".to_string(),
+            status: RunStatus::Running,
+            depends_on: vec![],
+            input: None,
+            output: None,
+            error: None,
+            tokens_in: None,
+            tokens_out: None,
+            model: None,
+            started_at: None,
+            completed_at: None,
+            elapsed_secs: None,
+        }];
+        run
     }
 
     /// A second 'f' press while a load is already in flight must NOT
@@ -2032,6 +2204,128 @@ mod tests {
             msg.contains("bastion inspect"),
             "footer must name the inspect command: {msg}"
         );
+    }
+
+    // ── on_key: 'w'/'t' watch-vs-attach a node's session (BA.26.F task 2) ────
+
+    /// Block AC (mandatory): the watch path NEVER attaches. The Watch key's
+    /// resulting state change is a `watching_session` toggle — `Action::None`
+    /// — never `Action::Attach`.
+    #[test]
+    fn on_key_w_never_produces_attach() {
+        let mut app = make_empty_app();
+        app.monitor_app
+            .replace_items(vec![crate::monitor::app::MissionItem::Run(
+                a_workflow_run_with_session("run-1", "eng-42"),
+            )]);
+        let action = app.on_key(KeyCode::Char('w'));
+        assert_ne!(
+            action,
+            Action::Attach("eng-42".to_string()),
+            "the watch key must never produce Action::Attach"
+        );
+        assert_eq!(action, Action::None);
+        assert_eq!(app.watching_session.as_deref(), Some("eng-42"));
+    }
+
+    /// Watch and Attach on the same selected node produce different results
+    /// — Attach is a separate, deliberate key, never the default.
+    #[test]
+    fn on_key_w_and_t_produce_different_results_for_the_same_node() {
+        let mut app = make_empty_app();
+        app.monitor_app
+            .replace_items(vec![crate::monitor::app::MissionItem::Run(
+                a_workflow_run_with_session("run-1", "eng-42"),
+            )]);
+        let watch_action = app.on_key(KeyCode::Char('w'));
+        // Reset the toggle so 't' observes a clean starting state.
+        app.watching_session = None;
+        let attach_action = app.on_key(KeyCode::Char('t'));
+
+        assert_eq!(watch_action, Action::None);
+        assert_eq!(attach_action, Action::Attach("eng-42".to_string()));
+        assert_ne!(watch_action, attach_action);
+    }
+
+    /// A second 'w' press on the same node's session toggles the watch back
+    /// off, matching how 'r'/'p' guard against a duplicate in-flight action.
+    #[test]
+    fn on_key_w_twice_toggles_watch_off() {
+        let mut app = make_empty_app();
+        app.monitor_app
+            .replace_items(vec![crate::monitor::app::MissionItem::Run(
+                a_workflow_run_with_session("run-1", "eng-42"),
+            )]);
+        app.on_key(KeyCode::Char('w'));
+        assert_eq!(app.watching_session.as_deref(), Some("eng-42"));
+        app.watched_pane_text = Some("stale pane frame".to_string());
+
+        app.on_key(KeyCode::Char('w'));
+        assert_eq!(
+            app.watching_session, None,
+            "a second 'w' press must toggle watching back off"
+        );
+        assert_eq!(
+            app.watched_pane_text, None,
+            "toggling watch off must also clear the last-rendered pane text, \
+             not leave a stale frame on screen for a session no longer being watched"
+        );
+    }
+
+    /// Pressing 'w' when the selected node has no `session_name` is a no-op
+    /// with an explanatory footer message, never a panic or silent freeze.
+    #[test]
+    fn on_key_w_with_no_session_name_is_a_no_op_with_footer_message() {
+        let mut app = make_empty_app();
+        app.monitor_app
+            .replace_items(vec![crate::monitor::app::MissionItem::Run(
+                a_workflow_run_without_session("run-1"),
+            )]);
+        let action = app.on_key(KeyCode::Char('w'));
+        assert_eq!(action, Action::None);
+        assert_eq!(app.watching_session, None);
+        let msg = app
+            .status
+            .expect("a no-op 'w' press must set an explanatory footer message");
+        assert!(
+            msg.contains("no attachable session"),
+            "footer message should explain why: {msg}"
+        );
+    }
+
+    /// Pressing 't' when the selected node has no `session_name` is likewise
+    /// a no-op with a footer message, not `Action::Attach(String::new())` or
+    /// a panic.
+    #[test]
+    fn on_key_t_with_no_session_name_is_a_no_op_with_footer_message() {
+        let mut app = make_empty_app();
+        app.monitor_app
+            .replace_items(vec![crate::monitor::app::MissionItem::Run(
+                a_workflow_run_without_session("run-1"),
+            )]);
+        let action = app.on_key(KeyCode::Char('t'));
+        assert_eq!(action, Action::None);
+        let msg = app
+            .status
+            .expect("a no-op 't' press must set an explanatory footer message");
+        assert!(msg.contains("no attachable session"), "footer: {msg}");
+    }
+
+    /// 'w'/'t' outside Mission Control are no-ops — the run/node pane, and
+    /// therefore node selection, exists only at Mission Control.
+    #[test]
+    fn on_key_w_and_t_outside_mission_control_are_no_ops() {
+        let mut app = make_app(&make_sessions(&["s1"]));
+        app.selected_spine = 2; // a Space row, per the other outside-MC tests above.
+        app.reinit_browser();
+        assert_ne!(app.selected_node(), SelectedNode::MissionControl);
+
+        let watch_action = app.on_key(KeyCode::Char('w'));
+        assert_eq!(watch_action, Action::None);
+        assert_eq!(app.watching_session, None);
+
+        let attach_action = app.on_key(KeyCode::Char('t'));
+        assert_eq!(attach_action, Action::None);
     }
 
     // ── on_key: Input mode ────────────────────────────────────────────────────

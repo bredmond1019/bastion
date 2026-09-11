@@ -4086,3 +4086,28 @@ Next step: run `/generate-tasks` for the first Phase 0 block to begin the pipeli
 ```diff
 (no code changes — planning files only)
 ```
+
+## [run: 2026-09-11]
+
+### BA.26.F — BAILED at task 2 (upstream signature mismatch)
+
+Ran `/sdlc-flow BA.26.F` in a worktree targeting tasks 1–3. Task 1 passed on the first attempt: `node_session_name` (`src/runs/mod.rs`) reads `NodeState.output.session_name`, and `NodeTerminalVerb` + `node_terminal_verb_for_key` (`src/sessions/commands.rs`) map `'w'`→Watch, `'t'`→Attach, everything else to `None`, each unit-tested against the full taken-key set. Task 2 wired watch (read-only `capture_pane_raw` poll on the UI timer tick) and attach (the existing `Action::Attach` path, unchanged) onto the Mission Control node selection in `src/sessions/app.rs`/`src/sessions/ui.rs`, adding footer key-binding labels for AC-4's hold-duration disclosure and a `render_watched_pane` overlay ahead of the finished-runs view. The run then **BAILED**: `cargo build`/`cargo test` fail with an upstream signature mismatch — `engine-serve/src/journal.rs` calls `integrate_chain_with_run_record()` with 22 args, but `engine-core/src/workflows/orchestration/integrate.rs` now requires 23 (a missing `Option<&dyn Fn...>` parameter). Both files live in the sibling `../engine-rs` path-dependency repo; `git diff 7d0ba6e..HEAD` confirms zero changes to `journal.rs`/`integrate.rs`/`engine-serve`/`engine-core` from this run's own diff (`src/sessions/app.rs`, `src/sessions/ui.rs` only), so this is foreign breakage from an unpinned sibling repo, not a defect in task 2's work. Task 3 (docs) did not run. `planning/status.md` records the BLOCKED line; `planning/state.json` was left untouched (no block flip on a bail). Next: fix the `../engine-rs` `integrate_chain_with_run_record` call-site drift (or wait for engine-rs to stabilize), then resume `/sdlc-flow BA.26.F 2`.
+
+```
+a004010 feat: implement BA.26.F-task2
+30ef095 feat: implement BA.26.F-task1
+7d0ba6e chore: init worktree BA.26.F-flow
+```
+
+### BA.26.F — done (3 of 3 tasks), review PASS
+
+Resumed `/sdlc-flow BA.26.F` in the worktree after the prior upstream `engine-rs` signature-mismatch bail cleared on its own. Task 1 (already landed) added `node_session_name` (`src/runs/mod.rs`, reading `NodeState.output.session_name`) and `NodeTerminalVerb` + `node_terminal_verb_for_key` (`src/sessions/commands.rs`, mapping `'w'`→Watch, `'t'`→Attach, everything else `None`), each unit-tested against the full taken-key set. Task 2 confirmed the watch/attach wiring already committed in `src/sessions/app.rs`/`src/sessions/ui.rs` satisfied every acceptance criterion (capture_pane_raw-only watch path, separate deliberate attach key, exhaustive `SelectedNode` match, 60s-hold footer disclosure, no-session no-op) — the first work-assertion failure was a false negative caused by an intervening wrap-up commit shifting the `HEAD~1`/`HEAD` diff, fixed with a small in-scope commit strengthening one existing test (asserting `watched_pane_text` clears on toggle-off) so the assertion's diff was correct again. Task 3 documented the `w` (watch, read-only) and `t` (attach, 60s `OperatorHold`) key bindings in `docs/terminal/sessions.md`'s Mission Control table and ran the full authoritative validation suite (fmt, clippy, `cargo test`, release build, contract-corpus + typeshare drift checks), all green. Final review verdict: PASS. Block `BA.26.F` flipped closed in `state.json`. Next: pick up the next queued item per `planning/status.md`.
+
+```
+03b83a5 feat: implement BA.26.F-task3
+b073b90 fix: fix pass 1 for BA.26.F-task2
+a77cc32 chore: wrap up BA.26.F
+a004010 feat: implement BA.26.F-task2
+30ef095 feat: implement BA.26.F-task1
+7d0ba6e chore: init worktree BA.26.F-flow
+```
