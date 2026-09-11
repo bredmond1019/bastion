@@ -450,6 +450,36 @@ pub enum Commands {
         #[command(subcommand)]
         mode: CoordMode,
     },
+
+    /// Hand-fire one pass of the Rust `SWEEP` workflow (`BA.25.D`) — the ONLY way the Rust
+    /// sweep ever runs in this cut (Fork 4: no schedule on a travelling laptop). See
+    /// `sweep_cli` for the thin CLI shell; this subcommand adds no sweep pipeline logic of
+    /// its own.
+    Sweep {
+        /// The roadmap slug this sweep pass measures against.
+        roadmap: String,
+        /// Perform every measurement/routing step but skip the final `sweeps_dir` write.
+        #[arg(long)]
+        dry_run: bool,
+        /// Permission profile name from `brain.toml`'s `[permission_profiles.levels]`.
+        /// Omit to use `[permission_profiles].default`. An unrecognized or unresolvable
+        /// name is REFUSED, never defaulted to `unrestricted`.
+        #[arg(long)]
+        profile: Option<String>,
+    },
+
+    /// Hand-fire one pass of the Rust `COMMANDER` drain (`BA.25.D`) — the ONLY way the Rust
+    /// drain ever runs in this cut (Fork 4). See `drain_cli` for the thin CLI shell; this
+    /// subcommand adds no drain pipeline logic of its own.
+    Drain {
+        /// `<repo>/<lane>` identifying the lane to drain.
+        lane: String,
+        /// Permission profile name from `brain.toml`'s `[permission_profiles.levels]`.
+        /// Omit to use `[permission_profiles].default`. An unrecognized or unresolvable
+        /// name is REFUSED, never defaulted to `unrestricted`.
+        #[arg(long)]
+        profile: Option<String>,
+    },
 }
 
 /// `bastion coord` subcommands — see [`Commands::Coord`].

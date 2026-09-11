@@ -6,6 +6,59 @@ timestamp: 2026-09-10T21:10:00-0300
 ---
 # Log — bastion
 
+## [run: 2026-09-11]
+
+BA.25.D (`bastion sweep --once`, `bastion drain --once`) is DONE — full spec PASS after resuming
+from the earlier BAIL recorded above. All three tasks (sweep_cli.rs, drain_cli.rs +
+permission_profile.rs, and the real `bastion sweep`/`bastion drain` CLI subcommands with
+`tests/sweep_drain_cli_contract.rs`) carry confirmed `workAssertionPassed` outcomes, and the
+consolidated end review verdict is PASS with zero findings. The prior bail — a foreign engine-rs
+compile break on `graph.rs` (EN.17.F WIP) that then shifted to a different `integrate.rs`/
+`execute.rs` break on a later retry — resolved once that sibling lane landed its own commit;
+resumption picked back up cleanly with no bastion-side rework needed. `docs/commands.md` was
+updated for the two new subcommands. `planning/status.md`'s stale BLOCKED line for BA.25.D was
+replaced with the DONE narrative, and `planning/state.json`'s BA.25.D block was flipped to
+`closed` via `mev set-block-status bastion:BA.25.D closed --write`. Next: pick up the next queued
+item per `planning/status.md`.
+
+```
+64d0f6c docs: update docs for BA.25.D
+ca41ce6 chore: wrap up BA.25.D
+8adbb85 fix: review pass 2 for BA.25.D
+ec98b92 fix: review pass 1 for BA.25.D
+5fbc629 feat: implement BA.25.D-task3
+93066f2 feat: implement BA.25.D-task2
+4f2880e feat: implement BA.25.D-task1
+```
+
+BA.25.D (`bastion sweep --once`, `bastion drain --once`) ran all three tasks to a passing
+work-assertion outcome — task 1 added `src/sweep_cli.rs` (profile refusal, dry-run/refire-window
+gating, reproducing engine-core's `run_sweep_pass` composition against the sibling engine-rs
+SWEEP golden fixtures); task 2 added `src/drain_cli.rs` (in-process COMMANDER dispatch, printing
+queues/drained/completed plus the emit outcome verbatim) and extracted the shared
+`src/permission_profile.rs` resolver; task 3 wired both as real `bastion sweep`/`bastion drain`
+CLI subcommands in `cli.rs`/`main.rs` with a new binary-level contract test
+(`tests/sweep_drain_cli_contract.rs`). The spec's own final verdict is **FAIL** — the gating
+`cargo clippy` check fails to compile due to a SIBLING repo, `engine-rs`, in a file another lane
+has uncommitted and is actively editing (`crates/engine-core/src/workflows/orchestration/graph.rs`,
+labelled `EN.17.F Task 1` in its own doc comments): `E0204` (a new `Option<serde_json::Value>`
+field breaks that struct's `#[derive(Copy)]`) plus two `E0063` missing-field errors. A later re-run
+against the same uncommitted tree surfaced a *different* foreign error instead
+(`integrate.rs`/`execute.rs` arg-count mismatch, `E0061`), confirming the target is moving underfoot
+rather than stably broken. Zero bastion files appear in either error set, and this lane cannot
+commit or alter another lane's WIP to converge it. The bail is recorded as out-of-scope/unfixable
+from here; BA.25.D stays open, blocked on that sibling lane landing its own commit. Next: retry
+BA.25.D's review once `EN.17.F` (or whatever lands on `graph.rs`/`integrate.rs`) is committed on
+`engine-rs`.
+
+```
+8adbb85 fix: review pass 2 for BA.25.D
+ec98b92 fix: review pass 1 for BA.25.D
+5fbc629 feat: implement BA.25.D-task3
+93066f2 feat: implement BA.25.D-task2
+4f2880e feat: implement BA.25.D-task1
+```
+
 ## [run: 2026-09-10]
 
 Closed out BA.26.H (5 of 5 tasks, review PASS) after resuming from the prior bail. Task 1 added a

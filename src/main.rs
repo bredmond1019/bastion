@@ -13,6 +13,7 @@ mod coord_cli;
 mod costs;
 mod db;
 mod docview;
+mod drain_cli;
 mod inspect;
 mod man;
 mod momentum;
@@ -22,10 +23,12 @@ mod notify_cli;
 mod observ;
 mod openwork;
 mod overview;
+mod permission_profile;
 mod run;
 mod runs;
 mod serve;
 mod sessions;
+mod sweep_cli;
 #[cfg(test)]
 mod testsupport;
 mod ui_theme;
@@ -80,6 +83,8 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Assess { .. } => "assess",
         Commands::Notify { .. } => "notify",
         Commands::Coord { .. } => "coord",
+        Commands::Sweep { .. } => "sweep",
+        Commands::Drain { .. } => "drain",
     }
 }
 
@@ -435,6 +440,17 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 } => coord_cli::run_complete(&repo, &lane, &message_id, lock_dir.as_deref()),
                 CoordMode::Restore { lock_dir } => coord_cli::run_restore(lock_dir.as_deref()),
             },
+            // Sweep/Drain are the only two hand-woken faces for the Rust SWEEP and
+            // COMMANDER workflows in this cut (BA.25.D, Fork 4 — no schedule). No
+            // pipeline logic lives here; see `sweep_cli`/`drain_cli`.
+            Commands::Sweep {
+                roadmap,
+                dry_run,
+                profile,
+            } => sweep_cli::run_sweep_once(&roadmap, dry_run, profile.as_deref()).await,
+            Commands::Drain { lane, profile } => {
+                drain_cli::run_drain_once(&lane, profile.as_deref()).await
+            }
         },
     }
 }
