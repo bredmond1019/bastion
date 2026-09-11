@@ -490,6 +490,213 @@ cross_repo_write = true
         );
     }
 
+    // ── AC-5: outside the refire window, the write matches `roadmap_sweep.py --dry-run` ──
+    //
+    // The block record's acceptance criterion (and this task's own `testing_strategy`) requires
+    // the write outside the refire window to match what the Python oracle reports for routes on
+    // the IDENTICAL fixture tree — not merely that a write happened (that half is already covered
+    // by `refire_window_gates_whether_a_new_snapshot_is_written` above). This shells out to the
+    // real `scripts/roadmap_sweep.py --dry-run` (mirroring `coord_cli.rs`'s own
+    // `find_oracle_script`/`python3_available` pattern for a sibling-repo oracle) against a
+    // byte-for-byte copy of the same 13-seeded-snapshot tree, then compares the DECISION fields
+    // that matter — `action`/`channel`/`severity`/`stale`/`gate_id` — never a byte-for-byte JSON
+    // diff: `engine-rs`'s own `sweep_replay.rs` (`EN.15.E` task 6) already documents why a
+    // byte-for-byte compare is the wrong bar (the Python's dry-run dict carries `dry_run`/
+    // `summary` keys `RouteOutcome` has no slot for, and vice versa `ts_routed`/`routed`(bool)
+    // are real-clock-dependent on the Python side since its CLI has no `--now` override).
+
+    /// The decision-relevant slice of one `routed[]` entry, exactly `sweep_replay.rs`'s own
+    /// `Decision` shape — kept as a **local, second, independently-written** copy rather than a
+    /// shared import: this crate has no dependency on `engine-core`'s `tests/` directory (it is
+    /// not a library target), and re-deriving the same five fields here is one Decision struct
+    /// two crates would otherwise have to keep in lockstep for no reuse benefit.
+    #[derive(Debug, PartialEq)]
+    struct SweepDecision {
+        action: Option<String>,
+        channel: Option<String>,
+        severity: Option<String>,
+        stale: Option<bool>,
+        gate_id: Option<String>,
+    }
+
+    /// `route_non_escalation_diff`'s Rust sentinel gate_id — the Python dict for that same route
+    /// has no `gate_id`/`stale` key at all (that route is about the diff as a whole, not one
+    /// escalation), so a JSON entry carrying this sentinel treats both as absent, exactly
+    /// `sweep_replay.rs`'s own `decision_from_outcome` does for the struct side.
+    const NON_ESCALATION_SENTINEL: &str = "<non-escalation-diff>";
+
+    fn decision_from_json(entry: &Value) -> SweepDecision {
+        let gate_id = entry.get("gate_id").and_then(Value::as_str);
+        let is_non_escalation = gate_id == Some(NON_ESCALATION_SENTINEL);
+        SweepDecision {
+            action: entry
+                .get("action")
+                .and_then(Value::as_str)
+                .map(String::from),
+            channel: entry
+                .get("channel")
+                .and_then(Value::as_str)
+                .map(String::from),
+            severity: entry
+                .get("severity")
+                .and_then(Value::as_str)
+                .map(String::from),
+            stale: (!is_non_escalation)
+                .then(|| entry.get("stale").and_then(Value::as_bool))
+                .flatten(),
+            gate_id: (!is_non_escalation)
+                .then(|| gate_id.map(String::from))
+                .flatten(),
+        }
+    }
+
+    /// Walk up from `start` looking for `brain.toml` — the company-brain vault root that houses
+    /// both the sibling `engine-rs` fixtures and the oracle script itself
+    /// (`scripts/roadmap_sweep.py`).
+    fn find_brain_root(start: &Path) -> Option<PathBuf> {
+        crate::config::walk_up_from(start, "brain.toml")
+            .and_then(|toml| toml.parent().map(Path::to_path_buf))
+    }
+
+    /// `<brain_root>/scripts/roadmap_sweep.py`, or `None` (after a loud `eprintln!`) when this
+    /// checkout has no sibling brain root to find it in.
+    fn find_oracle_script() -> Option<PathBuf> {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Some(brain_root) = find_brain_root(manifest_dir) else {
+            eprintln!(
+                "SKIPPING sweep parity test: no brain.toml found walking up from {} \
+                 (this checkout has no sibling brain root to locate the oracle in)",
+                manifest_dir.display()
+            );
+            return None;
+        };
+        let script = brain_root.join("scripts").join("roadmap_sweep.py");
+        if !script.is_file() {
+            eprintln!(
+                "SKIPPING sweep parity test: brain root found at {} but {} does not exist",
+                brain_root.display(),
+                script.display()
+            );
+            return None;
+        }
+        Some(script)
+    }
+
+    /// `true` iff `python3` is on `PATH` and runs. Spawn failure (interpreter absent) is
+    /// distinguished from a `python3` that exists but crashes on `--version`.
+    fn python3_available() -> bool {
+        match std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+        {
+            Ok(output) => output.status.success(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => panic!("python3 --version failed unexpectedly: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn outside_refire_window_write_matches_the_python_oracles_dry_run_routes() {
+        let Some(fixtures_source) = find_real_sweep_fixtures_dir() else {
+            return;
+        };
+        let Some(oracle_script) = find_oracle_script() else {
+            return;
+        };
+        if !python3_available() {
+            eprintln!("SKIPPING sweep parity test: python3 is not available on PATH");
+            return;
+        }
+
+        let roadmap = "autonomous-foundation";
+
+        // --- bastion side: run_sweep_once_at, outside the refire window ------------------------
+        let rust_root = tempfile::tempdir().expect("tempdir");
+        write_valid_brain_toml(rust_root.path());
+        make_roadmap(rust_root.path(), roadmap);
+        let rust_sweeps_dir = sweeps_dir(rust_root.path(), roadmap);
+        seed_sweeps_dir_from_real_fixtures(&rust_sweeps_dir, &fixtures_source);
+
+        let outside_window = DateTime::parse_from_rfc3339("2026-08-28T14:01:11Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        run_sweep_once_at(rust_root.path(), roadmap, false, None, outside_window)
+            .await
+            .expect("sweep outside the refire window should succeed");
+
+        let rust_files = list_snapshot_files(&rust_sweeps_dir);
+        assert_eq!(
+            rust_files.len(),
+            14,
+            "bastion sweep must have written exactly one new snapshot"
+        );
+        let rust_written: Value = serde_json::from_str(
+            &std::fs::read_to_string(rust_files.last().expect("a snapshot was just written"))
+                .expect("read the snapshot bastion just wrote"),
+        )
+        .expect("bastion's written snapshot must be valid JSON");
+        let rust_routed: Vec<Value> = rust_written
+            .get("routed")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let rust_decisions: Vec<SweepDecision> =
+            rust_routed.iter().map(decision_from_json).collect();
+
+        // --- oracle side: the SAME 13-snapshot tree, byte-for-byte, `--dry-run` -----------------
+        // The oracle's own CLI has no `--now` override (real `datetime.now(timezone.utc)`), but
+        // every fixture's `ts_utc` is 2026-08-28 — real wall-clock time is always outside the 6h
+        // refire window against them, so this reproduces the same "outside the window" case
+        // without needing to fake the oracle's clock.
+        let python_root = tempfile::tempdir().expect("tempdir");
+        write_valid_brain_toml(python_root.path());
+        make_roadmap(python_root.path(), roadmap);
+        let python_sweeps_dir = sweeps_dir(python_root.path(), roadmap);
+        seed_sweeps_dir_from_real_fixtures(&python_sweeps_dir, &fixtures_source);
+
+        let output = std::process::Command::new("python3")
+            .arg(&oracle_script)
+            .arg("--roadmap")
+            .arg(roadmap)
+            .arg("--root")
+            .arg(python_root.path())
+            .arg("--dry-run")
+            .arg("--quiet")
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn python3 {}: {e}", oracle_script.display()));
+        assert!(
+            output.status.success(),
+            "roadmap_sweep.py --dry-run failed: stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let python_files = list_snapshot_files(&python_sweeps_dir);
+        assert_eq!(
+            python_files.len(),
+            14,
+            "the oracle always writes its one sweeps/<ts>.json file, dry-run or not"
+        );
+        let python_written: Value = serde_json::from_str(
+            &std::fs::read_to_string(python_files.last().expect("the oracle just wrote a file"))
+                .expect("read the snapshot the oracle just wrote"),
+        )
+        .expect("the oracle's written snapshot must be valid JSON");
+        let python_routed: Vec<Value> = python_written
+            .get("routed")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let python_decisions: Vec<SweepDecision> =
+            python_routed.iter().map(decision_from_json).collect();
+
+        assert_eq!(
+            rust_decisions, python_decisions,
+            "bastion's routes outside the refire window must match roadmap_sweep.py --dry-run's \
+             routes on the identical fixture tree"
+        );
+    }
+
     /// A first-ever sweep (no prior snapshot at all) is always outside "the refire window" —
     /// there is nothing to be inside the window OF — and always writes.
     #[tokio::test]
