@@ -8,6 +8,16 @@ timestamp: 2026-09-10T21:10:00-0300
 
 ## [run: 2026-09-10]
 
+### BA.26.F — BAILED at task 2 (upstream signature mismatch)
+
+Ran `/sdlc-flow BA.26.F` in a worktree targeting tasks 1–3. Task 1 passed on the first attempt: `node_session_name` (`src/runs/mod.rs`) reads `NodeState.output.session_name`, and `NodeTerminalVerb` + `node_terminal_verb_for_key` (`src/sessions/commands.rs`) map `'w'`→Watch, `'t'`→Attach, everything else to `None`, each unit-tested against the full taken-key set. Task 2 wired watch (read-only `capture_pane_raw` poll on the UI timer tick) and attach (the existing `Action::Attach` path, unchanged) onto the Mission Control node selection in `src/sessions/app.rs`/`src/sessions/ui.rs`, adding footer key-binding labels for AC-4's hold-duration disclosure and a `render_watched_pane` overlay ahead of the finished-runs view. The run then **BAILED**: `cargo build`/`cargo test` fail with an upstream signature mismatch — `engine-serve/src/journal.rs` calls `integrate_chain_with_run_record()` with 22 args, but `engine-core/src/workflows/orchestration/integrate.rs` now requires 23 (a missing `Option<&dyn Fn...>` parameter). Both files live in the sibling `../engine-rs` path-dependency repo; `git diff 7d0ba6e..HEAD` confirms zero changes to `journal.rs`/`integrate.rs`/`engine-serve`/`engine-core` from this run's own diff (`src/sessions/app.rs`, `src/sessions/ui.rs` only), so this is foreign breakage from an unpinned sibling repo, not a defect in task 2's work. Task 3 (docs) did not run. `planning/status.md` records the BLOCKED line; `planning/state.json` was left untouched (no block flip on a bail). Next: fix the `../engine-rs` `integrate_chain_with_run_record` call-site drift (or wait for engine-rs to stabilize), then resume `/sdlc-flow BA.26.F 2`.
+
+```
+a004010 feat: implement BA.26.F-task2
+30ef095 feat: implement BA.26.F-task1
+7d0ba6e chore: init worktree BA.26.F-flow
+```
+
 ### Orchestration lane close-out — BA.26.E merged, three bails resolved, lane paused
 
 - **What:** Drove `BA.26.E` through `/sdlc-flow --auto-merge` under `/begin-orchestration
