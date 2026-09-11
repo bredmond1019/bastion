@@ -8,6 +8,43 @@ timestamp: 2026-09-10T21:10:00-0300
 
 ## [run: 2026-09-10]
 
+Implemented tasks 1-3 of BA.26.H (a chrome pass for 80x24 legibility plus a shared bastiel status
+glyph/colour set): task 1 added `MIN_CONTENT_WIDTH_WITH_BROWSER=40` to
+`compute_pane_areas`/`sessions/app.rs` so the Hq/Space/View browser split collapses to a full-width
+content pane below that threshold instead of shredding long slugs mid-word, with new render tests
+at 80x24 (guard engages) and 160x24 (guard does not); task 2 introduced a shared `StatusKind`
+enum in `src/ui_theme.rs` (glyph/style/label) with `From` impls for `AgentState` and
+`db::workflows::RunStatus`, and rewired `state_running_style`/`state_idle_style`/
+`state_working_style`/`state_blocked_style` to delegate to it; task 3 added `finished_run_line` (a
+`Line`-based companion to `finished_run_row`) in `src/runs/mod.rs` and wired it into
+`sessions/ui.rs`'s finished-runs pane render, resolving glyph/style/label through the same shared
+`StatusKind` set. Task 4 (the overview jump-status pane) implemented the same pattern —
+`render_jump_status` now resolves through `StatusKind::Success`/`Failed` — but the run BAILED on
+task 4's own validation: `task_validation_4`'s check command (`` wc -l | grep -qx 0 ``) is broken on
+this macOS/BSD toolchain, because `wc -l` pads its output with leading whitespace (confirmed via
+`od -c`: `"       0\n"`), so `grep -qx 0` can never match regardless of the true count. Directly
+verified the real diff count is 0 (no new `render`/`StateJson` fn was added, honoring the block's
+out-of-scope guard on the parked overview path) by trimming whitespace before comparing by hand.
+Fixing the check requires editing `planning/BA.26.H/tasks.json`'s validation command, which sits
+outside task 4's declared file scope, so this needs an operator/spec-owner decision on how to
+correct it rather than a code fix. Task 5 (final harness suite) did not run. No amendment-log target
+exists for BA.26.H (the block record is `planning/blocks/BA.26.H.json`, JSON with no
+`## Amendment Log` section, and no per-spec plan.md was authored for it) — the task 4 deviation is
+recorded here and in `planning/BA.26.H/sdlc/sdlc-flow-state.json` instead. Next: an
+operator/spec-owner fixes `task_validation_4`'s check command in `tasks.json` (e.g. trim `wc -l`'s
+output, or use `git diff --stat` differently), then resume `/sdlc-flow BA.26.H 4` through the
+remaining tasks.
+
+```
+810e9ab feat: implement BA.26.H-task4
+91e8b51 feat: implement BA.26.H-task3
+3051bdf feat: implement BA.26.H-task2
+a0de452 feat: implement BA.26.H-task1
+f4a8426 chore: init worktree BA.26.H-flow
+```
+
+## [run: 2026-09-10]
+
 ### Orchestration lane close-out — BA.26.E merged, three bails resolved, lane paused
 
 - **What:** Drove `BA.26.E` through `/sdlc-flow --auto-merge` under `/begin-orchestration
