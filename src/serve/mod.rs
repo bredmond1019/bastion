@@ -3921,9 +3921,26 @@ mod tests {
         // repopulate the vars from a checked-out `.env` the moment they are
         // removed from the process env — see `get_costs_missing_database_url_
         // returns_503_c005`'s comment for the same trap with `DATABASE_URL`.
+        // `DotenvShadow` covers the common case, but its own docs name a
+        // residual hazard: a `Nested` guard (this test overlapping, cross-
+        // process, with another test's shadow under a different suffix)
+        // provides no guarantee the owner's shadow outlives this test body —
+        // if the owner drops and restores the real `.env` mid-test, a bare
+        // `unset` here leaves the var genuinely absent from process env, so
+        // `dotenvy::dotenv()` (which only fills in vars not already present)
+        // repopulates it from this dev checkout's real, credentialed `.env`.
+        // Setting the vars to an explicit empty string instead closes that
+        // window: `telegram_config` treats an empty string as absent (same
+        // rule as `build_serve_config`'s `BASTION_SERVE_TOKEN`), but the key
+        // is now *present* in process env, so `dotenvy` never touches it no
+        // matter what the real `.env` on disk says at the moment this test's
+        // handler runs. Measured: this test failed intermittently under the
+        // full `cargo nextest run --lib --bins` suite with a bare `unset`
+        // (got 200 OK instead of 503) and was stable across repeated runs
+        // once switched to `set(.., "")`.
         let _dotenv_shadow = DotenvShadow::new(&env_lock, "notify_test_send_c005");
-        let _bot_token = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN");
-        let _chat_id = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+        let _bot_token = EnvVarGuard::set(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN", "");
+        let _chat_id = EnvVarGuard::set(&env_lock, "BASTION_TELEGRAM_CHAT_ID", "");
 
         let app = test::init_service(build_app(FileConfig::default())).await;
         let req = test::TestRequest::post()
@@ -3951,7 +3968,14 @@ mod tests {
         let _dotenv_shadow = DotenvShadow::new(&env_lock, "notify_test_send_incomplete");
         let _bot_token =
             EnvVarGuard::set(&env_lock, "BASTION_TELEGRAM_BOT_TOKEN", "fake-token-value");
-        let _chat_id = EnvVarGuard::unset(&env_lock, "BASTION_TELEGRAM_CHAT_ID");
+        // Empty string, not `unset` — see the comment on
+        // `notify_test_send_unconfigured_transport_returns_503_c005` above:
+        // a bare `unset` leaves this key open for `dotenvy::dotenv()` to
+        // repopulate from the real, credentialed `.env` if a concurrent
+        // `DotenvShadow` (a different suffix, a different test process)
+        // restores it mid-test. An explicit empty string is still "absent"
+        // to `telegram_config`, but is a key `dotenvy` will never touch.
+        let _chat_id = EnvVarGuard::set(&env_lock, "BASTION_TELEGRAM_CHAT_ID", "");
 
         let app = test::init_service(build_app(FileConfig::default())).await;
         let req = test::TestRequest::post()
