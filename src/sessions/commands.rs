@@ -4,7 +4,12 @@
 // Decision D5: all verbs are synchronous blocking calls — no async/tokio coupling.
 // tmux is the only data source.
 
+use std::fs;
+use std::path::Path;
+
+use anyhow::Context;
 use crossterm::event::KeyCode;
+use okf_core::{Coord, RegistryClaim};
 
 use crate::sessions::claude_state::{TrustStatus, trust_status};
 use crate::sessions::model::{Pane, Session, parse_sessions};
@@ -93,6 +98,84 @@ pub fn attach(session_name: &str) -> anyhow::Result<()> {
         Ok(()) => Ok(()),
         Err(e) => apply_degradation("attach", session_name, e),
     }
+}
+
+/// Resolve `<repo>/<lane>` to its held engine session and attach the operator's terminal
+/// to it (`BA.25.E` task 2).
+///
+/// Resolves the real fleet lock directory (`engine_core::coord::resolve_lock_dir`) and
+/// delegates the lane→session resolution and the "is this lane actually live" registry
+/// check to [`attach_lane_at`], then hands the resolved session name to the existing
+/// [`attach`] for the real (blocking, interactive) tmux attach. Adds no new tmux logic of
+/// its own — see `attach`'s own doc comment for that half.
+pub fn attach_lane(repo: &str, lane: &str) -> anyhow::Result<()> {
+    let brain_root =
+        engine_core::brain_root::resolve_brain_root().context("cannot resolve brain root")?;
+    let lock_dir = engine_core::coord::resolve_lock_dir(&brain_root);
+    attach_lane_at(&lock_dir, repo, lane, attach)
+}
+
+/// Fixture-driven sibling of [`attach_lane`]: takes the already-resolved lock directory
+/// directly (the same `*_at` split `coord_cli`/`sweep_cli`/`drain_cli` already use) and the
+/// final attach call as an injected function, so a unit test can assert the resolved
+/// session name via the stub's captured argument without ever spawning a real tmux
+/// process.
+///
+/// Verifies a live registry claim exists for `repo`/`lane` under
+/// `<lock_dir>/lane-agents/*.json` BEFORE calling `do_attach` — an unresolved lane never
+/// reaches tmux (AC-1). On no match, the returned error names both `<repo>/<lane>` and the
+/// literal registry path that was checked (AC-1's "naming the registry it consulted").
+///
+/// Registry claims are read via `okf_core`'s own [`Coord`]/[`RegistryClaim`] types — the
+/// exact shape `engine_core::coord`'s reader composes from. That reader's own
+/// `read_registry` helper is private to its module, so this reuses the public record type
+/// it deserializes into rather than reimplementing the record shape a second time. Unlike
+/// `engine_core::coord::read_coordination_view`, this does not classify or surface
+/// `Coord::Legacy`/unreadable entries as a `DegradationReason` — it only answers "is this
+/// lane claimed", not the full coordination-surface health accounting that `bastion coord
+/// status` (`EN.15.A`) already owns.
+pub fn attach_lane_at(
+    lock_dir: &Path,
+    repo: &str,
+    lane: &str,
+    do_attach: impl FnOnce(&str) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let registry_dir = lock_dir.join("lane-agents");
+    let matched = registry_claims(&registry_dir)
+        .into_iter()
+        .any(|claim| claim.repo == repo && claim.lane == lane);
+
+    if !matched {
+        anyhow::bail!(
+            "no registry claim for lane '{repo}/{lane}' — checked {}",
+            registry_dir.display()
+        );
+    }
+
+    let session_name = engine_core::workflows::orchestration::graph::held_session_name(repo, lane);
+    do_attach(&session_name)
+}
+
+/// Every strictly-typed [`RegistryClaim`] found under `registry_dir`
+/// (`<lock_dir>/lane-agents`). A missing directory, an unreadable file, malformed JSON, or
+/// a `Coord::Legacy` fallback are all silently skipped — see [`attach_lane_at`]'s doc
+/// comment for why that is deliberate here.
+fn registry_claims(registry_dir: &Path) -> Vec<RegistryClaim> {
+    let entries = match fs::read_dir(registry_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+        .filter_map(|contents| serde_json::from_str::<okf_core::Registry>(&contents).ok())
+        .filter_map(|record| match record {
+            Coord::Typed(claim) => Some(claim),
+            Coord::Legacy(_) => None,
+        })
+        .collect()
 }
 
 /// Create a new detached tmux session, optionally in a given directory.
@@ -601,6 +684,85 @@ mod tests {
     #[test]
     fn node_terminal_verb_for_key_none_for_unrelated_char() {
         assert_eq!(node_terminal_verb_for_key(KeyCode::Char('z')), None);
+    }
+
+    // ── attach_lane_at (BA.25.E task 2) ─────────────────────────────────────────
+
+    fn write_claim(dir: &std::path::Path, file_name: &str, repo: &str, lane: &str) {
+        std::fs::create_dir_all(dir).expect("create lane-agents dir");
+        let body = format!(
+            r#"{{"agent_name":"agent-1","repo":"{repo}","lane":"{lane}","roadmap":"r","started_at":"2026-09-01T00:00:00Z","heartbeat":"2026-09-01T00:00:00Z"}}"#
+        );
+        std::fs::write(dir.join(file_name), body).expect("write claim fixture");
+    }
+
+    #[test]
+    fn attach_lane_at_no_matching_claim_names_lane_and_registry_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let lock_dir = tmp.path();
+        // A claim exists, but for a different repo/lane — must not match.
+        write_claim(&lock_dir.join("lane-agents"), "other.json", "bastion", "b1");
+
+        let err = attach_lane_at(lock_dir, "engine-rs", "e1", |_| Ok(()))
+            .expect_err("expected no-match error");
+        let msg = err.to_string();
+        assert!(msg.contains("engine-rs/e1"), "got: {msg}");
+        assert!(
+            msg.contains(&lock_dir.join("lane-agents").display().to_string()),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn attach_lane_at_missing_registry_dir_names_lane_and_registry_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let lock_dir = tmp.path();
+        // No lane-agents/ directory at all.
+
+        let err = attach_lane_at(lock_dir, "bastion", "b1", |_| Ok(()))
+            .expect_err("expected no-match error");
+        let msg = err.to_string();
+        assert!(msg.contains("bastion/b1"), "got: {msg}");
+        assert!(
+            msg.contains(&lock_dir.join("lane-agents").display().to_string()),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn attach_lane_at_matching_claim_calls_attach_with_exact_session_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let lock_dir = tmp.path();
+        write_claim(&lock_dir.join("lane-agents"), "mine.json", "bastion", "b1");
+
+        let captured: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+        let result = attach_lane_at(lock_dir, "bastion", "b1", |session_name| {
+            *captured.borrow_mut() = Some(session_name.to_string());
+            Ok(())
+        });
+
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        assert_eq!(
+            captured.into_inner().as_deref(),
+            Some("lane-bastion-b1"),
+            "session name must be exactly lane-<repo>-<lane>"
+        );
+    }
+
+    #[test]
+    fn attach_lane_at_legacy_claim_does_not_match() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let lock_dir = tmp.path();
+        let dir = lock_dir.join("lane-agents");
+        std::fs::create_dir_all(&dir).expect("create lane-agents dir");
+        // Valid JSON, but not the strict RegistryClaim shape — falls back to Coord::Legacy
+        // and must never be treated as a match.
+        std::fs::write(dir.join("legacy.json"), r#"{"unexpected":"shape"}"#)
+            .expect("write legacy fixture");
+
+        let err = attach_lane_at(lock_dir, "bastion", "b1", |_| Ok(()))
+            .expect_err("legacy record must not satisfy the registry check");
+        assert!(err.to_string().contains("bastion/b1"));
     }
 
     /// Architectural guarantee: the sessions code path does not call Config::load()
