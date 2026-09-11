@@ -2,7 +2,7 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-09-11T10:49:22-0300
+timestamp: 2026-09-11T16:49:36-0300
 ---
 # Log — bastion
 
@@ -25,6 +25,21 @@ timestamp: 2026-09-11T10:49:22-0300
   `planning/BA.25.E/review.md`, `planning/handoff.md`. Final chain block
   (`BA.ticket.engine-dispatcher-carries-the-real-operator-transport`) remains HELD on
   `engine-rs:EN.17.C`.
+
+### Coordination-layer-port console lane CLOSED — engine-dispatcher Telegram wiring landed
+- **What:** `engine-rs:EN.17.C` closed, unblocking the lane's last chain block. Authored a 2-task
+  spec and ran `/sdlc-task` (`wf_30d1274d-b41`) clean: `bastion serve`'s engine dispatcher now
+  registers SWEEP/ORCHESTRATION with the same `TelegramTransport` `Arc` the notify poll loop
+  already holds (`engine_serve::workflows::register_builtin_workflows_with_operator`, `EN.17.C`),
+  replacing `NoopOperatorTransport`. One retryable test-isolation flake fixed mid-run (`5f56d76`).
+  Patched `docs/serve/serve-api.md` §26.2, which read as if the seam had no caller yet. All 6
+  blocks in this repo's coordination-layer-port chain are now closed.
+- **Why:** Continuing the same `/begin-orchestration` lane once its cross-repo dependency cleared,
+  per the operator's request to make lane decisions autonomously and record them.
+- **Refs:** `planning/orchestration-run/coordination-layer-port/{notes.md,review.md}`,
+  `planning/handoff.md`. New carryover:
+  `telegram-sweep-orchestration-routing-unverified-live` (live phone hand-verification, needs
+  Mac Mini access).
 
 BA.25.E (`bastion roadmap-status`, `bastion attach <lane>`) is PARTIAL — all three tasks passed
 their own implement/fix loop with confirmed `workAssertionPassed` outcomes, but the consolidated
