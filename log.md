@@ -2,11 +2,33 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-09-02T07:26:32-0300
+timestamp: 2026-09-10T21:10:00-0300
 ---
 # Log — bastion
 
 ## [run: 2026-09-10]
+
+### Orchestration lane close-out — BA.26.E merged, three bails resolved, lane paused
+
+- **What:** Drove `BA.26.E` through `/sdlc-flow --auto-merge` under `/begin-orchestration
+  --roadmap operator-console --lane console`. Re-derived stale bella-collision and BA.26.J-capture
+  premises in `BA.26.E`/`F`/`H`'s block records before generating specs (D18). The engine bailed
+  three times before merging: (1) a stochastic env-leak flake in
+  `notify_test_send_unconfigured_transport_returns_503_c005` — a recurrence of the already-filed
+  carryover `nextest-defeats-the-in-process-env-lock` — root-caused to task 2's own new test
+  unsetting `DATABASE_URL` without the shared `testsupport::lock_env()` guard, fixed with a
+  one-line hotfix (`8f62d86`); (2) the identical flake recurring, confirmed genuinely intermittent,
+  resolved by retrying; (3) a structural bail where each bail's own "wrap-up" commit accumulated on
+  the branch's HEAD, poisoning the next resume's work-assertion diff — resolved by hand-repairing
+  `planning/BA.26.E/sdlc/sdlc-flow-state.json` (task 2 marked passed, independently re-verified
+  correct three times) rather than resuming a fourth time. Rebuilt/reinstalled `bastion` (stale
+  binary blocked `mev emit-state --write`) and ran it clean. Generated `BA.26.F`'s spec (ready to
+  run); deferred `BA.26.H`'s spec since its file list touches surfaces `BA.26.F` builds. Released
+  the repo lease, registry claim, and fleet-concurrency slot; wrote `planning/handoff.md`.
+- **Why:** User asked to run this lane autonomously ("make your own decisions... no need to ask
+  the operator") and to `/handoff` once `BA.26.E` finished, rather than continuing straight into
+  `BA.26.F`.
+- **Refs:** `planning/roadmaps/operator-console/roadmap.md`, `planning/orchestration-run/operator-console/notes.md`, PR #55.
 
 Full spec BA.26.E ("Find a finished run without knowing its UUID") closed, review PASS, all
 3 tasks passed. Task 1 added an async, read-only `list_finished_runs` plus a pure
