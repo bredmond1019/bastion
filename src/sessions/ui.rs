@@ -1262,11 +1262,13 @@ fn finished_runs_status_message(status: &crate::runs::FinishedRunsStatus) -> Opt
 
 /// Draw the finished-runs discovery-list pane (BA.26.E task 2) — the
 /// Mission-Control content the 'f' key switches into. Renders through
-/// [`crate::runs::finished_run_row`], the ONE formatter this block adds, so
-/// a reviewer can point at this single call site rather than finding a
-/// second formatter.
+/// [`crate::runs::finished_run_line`] (BA.26.H task 3: the styled companion
+/// to `finished_run_row` that resolves the status column through
+/// `ui_theme`'s shared glyph+colour set), the ONE formatter this block
+/// adds, so a reviewer can point at this single call site rather than
+/// finding a second formatter.
 fn render_finished_runs_pane(frame: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
-    use crate::runs::{FinishedRunsStatus, finished_run_row};
+    use crate::runs::{FinishedRunsStatus, finished_run_line};
 
     let block = crate::ui_theme::themed_block(
         Span::styled(" finished runs ", crate::ui_theme::title_style()),
@@ -1277,7 +1279,7 @@ fn render_finished_runs_pane(frame: &mut Frame, app: &AppState, area: ratatui::l
         FinishedRunsStatus::Done(runs) if !runs.is_empty() => {
             let items: Vec<ListItem> = runs
                 .iter()
-                .map(|r| ListItem::new(finished_run_row(r)))
+                .map(|r| ListItem::new(finished_run_line(r)))
                 .collect();
             let list = List::new(items)
                 .block(block)
