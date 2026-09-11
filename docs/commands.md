@@ -6,7 +6,7 @@ doc_id: commands
 layer: [console]
 project: bastion
 status: active
-keywords: [commands, catalogue, subcommands, cli, invocation, capability list]
+keywords: [commands, catalogue, subcommands, cli, invocation, capability list, sweep, drain]
 related: [bastion-cli-docs-index, config, bastion-setup, sessions, brainval]
 ---
 
@@ -193,6 +193,21 @@ board. Admitting all 548 items because a subprocess failed would be a far worse 
 admitting none, and avoiding exactly that is why this source exists. The source is also
 read-only end to end: no code path here opens any `state.json` for writing, matching `GET
 /api/attention`'s read-only guarantee (D25).
+
+## Roadmap sweep and drain — hand-fired workflow passes (BA.25.D)
+
+| Command | What it does |
+|---|---|
+| `bastion sweep <roadmap> [--dry-run] [--profile <name>]` | Hand-fire one pass of the Rust `SWEEP` workflow for `<roadmap>` — the only way the Rust sweep runs in this cut (Fork 4: no schedule). `--dry-run` runs every measurement/routing step but skips the final `sweeps_dir` snapshot write. A second run inside the refire window (against the most recent on-disk snapshot) also writes nothing. |
+| `bastion drain <repo>/<lane> [--profile <name>]` | Hand-fire one pass of the Rust `COMMANDER` drain against `<repo>/<lane>` — the only way the Rust drain runs in this cut. Prints the dispatched workflow's queue/drained/completed counts and the emit outcome's status verbatim (`emit status: <status>`, plus `emit reason: <reason>` when refused). |
+
+Both commands take an optional `--profile <name>` naming a permission profile from
+`brain.toml`'s `[permission_profiles.levels]` (default: `[permission_profiles].default`); an
+unrecognized or unresolvable name is **refused**, never silently defaulted to `unrestricted`. See
+[`sweep_cli`](../src/sweep_cli.rs), [`drain_cli`](../src/drain_cli.rs) and
+[`permission_profile`](../src/permission_profile.rs) for the pipeline these thin CLI shells
+dispatch into. Not the same as `bastion coord drain` above, which moves fleet-coordination
+messages, not a workflow pass.
 
 ## Not a command
 
