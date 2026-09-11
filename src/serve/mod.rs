@@ -60,14 +60,35 @@ use engine_serve::durable::spawn_durable_writer;
 use engine_serve::http::AppState as EngineAppState;
 use engine_serve::live_state::LiveStateStore;
 use engine_serve::orphan::ReconcileSummary;
-use engine_serve::workflows::{init_repo_registry_from_env, register_builtin_workflows};
+use engine_serve::workflows::{
+    init_repo_registry_from_env, register_builtin_workflows,
+    register_builtin_workflows_with_operator,
+};
 
 /// Build the engine's `Dispatcher` with every builtin workflow (currently
 /// just `SDLC_FLOW`) registered. Pulled out of `run()` so the wiring is
 /// unit-testable without standing up actix/Postgres.
-fn build_engine_dispatcher() -> Dispatcher {
+///
+/// `operator_transport` (`BA.ticket.engine-dispatcher-carries-the-real-
+/// operator-transport` task 1): always calls
+/// [`register_builtin_workflows`] first, unconditionally — the same
+/// no-transport registration this fn has always performed, so
+/// `build_engine_dispatcher_registers_sdlc_flow`'s assertion holds
+/// unmodified when called with `None`. When `Some(transport)` is given,
+/// additionally calls [`register_builtin_workflows_with_operator`], which
+/// re-registers `SWEEP`/`ORCHESTRATION` (a safe `HashMap`-insert replace)
+/// wired to the real transport instead of `NoopOperatorTransport`. The
+/// `Arc` passed in must be the SAME allocation the poll loop and the
+/// engine app_data hold — see `split_operator_transport` — never a second
+/// `TelegramTransport::new(..)`.
+fn build_engine_dispatcher(
+    operator_transport: Option<std::sync::Arc<dyn notify::OperatorTransport>>,
+) -> Dispatcher {
     let mut dispatcher = Dispatcher::new();
     register_builtin_workflows(&mut dispatcher);
+    if let Some(transport) = operator_transport {
+        register_builtin_workflows_with_operator(&mut dispatcher, transport);
+    }
     dispatcher
 }
 
@@ -563,6 +584,31 @@ async fn run_server(
     // own clone for the `runs`-topic poller.
     let live_store = LiveStateStore::new();
 
+    // ── Operator transport, hoisted (BA.ticket.engine-dispatcher-carries-the-
+    // real-operator-transport task 1) ───────────────────────────────────────
+    //
+    // Loaded here — before the engine-mount decision below — so the SAME
+    // `TelegramTransport` `Arc` can be handed to `build_engine_dispatcher`
+    // (which registers the engine's SWEEP/ORCHESTRATION workflows against
+    // it) AND reused, unchanged, at this fn's original telegram-config match
+    // site further down for the notify poll loop / engine app_data split.
+    // Only the config load and the `TelegramTransport::new(..)` construction
+    // move up here; the `who`/poll-loop/app_data wiring stays at its
+    // original call site because it depends on `pending_payloads` /
+    // `approve_and_run_seams` / `headless_pending_payloads`, all constructed
+    // between here and there. `hoisted_operator_transport` is `None`
+    // whenever Telegram is unconfigured or misconfigured (`Ok(None)` or
+    // `Err(..)`), matching `build_engine_dispatcher`'s no-transport path.
+    let telegram_config_result = crate::config::load_telegram_config();
+    let hoisted_operator_transport: Option<std::sync::Arc<dyn notify::OperatorTransport>> =
+        match &telegram_config_result {
+            Ok(Some(telegram_config)) => Some(std::sync::Arc::new(
+                notify::telegram::TelegramTransport::new(telegram_config.clone()),
+            )
+                as std::sync::Arc<dyn notify::OperatorTransport>),
+            _ => None,
+        };
+
     // ── Engine embed (BA.7.C task 2) ────────────────────────────────────────
     //
     // Decide once at boot whether to mount `engine-serve`'s route table.
@@ -691,7 +737,7 @@ async fn run_server(
                     let durable_handle = spawn_durable_writer(Some(pool));
                     engine_serve::journal::set_journal_durable_handle(durable_handle.clone());
                     let state = EngineAppState::builder(
-                        Arc::new(build_engine_dispatcher()),
+                        Arc::new(build_engine_dispatcher(hoisted_operator_transport.clone())),
                         live_store.clone(),
                         durable_handle,
                         engine_api_key,
@@ -1130,7 +1176,7 @@ async fn run_server(
     // a placeholder that would swallow sends.
     let operator_transport: Option<std::sync::Arc<dyn notify::OperatorTransport>>;
 
-    match crate::config::load_telegram_config() {
+    match telegram_config_result {
         Ok(Some(telegram_config)) => {
             tracing::info!(
                 target: "bastion::serve",
@@ -1143,8 +1189,11 @@ async fn run_server(
             // approved this" beats a fabricated "who" in an audit ledger —
             // see the ticket's Notes.
             let who = telegram_config.chat_id.clone();
-            let transport: std::sync::Arc<dyn notify::OperatorTransport> =
-                std::sync::Arc::new(notify::telegram::TelegramTransport::new(telegram_config));
+            // Reuse the SAME `Arc` `hoisted_operator_transport` built above
+            // — never a second `TelegramTransport::new(..)` call site.
+            let transport: std::sync::Arc<dyn notify::OperatorTransport> = hoisted_operator_transport
+                .clone()
+                .expect("telegram_config_result matched Ok(Some(..)) above, so hoisted_operator_transport must be Some");
             let (transport, for_app_data) = split_operator_transport(transport);
             operator_transport = for_app_data;
             let verdict_registry = std::sync::Arc::clone(&pending_payloads);
@@ -1770,7 +1819,7 @@ mod engine_mount_tests {
         // assertion only pins the contract this module relies on — `SDLC_FLOW` is
         // present — rather than the full (and upstream-owned) registry contents, so it
         // doesn't churn every time `engine-serve` adds another built-in workflow.
-        let dispatcher = build_engine_dispatcher();
+        let dispatcher = build_engine_dispatcher(None);
         assert!(dispatcher.is_registered("SDLC_FLOW"));
     }
 
@@ -5933,7 +5982,7 @@ heading = "bastion"
         Error = actix_web::Error,
     > {
         let state = EngineAppState::builder(
-            Arc::new(build_engine_dispatcher()),
+            Arc::new(build_engine_dispatcher(None)),
             LiveStateStore::new(),
             spawn_durable_writer(None),
             api_key.to_string(),
@@ -5999,7 +6048,7 @@ heading = "bastion"
         let durable_handle = spawn_durable_writer(None);
         engine_serve::journal::set_journal_durable_handle(durable_handle.clone());
         let _state = EngineAppState::builder(
-            Arc::new(build_engine_dispatcher()),
+            Arc::new(build_engine_dispatcher(None)),
             LiveStateStore::new(),
             durable_handle,
             ENGINE_TEST_KEY.to_string(),
@@ -6202,7 +6251,7 @@ heading = "bastion"
         Error = actix_web::Error,
     > {
         let state = EngineAppState::builder(
-            Arc::new(build_engine_dispatcher()),
+            Arc::new(build_engine_dispatcher(None)),
             LiveStateStore::new(),
             spawn_durable_writer(None),
             api_key.to_string(),
@@ -7599,7 +7648,7 @@ mod schedule_loop_wiring_tests {
     fn schedule_test_state() -> Arc<EngineAppState> {
         web::Data::new(
             EngineAppState::builder(
-                Arc::new(build_engine_dispatcher()),
+                Arc::new(build_engine_dispatcher(None)),
                 LiveStateStore::new(),
                 spawn_durable_writer(None),
                 "schedule-loop-test-key".to_string(),
