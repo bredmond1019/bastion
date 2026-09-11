@@ -2,11 +2,129 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-09-02T07:26:32-0300
+timestamp: 2026-09-10T21:10:00-0300
 ---
 # Log — bastion
 
 ## [run: 2026-09-10]
+
+Closed out BA.26.H (5 of 5 tasks, review PASS) after resuming from the prior bail. Task 1 added a
+`MIN_CONTENT_WIDTH_WITH_BROWSER` size guard to `compute_pane_areas` so the Hq/Space/View browser
+split collapses to full-width content below 40 columns instead of shredding long slugs mid-word;
+task 2 introduced the shared `StatusKind` glyph/style/label enum in `src/ui_theme.rs` with `From`
+impls for `AgentState` and `db::workflows::RunStatus`; task 3 wired `finished_run_line` through the
+finished-runs pane onto the shared set; task 4 repointed `src/overview/mod.rs`'s
+`render_jump_status` onto `StatusKind::Success`/`Failed`, leaving the parked `render`/`StateJson`
+path untouched; task 5 re-blessed the 80x24 celia golden against the shipped build and fixed six
+pre-existing test-geometry regressions. The end review returned PASS with no findings; docs were
+updated (`docs/terminal/sessions.md`). Next: pick up the next queued item per `planning/status.md`.
+
+```
+45b0e0b docs: update docs for BA.26.H
+647dd18 chore: wrap up BA.26.H
+6d51cc8 feat: implement BA.26.H-task5
+e3e5900 chore: wrap up BA.26.H
+810e9ab feat: implement BA.26.H-task4
+91e8b51 feat: implement BA.26.H-task3
+3051bdf feat: implement BA.26.H-task2
+a0de452 feat: implement BA.26.H-task1
+```
+
+## [run: 2026-09-10]
+
+Resumed BA.26.H and ran tasks 1 through 5 on the worktree branch. Task 1 added the
+`MIN_CONTENT_WIDTH_WITH_BROWSER` size guard to `compute_pane_areas` so the Hq/Space/View browser
+split collapses to full-width content below 40 columns instead of shredding long slugs mid-word;
+task 2 introduced the shared `StatusKind` glyph/style/label enum in `src/ui_theme.rs` with `From`
+impls for `AgentState` and `db::workflows::RunStatus`; task 3 wired `finished_run_line` (a
+`Line`-based companion to `finished_run_row`) through the finished-runs pane so it resolves through
+the same shared set; task 4 repointed `src/overview/mod.rs`'s `render_jump_status` onto
+`StatusKind::Success`/`Failed`, leaving the parked `render`/`StateJson` path untouched. Task 5
+re-blessed the 80x24 celia golden against the shipped build and fixed six pre-existing
+test-geometry regressions surfaced by the full authoritative gate, landing every declared BA.26.H
+validation command green. The run BAILED at task 5's test stage: `task_validation_8`
+(capture-scenes-text celia check) failed on the pre-existing `session_tui_open_work_200x55`/
+`120x40` scenes (a keybinding-footer-line mismatch), but `planning/harness.json` declares this exact
+check `gates:false` by deliberate design (BA.26.J: a brand-new golden-image surface must not be able
+to red-gate every block on its first day). A source-diff check (`git diff f4a8426..HEAD --
+src/sessions/app.rs`) shows zero changes to `NORMAL_KEY_BINDINGS` across all five BA.26.H task
+commits, and the two golden scenes' keybinding line only lists entries through `r` refresh-boards
+while current source — unchanged by BA.26.H, already present at the branch base — carries later
+entries (`p` probe run view from BA.26.D, plus BA.26.E's addition); the mismatch would reproduce
+byte-for-byte on the pre-BA.26.H tree, though this was not literally re-run against base with celia
+itself (celia is not on PATH here). Closing this needs either blessing the two non-80x24 scenes
+outside task 5's declared file scope (already declined by the implementer) or the test stage
+correctly honoring harness.json's `gates:false` for this check — an operator/spec-owner decision,
+not a retry. Next: get an operator/spec-owner call on the gates:false-vs-test-stage mismatch, then
+resume BA.26.H's end review.
+
+```
+6d51cc8 feat: implement BA.26.H-task5
+e3e5900 chore: wrap up BA.26.H
+810e9ab feat: implement BA.26.H-task4
+91e8b51 feat: implement BA.26.H-task3
+3051bdf feat: implement BA.26.H-task2
+a0de452 feat: implement BA.26.H-task1
+```
+
+Implemented tasks 1-3 of BA.26.H (a chrome pass for 80x24 legibility plus a shared bastiel status
+glyph/colour set): task 1 added `MIN_CONTENT_WIDTH_WITH_BROWSER=40` to
+`compute_pane_areas`/`sessions/app.rs` so the Hq/Space/View browser split collapses to a full-width
+content pane below that threshold instead of shredding long slugs mid-word, with new render tests
+at 80x24 (guard engages) and 160x24 (guard does not); task 2 introduced a shared `StatusKind`
+enum in `src/ui_theme.rs` (glyph/style/label) with `From` impls for `AgentState` and
+`db::workflows::RunStatus`, and rewired `state_running_style`/`state_idle_style`/
+`state_working_style`/`state_blocked_style` to delegate to it; task 3 added `finished_run_line` (a
+`Line`-based companion to `finished_run_row`) in `src/runs/mod.rs` and wired it into
+`sessions/ui.rs`'s finished-runs pane render, resolving glyph/style/label through the same shared
+`StatusKind` set. Task 4 (the overview jump-status pane) implemented the same pattern —
+`render_jump_status` now resolves through `StatusKind::Success`/`Failed` — but the run BAILED on
+task 4's own validation: `task_validation_4`'s check command (`` wc -l | grep -qx 0 ``) is broken on
+this macOS/BSD toolchain, because `wc -l` pads its output with leading whitespace (confirmed via
+`od -c`: `"       0\n"`), so `grep -qx 0` can never match regardless of the true count. Directly
+verified the real diff count is 0 (no new `render`/`StateJson` fn was added, honoring the block's
+out-of-scope guard on the parked overview path) by trimming whitespace before comparing by hand.
+Fixing the check requires editing `planning/BA.26.H/tasks.json`'s validation command, which sits
+outside task 4's declared file scope, so this needs an operator/spec-owner decision on how to
+correct it rather than a code fix. Task 5 (final harness suite) did not run. No amendment-log target
+exists for BA.26.H (the block record is `planning/blocks/BA.26.H.json`, JSON with no
+`## Amendment Log` section, and no per-spec plan.md was authored for it) — the task 4 deviation is
+recorded here and in `planning/BA.26.H/sdlc/sdlc-flow-state.json` instead. Next: an
+operator/spec-owner fixes `task_validation_4`'s check command in `tasks.json` (e.g. trim `wc -l`'s
+output, or use `git diff --stat` differently), then resume `/sdlc-flow BA.26.H 4` through the
+remaining tasks.
+
+```
+810e9ab feat: implement BA.26.H-task4
+91e8b51 feat: implement BA.26.H-task3
+3051bdf feat: implement BA.26.H-task2
+a0de452 feat: implement BA.26.H-task1
+f4a8426 chore: init worktree BA.26.H-flow
+```
+
+## [run: 2026-09-10]
+
+### Orchestration lane close-out — BA.26.E merged, three bails resolved, lane paused
+
+- **What:** Drove `BA.26.E` through `/sdlc-flow --auto-merge` under `/begin-orchestration
+  --roadmap operator-console --lane console`. Re-derived stale bella-collision and BA.26.J-capture
+  premises in `BA.26.E`/`F`/`H`'s block records before generating specs (D18). The engine bailed
+  three times before merging: (1) a stochastic env-leak flake in
+  `notify_test_send_unconfigured_transport_returns_503_c005` — a recurrence of the already-filed
+  carryover `nextest-defeats-the-in-process-env-lock` — root-caused to task 2's own new test
+  unsetting `DATABASE_URL` without the shared `testsupport::lock_env()` guard, fixed with a
+  one-line hotfix (`8f62d86`); (2) the identical flake recurring, confirmed genuinely intermittent,
+  resolved by retrying; (3) a structural bail where each bail's own "wrap-up" commit accumulated on
+  the branch's HEAD, poisoning the next resume's work-assertion diff — resolved by hand-repairing
+  `planning/BA.26.E/sdlc/sdlc-flow-state.json` (task 2 marked passed, independently re-verified
+  correct three times) rather than resuming a fourth time. Rebuilt/reinstalled `bastion` (stale
+  binary blocked `mev emit-state --write`) and ran it clean. Generated `BA.26.F`'s spec (ready to
+  run); deferred `BA.26.H`'s spec since its file list touches surfaces `BA.26.F` builds. Released
+  the repo lease, registry claim, and fleet-concurrency slot; wrote `planning/handoff.md`.
+- **Why:** User asked to run this lane autonomously ("make your own decisions... no need to ask
+  the operator") and to `/handoff` once `BA.26.E` finished, rather than continuing straight into
+  `BA.26.F`.
+- **Refs:** `planning/roadmaps/operator-console/roadmap.md`, `planning/orchestration-run/operator-console/notes.md`, PR #55.
 
 Full spec BA.26.E ("Find a finished run without knowing its UUID") closed, review PASS, all
 3 tasks passed. Task 1 added an async, read-only `list_finished_runs` plus a pure

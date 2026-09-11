@@ -490,29 +490,37 @@ pub fn resolve_jump(
 /// Renders the current jump status as a one-line footer: nothing selected
 /// yet, a resolved target's path, or an unresolved target's reason — always
 /// SOMETHING visible, never a blank line standing in for "nothing happened".
+///
+/// A `Found` jump maps onto [`crate::ui_theme::StatusKind::Success`] and an
+/// `Unresolved` one onto [`crate::ui_theme::StatusKind::Failed`], both
+/// resolved through [`crate::ui_theme::status_glyph_and_style`] (BA.26.H
+/// task 4) rather than picking `sage()`/`rose()` ad hoc as before — the same
+/// shared status set `src/runs/mod.rs`'s `finished_run_line` (task 3) and
+/// `src/sessions/ui.rs`'s state dots (task 2) resolve through. The "nothing
+/// selected yet" prompt isn't a pass/fail status at all, so it keeps plain
+/// body text styling rather than being forced onto a `StatusKind` variant.
 pub fn render_jump_status(
     frame: &mut Frame,
     status: Option<&JumpResolution>,
     area: ratatui::layout::Rect,
 ) {
-    let (text, color) = match status {
+    let (text, style) = match status {
         None => (
             "Press 'g' to jump to the next in-document roadmap/epic/repo reference.".to_string(),
-            crate::ui_theme::text(),
+            Style::default().fg(crate::ui_theme::text()),
         ),
-        Some(JumpResolution::Found(path)) => (
-            format!("-> Jumped to {}", path.display()),
-            crate::ui_theme::sage(),
-        ),
-        Some(JumpResolution::Unresolved(reason)) => (
-            format!("x Could not resolve jump: {reason}"),
-            crate::ui_theme::rose(),
-        ),
+        Some(JumpResolution::Found(path)) => {
+            let (glyph, style) =
+                crate::ui_theme::status_glyph_and_style(crate::ui_theme::StatusKind::Success);
+            (format!("{glyph}-> Jumped to {}", path.display()), style)
+        }
+        Some(JumpResolution::Unresolved(reason)) => {
+            let (glyph, style) =
+                crate::ui_theme::status_glyph_and_style(crate::ui_theme::StatusKind::Failed);
+            (format!("{glyph}x Could not resolve jump: {reason}"), style)
+        }
     };
-    let line = Paragraph::new(ratatui::text::Span::styled(
-        text,
-        Style::default().fg(color),
-    ));
+    let line = Paragraph::new(ratatui::text::Span::styled(text, style));
     frame.render_widget(line, area);
 }
 
@@ -1271,5 +1279,53 @@ mod tests {
         assert_ne!(idle, found_rendered);
         assert_ne!(idle, unresolved_rendered);
         assert_ne!(found_rendered, unresolved_rendered);
+    }
+
+    /// BA.26.H task 4: `render_jump_status`'s Found/Unresolved colours must
+    /// resolve through `ui_theme`'s shared `StatusKind` set
+    /// (`Success`/`Failed`) rather than picking `sage()`/`rose()` ad hoc —
+    /// asserted against the buffer's actual foreground colour, which is the
+    /// same (glyph, style) pair `status_glyph_and_style` returns.
+    #[test]
+    fn jump_status_found_and_unresolved_use_the_shared_status_kind_colours() {
+        use crate::ui_theme::{StatusKind, status_glyph_and_style};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (_, success_style) = status_glyph_and_style(StatusKind::Success);
+        let (_, failed_style) = status_glyph_and_style(StatusKind::Failed);
+
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+
+        let found = JumpResolution::Found(std::path::PathBuf::from("/tmp/roadmap.md"));
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_jump_status(f, Some(&found), area);
+            })
+            .expect("render_jump_status must not panic (found)");
+        let found_cell = terminal
+            .backend()
+            .buffer()
+            .cell((0, 0))
+            .expect("cell present");
+        assert_eq!(found_cell.fg, success_style.fg.expect("style has an fg"));
+
+        let unresolved = JumpResolution::Unresolved("no epic named 'ghost'".to_string());
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_jump_status(f, Some(&unresolved), area);
+            })
+            .expect("render_jump_status must not panic (unresolved)");
+        let unresolved_cell = terminal
+            .backend()
+            .buffer()
+            .cell((0, 0))
+            .expect("cell present");
+        assert_eq!(
+            unresolved_cell.fg,
+            failed_style.fg.expect("style has an fg")
+        );
     }
 }
