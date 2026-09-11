@@ -247,6 +247,25 @@ pub fn finished_run_row(run: &WorkflowRun) -> String {
     )
 }
 
+// ── BA.26.F task 1: resolve a node's tmux session name ──────────────────
+//
+// Mirrors exactly how engine-core's `LiveClaudeSessionNode` reads its
+// upstream `HeldSessionNode`'s `session_name`
+// (`../engine-rs/crates/engine-core/src/nodes/terminal/live_claude.rs:220-236`:
+// `stored.get("session_name").and_then(Value::as_str)`). That same key
+// lands in `NodeState.output` on the wire via the existing node/task_context
+// join this crate already parses (`src/db/workflows.rs`'s
+// `parse_task_context`) — this is a read of an EXISTING field, not a new
+// contract. A node with no `session_name` (most nodes are not
+// terminal-backed) returns `None`.
+pub(crate) fn node_session_name(node: &crate::db::workflows::NodeState) -> Option<String> {
+    node.output
+        .as_ref()
+        .and_then(|v| v.get("session_name"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,6 +722,51 @@ mod tests {
             "the terminal run must be ABSENT from the active-runs-equivalent \
              set — that gap is the discovery problem this block closes"
         );
+    }
+
+    // ── node_session_name (BA.26.F task 1) ──────────────────────────────
+
+    fn a_node_state(output: Option<serde_json::Value>) -> crate::db::workflows::NodeState {
+        use crate::db::workflows::{NodeState, RunStatus};
+        NodeState {
+            id: "node-1".to_string(),
+            name: "some-node".to_string(),
+            status: RunStatus::Running,
+            depends_on: vec![],
+            input: None,
+            output,
+            error: None,
+            tokens_in: None,
+            tokens_out: None,
+            model: None,
+            started_at: None,
+            completed_at: None,
+            elapsed_secs: None,
+        }
+    }
+
+    #[test]
+    fn node_session_name_some_when_output_carries_session_name_string() {
+        let node = a_node_state(Some(serde_json::json!({"session_name": "eng-42"})));
+        assert_eq!(node_session_name(&node), Some("eng-42".to_string()));
+    }
+
+    #[test]
+    fn node_session_name_none_when_output_is_none() {
+        let node = a_node_state(None);
+        assert_eq!(node_session_name(&node), None);
+    }
+
+    #[test]
+    fn node_session_name_none_when_output_has_no_session_name_key() {
+        let node = a_node_state(Some(serde_json::json!({"other_field": "value"})));
+        assert_eq!(node_session_name(&node), None);
+    }
+
+    #[test]
+    fn node_session_name_none_when_session_name_is_not_a_string() {
+        let node = a_node_state(Some(serde_json::json!({"session_name": 42})));
+        assert_eq!(node_session_name(&node), None);
     }
 
     #[test]

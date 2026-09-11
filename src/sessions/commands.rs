@@ -4,9 +4,42 @@
 // Decision D5: all verbs are synchronous blocking calls — no async/tokio coupling.
 // tmux is the only data source.
 
+use crossterm::event::KeyCode;
+
 use crate::sessions::claude_state::{TrustStatus, trust_status};
 use crate::sessions::model::{Pane, Session, parse_sessions};
 use crate::sessions::tmux::{self, TmuxError};
+
+// ── BA.26.F task 1: watch-vs-attach key routing ──────────────────────────
+//
+// Pure decision only — no tmux argv construction here. term-core's
+// `capture_pane_args`/`attach_args` (`../engine-rs/crates/term-core/src/tmux.rs:53,69`)
+// are already unit-tested element-by-element; this block calls the existing
+// `tmux::capture_pane_raw`/`tmux::suspend_and_attach` wrappers rather than
+// building new argv.
+
+/// The two verbs a node-selection surface can produce for a node with a
+/// live tmux session: a non-pausing `Watch` (the default affordance) and a
+/// deliberate `Attach` (the real tmux attach, behind a separate key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeTerminalVerb {
+    Watch,
+    Attach,
+}
+
+/// Map a key to a [`NodeTerminalVerb`]. `'w'` watches (read-only, never
+/// pauses the engine); `'t'` attaches (deliberate, pauses the engine's
+/// sends for the attach duration + 60s). Every other key — including `'a'`,
+/// already bound to the ordinary session-attach action, and every other
+/// currently-bound key in `src/sessions/app.rs`'s `on_key` `Mode::Normal`
+/// match — returns `None`.
+pub(crate) fn node_terminal_verb_for_key(key: KeyCode) -> Option<NodeTerminalVerb> {
+    match key {
+        KeyCode::Char('w') => Some(NodeTerminalVerb::Watch),
+        KeyCode::Char('t') => Some(NodeTerminalVerb::Attach),
+        _ => None,
+    }
+}
 
 /// Entry point for `bastion sessions`.
 /// Gathers data from tmux and prints a plain-text table.
@@ -510,6 +543,64 @@ mod tests {
         let lines = vec!["only".to_string()];
         let out = format_capture(&lines);
         assert_eq!(out, "only\n");
+    }
+
+    // ── node_terminal_verb_for_key (BA.26.F task 1) ─────────────────────
+
+    #[test]
+    fn node_terminal_verb_for_key_w_is_watch() {
+        assert_eq!(
+            node_terminal_verb_for_key(KeyCode::Char('w')),
+            Some(NodeTerminalVerb::Watch)
+        );
+    }
+
+    #[test]
+    fn node_terminal_verb_for_key_t_is_attach() {
+        assert_eq!(
+            node_terminal_verb_for_key(KeyCode::Char('t')),
+            Some(NodeTerminalVerb::Attach)
+        );
+    }
+
+    #[test]
+    fn node_terminal_verb_for_key_none_for_every_other_currently_bound_key() {
+        // The taken set as of this block (src/sessions/app.rs's on_key
+        // Mode::Normal match), plus 'a' explicitly per this task's AC.
+        let taken = [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Char('a'),
+            KeyCode::Char('n'),
+            KeyCode::Char('s'),
+            KeyCode::Char('k'),
+            KeyCode::Char('q'),
+            KeyCode::Char('v'),
+            KeyCode::Char('e'),
+            KeyCode::Char('r'),
+            KeyCode::Char('p'),
+            KeyCode::Char('f'),
+            KeyCode::Enter,
+            KeyCode::Right,
+            KeyCode::Left,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Backspace,
+            KeyCode::Esc,
+        ];
+        for key in taken {
+            assert_eq!(
+                node_terminal_verb_for_key(key),
+                None,
+                "key {key:?} should not map to a terminal verb"
+            );
+        }
+    }
+
+    #[test]
+    fn node_terminal_verb_for_key_none_for_unrelated_char() {
+        assert_eq!(node_terminal_verb_for_key(KeyCode::Char('z')), None);
     }
 
     /// Architectural guarantee: the sessions code path does not call Config::load()
