@@ -129,10 +129,17 @@ pub enum Commands {
     Momentum,
     /// List all tmux sessions with their last line of pane output
     Sessions,
-    /// Attach your terminal to an existing tmux session
+    /// Land the operator's terminal in a live coordination lane's held session (`BA.25.E`)
+    ///
+    /// Takes a single `<repo>/<lane>` value, split on the first `/` (mirroring `bastion
+    /// drain`'s `--lane <repo>/<lane>` convention) — a value with no `/` is refused before
+    /// any file I/O, naming the literal string given. Resolves the lane against the fleet
+    /// lock directory's registry and, once confirmed live, attaches (blocking, interactive)
+    /// to its held tmux session. See `sessions::commands::attach_lane` for the thin CLI
+    /// shell; this subcommand adds no resolution or tmux logic of its own.
     Attach {
-        /// Name of the session to attach to
-        session: String,
+        /// `<repo>/<lane>` identifying the lane to attach to.
+        lane: String,
     },
     /// Create a new detached tmux session
     New {
@@ -449,6 +456,21 @@ pub enum Commands {
     Coord {
         #[command(subcommand)]
         mode: CoordMode,
+    },
+
+    /// Typed roadmap-status face over engine-core's four-artifact join (`BA.25.E`),
+    /// kept BESIDE `/roadmap-status`'s existing Python path rather than replacing it.
+    ///
+    /// See `roadmap_status_cli` for the thin CLI shell — this subcommand adds no
+    /// discovery logic of its own.
+    RoadmapStatus {
+        /// Roadmap slug (the directory name under `planning/roadmaps/`).
+        #[arg(long)]
+        roadmap: String,
+        /// Emit the machine-readable JSON envelope (the `RoadmapStatusResult` serialized
+        /// verbatim) instead of a human summary.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Hand-fire one pass of the Rust `SWEEP` workflow (`BA.25.D`) — the ONLY way the Rust
