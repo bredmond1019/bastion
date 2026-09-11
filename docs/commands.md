@@ -102,7 +102,7 @@ DB-free by design (decision D4). Every one of these shells out to `tmux`.
 |---|---|---|
 | `bastion` / `bastion tui` | Interactive session dashboard. This is what you get with no subcommand. | [sessions.md](terminal/sessions.md#unified-console-tui-dashboard) |
 | `bastion sessions` | List every tmux session with its last line of pane output. | [sessions.md](terminal/sessions.md#verb-reference) |
-| `bastion attach <session>` | Attach your terminal to an existing session. | [sessions.md](terminal/sessions.md#verb-reference) |
+| `bastion attach <repo>/<lane>` | Resolve a lane to its held engine session (`lane-<repo>-<lane>`) and attach — refuses, naming the registry path checked, if no live `.fleet-locks/lane-agents/` claim matches (BA.25.E). Not a raw tmux session-name attach. | [sessions.md](terminal/sessions.md#verb-reference) |
 | `bastion new <session> [--dir <path>]` | Create a new detached session. | [sessions.md](terminal/sessions.md#verb-reference) |
 | `bastion kill <session>` | Kill a tmux session. **Destructive**, no confirmation. Not the same as `bastion abort` — this kills a terminal, not a workflow run. | [sessions.md](terminal/sessions.md#verb-reference) |
 | `bastion send <session> <cmd...>` | Send a command into a session without attaching. Multi-word, no quoting needed. | [sessions.md](terminal/sessions.md#verb-reference) |
@@ -117,6 +117,7 @@ Read files on disk. Never write back — `/log-work` owns the writes (decision D
 |---|---|---|
 | `bastion overview` | Tabbed open-work viewer over this repo's declared `[views]` sections, with in-document `[[roadmap:id]]`/`[[epic:id]]`/`[[repo:id]]` jumps. The prior Kanban `now`/`next`/`blocked` board is parked code, no longer the default. | [overview.md](boards/overview.md) *(doc pending update — see NEEDS_REVIEW)* |
 | `bastion momentum` | Cross-repo rollup: the momentum queues and `## Metrics` from every registered workspace's `planning/status.md`, in one table. | [momentum.md](boards/momentum.md) |
+| `bastion roadmap-status --roadmap <slug> [--json]` | Typed Rust face over `engine_core::roadmap_status::discover` — the same four-artifact join (`lane-log.jsonl`, `orchestration-run/{notes,review}.md`, `sdlc-*state.json`, each repo's `state.json`) `/roadmap-status`'s Python path performs, kept beside it (Fork 2, nothing deleted). A truncated/malformed `lane-log.jsonl` line surfaces as `malformed_lines` in both output modes, never silently dropped (BA.25.E). | [roadmap_status_cli.rs](../src/roadmap_status_cli.rs) |
 
 ## Knowledge graph and validation
 
