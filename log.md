@@ -8,6 +8,42 @@ timestamp: 2026-09-10T21:10:00-0300
 
 ## [run: 2026-09-11]
 
+BA.25.E (`bastion roadmap-status`, `bastion attach <lane>`) is PARTIAL — all three tasks passed
+their own implement/fix loop with confirmed `workAssertionPassed` outcomes, but the consolidated
+end review verdict is PARTIAL and the spec BAILED. Task 1 added `src/roadmap_status_cli.rs`
+(human/`--json` rendering over `engine_core::roadmap_status::discover`, surfacing
+`malformed_lines` and distinct NotFound/Ambiguous errors). Task 2 added `attach_lane`/
+`attach_lane_at` in `src/sessions/commands.rs`, resolving a `<repo>/<lane>` pair to its held tmux
+session via `engine_core::coord`'s lock dir + `held_session_name`, refusing to attach when no
+lane-agents registry claim matches. Task 3 registered `bastion roadmap-status --roadmap <slug>
+[--json]` and repurposed `bastion attach <repo>/<lane>` (lane resolution + registry check before
+the existing tmux attach) in `src/cli.rs`/`src/main.rs`, with a new binary-level contract test
+(`tests/roadmap_status_attach_cli_contract.rs`). It bailed because task 2's own plan
+(`planning/BA.25.E/tasks.json` task 2) requires the AC "attach lands the operator in the session
+and `bastion coord status` then shows the lane held-operator" be hand-verified via a `review.md`
+recipe — no `review.md` exists anywhere for BA.25.E and no manual smoke test is logged in
+`sdlc-flow-state.json`/`worklog.md`. The underlying mechanism is unit-tested up through the
+registry-claim check, and both `attach()` and `held_session_name` were already exercised
+pre-block, but the end-to-end interactive claim has never actually been observed by anyone. This
+is a missing required human-verification artifact, not a fixable code defect — further automated
+retries cannot produce a hand-verification. Notable decision: the pre-existing
+`Commands::Attach { session: String }` (raw tmux session name) was repurposed in place to
+`Commands::Attach { lane: String }` (a `<repo>/<lane>` value) rather than added as a second
+variant, since task 3's AC requires erroring on a missing `/`; `docs/commands.md`'s
+`bastion attach <session>` line is now stale, left for a future `/document` pass. Next: get a
+human to run the attach smoke test and author `planning/BA.25.E/review.md`'s recipe (or the
+equivalent manual verification), then resume BA.25.E to close it out.
+
+```
+33f6b9c fix: review pass 1 for BA.25.E
+ea3ce77 feat: implement BA.25.E-task3
+8515b48 feat: implement BA.25.E-task2
+73528c9 feat: implement BA.25.E-task1
+7f8f6a9 Merge pull request #58 from bredmond1019/BA.25.D-flow
+9d305a0 chore: wrap up BA.25.D
+64d0f6c docs: update docs for BA.25.D
+```
+
 BA.25.D (`bastion sweep --once`, `bastion drain --once`) is DONE — full spec PASS after resuming
 from the earlier BAIL recorded above. All three tasks (sweep_cli.rs, drain_cli.rs +
 permission_profile.rs, and the real `bastion sweep`/`bastion drain` CLI subcommands with
