@@ -249,4 +249,26 @@ mod tests {
         let summary = human_summary(&result);
         assert!(summary.contains("malformed lane-log lines: none"));
     }
+
+    /// BA.25.E's cross-tree doc edit: the HQ command doc at
+    /// `.claude/commands/roadmap-status.md` must document BOTH the pre-existing Python path
+    /// (`roadmap_status_discovery.py`) and this block's Rust face (`bastion roadmap-status`) —
+    /// per the spec's acceptance criterion "the Python path still works ... both paths are
+    /// offered". This repo sits at `<brain_root>/core/bastion`, so the doc is two levels up.
+    #[test]
+    fn hq_roadmap_status_doc_documents_both_paths() {
+        let doc_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/commands/roadmap-status.md");
+        let contents = std::fs::read_to_string(&doc_path)
+            .unwrap_or_else(|e| panic!("could not read {}: {e}", doc_path.display()));
+
+        assert!(
+            contents.contains("roadmap_status_discovery.py"),
+            "doc must still document the Python discovery path"
+        );
+        assert!(
+            contents.contains("bastion roadmap-status"),
+            "doc must document the Rust `bastion roadmap-status` face"
+        );
+    }
 }
