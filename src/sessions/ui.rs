@@ -563,7 +563,12 @@ fn draw_with_root(
             // live run/session pane — this block ships the LIST, not a
             // second in-console detail view (`bastion inspect` and
             // BA.26.D's live pane already own detail rendering).
-            if app.viewing_finished_runs {
+            if let Some(name) = app.watching_session.clone() {
+                // BA.26.F task 2: a node watch takes over the content pane,
+                // exactly like `viewing_finished_runs` does — read-only, so
+                // it never disturbs the run/session data underneath.
+                render_watched_pane(frame, app, &name, content_area);
+            } else if app.viewing_finished_runs {
                 render_finished_runs_pane(frame, app, content_area);
             } else {
                 crate::monitor::ui::render(frame, &app.monitor_app, content_area);
@@ -984,6 +989,19 @@ fn run_inner_with_events_and_refresh<E: EventSource>(
         } else {
             // Timeout: refresh session list.
             app.set_sessions(poll_sessions());
+            // BA.26.F task 2: refresh the watched pane's text on the same
+            // tick, if a watch is active. A direct synchronous
+            // `capture_pane_raw` call — matching `poll_sessions()`'s own
+            // synchronous tmux shell-out above — never `attach_session`/
+            // `suspend_and_attach`, so this tick can never pause the agent
+            // it is watching. `Err` degrades to a message rather than
+            // panicking or dropping the pane silently.
+            if let Some(name) = app.watching_session.clone() {
+                app.watched_pane_text = Some(match tmux::capture_pane_raw(&name) {
+                    Ok(text) => text,
+                    Err(e) => format!("pane unavailable: {}", e.root_cause()),
+                });
+            }
         }
 
         if app.should_quit {
@@ -1293,6 +1311,41 @@ fn render_finished_runs_pane(frame: &mut Frame, app: &AppState, area: ratatui::l
             let message = finished_runs_status_message(other)
                 .unwrap_or_else(|| "no finished runs".to_string());
             let paragraph = Paragraph::new(message)
+                .block(block)
+                .style(Style::default().fg(crate::ui_theme::muted()));
+            frame.render_widget(paragraph, area);
+        }
+    }
+}
+
+/// Render the pane currently being WATCHED (BA.26.F task 2) — a live,
+/// read-only `tmux::capture_pane_raw` snapshot refreshed once per
+/// event-loop timeout tick (see `run_inner_with_events_and_refresh`'s
+/// `else` arm). Mirrors `render_finished_runs_pane`'s block/Paragraph
+/// convention: a titled block naming the watched session, a muted "no pane
+/// text yet" placeholder before the first tick lands, and the raw pane text
+/// otherwise. This function performs no I/O of its own — it only reads
+/// `AppState::watched_pane_text`.
+fn render_watched_pane(
+    frame: &mut Frame,
+    app: &AppState,
+    session_name: &str,
+    area: ratatui::layout::Rect,
+) {
+    let block = crate::ui_theme::themed_block(
+        Span::styled(
+            format!(" watching {session_name} (read-only — 'w' to stop) "),
+            crate::ui_theme::title_style(),
+        ),
+        false,
+    );
+    match &app.watched_pane_text {
+        Some(text) => {
+            let paragraph = Paragraph::new(text.clone()).block(block);
+            frame.render_widget(paragraph, area);
+        }
+        None => {
+            let paragraph = Paragraph::new("waiting for the next pane refresh…")
                 .block(block)
                 .style(Style::default().fg(crate::ui_theme::muted()));
             frame.render_widget(paragraph, area);
