@@ -24,6 +24,7 @@ mod observ;
 mod openwork;
 mod overview;
 mod permission_profile;
+mod roadmap_status_cli;
 mod run;
 mod runs;
 mod serve;
