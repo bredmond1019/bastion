@@ -144,13 +144,18 @@ flowchart TD
 All of these are typed in a **shell** as `bastion <subcommand>` (or `cargo run -- <subcommand>`
 from source). None of them are Claude Code slash commands — this binary is a plain CLI.
 
+The tables below cover the common surfaces; **[docs/commands.md](docs/commands.md) is the
+authoritative, always-current catalogue** (kept in sync as part of every block that adds a
+subcommand) — check there for anything newer than this table, and for the fleet-coordination
+(`coord`) and roadmap sweep/drain surfaces in full.
+
 ### Session control (no database)
 
 | Command | What it does |
 |---|---|
 | `sessions` | List tmux sessions with activity state (`running (cmd)` / `idle`) and last-line output |
 | `new <session> [--dir PATH]` | Create a detached tmux session, optional working directory |
-| `attach <session>` | Attach your terminal to a session (`Ctrl-b d` to detach) |
+| `attach <repo>/<lane>` | Resolve a live coordination lane to its held tmux session and attach (`Ctrl-b d` to detach); refuses, naming the registry path it checked, if no matching claim exists (`BA.25.E`) — **not** a raw tmux session-name attach |
 | `send <session> <cmd...>` | Send keystrokes + Enter to a session without attaching |
 | `capture <session> [--lines N]` | Print a session's recent pane output without attaching |
 | `kill <session>` | **Destructive** — remove a tmux session |
@@ -174,6 +179,7 @@ from source). None of them are Claude Code slash commands — this binary is a p
 |---|---|
 | `overview` | Workspace overview board (Kanban-style), reading local `state.json` files |
 | `momentum` | Cross-repo rollup of each registered project's now/next/blocked queues and metrics, read from `status.md` files |
+| `roadmap-status --roadmap <slug> [--json]` | Typed Rust face over the same four-artifact join (`lane-log.jsonl`, orchestration-run notes/review, per-spec SDLC state, each repo's `state.json`) the Python `/roadmap-status` command performs — kept beside it, not a replacement (`BA.25.E`) |
 | `validate <path>` | Recursively validate Markdown/MDX front-matter and links under `path` (default: current directory); greppable report, non-zero exit on errors; see [docs/knowledge/validate.md](docs/knowledge/validate.md) |
 | `assess [path] [--json]` | Read-only diagnostic over a repo: frontmatter coverage, link-graph readiness, `state.json` readiness; see [docs/knowledge/assess.md](docs/knowledge/assess.md) |
 | `brain (--dependents\|--blast-radius\|--lineage) <NODE_ID> [--root DIR] [--workspace NAME]` | Structural queries over a Markdown documentation corpus's cross-link graph; see [docs/knowledge/brain.md](docs/knowledge/brain.md) |
@@ -189,6 +195,15 @@ from source). None of them are Claude Code slash commands — this binary is a p
 | `manifest [path] [--pretty]` | Emit a JSON manifest of every file in the corpus |
 | `graph [path]` | Emit the corpus's cross-reference graph as a JSON artifact |
 | `emit-state [path] [--write] [--fail-on-drift]` | Derive generated state artifacts from every `state.json` found under `path`; dry-run by default — **`--write` applies the changes** |
+
+### Fleet coordination and roadmap engine (thin faces over `engine-core`)
+
+| Command | What it does |
+|---|---|
+| `coord status [--json]` | Joined fleet coordination view — registry, leases, slots, messages, heartbeats, escalations, run records (`BA.25.A`) |
+| `coord register\|heartbeat\|release\|lease\|unlease\|drain\|send\|complete\|restore ...` | Write verbs over the `.fleet-locks/` registry/lease/message-queue, each mirroring a `POST /api/coordination/*` route (`BA.25.C`); see [docs/commands.md](docs/commands.md#fleet-coordination--lane-registry-leases-message-queue) for every flag |
+| `sweep <roadmap> [--dry-run] [--profile NAME]` | Hand-fire one pass of the Rust `SWEEP` workflow — the only way it runs in this cut, no schedule (`BA.25.D`) |
+| `drain <repo>/<lane> [--profile NAME]` | Hand-fire one pass of the Rust `COMMANDER` drain against a lane — the only way it runs in this cut (`BA.25.D`) |
 
 ### Server and notifications
 
@@ -220,17 +235,14 @@ format, and an example `config.toml`: [docs/operations/config.md](docs/operation
 ## Tests
 
 ```bash
-cargo test                     # run the test suite
+cargo nextest run --lib --bins   # fast loop while iterating (requires cargo-nextest)
+cargo test                       # authoritative full suite
 ```
 
-The full validation gate this project runs in CI-equivalent form:
-
-```bash
-cargo fmt --check               # format gate
-cargo clippy -- -D warnings     # lint gate
-cargo test                      # test suite
-cargo build --release           # build gate
-```
+**Full runbook: [docs/testing.md](docs/testing.md)** — the complete 7-check gate suite (mirrors
+`planning/harness.json`), how to regenerate a drifted golden instead of hand-editing it, the
+`#[ignore]`d database integration tests, and every hand-verification recipe (tmux, `serve`,
+`coord`, sweep/drain, live Telegram delivery) for the things nothing automated can cover.
 
 ## Troubleshooting
 
@@ -251,6 +263,7 @@ knowledge-graph queries, infrastructure).
 
 | Doc | Contents |
 |---|---|
+| [docs/commands.md](docs/commands.md) | The authoritative, always-current command catalogue — every subcommand, one line + invocation each |
 | [docs/operations/setup.md](docs/operations/setup.md) | End-to-end setup: connecting bastion to the orchestrator's database |
 | [docs/terminal/sessions.md](docs/terminal/sessions.md) | Session-control surface — verb reference + operator workflow |
 | [docs/workflows/monitor.md](docs/workflows/monitor.md) | Live monitor — keybindings, layout, flags, degrade paths |
