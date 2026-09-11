@@ -2,11 +2,29 @@
 type: Log
 title: bastion Development Log
 description: Chronological log of work completed for bastion.
-timestamp: 2026-09-10T21:10:00-0300
+timestamp: 2026-09-11T10:49:22-0300
 ---
 # Log — bastion
 
 ## [run: 2026-09-11]
+
+### Coordination-layer-port console lane — BA.25.D and BA.25.E closed
+- **What:** Closed `BA.25.D` (`bastion sweep --once`/`bastion drain --once`, PR #58) and `BA.25.E`
+  (`bastion roadmap-status`/`bastion attach <lane>`, PR #59) in the `coordination-layer-port`
+  roadmap's console lane. `BA.25.D` bailed once on a foreign sibling-repo compile error and
+  resumed clean. `BA.25.E` bailed twice on a missing hand-verification artifact the review stage
+  structurally can't see (`planning/` is a vault symlink outside `bastion`'s own git index) —
+  performed the hand-verification directly (fixture tmux session + registry claim), found and
+  fixed a real CI-checkout-scope bug the engine introduced (`hq_roadmap_status_doc_documents_
+  both_paths` reading an HQ-root path GitHub CI can't see), and merged by hand. Also fixed two
+  stale/missing entries in `docs/commands.md` (`bastion attach`'s repurposed semantics,
+  `bastion roadmap-status` entirely undocumented).
+- **Why:** Driving `/begin-orchestration --roadmap coordination-layer-port --lane console
+  --execute` per the operator's request to make lane decisions autonomously and record them.
+- **Refs:** `planning/orchestration-run/coordination-layer-port/notes.md`,
+  `planning/BA.25.E/review.md`, `planning/handoff.md`. Final chain block
+  (`BA.ticket.engine-dispatcher-carries-the-real-operator-transport`) remains HELD on
+  `engine-rs:EN.17.C`.
 
 BA.25.E (`bastion roadmap-status`, `bastion attach <lane>`) is PARTIAL — all three tasks passed
 their own implement/fix loop with confirmed `workAssertionPassed` outcomes, but the consolidated
