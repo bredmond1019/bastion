@@ -12,7 +12,7 @@ related: [config, observ, data-contract, abort, master-plan, "base-template:run-
 
 # serve-api — v1.0.0 Contract
 
-**Version:** v1.0.0  
+**Version:** v1.1.0  
 **Produced by:** `bastion` (this repo, `src/serve/`) — Sections 1–17, 19–26, 28–29 — plus, when mounted,
 `engine-serve` (`../engine-rs/crates/engine-serve/`, embedded per D48) — Section 18.  
 **Consumed by:** `bastion-ui` (Flutter mobile Surface, D28) for Sections 1–13, 15–17, 19–21, 24;
@@ -982,6 +982,12 @@ Content-Type: application/json
 
 **Response:** `204 No Content` on success (no body).
 
+**`X-Bastion-Warning` header (optional, added v1.1.0):** present on the `204` only when the
+target session carries a live `@engine_lease@<session>` tmux option held by an engine run — the
+send is still performed regardless. Value format:
+`leased-session; run_id=<run_id>; identity=<identity>`. Absent when the session carries no lease,
+an expired lease, or a malformed lease value.
+
 Returns `404` when the session does not exist (see Section 10.4).
 
 ---
@@ -1009,6 +1015,11 @@ Content-Type: application/json
 ```
 
 **Response:** `204 No Content` on success (no body).
+
+**`X-Bastion-Warning` header (optional, added v1.1.0):** present on the `204` only when the
+target session carries a live `@engine_lease@<session>` tmux option held by an engine run — the
+key is still sent regardless. Value format: `leased-session; run_id=<run_id>; identity=<identity>`.
+Absent when the session carries no lease, an expired lease, or a malformed lease value.
 
 Returns `404` when the session does not exist (see Section 10.4).
 
@@ -2714,7 +2725,7 @@ This document follows a simple monotonic version scheme:
 | New route or frame kind | v0.x minor bump |
 | Breaking change to an existing route/shape | v1 major bump |
 
-`bastion-ui` MUST pin to a specific version tag.  The current contract is **v1.0.0**.
+`bastion-ui` MUST pin to a specific version tag.  The current contract is **v1.1.0**.
 
 **v1.0.0 is a freeze of the existing route shapes as of this version, not a breaking change** —
 despite the major-version-bump-means-breaking convention in the table above, this bump exists
@@ -5022,3 +5033,14 @@ deliberately not duplicated in this repo.
   this log's append-only convention. Registered `serve-api-version` (`scripts/check-serve-api-version.sh`)
   as a gated harness check pinning that the header and Section 21 never drift again. No client-facing
   route shape changed — `bastion-ui`/`bastion-web` need no update.
+- **2026-09-13 — v1.0.0 → v1.1.0 (`BA.ticket.human-send-into-leased-session-warns` task 3):**
+  Additive response header only. `POST /api/sessions/{name}/send` and `POST /api/sessions/{name}/key`
+  now carry an optional `X-Bastion-Warning` header on the `204` response when the target tmux
+  session carries a live `@engine_lease@<session>` option held by an in-flight engine run — a
+  human input path (REST send/key, WS `Send`/`SendKey`) that types into a session an engine node
+  is actively driving. The send itself is always still performed; the header only makes the
+  collision visible (`src/serve/leased_send.rs`'s pure classifier + `sent_response` builder in
+  `src/serve/handlers/sessions.rs`, wired into all four human input paths in tasks 1–2). No DTO or
+  frame-kind change — WS paths log a structured `tracing::warn!` only, no new frame is sent to the
+  client — so `types/serve.ts` is not regenerated and the contract-corpus goldens are unaffected.
+  A consumer that does not read the new header is unaffected.
