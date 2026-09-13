@@ -66,9 +66,11 @@ async-trait = "0.1"
 # engine-core above — BA.18.F Phase 0b extraction: bastion::sessions::{tmux, model}
 # become pub use shims over these. Do NOT add `default-features = false` (same
 # posture as bella-engine, CLAUDE.md standing rule 7); term-core's `tokio` feature
-# is intentionally left disabled — bastion needs only the unconditional modules
-# (tmux/model/claude_state/detect).
-term-core = { path = "../engine-rs/crates/term-core" }
+# is enabled explicitly — term_core::lease (BA.ticket.human-send-into-leased-session-warns)
+# is gated behind it, and engine-core (also a bastion dependency, above) already
+# enables it, so Cargo feature unification already compiled it into bastion; this
+# makes that dependency honest instead of accidental.
+term-core = { path = "../engine-rs/crates/term-core", features = ["tokio"] }
 term-attach = { path = "../engine-rs/crates/term-attach" }
 fs4 = { version = "1.1.0", features = ["sync"] }
 # BA.ticket.serve-auth-boundary-freeze task 2/3: constant-time compare for

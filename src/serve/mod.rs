@@ -39,6 +39,7 @@ pub mod contract_corpus;
 pub mod docs;
 pub mod dto;
 pub mod handlers;
+pub mod leased_send;
 pub mod notify;
 mod pending_harvest;
 pub mod poll;
