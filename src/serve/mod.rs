@@ -390,6 +390,48 @@ pub(crate) async fn health() -> HttpResponse {
     HttpResponse::Ok().json(dto::HealthResponse::ok())
 }
 
+/// `GET /api/coordination` — the fleet's joined coordination view, read
+/// through bastion's own bearer-protected `/api` scope.
+///
+/// Route-registration fix for `BA.ticket.coordination-route-404-scope-order`:
+/// bastion's own `web::scope("/api")` (bearer-auth-wrapped) registers ahead
+/// of the embedded engine's `web::scope("").configure(engine_serve::http::
+/// configure)` mount, and actix-web commits to the first scope whose prefix
+/// matches — it never falls through to a sibling scope for an unmatched
+/// sub-path. `engine_serve::http`'s own `GET /api/coordination` (`get_coordination`,
+/// private to that crate) therefore never receives a request that starts
+/// with `/api`: it is claimed and 404'd by bastion's own scope first. That
+/// handler is intentionally left untouched (per the ticket's out-of-scope
+/// note, this fix must not edit `engine-serve`) — it is simply unreachable
+/// dead routing, harmless to leave registered.
+///
+/// This handler restores a working `GET /api/coordination` by registering
+/// the resource directly inside bastion's protected scope instead, calling
+/// the *exact same* underlying library functions `get_coordination` calls
+/// (`engine_core::brain_root::resolve_brain_root` then
+/// `engine_core::coord::read_coordination_view`) so the response shape,
+/// status-code contract (`200` normally, `500` only when the brain root
+/// itself cannot be resolved) and degradation semantics are byte-identical
+/// to `engine_serve::http::get_coordination` — the computation lives in the
+/// shared `engine_core` crate, not duplicated here. Auth is bastion's own
+/// bearer token (this scope's `BearerAuthMiddleware`), not the engine
+/// mount's `X-API-Key` gate — `get_coordination` itself carries no
+/// `X-API-Key` check (see its doc comment), so reaching it via bearer
+/// auth changes nothing about its own auth contract.
+async fn coordination_view() -> HttpResponse {
+    let brain_root = match engine_core::brain_root::resolve_brain_root() {
+        Ok(root) => root,
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("cannot resolve brain root: {err}"),
+            }));
+        }
+    };
+
+    let view = engine_core::coord::read_coordination_view(&brain_root);
+    HttpResponse::Ok().json(view)
+}
+
 /// `GET /ws` — WebSocket upgrade handler (v0.2, hub-backed).
 ///
 /// Upgrades the HTTP connection to a WebSocket and starts a [`ws::session::WsConn`]
@@ -1696,6 +1738,11 @@ async fn run_server(
             .service(
                 web::resource("/notify/test").route(web::post().to(handlers::notify::test_send)),
             )
+            // ── Coordination view route (BA.ticket.coordination-route-404-scope-order) ──
+            // /coordination — GET only. See `coordination_view`'s doc comment: this
+            // scope claims the `/api` prefix ahead of the engine mount's own
+            // `GET /api/coordination`, so the route must be registered here, not there.
+            .service(web::resource("/coordination").route(web::get().to(coordination_view)))
             .app_data(pending_payloads.clone())
             .app_data(live_data);
 
@@ -2502,6 +2549,7 @@ mod tests {
             .service(
                 web::resource("/notify/test").route(web::post().to(handlers::notify::test_send)),
             )
+            .service(web::resource("/coordination").route(web::get().to(coordination_view)))
             .app_data(web::Data::new(notify::PendingPayloads::new()))
             .app_data(live_data);
         let ws_scope = web::scope("/ws")
@@ -6401,6 +6449,108 @@ heading = "bastion"
             .to_request();
         let resp = test::call_service(&service, bogus).await;
         assert_eq!(resp.status(), 200);
+    }
+
+    // ── /api/coordination scope-order regression (BA.ticket.coordination-route-404-scope-order) ─
+    //
+    // Mirrors `run()`'s production `App` exactly: bastion's own bearer-
+    // protected `web::scope("/api")` registered first, the embedded engine's
+    // `web::scope("").configure(engine_serve::http::configure)` mount
+    // registered second — both a real, unmocked production App builder
+    // (same pattern `contract_corpus.rs` uses: real handlers, real scope
+    // nesting, no routing mocks). `engine_serve::http`'s own `GET
+    // /api/coordination` is left registered (unreachable, by design — see
+    // `coordination_view`'s doc comment) so this test proves the *actual*
+    // production ordering conflict, not a simplified stand-in for it.
+
+    /// Build a standalone test service mounting BOTH scopes exactly as
+    /// `run()` does: bastion's protected `/api` scope (bearer-auth, full
+    /// route table including the new `/coordination` resource) registered
+    /// before the engine's own `scope("").configure(engine_serve::http::
+    /// configure)` mount (X-API-Key-gated). DB-free, matching
+    /// `engine_test_service`.
+    async fn full_app_test_service(
+        api_key: &str,
+    ) -> impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    > {
+        let (app, _hub) =
+            build_app_with_live_store(FileConfig::default(), LiveStateStore::new(), (false, None));
+
+        let state = EngineAppState::builder(
+            Arc::new(build_engine_dispatcher(None)),
+            LiveStateStore::new(),
+            spawn_durable_writer(None),
+            api_key.to_string(),
+        )
+        .build();
+        let engine_data = web::Data::new(state);
+
+        let app = app.app_data(engine_data).service(
+            web::scope("")
+                .wrap(ApiKeyAuthMiddleware::new(api_key))
+                .configure(engine_serve::http::configure),
+        );
+
+        test::init_service(app).await
+    }
+
+    const COORD_TEST_API_KEY: &str = "coord-test-api-key";
+
+    #[actix_web::test]
+    async fn get_api_coordination_does_not_404_with_both_scopes_mounted() {
+        let service = full_app_test_service(COORD_TEST_API_KEY).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/coordination")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&service, req).await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "GET /api/coordination with a valid bearer token must resolve through \
+             the coordination view, not 404 through the scope-registration conflict; \
+             got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn get_api_coordination_still_requires_bearer_auth() {
+        let service = full_app_test_service(COORD_TEST_API_KEY).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/coordination")
+            .to_request();
+        let resp = test::call_service(&service, req).await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "GET /api/coordination without a bearer token must still 401, not 404 \
+             or 200; got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn sibling_api_routes_unaffected_by_coordination_route_fix() {
+        let service = full_app_test_service(COORD_TEST_API_KEY).await;
+
+        let req = test::TestRequest::get()
+            .uri("/api/repos")
+            .insert_header(("authorization", format!("Bearer {TEST_TOKEN}")))
+            .to_request();
+        let resp = test::call_service(&service, req).await;
+        assert_ne!(
+            resp.status(),
+            404,
+            "GET /api/repos must keep resolving through bastion's own protected \
+             scope; got {}",
+            resp.status()
+        );
     }
 
     // ── Approval-ledger read wiring (task 2, BA.ticket.approval-ledger-read-wiring) ─
