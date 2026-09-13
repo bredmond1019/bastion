@@ -20,7 +20,7 @@
 //! a custom `StreamHandler` is registered).  On `Close` or protocol error the
 //! actor stops, which triggers `stopping` → `Disconnect` to the hub.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use actix::prelude::*;
 use actix::{ActorContext, AsyncContext};
@@ -31,10 +31,43 @@ use actix_web_actors::ws;
 use crate::serve::dto::{
     SendKeyPayload, SendPayload, SubscribePayload, Topic, WsFrame, WsFrameKind, parse_topic,
 };
+use crate::serve::leased_send::{self, LeasedSendWarning};
 use crate::serve::ws::server::{
     ConnId, Connect, Disconnect, Hub, ServerFrame, Subscribe, Unsubscribe,
 };
 use crate::sessions::tmux;
+
+/// Current time in milliseconds since the Unix epoch, for lease-expiry checks.
+///
+/// A clock error (pre-epoch system clock) reads as `0` — never a panic, and
+/// `0` can only ever classify as "already expired", the safe direction.
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Emit the single structured warning for a human send that landed on a
+/// session an engine run currently holds. Logs `session`, `run_id`,
+/// `identity`, `route` and `input` kind — **never** the key text.
+fn log_leased_send_warning(
+    session: &str,
+    warning: &LeasedSendWarning,
+    input: &str,
+    keys_len: usize,
+) {
+    tracing::warn!(
+        target: "bastion::serve",
+        session = %session,
+        run_id = %warning.run_id,
+        identity = %warning.identity,
+        route = "ws",
+        input = input,
+        keys_len,
+        "human send into a session an engine run holds a live lease on"
+    );
+}
 
 // ── Pure dispatch helper ──────────────────────────────────────────────────────
 
@@ -288,25 +321,64 @@ impl WsConn {
             }
             Inbound::Send { session, keys } => {
                 // Offload the blocking tmux call; report errors back to the client.
-                let fut = web::block(move || tmux::send_keys(&session, &keys))
-                    .into_actor(self)
-                    .then(|result, _act, ctx| {
-                        if let Err(e) = result {
+                let keys_len = keys.len();
+                let now_ms = now_millis();
+                let session_for_log = session.clone();
+                let fut = web::block(move || {
+                    let raw = leased_send::read_engine_lease(&session);
+                    let warning = leased_send::classify_lease(raw.as_deref(), now_ms);
+                    (tmux::send_keys(&session, &keys), warning)
+                })
+                .into_actor(self)
+                .then(move |result, _act, ctx| {
+                    match result {
+                        Ok((Ok(()), warning)) => {
+                            if let Some(warning) = &warning {
+                                log_leased_send_warning(
+                                    &session_for_log,
+                                    warning,
+                                    "send",
+                                    keys_len,
+                                );
+                            }
+                        }
+                        Ok((Err(e), _)) => {
                             ctx.text(error_frame(&format!("send failed: {e}")));
                         }
-                        actix::fut::ready(())
-                    });
+                        Err(e) => {
+                            ctx.text(error_frame(&format!("send failed: {e}")));
+                        }
+                    }
+                    actix::fut::ready(())
+                });
                 ctx.spawn(fut);
             }
             Inbound::SendKey { session, key } => {
-                let fut = web::block(move || tmux::send_named_key(&session, &key))
-                    .into_actor(self)
-                    .then(|result, _act, ctx| {
-                        if let Err(e) = result {
+                let keys_len = key.len();
+                let now_ms = now_millis();
+                let session_for_log = session.clone();
+                let fut = web::block(move || {
+                    let raw = leased_send::read_engine_lease(&session);
+                    let warning = leased_send::classify_lease(raw.as_deref(), now_ms);
+                    (tmux::send_named_key(&session, &key), warning)
+                })
+                .into_actor(self)
+                .then(move |result, _act, ctx| {
+                    match result {
+                        Ok((Ok(()), warning)) => {
+                            if let Some(warning) = &warning {
+                                log_leased_send_warning(&session_for_log, warning, "key", keys_len);
+                            }
+                        }
+                        Ok((Err(e), _)) => {
                             ctx.text(error_frame(&format!("send_key failed: {e}")));
                         }
-                        actix::fut::ready(())
-                    });
+                        Err(e) => {
+                            ctx.text(error_frame(&format!("send_key failed: {e}")));
+                        }
+                    }
+                    actix::fut::ready(())
+                });
                 ctx.spawn(fut);
             }
             Inbound::Ignore => {

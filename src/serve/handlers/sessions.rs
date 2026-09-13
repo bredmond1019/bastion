@@ -20,11 +20,14 @@
 //! - Other [`TmuxError::ExitError`] → 500 + `C010`
 //! - Non-tmux errors (e.g. thread panic) → 500 + `C010`
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, web};
 use serde::Deserialize;
 
 use crate::serve::dto::{ErrorPayload, KeyBody, NewSessionBody, PaneDto, SendBody, SessionDto};
+use crate::serve::leased_send::{self, LeasedSendWarning};
 use crate::sessions::model::{Pane, parse_sessions};
 use crate::sessions::tmux::{
     TmuxError, capture_pane_raw, kill_session, list_sessions_raw, new_session, send_keys,
@@ -124,6 +127,55 @@ fn blocking_error_response(err: actix_web::error::BlockingError) -> HttpResponse
     })
 }
 
+// ── Leased-session warning (BA.ticket.human-send-into-leased-session-warns) ────
+
+/// Current time in milliseconds since the Unix epoch, for lease-expiry checks.
+///
+/// A clock error (pre-epoch system clock) reads as `0` — never a panic, and
+/// `0` can only ever classify as "already expired", which is the safe
+/// direction (no lease is reported that isn't genuinely live).
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Emit the single structured warning for a human send that landed on a
+/// session an engine run currently holds. Logs `session`, `run_id`,
+/// `identity`, `route` and `input` kind — **never** the key text.
+fn log_leased_send_warning(
+    session: &str,
+    warning: &LeasedSendWarning,
+    input: &str,
+    keys_len: usize,
+) {
+    tracing::warn!(
+        target: "bastion::serve",
+        session = %session,
+        run_id = %warning.run_id,
+        identity = %warning.identity,
+        route = "rest",
+        input = input,
+        keys_len,
+        "human send into a session an engine run holds a live lease on"
+    );
+}
+
+/// Build the success response for a send/send_key call: 204 No Content,
+/// plus an `X-Bastion-Warning` header naming the run/identity when the
+/// target session carries a live engine lease. Pure — no I/O.
+fn sent_response(warning: Option<&LeasedSendWarning>) -> HttpResponse {
+    let mut builder = HttpResponse::NoContent();
+    if let Some(warning) = warning {
+        builder.insert_header((
+            "X-Bastion-Warning",
+            leased_send::warning_header_value(warning),
+        ));
+    }
+    builder.finish()
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// `GET /api/sessions` — list all tmux sessions as JSON.
@@ -178,10 +230,25 @@ pub async fn get_pane(name: web::Path<String>, query: web::Query<PaneQuery>) -> 
 pub async fn send(name: web::Path<String>, body: web::Json<SendBody>) -> HttpResponse {
     let session_name = name.into_inner();
     let keys = body.into_inner().keys;
+    let keys_len = keys.len();
+    let now_ms = now_millis();
+    let session_for_log = session_name.clone();
 
-    match web::block(move || send_keys(&session_name, &keys)).await {
-        Ok(Ok(())) => HttpResponse::NoContent().finish(),
-        Ok(Err(err)) => {
+    let result = web::block(move || {
+        let raw = leased_send::read_engine_lease(&session_name);
+        let warning = leased_send::classify_lease(raw.as_deref(), now_ms);
+        (send_keys(&session_name, &keys), warning)
+    })
+    .await;
+
+    match result {
+        Ok((Ok(()), warning)) => {
+            if let Some(warning) = &warning {
+                log_leased_send_warning(&session_for_log, warning, "send", keys_len);
+            }
+            sent_response(warning.as_ref())
+        }
+        Ok((Err(err), _)) => {
             let (status, payload) = tmux_error_to_status(&err);
             HttpResponse::build(status).json(payload)
         }
@@ -199,10 +266,25 @@ pub async fn send(name: web::Path<String>, body: web::Json<SendBody>) -> HttpRes
 pub async fn send_key(name: web::Path<String>, body: web::Json<KeyBody>) -> HttpResponse {
     let session_name = name.into_inner();
     let key = body.into_inner().key;
+    let keys_len = key.len();
+    let now_ms = now_millis();
+    let session_for_log = session_name.clone();
 
-    match web::block(move || send_named_key(&session_name, &key)).await {
-        Ok(Ok(())) => HttpResponse::NoContent().finish(),
-        Ok(Err(err)) => {
+    let result = web::block(move || {
+        let raw = leased_send::read_engine_lease(&session_name);
+        let warning = leased_send::classify_lease(raw.as_deref(), now_ms);
+        (send_named_key(&session_name, &key), warning)
+    })
+    .await;
+
+    match result {
+        Ok((Ok(()), warning)) => {
+            if let Some(warning) = &warning {
+                log_leased_send_warning(&session_for_log, warning, "key", keys_len);
+            }
+            sent_response(warning.as_ref())
+        }
+        Ok((Err(err), _)) => {
             let (status, payload) = tmux_error_to_status(&err);
             HttpResponse::build(status).json(payload)
         }
@@ -430,5 +512,33 @@ mod tests {
         assert!(!is_unknown_session(
             "error connecting to /tmp/tmux-501/default"
         ));
+    }
+
+    // ── sent_response — X-Bastion-Warning runtime inversion ────────────────────
+
+    #[test]
+    fn sent_response_no_warning_is_204_without_header() {
+        let resp = sent_response(None);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(resp.headers().get("X-Bastion-Warning").is_none());
+    }
+
+    #[test]
+    fn sent_response_live_warning_is_204_with_header() {
+        let warning = LeasedSendWarning {
+            run_id: "run-1".to_owned(),
+            identity: "node-1".to_owned(),
+            expires_at_ms: 2_000,
+        };
+        let resp = sent_response(Some(&warning));
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let header = resp
+            .headers()
+            .get("X-Bastion-Warning")
+            .expect("X-Bastion-Warning header must be present for a live warning")
+            .to_str()
+            .expect("header value must be valid ASCII");
+        assert!(header.contains("run_id=run-1"), "header was: {header}");
+        assert!(header.contains("identity=node-1"), "header was: {header}");
     }
 }
