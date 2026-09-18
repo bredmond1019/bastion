@@ -40,7 +40,7 @@ use crate::sessions::model::parse_sessions;
 ///
 /// # Examples
 /// ```
-/// use crate::serve::poll::diff_pane;
+/// use bastion::serve::poll::diff_pane;
 /// assert!(diff_pane(None, "output"));        // no previous → always new
 /// assert!(!diff_pane(Some("x"), "x"));       // same → no diff
 /// assert!(diff_pane(Some("x"), "y"));        // changed → diff
@@ -62,6 +62,7 @@ pub fn diff_pane(prev: Option<&str>, next: &str) -> bool {
 ///
 /// # Example
 /// ```
+/// use bastion::serve::poll::PaneCursor;
 /// let mut cursor = PaneCursor::default();
 /// let first = cursor.observe("line1\nline2\n");
 /// assert!(first.is_some()); // first observation always pushes (seq = 1)

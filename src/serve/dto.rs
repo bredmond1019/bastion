@@ -279,7 +279,7 @@ pub enum Topic {
 ///
 /// # Examples
 /// ```
-/// use crate::serve::dto::{parse_topic, Topic};
+/// use bastion::serve::dto::{parse_topic, Topic};
 /// assert_eq!(parse_topic("sessions"), Some(Topic::Sessions));
 /// assert_eq!(parse_topic("pane:work"), Some(Topic::Pane("work".into())));
 /// assert_eq!(parse_topic("pane:"),     None);  // empty name
