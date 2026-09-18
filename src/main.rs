@@ -75,6 +75,22 @@ fn default_code_index_db_path(repo_root: &std::path::Path) -> Result<std::path::
     Ok(git_common_dir_abs.join("bastion-code").join("index.sqlite"))
 }
 
+/// Resolve the effective code-index db path for `resolved_root`: the `[code]`
+/// config table's `index_path` override when set (`registry`, already loaded
+/// by the caller), else the git-common-dir default computed by
+/// [`default_code_index_db_path`]. Thin I/O wrapper over the pure
+/// [`config::resolve_code_index_db_path`] — the git call itself is not
+/// skippable ahead of time without duplicating that function's precedence
+/// logic here, so it is always computed and simply discarded when an
+/// override wins.
+fn resolve_code_index_db_path_for_repo(
+    resolved_root: &std::path::Path,
+    registry: &config::FileConfig,
+) -> Result<std::path::PathBuf> {
+    let default_path = default_code_index_db_path(resolved_root)?;
+    Ok(config::resolve_code_index_db_path(registry, default_path))
+}
+
 /// Every blob OID reachable from any ref, via `git rev-list --objects --all` —
 /// the "cheaper" of task 2's two suggested strategies for computing the
 /// `--prune` live set. Deliberately over-inclusive (also collects commit/tree
@@ -274,7 +290,7 @@ fn run_code_action(action: cli::CodeAction) -> Result<()> {
                 resolved_root.display(),
                 root_source
             );
-            let db_path = default_code_index_db_path(&resolved_root)?;
+            let db_path = resolve_code_index_db_path_for_repo(&resolved_root, &registry)?;
             let conn = brain::code_index::open_or_create_index(&db_path)?;
             let blob_list =
                 brain::code_index::assemble_blob_list(&resolved_root, rev.as_deref(), staged)?;
@@ -309,7 +325,7 @@ fn run_code_action(action: cli::CodeAction) -> Result<()> {
                 resolved_root.display(),
                 root_source
             );
-            let db_path = default_code_index_db_path(&resolved_root)?;
+            let db_path = resolve_code_index_db_path_for_repo(&resolved_root, &registry)?;
             let conn = brain::code_index::open_or_create_index(&db_path)?;
             let blob_list =
                 brain::code_index::assemble_blob_list(&resolved_root, rev.as_deref(), staged)?;
@@ -374,7 +390,7 @@ fn run_code_action(action: cli::CodeAction) -> Result<()> {
                     root_source
                 );
             }
-            let db_path = default_code_index_db_path(&resolved_root)?;
+            let db_path = resolve_code_index_db_path_for_repo(&resolved_root, &registry)?;
             let conn = brain::code_index::open_or_create_index(&db_path)?;
             let blob_list = brain::code_index::assemble_blob_list(&resolved_root, None, false)?;
             let (_symbols, _refs, counters) =

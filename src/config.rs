@@ -207,6 +207,30 @@ pub struct FileConfig {
     /// config file's own parent directory, exactly like `[workspaces]` (see
     /// `load_workspace_registry`'s canonicalization contract).
     pub views: Option<HashMap<String, ViewEntry>>,
+    /// The `[code]` TOML table — `bastion code`'s own config, distinct from the
+    /// `[workspaces]`/`[views]` tables above. Absent entirely for existing
+    /// configs, which parse unchanged (BA.ticket.code-index-cache task 6).
+    pub code: Option<CodeConfig>,
+}
+
+/// The `[code]` TOML table — configuration for `bastion code`'s content-addressed
+/// index (BA.ticket.code-index-cache).
+///
+/// ```toml
+/// [code]
+/// index_path = "/custom/path/index.sqlite"
+/// ```
+#[derive(Debug, Clone, serde::Deserialize, Default, PartialEq)]
+pub struct CodeConfig {
+    /// Overrides the default index database location
+    /// (`$(git rev-parse --git-common-dir)/bastion-code/index.sqlite`) when set.
+    /// May be authored as relative in the TOML — unlike `[workspaces]`/`[views]`
+    /// entries, this is deliberately NOT canonicalized against the config
+    /// file's directory by `load_workspace_registry`: an index path is a
+    /// per-machine cache location a caller most often wants either absolute
+    /// or resolved relative to the invoking process's own cwd, not tied to
+    /// where `config.toml` happens to live.
+    pub index_path: Option<PathBuf>,
 }
 
 /// One `[views.<name>]` entry: a reader destination the session TUI's spine
@@ -559,6 +583,26 @@ pub(crate) fn resolve_cli_root(
 
     // 5. Built-in default.
     Ok(PathBuf::from("."))
+}
+
+/// Resolve the effective `bastion code` index database path.
+///
+/// Precedence (highest → lowest):
+/// 1. `file.code.index_path` — the `[code]` TOML table's override, if set.
+/// 2. `default_path` — the built-in default
+///    (`$(git rev-parse --git-common-dir)/bastion-code/index.sqlite`), computed
+///    by the caller and passed in.
+///
+/// Pure function — no I/O, no filesystem access. The default path's own
+/// computation requires running `git`, so that stays the caller's
+/// responsibility (see `default_code_index_db_path` in `src/main.rs`); this
+/// function only decides which of the two wins, exactly like
+/// [`resolve_workspace_root`]'s `explicit_root` step.
+pub fn resolve_code_index_db_path(file: &FileConfig, default_path: PathBuf) -> PathBuf {
+    file.code
+        .as_ref()
+        .and_then(|c| c.index_path.clone())
+        .unwrap_or(default_path)
 }
 
 /// How a CLI-resolved corpus root was determined — for the human-output-path
@@ -1367,6 +1411,55 @@ mod tests {
     fn missing_database_url_is_typed_error_not_panic() {
         let err = Config::from_vars(None, None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingVar("DATABASE_URL"));
+    }
+
+    // ─── resolve_code_index_db_path: [code] override precedence ───────────────
+
+    #[test]
+    fn resolve_code_index_db_path_uses_override_when_set() {
+        let file = FileConfig {
+            code: Some(CodeConfig {
+                index_path: Some(PathBuf::from("/custom/path/index.sqlite")),
+            }),
+            ..FileConfig::default()
+        };
+        let resolved =
+            resolve_code_index_db_path(&file, PathBuf::from("/default/path/index.sqlite"));
+        assert_eq!(resolved, PathBuf::from("/custom/path/index.sqlite"));
+    }
+
+    #[test]
+    fn resolve_code_index_db_path_falls_back_to_default_when_no_code_table() {
+        let file = FileConfig::default();
+        let resolved =
+            resolve_code_index_db_path(&file, PathBuf::from("/default/path/index.sqlite"));
+        assert_eq!(resolved, PathBuf::from("/default/path/index.sqlite"));
+    }
+
+    #[test]
+    fn resolve_code_index_db_path_falls_back_to_default_when_code_table_present_but_unset() {
+        let file = FileConfig {
+            code: Some(CodeConfig { index_path: None }),
+            ..FileConfig::default()
+        };
+        let resolved =
+            resolve_code_index_db_path(&file, PathBuf::from("/default/path/index.sqlite"));
+        assert_eq!(resolved, PathBuf::from("/default/path/index.sqlite"));
+    }
+
+    #[test]
+    fn code_config_parses_from_toml() {
+        let file = parse_file(
+            r#"
+            [code]
+            index_path = "/custom/path/index.sqlite"
+            "#,
+        )
+        .expect("should parse");
+        assert_eq!(
+            file.code.unwrap().index_path,
+            Some(PathBuf::from("/custom/path/index.sqlite"))
+        );
     }
 
     // ─── resolve_api_base_url: pure precedence (no Config::load, no I/O) ──────
