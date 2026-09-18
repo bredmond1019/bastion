@@ -6,7 +6,8 @@
 //!
 //! # Coverage
 //! Extraction scope is the **Rust language only**, using the `tree-sitter-rust`
-//! grammar. Symbol kinds: `Fn`, `Struct`, `Enum`, `Trait`, `Mod`, `Impl`.
+//! grammar. Symbol kinds: `Fn`, `Struct`, `Enum`, `Trait`, `Mod`, `Impl`, `Const`,
+//! `Static`, `TypeAlias`.
 //! Reference kinds: direct function calls, method calls, and `use` import paths
 //! (simple, scoped, and grouped).
 //! Other languages in the scan root are silently skipped by the file-walk layer.
@@ -51,6 +52,12 @@ pub enum SymbolKind {
     Mod,
     /// An `impl` block — keyed by the implementing type name.
     Impl,
+    /// A `const` item.
+    Const,
+    /// A `static` item.
+    Static,
+    /// A `type` alias item.
+    TypeAlias,
 }
 
 /// A symbol definition found in Rust source.
@@ -115,6 +122,18 @@ fn symbol_queries() -> &'static [(Query, SymbolKind)] {
             (
                 r#"(impl_item type: (generic_type type: (type_identifier) @name))"#,
                 SymbolKind::Impl,
+            ),
+            (
+                r#"(const_item name: (identifier) @name)"#,
+                SymbolKind::Const,
+            ),
+            (
+                r#"(static_item name: (identifier) @name)"#,
+                SymbolKind::Static,
+            ),
+            (
+                r#"(type_item name: (type_identifier) @name)"#,
+                SymbolKind::TypeAlias,
             ),
         ];
         patterns
@@ -580,6 +599,51 @@ mod tests {
             .iter()
             .find(|s| s.name == "utils" && s.kind == SymbolKind::Mod);
         assert!(found.is_some(), "expected mod utils");
+        assert_eq!(found.unwrap().line, 1);
+    }
+
+    #[test]
+    fn extract_symbols_const() {
+        let src = "const FOO: u32 = 1;";
+        let syms = extract_symbols(src, Path::new("consts.rs"));
+        let found = syms
+            .iter()
+            .find(|s| s.name == "FOO" && s.kind == SymbolKind::Const);
+        assert!(
+            found.is_some(),
+            "expected const FOO; got: {:?}",
+            debug_syms(&syms)
+        );
+        assert_eq!(found.unwrap().line, 1);
+    }
+
+    #[test]
+    fn extract_symbols_static() {
+        let src = "static BAR: &str = \"x\";";
+        let syms = extract_symbols(src, Path::new("statics.rs"));
+        let found = syms
+            .iter()
+            .find(|s| s.name == "BAR" && s.kind == SymbolKind::Static);
+        assert!(
+            found.is_some(),
+            "expected static BAR; got: {:?}",
+            debug_syms(&syms)
+        );
+        assert_eq!(found.unwrap().line, 1);
+    }
+
+    #[test]
+    fn extract_symbols_type_alias() {
+        let src = "type Baz = Vec<u32>;";
+        let syms = extract_symbols(src, Path::new("aliases.rs"));
+        let found = syms
+            .iter()
+            .find(|s| s.name == "Baz" && s.kind == SymbolKind::TypeAlias);
+        assert!(
+            found.is_some(),
+            "expected type alias Baz; got: {:?}",
+            debug_syms(&syms)
+        );
         assert_eq!(found.unwrap().line, 1);
     }
 

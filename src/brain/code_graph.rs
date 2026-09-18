@@ -75,6 +75,9 @@ fn kind_str(kind: &SymbolKind) -> &'static str {
         SymbolKind::Trait => "trait",
         SymbolKind::Mod => "mod",
         SymbolKind::Impl => "impl",
+        SymbolKind::Const => "const",
+        SymbolKind::Static => "static",
+        SymbolKind::TypeAlias => "typealias",
     }
 }
 
