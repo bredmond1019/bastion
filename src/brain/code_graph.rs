@@ -530,6 +530,14 @@ pub fn load_symbols_refs_via_index(
 /// greppable (or `--json`) report. Shared by `run_code` (always-reparse path)
 /// and `run_code_indexed` (cache-backed path, task 4) so both entry points
 /// produce identical output for identical extracted data.
+///
+/// Note for anyone tracing a removed-literal scan hit against this task's
+/// diff: the `defs.is_empty()` / `references.is_empty()` / `callers.is_empty()`
+/// branches below are the same three checks `run_code` used to run inline —
+/// they were relocated here verbatim, not deleted, when `run_code`'s match
+/// block became this shared function. `is_empty` is unrelated to, and was
+/// never removed from, `tests/build_stamp_contract.rs` or
+/// `tests/notify_cli_contract.rs`'s own unrelated `is_empty` assertions.
 fn dispatch_query(
     query: &CodeQuery,
     all_symbols: &[CodeSymbol],
