@@ -6,6 +6,51 @@ timestamp: 2026-09-11T16:49:36-0300
 ---
 # Log — bastion
 
+## [run: 2026-09-18]
+
+### BA.ticket.code-index-cache — tasks 1-7 implemented; BAILED on a doctest regression that didn't clear after a fix attempt
+- **What:** `/sdlc-flow BA.ticket.code-index-cache` resumed from the prior bail and ran tasks 1
+  through 7. Tasks 1-6 passed clean: task 1 added `Const`/`Static`/`TypeAlias` `SymbolKind`
+  variants and exposed `brain` (plus its transitive module closure) through `src/lib.rs`; task 2
+  added the OID-keyed sqlite cache (`src/brain/code_index.rs`) with blob-list assembly, prune, and
+  status counters; task 3 wired query dispatch through the index; task 4 added the `bastion code
+  index`/`query`/`status` CLI verbs; task 5 added the binary-level contract test suite
+  (`tests/code_index_contract.rs`, 7 cases); task 6 wired the index db path through config
+  (`resolve_code_index_db_path`) and added non-blocking warm lines to `hooks/post-commit`,
+  `hooks/post-checkout`, `hooks/post-merge`. Task 7 (docs + full-suite validation) surfaced 3
+  doctest failures in `src/serve/dto.rs`/`src/serve/poll.rs` (a regression from task 1's `pub mod
+  serve` exposure, not task 7's own docs work) and attempted a fix rewriting the doctests' `use
+  crate::serve::...` paths to `use bastion::serve::...`. The fix attempt landed the same
+  byte-identical 3 failing doctest IDs on the second attempt, and the terminal work-assertion also
+  came back unconfirmed (`workAssertionPassed=false`) both times, so the run BAILED per the
+  same-failure-twice-no-progress rule rather than retrying a third time.
+- **Why it bailed:** task_validation_3's 3 doctest failures
+  (`src/serve/dto.rs::parse_topic` line 281, `src/serve/poll.rs::PaneCursor` line 64,
+  `src/serve/poll.rs::diff_pane` line 42) were identical before and after the fix attempt, and the
+  work assertion stayed unconfirmed for two attempts in a row — no forward progress to justify a
+  third try.
+- **Decisions:** widened task 6/7's writable set to include out-of-declared-files fixes
+  (`tests/code_index_contract.rs`, `src/serve/poll.rs`, `src/serve/dto.rs`) for bounded,
+  in-spec-debt fixes per the run's own attribution rules; two known gaps were documented rather
+  than silently claimed fixed — `--refs` misses bare-identifier-only references (task 1 extractor
+  scope), and the doctest path regression itself (introduced by task 1's `pub mod serve`, not
+  caught until task 7's full-suite run).
+- **Refs:** `planning/BA.ticket.code-index-cache/sdlc/sdlc-flow-state.json`,
+  `planning/BA.ticket.code-index-cache/sdlc/worklog.md`, `docs/code-index.md`. Next: diagnose why
+  the doctest path rewrite (`crate::serve::...` -> `bastion::serve::...`) did not clear the 3
+  failures — check whether `cargo test`'s doctest harness is actually picking up the edited files,
+  or whether a stale build artifact / caching layer is serving pre-fix doctest content — then
+  resume from task 7.
+
+```
+6a7e7f5 fix: fix pass 1 for BA.ticket.code-index-cache-task7
+f5f5fbd feat: implement BA.ticket.code-index-cache-task7
+5c61a32 fix: fix pass 1 for BA.ticket.code-index-cache-task6
+ecd9b5e feat: implement BA.ticket.code-index-cache-task6
+d1a39f9 feat: implement BA.ticket.code-index-cache-task5
+13df38a fix: fix pass 1 for BA.ticket.code-index-cache-task4
+```
+
 ## [run: 2026-09-17]
 
 ### BA.ticket.code-index-cache — task 1 landed, then BAILED on an unfireable validation command
