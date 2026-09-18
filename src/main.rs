@@ -48,6 +48,256 @@ use observ::errors::{ConsoleError, ErrorCode};
 
 // ── Pure helpers (unit-tested below) ─────────────────────────────────────────
 
+/// Default index db path when no config override is in play (config override
+/// itself lands in a later task): `$(git rev-parse --git-common-dir)/bastion-code/index.sqlite`,
+/// resolved relative to `repo_root`.
+fn default_code_index_db_path(repo_root: &std::path::Path) -> Result<std::path::PathBuf> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to spawn git rev-parse --git-common-dir: {e}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git rev-parse --git-common-dir failed (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let git_common_dir_path = std::path::PathBuf::from(git_common_dir);
+    let git_common_dir_abs = if git_common_dir_path.is_absolute() {
+        git_common_dir_path
+    } else {
+        repo_root.join(git_common_dir_path)
+    };
+    Ok(git_common_dir_abs.join("bastion-code").join("index.sqlite"))
+}
+
+/// Every blob OID reachable from any ref, via `git rev-list --objects --all` —
+/// the "cheaper" of task 2's two suggested strategies for computing the
+/// `--prune` live set. Deliberately over-inclusive (also collects commit/tree
+/// OIDs alongside blob OIDs from the same line stream) rather than
+/// under-inclusive: `prune_unreachable` only ever deletes rows whose blob_oid
+/// is ABSENT from this set, so an over-inclusive set can only under-prune,
+/// never wrongly delete a still-reachable blob's cache row.
+fn live_oids_from_all_refs(
+    repo_root: &std::path::Path,
+) -> Result<std::collections::HashSet<String>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-list", "--objects", "--all"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to spawn git rev-list --objects --all: {e}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git rev-list --objects --all failed (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(|s| s.to_string())
+        .collect())
+}
+
+/// One JSON-batch line's parsed query — `{"def": "<name>"}` / `{"refs": "<name>"}` /
+/// `{"dependents": "<name>"}`, mirroring the existing bare `--def`/`--refs`/
+/// `--dependents` flags' shape for `bastion code query --json`'s stdin protocol.
+#[derive(serde::Deserialize)]
+struct StdinCodeQuery {
+    def: Option<String>,
+    refs: Option<String>,
+    dependents: Option<String>,
+}
+
+impl TryFrom<StdinCodeQuery> for brain::code_graph::CodeQuery {
+    type Error = anyhow::Error;
+
+    fn try_from(q: StdinCodeQuery) -> Result<Self> {
+        match (q.def, q.refs, q.dependents) {
+            (Some(name), None, None) => Ok(brain::code_graph::CodeQuery::Def(name)),
+            (None, Some(name), None) => Ok(brain::code_graph::CodeQuery::Refs(name)),
+            (None, None, Some(name)) => Ok(brain::code_graph::CodeQuery::Dependents(name)),
+            _ => anyhow::bail!(
+                "each stdin query line must set exactly one of \"def\"/\"refs\"/\"dependents\""
+            ),
+        }
+    }
+}
+
+/// Combined report for `bastion code status`: this run's cache hit/miss/reparse
+/// counters against the current blob set (warming the cache as a side effect,
+/// same as any other query would) alongside the index's total row/blob counts.
+#[derive(Debug, serde::Serialize)]
+struct CodeStatusReport {
+    hits: usize,
+    misses: usize,
+    reparses: usize,
+    total_rows: usize,
+    distinct_blobs: usize,
+}
+
+/// Dispatch for `bastion code <index|query|status>` (task 4) — the index-backed
+/// verbs alongside the pre-existing bare `--def`/`--refs`/`--dependents` flags
+/// on `Commands::Code` (handled by the caller when `action` is `None`).
+fn run_code_action(action: cli::CodeAction) -> Result<()> {
+    let registry = config::load_workspace_registry(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )?;
+
+    match action {
+        cli::CodeAction::Index {
+            rev,
+            staged,
+            prune,
+            root,
+            workspace,
+        } => {
+            let (resolved_root, root_source) =
+                config::resolve_cli_root_from_cwd(root, workspace.as_deref(), &registry)
+                    .map_err(anyhow::Error::from)?;
+            eprintln!(
+                "code index: root {} ({})",
+                resolved_root.display(),
+                root_source
+            );
+            let db_path = default_code_index_db_path(&resolved_root)?;
+            let conn = brain::code_index::open_or_create_index(&db_path)?;
+            let blob_list =
+                brain::code_index::assemble_blob_list(&resolved_root, rev.as_deref(), staged)?;
+            let (_symbols, _refs, counters) =
+                brain::code_graph::load_symbols_refs_via_index(&conn, &resolved_root, &blob_list);
+            println!(
+                "code index: {} blobs — {} hits, {} misses, {} reparses",
+                blob_list.len(),
+                counters.hits,
+                counters.misses,
+                counters.reparses
+            );
+            if prune {
+                let live_oids = live_oids_from_all_refs(&resolved_root)?;
+                let removed = brain::code_index::prune_unreachable(&conn, &live_oids)?;
+                println!("code index: pruned {removed} unreachable row(s)");
+            }
+            Ok(())
+        }
+        cli::CodeAction::Query {
+            json: _json,
+            rev,
+            staged,
+            root,
+            workspace,
+        } => {
+            let (resolved_root, root_source) =
+                config::resolve_cli_root_from_cwd(root, workspace.as_deref(), &registry)
+                    .map_err(anyhow::Error::from)?;
+            eprintln!(
+                "code query: root {} ({})",
+                resolved_root.display(),
+                root_source
+            );
+            let db_path = default_code_index_db_path(&resolved_root)?;
+            let conn = brain::code_index::open_or_create_index(&db_path)?;
+            let blob_list =
+                brain::code_index::assemble_blob_list(&resolved_root, rev.as_deref(), staged)?;
+            let (all_symbols, all_refs, _counters) =
+                brain::code_graph::load_symbols_refs_via_index(&conn, &resolved_root, &blob_list);
+            let (nodes, edges) =
+                brain::code_graph::build_code_node_edge_lists(&all_symbols, &all_refs);
+            let graph = brain::graph::BrainGraph::build(nodes, edges);
+            let root_str = resolved_root.display().to_string();
+
+            use std::io::BufRead;
+            let stdin = std::io::stdin();
+            for line in stdin.lock().lines() {
+                let line = line?;
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let parsed: StdinCodeQuery = serde_json::from_str(trimmed)
+                    .map_err(|e| anyhow::anyhow!("invalid query line {trimmed:?}: {e}"))?;
+                let query: brain::code_graph::CodeQuery = parsed.try_into()?;
+                let line_out = match &query {
+                    brain::code_graph::CodeQuery::Def(name) => {
+                        let defs = brain::code_graph::find_definition(&all_symbols, name);
+                        let envelope =
+                            brain::code_graph::build_def_json_envelope(&root_str, name, &defs);
+                        serde_json::to_string(&envelope)?
+                    }
+                    brain::code_graph::CodeQuery::Refs(name) => {
+                        let references = brain::code_graph::find_references(&all_refs, name);
+                        let envelope = brain::code_graph::build_refs_json_envelope(
+                            &root_str,
+                            name,
+                            &references,
+                        );
+                        serde_json::to_string(&envelope)?
+                    }
+                    brain::code_graph::CodeQuery::Dependents(name) => {
+                        let callers = graph.predecessors_by_name(name);
+                        let envelope = brain::code_graph::build_dependents_json_envelope(
+                            &root_str, name, &callers,
+                        );
+                        serde_json::to_string(&envelope)?
+                    }
+                };
+                println!("{line_out}");
+            }
+            Ok(())
+        }
+        cli::CodeAction::Status {
+            json,
+            root,
+            workspace,
+        } => {
+            let (resolved_root, root_source) =
+                config::resolve_cli_root_from_cwd(root, workspace.as_deref(), &registry)
+                    .map_err(anyhow::Error::from)?;
+            if !json {
+                eprintln!(
+                    "code status: root {} ({})",
+                    resolved_root.display(),
+                    root_source
+                );
+            }
+            let db_path = default_code_index_db_path(&resolved_root)?;
+            let conn = brain::code_index::open_or_create_index(&db_path)?;
+            let blob_list = brain::code_index::assemble_blob_list(&resolved_root, None, false)?;
+            let (_symbols, _refs, counters) =
+                brain::code_graph::load_symbols_refs_via_index(&conn, &resolved_root, &blob_list);
+            let stats = brain::code_index::index_stats(&conn)?;
+            let report = CodeStatusReport {
+                hits: counters.hits,
+                misses: counters.misses,
+                reparses: counters.reparses,
+                total_rows: stats.total_rows,
+                distinct_blobs: stats.distinct_blobs,
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "code status: {} hits, {} misses, {} reparses — {} total rows, {} distinct blobs",
+                    report.hits,
+                    report.misses,
+                    report.reparses,
+                    report.total_rows,
+                    report.distinct_blobs
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Split `lane` (`bastion attach`'s own CLI shape, `<repo>/<lane>`) on the FIRST `/` into
 /// `(repo, lane_name)` — mirroring `drain_cli`'s own `parse_lane` convention for the sibling
 /// `bastion drain --lane <repo>/<lane>` shape (`BA.25.D`). `Err` naming the literal `lane`
@@ -336,22 +586,33 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 root,
                 workspace,
                 json,
+                action,
             } => {
-                let query = if let Some(name) = def {
-                    brain::code_graph::CodeQuery::Def(name)
-                } else if let Some(name) = refs {
-                    brain::code_graph::CodeQuery::Refs(name)
-                } else if let Some(name) = dependents {
-                    brain::code_graph::CodeQuery::Dependents(name)
+                if let Some(action) = action {
+                    run_code_action(action)
                 } else {
-                    // Unreachable: clap ArgGroup enforces exactly one of the three flags.
-                    unreachable!("clap ArgGroup guarantees exactly one code query flag is set")
-                };
-                let registry = config::load_workspace_registry(
-                    std::env::var("XDG_CONFIG_HOME").ok(),
-                    std::env::var("HOME").ok(),
-                )?;
-                brain::code_graph::run_code(query, root, workspace, &registry, json)
+                    let query = if let Some(name) = def {
+                        brain::code_graph::CodeQuery::Def(name)
+                    } else if let Some(name) = refs {
+                        brain::code_graph::CodeQuery::Refs(name)
+                    } else if let Some(name) = dependents {
+                        brain::code_graph::CodeQuery::Dependents(name)
+                    } else {
+                        // Enforced here (not by a clap ArgGroup) because the group can no
+                        // longer be `required(true)` once `action`'s nested subcommand
+                        // shares the same `Code` variant — `bastion code index` must be
+                        // able to parse with none of --def/--refs/--dependents set.
+                        anyhow::bail!(
+                            "one of --def, --refs, or --dependents is required when no \
+                             `bastion code <action>` subcommand (index/query/status) is given"
+                        );
+                    };
+                    let registry = config::load_workspace_registry(
+                        std::env::var("XDG_CONFIG_HOME").ok(),
+                        std::env::var("HOME").ok(),
+                    )?;
+                    brain::code_graph::run_code(query, root, workspace, &registry, json)
+                }
             }
             // View/Edit are DB-free (D4) and synchronous — thin pass-throughs to the
             // `bella` terminal markdown viewer/editor over bella-engine (D14/BA.15.2).
@@ -831,6 +1092,7 @@ mod tests {
                 root: None,
                 workspace: None,
                 json: false,
+                action: None,
             }),
             "code"
         );

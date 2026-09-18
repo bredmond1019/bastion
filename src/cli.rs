@@ -364,8 +364,13 @@ pub enum Commands {
     ///   refs:      `ref: <name>\t<path>:<line>`
     ///   dependents: `dependent: <name>\t<path>`
     ///
-    /// Exactly one of --def, --refs, or --dependents must be supplied.
+    /// Exactly one of --def, --refs, or --dependents must be supplied, UNLESS a nested
+    /// action subcommand (`index` / `query` / `status`, task 4) is given instead — the
+    /// two forms are mutually exclusive and validated at dispatch time (see `main.rs`),
+    /// since clap's declarative `ArgGroup::required` cannot itself be made conditional
+    /// on "some other subcommand was chosen".
     /// Coverage: Rust (.rs) files only; other languages are skipped.
+    #[command(args_conflicts_with_subcommands = true)]
     #[command(group(
         clap::ArgGroup::new("code-query-mode")
             .required(true)
@@ -394,6 +399,11 @@ pub enum Commands {
         /// See docs/brain-graph-output.md for the documented shape.
         #[arg(long)]
         json: bool,
+        /// Index-cache action (`index` / `query` / `status`, task 4) — kept as a nested
+        /// subcommand alongside the bare `--def`/`--refs`/`--dependents` flags above for
+        /// backward compatibility. Omitted entirely for the bare-flag form.
+        #[command(subcommand)]
+        action: Option<CodeAction>,
     },
 
     /// Open a markdown document in bella's terminal viewer (bella-engine pass-through)
@@ -501,6 +511,80 @@ pub enum Commands {
         /// name is REFUSED, never defaulted to `unrestricted`.
         #[arg(long)]
         profile: Option<String>,
+    },
+}
+
+/// `bastion code <action>` subcommands — see [`Commands::Code`]'s `action` field
+/// (BA.ticket.code-index-cache task 4). Nested alongside the pre-existing bare
+/// `--def`/`--refs`/`--dependents` flags on `Code` itself, kept for backward
+/// compatibility; the two forms are mutually exclusive, enforced at dispatch time.
+#[derive(Debug, Subcommand)]
+pub enum CodeAction {
+    /// Build/refresh the content-addressed code index for a blob set — the working
+    /// tree by default, a historical commit (`--rev`), or the git index (`--staged`).
+    ///
+    /// `--prune` additionally removes cache rows for blobs unreachable from any ref,
+    /// reclaiming rows orphaned by a bumped parser version or a deleted branch.
+    Index {
+        /// Index a historical commit's tree instead of the working tree, without
+        /// checking it out. Mutually exclusive with `--staged`.
+        #[arg(long, conflicts_with = "staged")]
+        rev: Option<String>,
+        /// Index the git index's (staged) content instead of the working tree.
+        /// Mutually exclusive with `--rev`.
+        #[arg(long)]
+        staged: bool,
+        /// After indexing, remove cache rows for blobs unreachable from any ref and
+        /// report the number removed.
+        #[arg(long)]
+        prune: bool,
+        /// Root directory of the Rust source tree to index (explicit override; takes
+        /// precedence over --workspace and the config default).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Named workspace from the [workspaces] registry in the bastion config file.
+        #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
+        workspace: Option<String>,
+    },
+
+    /// Batch-answer many `--def`/`--refs`/`--dependents`-shaped queries from one
+    /// process against a warm (or self-healing) index.
+    ///
+    /// Reads newline-delimited JSON query objects from stdin — one of
+    /// `{"def": "<name>"}`, `{"refs": "<name>"}`, or `{"dependents": "<name>"}` per
+    /// line — and writes one JSON result object per line to stdout, in order.
+    Query {
+        /// Emit each result as the machine-readable JSON envelope (always true for
+        /// this batch verb in practice, kept as a flag for symmetry with the other
+        /// code verbs and to allow a future non-JSON batch format).
+        #[arg(long)]
+        json: bool,
+        /// Answer against a historical commit's tree instead of the working tree.
+        #[arg(long, conflicts_with = "staged")]
+        rev: Option<String>,
+        /// Answer against the git index's (staged) content instead of the working tree.
+        #[arg(long)]
+        staged: bool,
+        /// Root directory of the Rust source tree to query (explicit override).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Named workspace from the [workspaces] registry in the bastion config file.
+        #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
+        workspace: Option<String>,
+    },
+
+    /// Report cache hit/miss/reparse counts for a query against the current blob
+    /// set, plus total indexed row/blob counts.
+    Status {
+        /// Emit the machine-readable JSON envelope instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+        /// Root directory of the Rust source tree to check (explicit override).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Named workspace from the [workspaces] registry in the bastion config file.
+        #[arg(long, visible_alias = "knowledge-dir", value_name = "NAME")]
+        workspace: Option<String>,
     },
 }
 
@@ -1351,6 +1435,7 @@ mod tests {
                 root,
                 workspace,
                 json,
+                action,
             }) => {
                 assert_eq!(def, Some("alpha".to_string()));
                 assert!(refs.is_none());
@@ -1358,6 +1443,7 @@ mod tests {
                 assert!(root.is_none());
                 assert!(workspace.is_none());
                 assert!(!json);
+                assert!(action.is_none());
             }
             other => panic!("expected Code, got {other:?}"),
         }
@@ -1491,6 +1577,100 @@ mod tests {
         assert!(
             Cli::try_parse_from(["bastion", "code", "--def", "alpha", "--refs", "alpha"]).is_err()
         );
+    }
+
+    #[test]
+    fn code_index_action_parses_defaults() {
+        let cli = Cli::try_parse_from(["bastion", "code", "index"]).unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                def,
+                refs,
+                dependents,
+                action,
+                ..
+            }) => {
+                assert!(def.is_none());
+                assert!(refs.is_none());
+                assert!(dependents.is_none());
+                match action {
+                    Some(CodeAction::Index {
+                        rev,
+                        staged,
+                        prune,
+                        root,
+                        workspace,
+                    }) => {
+                        assert!(rev.is_none());
+                        assert!(!staged);
+                        assert!(!prune);
+                        assert!(root.is_none());
+                        assert!(workspace.is_none());
+                    }
+                    other => panic!("expected CodeAction::Index, got {other:?}"),
+                }
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_index_action_flags_parse() {
+        let cli = Cli::try_parse_from(["bastion", "code", "index", "--rev", "abc123", "--prune"])
+            .unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                action: Some(CodeAction::Index { rev, prune, .. }),
+                ..
+            }) => {
+                assert_eq!(rev.as_deref(), Some("abc123"));
+                assert!(prune);
+            }
+            other => panic!("expected CodeAction::Index, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_index_action_rev_conflicts_with_staged() {
+        assert!(
+            Cli::try_parse_from(["bastion", "code", "index", "--rev", "abc", "--staged"]).is_err()
+        );
+    }
+
+    #[test]
+    fn code_query_action_parses() {
+        let cli = Cli::try_parse_from(["bastion", "code", "query", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                action: Some(CodeAction::Query { json, staged, .. }),
+                ..
+            }) => {
+                assert!(json);
+                assert!(!staged);
+            }
+            other => panic!("expected CodeAction::Query, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_status_action_parses() {
+        let cli = Cli::try_parse_from(["bastion", "code", "status", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Code {
+                action: Some(CodeAction::Status { json, .. }),
+                ..
+            }) => {
+                assert!(json);
+            }
+            other => panic!("expected CodeAction::Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_action_and_bare_query_flag_together_fails() {
+        // args_conflicts_with_subcommands: a bare query flag alongside a nested
+        // action subcommand is refused, not silently combined.
+        assert!(Cli::try_parse_from(["bastion", "code", "--def", "alpha", "index"]).is_err());
     }
 
     // ── Global --verbose / --json-logs flags ─────────────────────────────────
