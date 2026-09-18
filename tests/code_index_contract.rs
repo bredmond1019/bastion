@@ -72,9 +72,17 @@ fn commit_all(dir: &Path, msg: &str) {
     git(dir, &["commit", "-q", "-m", msg]);
 }
 
-/// Mirrors `default_code_index_db_path` (src/main.rs) exactly, so tests derive
-/// the same path the binary itself resolves for a plain (non-worktree) repo,
-/// without depending on that private function directly.
+/// Mirrors the binary's own default-path computation (`default_code_index_db_path`
+/// in `src/main.rs`) exactly, so tests derive the same path the binary itself
+/// resolves for a plain (non-worktree) repo, without depending on that private
+/// function directly.
+///
+/// Since BA.ticket.code-index-cache task 6, every call site resolves the db
+/// path through `resolve_code_index_db_path_for_repo`, which layers an
+/// optional `[code]` config-table override on top of this same default — none
+/// of these tests write a config file, so `registry.code` is always `None` and
+/// the effective path always falls back to this default, keeping this helper
+/// accurate.
 fn db_path_for(root: &Path) -> PathBuf {
     let common = git_output(root, &["rev-parse", "--git-common-dir"]);
     let common_path = PathBuf::from(&common);
