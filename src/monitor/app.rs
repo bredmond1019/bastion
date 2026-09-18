@@ -59,6 +59,12 @@ pub struct App {
     pub banner: Option<String>,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         Self {

@@ -352,7 +352,7 @@ fn finished_blocks_for_repo(
 /// left `None` on the other four — mev defines `unmet_count` as `0` for every
 /// non-`Blocked` lane, so surfacing it unqualified there would read as
 /// falsely-ready (see `BoardBlockDto::unmet_count`'s doc comment).
-pub fn build_board(
+pub(crate) fn build_board(
     scope: BoardScope,
     resolved_tier: Option<String>,
     rollups: &[RepoRollup],
