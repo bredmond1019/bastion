@@ -39,6 +39,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::brain::code::{CodeRef, CodeSymbol, SymbolKind};
 
+/// The extractor/parser version cache rows are keyed on, alongside `blob_oid`.
+///
+/// Bumping this constant orphans every previously cached row without a migration:
+/// `cached_symbols` only matches rows whose stored `parser_version` equals this
+/// value, so a bump makes every existing row silently stop matching — the next
+/// query treats it as a miss, reparses live, and re-stores under the new version.
+/// `prune_unreachable` then reclaims the orphaned rows once they are also
+/// unreachable from any ref (see task 4's `--prune`).
+pub const PARSER_VERSION: u32 = 1;
+
 // ── Schema ──────────────────────────────────────────────────────────────────────
 
 const SCHEMA_SQL: &str = "CREATE TABLE IF NOT EXISTS code_index (
@@ -390,6 +400,25 @@ pub fn assemble_blob_list(
     }
 
     Ok(entries)
+}
+
+/// Reads the content of blob `oid` (at `path`, relative to `repo_root`) that a
+/// query needs to parse on a cache miss.
+///
+/// Tries `git cat-file -p <oid>` first — this resolves for every blob already
+/// written to the object database: every committed blob, and every staged blob
+/// (`git add` writes the object immediately, before commit). Falls back to
+/// reading `path` directly from the working tree when that fails, which is the
+/// one case `assemble_blob_list` can produce an oid for that is **not** in the
+/// object database: a dirty tracked file's oid comes from `git hash-object`
+/// (no `-w`), which computes the hash without persisting the blob.
+pub fn read_blob_content(repo_root: &Path, path: &Path, oid: &str) -> anyhow::Result<String> {
+    if let Ok(content) = run_git(repo_root, &["cat-file", "-p", oid]) {
+        return Ok(content);
+    }
+    let abs = repo_root.join(path);
+    std::fs::read_to_string(&abs)
+        .map_err(|e| anyhow::anyhow!("failed to read blob '{oid}' at '{}': {e}", abs.display()))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────────
@@ -775,5 +804,49 @@ mod tests {
             .map(|(_, oid)| oid.clone())
             .unwrap();
         assert_ne!(historical_oid, working_oid);
+    }
+
+    // ── read_blob_content ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_blob_content_committed_blob_via_cat_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        git(root, &["add", "a.rs"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+
+        let entries = assemble_blob_list(root, None, false).unwrap();
+        let (path, oid) = entries
+            .iter()
+            .find(|(p, _)| p == &PathBuf::from("a.rs"))
+            .unwrap();
+
+        let content = read_blob_content(root, path, oid).unwrap();
+        assert_eq!(content, "fn a() {}\n");
+    }
+
+    #[test]
+    fn read_blob_content_dirty_blob_falls_back_to_working_tree() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        git(root, &["add", "a.rs"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+
+        // Dirty the file without staging — its hash-object oid is never written
+        // to the object database, so `git cat-file -p` on it must fail and the
+        // working-tree fallback must kick in.
+        std::fs::write(root.join("a.rs"), "fn a() { /* dirty */ }\n").unwrap();
+        let entries = assemble_blob_list(root, None, false).unwrap();
+        let (path, oid) = entries
+            .iter()
+            .find(|(p, _)| p == &PathBuf::from("a.rs"))
+            .unwrap();
+
+        let content = read_blob_content(root, path, oid).unwrap();
+        assert_eq!(content, "fn a() { /* dirty */ }\n");
     }
 }

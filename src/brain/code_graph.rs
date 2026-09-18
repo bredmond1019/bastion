@@ -44,9 +44,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::brain::code::{CodeRef, CodeSymbol, SymbolKind};
+use crate::brain::code_index::{self, PARSER_VERSION};
 use crate::brain::graph::BrainGraph;
 use crate::brain::okf::{BrainEdge, BrainNode};
 use crate::config::FileConfig;
@@ -439,6 +441,205 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+// ── Index-backed loading (self-healing cache path, task 3) ────────────────────
+
+/// Cache-hit / cache-miss / reparse counters for one query's blob set, so the
+/// `status` verb (task 4) and cache-hit tests (task 5) can observe which path
+/// was taken without parsing stderr/debug output.
+///
+/// `reparses` always equals `misses` in the current implementation (every miss
+/// falls back to a live parse), but the fields are kept distinct because a
+/// miss and a reparse are conceptually different events and a future caller
+/// (e.g. a miss that could not be read at all) may need to tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct IndexStatusCounters {
+    /// Blobs whose symbols/refs were answered straight from the cache.
+    pub hits: usize,
+    /// Blobs not found in the cache at their current `(oid, parser_version)`.
+    pub misses: usize,
+    /// Blobs actually re-parsed live (via `extract_all`) to resolve a miss.
+    pub reparses: usize,
+}
+
+/// Loads symbols/refs for every `(path, blob_oid)` entry in `blob_list`,
+/// answering from `code_index::cached_symbols` where possible and
+/// self-healing (parse live + `store_symbols`) on a miss.
+///
+/// Only `.rs` paths are considered (mirrors `find_rust_files`'s Rust-only
+/// extraction scope); other tracked files in `blob_list` are skipped.
+///
+/// This is the self-healing entry point: `conn` may point at a freshly
+/// created (or freshly re-created after a deletion) index with no rows at
+/// all — every blob then misses, gets parsed live, and gets cached, so the
+/// very next call against the same blob set hits. A missing/unreadable blob
+/// is skipped with a warning on stderr rather than failing the whole query.
+pub fn load_symbols_refs_via_index(
+    conn: &Connection,
+    repo_root: &Path,
+    blob_list: &[(PathBuf, String)],
+) -> (Vec<CodeSymbol>, Vec<CodeRef>, IndexStatusCounters) {
+    use crate::brain::code::extract_all;
+
+    let mut all_symbols: Vec<CodeSymbol> = Vec::new();
+    let mut all_refs: Vec<CodeRef> = Vec::new();
+    let mut counters = IndexStatusCounters::default();
+
+    for (path, oid) in blob_list {
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+
+        if let Some((symbols, refs)) = code_index::cached_symbols(conn, oid, PARSER_VERSION) {
+            counters.hits += 1;
+            all_symbols.extend(symbols);
+            all_refs.extend(refs);
+            continue;
+        }
+
+        // Cache miss (unknown blob, stale parser_version, or a fresh/empty
+        // index) — parse live and write the result back so the next query
+        // against this same blob answers from cache.
+        counters.misses += 1;
+        let content = match code_index::read_blob_content(repo_root, path, oid) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "code: skipping unreadable blob '{}' ({oid}): {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        counters.reparses += 1;
+        let (symbols, refs) = extract_all(&content, path);
+        if let Err(e) = code_index::store_symbols(conn, oid, PARSER_VERSION, path, &symbols, &refs)
+        {
+            eprintln!(
+                "code: failed to cache blob '{}' ({oid}): {e}",
+                path.display()
+            );
+        }
+        all_symbols.extend(symbols);
+        all_refs.extend(refs);
+    }
+
+    (all_symbols, all_refs, counters)
+}
+
+/// Runs `query` against `all_symbols`/`all_refs`/`graph` and prints a
+/// greppable (or `--json`) report. Shared by `run_code` (always-reparse path)
+/// and `run_code_indexed` (cache-backed path, task 4) so both entry points
+/// produce identical output for identical extracted data.
+fn dispatch_query(
+    query: &CodeQuery,
+    all_symbols: &[CodeSymbol],
+    all_refs: &[CodeRef],
+    graph: &BrainGraph,
+    root_str: &str,
+    json: bool,
+) -> Result<()> {
+    match query {
+        CodeQuery::Def(name) => {
+            let defs = find_definition(all_symbols, name);
+            if json {
+                println!("{}", render_def_json(root_str, name, &defs)?);
+            } else if defs.is_empty() {
+                println!("# no def results for '{name}'");
+            } else {
+                for sym in defs {
+                    println!("{}", format_def_line(sym));
+                }
+            }
+        }
+        CodeQuery::Refs(name) => {
+            let references = find_references(all_refs, name);
+            if json {
+                println!("{}", render_refs_json(root_str, name, &references)?);
+            } else if references.is_empty() {
+                println!("# no ref results for '{name}'");
+            } else {
+                for r in references {
+                    println!("{}", format_ref_line(r));
+                }
+            }
+        }
+        CodeQuery::Dependents(name) => {
+            // Use bare-name lookup (D10): multiple qualified nodes may share the same name.
+            let callers = graph.predecessors_by_name(name);
+            if json {
+                println!("{}", render_dependents_json(root_str, name, &callers)?);
+            } else if callers.is_empty() {
+                println!("# no dependent results for '{name}'");
+            } else {
+                for node in &callers {
+                    println!("{}", format_dependent_line(node));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Scan-root resolution inputs for [`run_code_indexed`], grouped to keep that
+/// function's argument count under clippy's `too_many_arguments` threshold —
+/// mirrors the `(explicit_root, workspace, registry)` triple `run_code` takes
+/// as separate parameters, but bundled since `run_code_indexed` also needs
+/// `db_path`/`rev`/`staged` alongside `query`/`json`.
+pub struct CodeRootArgs<'a> {
+    pub explicit_root: Option<PathBuf>,
+    pub workspace: Option<String>,
+    pub registry: &'a FileConfig,
+}
+
+/// Index-backed entry point for `bastion code` queries (task 4 wires this
+/// into the CLI dispatch alongside/in place of `run_code`'s always-reparse
+/// path). Answers from `db_path`'s cache where possible; self-healing means
+/// `db_path` need not exist yet (`open_or_create_index` creates it).
+///
+/// `rev`/`staged` select the blob set exactly as `code_index::assemble_blob_list`
+/// does: a historical commit, the git index, or (both `None`/`false`) the
+/// working tree. Returns the `IndexStatusCounters` for the query alongside the
+/// `Result` so a caller (task 4's `status`) can report hit/miss/reparse counts.
+pub fn run_code_indexed(
+    query: CodeQuery,
+    root_args: CodeRootArgs<'_>,
+    json: bool,
+    db_path: &Path,
+    rev: Option<&str>,
+    staged: bool,
+) -> Result<IndexStatusCounters> {
+    let (root, root_source) = crate::config::resolve_cli_root_from_cwd(
+        root_args.explicit_root,
+        root_args.workspace.as_deref(),
+        root_args.registry,
+    )
+    .map_err(anyhow::Error::from)?;
+
+    if !json {
+        eprintln!("code: root {} ({})", root.display(), root_source);
+    }
+
+    let conn = code_index::open_or_create_index(db_path)?;
+    let blob_list = code_index::assemble_blob_list(&root, rev, staged)?;
+    let (all_symbols, all_refs, counters) = load_symbols_refs_via_index(&conn, &root, &blob_list);
+
+    if all_symbols.is_empty() && all_refs.is_empty() {
+        eprintln!(
+            "code: no .rs files found under '{}' — check --root or --workspace",
+            root.display()
+        );
+        anyhow::bail!("empty source tree at '{}'", root.display());
+    }
+
+    let (nodes, edges) = build_code_node_edge_lists(&all_symbols, &all_refs);
+    let graph = BrainGraph::build(nodes, edges);
+    let root_str = root.display().to_string();
+
+    dispatch_query(&query, &all_symbols, &all_refs, &graph, &root_str, json)?;
+
+    Ok(counters)
+}
+
 // ── I/O shell ─────────────────────────────────────────────────────────────────
 
 /// Entry point for `bastion code`.
@@ -524,47 +725,7 @@ pub fn run_code(
 
     let root_str = root.display().to_string();
 
-    match &query {
-        CodeQuery::Def(name) => {
-            let defs = find_definition(&all_symbols, name);
-            if json {
-                println!("{}", render_def_json(&root_str, name, &defs)?);
-            } else if defs.is_empty() {
-                println!("# no def results for '{name}'");
-            } else {
-                for sym in defs {
-                    println!("{}", format_def_line(sym));
-                }
-            }
-        }
-        CodeQuery::Refs(name) => {
-            let references = find_references(&all_refs, name);
-            if json {
-                println!("{}", render_refs_json(&root_str, name, &references)?);
-            } else if references.is_empty() {
-                println!("# no ref results for '{name}'");
-            } else {
-                for r in references {
-                    println!("{}", format_ref_line(r));
-                }
-            }
-        }
-        CodeQuery::Dependents(name) => {
-            // Use bare-name lookup (D10): multiple qualified nodes may share the same name.
-            let callers = graph.predecessors_by_name(name);
-            if json {
-                println!("{}", render_dependents_json(&root_str, name, &callers)?);
-            } else if callers.is_empty() {
-                println!("# no dependent results for '{name}'");
-            } else {
-                for node in &callers {
-                    println!("{}", format_dependent_line(node));
-                }
-            }
-        }
-    }
-
-    Ok(())
+    dispatch_query(&query, &all_symbols, &all_refs, &graph, &root_str, json)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1105,6 +1266,196 @@ mod tests {
                 !f.components().any(|c| c.as_os_str() == "target"),
                 "target/ must be excluded; got {f:?}"
             );
+        }
+    }
+
+    // ── load_symbols_refs_via_index: cache hit/miss/self-heal (task 3) ────────
+
+    mod indexed {
+        use super::*;
+        use crate::brain::code_index::{assemble_blob_list, open_or_create_index};
+        use std::collections::HashSet as StdHashSet;
+        use std::process::Command;
+        use tempfile::tempdir;
+
+        fn git(dir: &Path, args: &[&str]) {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("failed to spawn git");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        fn init_repo(dir: &Path) {
+            git(dir, &["init", "-q"]);
+            git(dir, &["config", "user.email", "test@example.com"]);
+            git(dir, &["config", "user.name", "Test"]);
+        }
+
+        #[test]
+        fn warm_cache_answers_with_zero_reparses() {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            init_repo(root);
+            std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+            git(root, &["add", "a.rs"]);
+            git(root, &["commit", "-q", "-m", "init"]);
+
+            let db_dir = tempdir().unwrap();
+            let conn = open_or_create_index(&db_dir.path().join("index.sqlite")).unwrap();
+            let blob_list = assemble_blob_list(root, None, false).unwrap();
+
+            let (_s1, _r1, cold) = load_symbols_refs_via_index(&conn, root, &blob_list);
+            assert_eq!(
+                cold.misses, 1,
+                "first query against an empty index must miss"
+            );
+            assert_eq!(cold.reparses, 1);
+
+            let (_s2, _r2, warm) = load_symbols_refs_via_index(&conn, root, &blob_list);
+            assert_eq!(warm.hits, 1, "second query against the same blob must hit");
+            assert_eq!(
+                warm.misses, 0,
+                "second query against an unchanged blob must reparse zero blobs"
+            );
+            assert_eq!(warm.reparses, 0);
+        }
+
+        #[test]
+        fn editing_one_file_reparses_only_that_blob() {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            init_repo(root);
+            std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+            std::fs::write(root.join("b.rs"), "fn beta() {}\n").unwrap();
+            git(root, &["add", "a.rs", "b.rs"]);
+            git(root, &["commit", "-q", "-m", "init"]);
+
+            let db_dir = tempdir().unwrap();
+            let conn = open_or_create_index(&db_dir.path().join("index.sqlite")).unwrap();
+            let blob_list = assemble_blob_list(root, None, false).unwrap();
+            // Warm both blobs.
+            load_symbols_refs_via_index(&conn, root, &blob_list);
+
+            std::fs::write(root.join("a.rs"), "fn alpha() { /* changed */ }\n").unwrap();
+            let blob_list_after_edit = assemble_blob_list(root, None, false).unwrap();
+            let (_symbols, _refs, counters) =
+                load_symbols_refs_via_index(&conn, root, &blob_list_after_edit);
+
+            assert_eq!(
+                counters.misses, 1,
+                "only the edited file's new blob OID should miss"
+            );
+            assert_eq!(
+                counters.hits, 1,
+                "the untouched file's blob must remain cached"
+            );
+        }
+
+        #[test]
+        fn fresh_empty_index_self_heals() {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            init_repo(root);
+            std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+            git(root, &["add", "a.rs"]);
+            git(root, &["commit", "-q", "-m", "init"]);
+
+            let db_dir = tempdir().unwrap();
+            // A nested, not-yet-existing path simulates a missing/deleted index
+            // directory — open_or_create_index must create it from nothing.
+            let conn =
+                open_or_create_index(&db_dir.path().join("nested").join("index.sqlite")).unwrap();
+            let blob_list = assemble_blob_list(root, None, false).unwrap();
+
+            let (symbols, _refs, counters) = load_symbols_refs_via_index(&conn, root, &blob_list);
+            assert_eq!(counters.misses, 1);
+            assert!(
+                symbols.iter().any(|s| s.name == "alpha"),
+                "self-healing must still produce correct results, just slower"
+            );
+        }
+
+        #[test]
+        fn cold_and_warm_cache_produce_identical_results() {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            init_repo(root);
+            std::fs::write(
+                root.join("lib.rs"),
+                "fn alpha() {}\nfn beta() { alpha(); }\n",
+            )
+            .unwrap();
+            git(root, &["add", "lib.rs"]);
+            git(root, &["commit", "-q", "-m", "init"]);
+
+            let db_dir = tempdir().unwrap();
+            let conn = open_or_create_index(&db_dir.path().join("index.sqlite")).unwrap();
+            let blob_list = assemble_blob_list(root, None, false).unwrap();
+
+            let (cold_symbols, cold_refs, cold_counters) =
+                load_symbols_refs_via_index(&conn, root, &blob_list);
+            assert_eq!(cold_counters.misses, 1);
+
+            let (warm_symbols, warm_refs, warm_counters) =
+                load_symbols_refs_via_index(&conn, root, &blob_list);
+            assert_eq!(warm_counters.hits, 1);
+
+            assert_eq!(cold_symbols.len(), warm_symbols.len());
+            assert_eq!(cold_refs.len(), warm_refs.len());
+
+            let cold_names: StdHashSet<&str> =
+                cold_symbols.iter().map(|s| s.name.as_str()).collect();
+            let warm_names: StdHashSet<&str> =
+                warm_symbols.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(
+                cold_names, warm_names,
+                "cold and warm cache paths must yield the same symbol set"
+            );
+
+            // Def/refs/dependents queries built from either path must agree.
+            let (cold_nodes, cold_edges) = build_code_node_edge_lists(&cold_symbols, &cold_refs);
+            let (warm_nodes, warm_edges) = build_code_node_edge_lists(&warm_symbols, &warm_refs);
+            let cold_graph = BrainGraph::build(cold_nodes, cold_edges);
+            let warm_graph = BrainGraph::build(warm_nodes, warm_edges);
+
+            let cold_def = find_definition(&cold_symbols, "alpha");
+            let warm_def = find_definition(&warm_symbols, "alpha");
+            assert_eq!(cold_def.len(), warm_def.len());
+
+            let cold_refs_alpha = find_references(&cold_refs, "alpha");
+            let warm_refs_alpha = find_references(&warm_refs, "alpha");
+            assert_eq!(cold_refs_alpha.len(), warm_refs_alpha.len());
+
+            let cold_dependents = cold_graph.predecessors_by_name("alpha");
+            let warm_dependents = warm_graph.predecessors_by_name("alpha");
+            assert_eq!(cold_dependents.len(), warm_dependents.len());
+        }
+
+        #[test]
+        fn non_rust_blobs_are_skipped() {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            init_repo(root);
+            std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+            std::fs::write(root.join("README.md"), "not rust\n").unwrap();
+            git(root, &["add", "a.rs", "README.md"]);
+            git(root, &["commit", "-q", "-m", "init"]);
+
+            let db_dir = tempdir().unwrap();
+            let conn = open_or_create_index(&db_dir.path().join("index.sqlite")).unwrap();
+            let blob_list = assemble_blob_list(root, None, false).unwrap();
+
+            let (symbols, _refs, counters) = load_symbols_refs_via_index(&conn, root, &blob_list);
+            assert_eq!(counters.misses, 1, "only the .rs blob should be considered");
+            assert!(symbols.iter().any(|s| s.name == "alpha"));
         }
     }
 }
