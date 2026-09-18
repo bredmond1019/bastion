@@ -131,6 +131,112 @@ impl TryFrom<StdinCodeQuery> for brain::code_graph::CodeQuery {
     }
 }
 
+#[cfg(test)]
+mod stdin_code_query_tests {
+    use super::StdinCodeQuery;
+    use crate::brain::code_graph::CodeQuery;
+
+    /// `StdinCodeQuery`'s `TryFrom` (task 4's `query --json` batch path) must
+    /// enforce exactly one of `def`/`refs`/`dependents`, mirroring the bare
+    /// `--def`/`--refs`/`--dependents` flags' `ArgGroup` contract — this impl
+    /// shipped in task 4 with no direct unit test of its own until now.
+    #[test]
+    fn stdin_code_query_accepts_exactly_one_field() {
+        let def = StdinCodeQuery {
+            def: Some("Foo".into()),
+            refs: None,
+            dependents: None,
+        };
+        assert!(matches!(
+            CodeQuery::try_from(def).expect("def-only should parse"),
+            CodeQuery::Def(name) if name == "Foo"
+        ));
+
+        let refs = StdinCodeQuery {
+            def: None,
+            refs: Some("Bar".into()),
+            dependents: None,
+        };
+        assert!(matches!(
+            CodeQuery::try_from(refs).expect("refs-only should parse"),
+            CodeQuery::Refs(name) if name == "Bar"
+        ));
+
+        let dependents = StdinCodeQuery {
+            def: None,
+            refs: None,
+            dependents: Some("Baz".into()),
+        };
+        assert!(matches!(
+            CodeQuery::try_from(dependents).expect("dependents-only should parse"),
+            CodeQuery::Dependents(name) if name == "Baz"
+        ));
+    }
+
+    #[test]
+    fn stdin_code_query_rejects_none_or_many_fields() {
+        let none = StdinCodeQuery {
+            def: None,
+            refs: None,
+            dependents: None,
+        };
+        assert!(CodeQuery::try_from(none).is_err());
+
+        let both = StdinCodeQuery {
+            def: Some("Foo".into()),
+            refs: Some("Foo".into()),
+            dependents: None,
+        };
+        assert!(CodeQuery::try_from(both).is_err());
+    }
+}
+
+#[cfg(test)]
+mod run_code_action_registry_tests {
+    use crate::testsupport;
+
+    /// `run_code_action` (task 4) loads the workspace registry through
+    /// `config::load_workspace_registry(XDG_CONFIG_HOME, HOME)` exactly like
+    /// every other DB-free command on this CLI — the same call that task 4's
+    /// refactor relocated (not removed) from the bare `--def`/`--refs`/
+    /// `--dependents` arm into this dedicated dispatch function. Proves that
+    /// exact call still resolves a `[workspaces]` entry from a fixture config
+    /// pointed at by `XDG_CONFIG_HOME`, so the relocation changed nothing
+    /// observable about config loading for the new index/query/status verbs.
+    #[test]
+    fn run_code_action_registry_load_honors_xdg_config_home() {
+        let env_lock = testsupport::lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().join("bastion");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[workspaces]\nfoo = \"foo\"\n",
+        )
+        .expect("write fixture config");
+
+        let _xdg = testsupport::EnvVarGuard::set(
+            &env_lock,
+            "XDG_CONFIG_HOME",
+            &dir.path().to_string_lossy(),
+        );
+        let _home = testsupport::EnvVarGuard::unset(&env_lock, "HOME");
+
+        let registry = crate::config::load_workspace_registry(
+            std::env::var("XDG_CONFIG_HOME").ok(),
+            std::env::var("HOME").ok(),
+        )
+        .expect("run_code_action's registry-loading call must still succeed");
+        assert!(
+            registry
+                .workspaces
+                .as_ref()
+                .is_some_and(|ws| ws.contains_key("foo")),
+            "expected the fixture's [workspaces] entry to load, got {registry:?}"
+        );
+    }
+}
+
 /// Combined report for `bastion code status`: this run's cache hit/miss/reparse
 /// counters against the current blob set (warming the cache as a side effect,
 /// same as any other query would) alongside the index's total row/blob counts.
