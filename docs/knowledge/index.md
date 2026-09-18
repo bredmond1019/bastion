@@ -7,7 +7,7 @@ layer: [console, brain]
 project: bastion
 status: active
 keywords: [knowledge graph, validation, okf, tree-sitter, pass-through, index]
-related: [bastion-cli-docs-index, commands, tuning]
+related: [bastion-cli-docs-index, commands, tuning, code-index]
 ---
 
 # Knowledge Graph & Validation
@@ -25,6 +25,7 @@ Two axes to orient by:
 |---|---|
 | [brain.md](brain.md) | `bastion brain` — dependents / blast-radius / lineage over the OKF corpus |
 | [code.md](code.md) | `bastion code` — definition / references / dependents over Rust source (`.rs` only) |
+| [../code-index.md](../code-index.md) | `bastion code`'s content-addressed sqlite cache — `index` / `query --json` / `status`, the `[code]` config override, self-healing/pruning, and the git-hook warm lines |
 | [validate.md](validate.md) | `bastion validate` — Markdown/MDX frontmatter and link validation; non-zero exit on error |
 | [assess.md](assess.md) | `bastion assess` — read-only coverage / readiness diagnostic; writes nothing |
 | [brainval.md](brainval.md) | `bastion validate-brain` / `manifest` / `graph` / `emit-state` — the `mev` pass-throughs. **Flags do not compose: one per invocation.** |

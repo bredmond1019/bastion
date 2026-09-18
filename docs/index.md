@@ -7,7 +7,7 @@ layer: [console]
 project: bastion
 status: active
 keywords: [bastion, cli, operator reference, index, docs]
-related: [commands, tuning, testing, bastion-docs-workflows-index, bastion-docs-terminal-index, bastion-docs-boards-index, bastion-docs-knowledge-index, bastion-docs-serve-index, bastion-docs-operations-index, data-contract, carryover-contract, workspace-contract, brain-graph-output]
+related: [commands, tuning, testing, bastion-docs-workflows-index, bastion-docs-terminal-index, bastion-docs-boards-index, bastion-docs-knowledge-index, bastion-docs-serve-index, bastion-docs-operations-index, data-contract, carryover-contract, workspace-contract, brain-graph-output, code-index]
 ---
 
 # bastion CLI — Docs
@@ -51,6 +51,7 @@ Each directory has its own `index.md` explaining what unifies it.
 | [commands.md](commands.md) | **The capability catalogue** — every subcommand, derived from the code's dispatch table rather than from this index, so a command with no doc still appears |
 | [tuning.md](tuning.md) | **How to tune it** — corpus roots, poll cadence, budget ceilings, the three secrets, logging, and the build-drift guard. Each mechanism is shared by several commands and is explained once here rather than inside whichever feature introduced it |
 | [testing.md](testing.md) | **How to test it** — the fast loop, the full gate suite (mirrors `planning/harness.json`), regenerating a drifted golden, and the hand-verification recipes for tmux, `serve`, `coord`, sweep/drain, and live Telegram delivery |
+| [code-index.md](code-index.md) | **`bastion code`'s cache** — the content-addressed sqlite index behind `code index` / `query --json` / `status`, the `[code]` config override, self-healing/pruning, and the non-blocking git-hook warm lines |
 
 ## Pinned contracts (consumer views)
 
