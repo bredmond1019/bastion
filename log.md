@@ -6,6 +6,37 @@ timestamp: 2026-09-11T16:49:36-0300
 ---
 # Log — bastion
 
+## [run: 2026-09-17]
+
+### BA.ticket.code-index-cache — task 1 landed, then BAILED on an unfireable validation command
+- **What:** `/sdlc-flow BA.ticket.code-index-cache` ran task 1 (of 7): `SymbolKind` gained
+  `Const`/`Static`/`TypeAlias` variants with tree-sitter extraction and unit tests, and `rusqlite`
+  (bundled) was added as a dependency for the upcoming code index (commit `12bfbd8`). Task 1's own
+  gates (fmt, clippy) passed; `task_validation_3` (`cargo nextest run --lib brain::code::`) failed
+  and the run BAILED before tasks 2-7 started. Root cause is structural, not a code defect:
+  `src/lib.rs` (added in `BA.7.C` task 4, unchanged since base commit `d461f96`) deliberately
+  exposes only `api` and `observ` — `brain` is declared solely in `src/main.rs`'s binary module
+  tree, never in the `[lib]` target. `git show d461f96:src/lib.rs` shows the same minimal module
+  list at the task's base commit, and `cargo nextest run --lib brain::code::` reproduces "0 tests
+  run ... error: no tests to run" on the current tree. No `--lib` invocation of this command could
+  ever discover `brain::code` tests regardless of what this task changes — the validation command
+  itself needs a re-plan (drop `--lib`, or expose `brain` via `lib.rs`).
+- **Why:** `bastion code` re-parses the whole tree on every call (~3.6-4.3s on `core/engine-rs`,
+  no cache) and has no const/static symbol kind, which caused bail causes in `EN.15.I`/`EN.17.A`.
+  This spec adds a content-addressed OID-keyed index; task 1 is the symbol-kind prerequisite.
+- **Refs:** `planning/BA.ticket.code-index-cache/sdlc/sdlc-flow-state.json`,
+  `planning/BA.ticket.code-index-cache/sdlc/worklog.md`. Next: re-plan `task_validation_3` (and any
+  other `--lib brain::` gates later in the spec) to target `src/main.rs`'s binary test tree instead
+  of `--lib`, or add `brain` to `src/lib.rs`'s module list, then resume from task 1.
+
+```
+12bfbd8 feat: implement BA.ticket.code-index-cache-task1
+d461f96 chore(harness): sync base-template — fix(engines): inline two more TDZ-hazard consts (ATTRIBUTION_CACHE_SCHEMA, REMOVED_LITERAL_SCAN_SCHEMA)
+d6c5fad chore(harness): sync base-template — fix(engines): inline REMOVED_LITERAL_SCAN_CONFIG defaults, fixing a fleet-wide TDZ crash in every /sdlc-task and /sdlc-flow run's post-commit stage
+41ccea0 chore(harness): sync base-template — fix(sync): distribute 4 lint_rules-required checker scripts missing from SCRIPT_FILENAMES
+8e87bde chore: pre-push auto-commit — core/bastion — 2026-09-16 16:06
+```
+
 ## [run: 2026-09-11]
 
 ### Coordination-layer-port console lane — BA.25.D and BA.25.E closed
